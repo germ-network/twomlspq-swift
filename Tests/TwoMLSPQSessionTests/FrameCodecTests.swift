@@ -34,9 +34,14 @@ final class FrameCodecTests: XCTestCase {
 		}
 	}
 
+	/// `encodeMessageFrame` now preconditions against an empty section (nit), so
+	/// this builds the malformed frame directly off `pushSection` rather than
+	/// through the encoder, to exercise the decoder's own rejection.
 	func testMessageFrameRejectsEmptySection() {
-		let frame = Frames.encodeMessageFrame(
-			staple: Data(), proposal: Data([1]), app: Data([2]))
+		var frame = Data([Frames.messageFrameTag])
+		Frames.pushSection(Data(), into: &frame)
+		Frames.pushSection(Data([1]), into: &frame)
+		Frames.pushSection(Data([2]), into: &frame)
 		XCTAssertThrowsError(try Frames.decodeMessageFrame(frame)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .emptySection)
 		}
@@ -62,12 +67,12 @@ final class FrameCodecTests: XCTestCase {
 
 	// MARK: - Proposal sub-section
 
-	func testProposalSectionRoundTripsWithEmptyProposing() throws {
+	func testProposalSectionRejectsEmptyProposing() {
 		let section = Frames.encodeProposalSection(
 			proposing: Data(), message: Data("upd-message".utf8))
-		let decoded = try Frames.decodeProposalSection(section)
-		XCTAssertEqual(decoded.proposing, Data())
-		XCTAssertEqual(decoded.message, Data("upd-message".utf8))
+		XCTAssertThrowsError(try Frames.decodeProposalSection(section)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .emptySection)
+		}
 	}
 
 	func testProposalSectionRoundTripsWithNonEmptyProposing() throws {

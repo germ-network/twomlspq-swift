@@ -32,6 +32,11 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// full (Group_A-shaped) welcome. Slice 1 only ever joins one of those via
 	/// the explicit `receive()` entry point, never through `processIncoming`.
 	case fullEstablishmentStapleUnsupported
+	/// A welcome staple's digest did not match the one already joined for
+	/// this receive group — a different Group_B than the one this session is
+	/// established against. The matching-digest case is an idempotent no-op,
+	/// not this error.
+	case unexpectedWelcome
 	/// The frame's app section did not decode to `.privateMessage`.
 	case appSectionNotPrivateMessage
 	/// A decrypted app-section message was not `.application` content.

@@ -107,5 +107,52 @@ final class EstablishmentTests: XCTestCase {
 				XCTAssertEqual(error, .unresolvedPreSharedKey)
 			}
 		}
+
+		// minor-3: pin the session layer's own cross-party PSK component id —
+		// distinct from the combiner's `apq_psk` component (`0xFF01`).
+		XCTAssertEqual(TwoMLSSession.crossPartyComponentID.rawValue, 0xFF02)
+	}
+
+	/// MAJOR-4: once Alice has joined Group_B, a frame carrying a DIFFERENT
+	/// welcome staple — a fresh, unrelated pair's Group_B welcome — must be
+	/// rejected outright, not silently re-joined. The idempotent early-return
+	/// in `joinGroupBIfNeeded` only covers a byte-identical restaple of the
+	/// SAME welcome.
+	func testProcessIncomingRejectsADifferentWelcomeOnceEstablished() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+
+		let (_, otherBobSession, _, _, _, _) = try SessionTestSupport.established(
+			alice: "alice-intruder", bob: "bob-intruder")
+		var otherBob = otherBobSession
+		_ = try otherBob.prepareToEncrypt()
+		let intruderFrame = try otherBob.encrypt(Data("intruder".utf8))
+
+		XCTAssertThrowsError(try alice.processIncoming(intruderFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unexpectedWelcome)
+		}
+	}
+
+	/// minor-2: a staple welcome not already joined but carrying a non-empty
+	/// pq slot — a full (Group_A-shaped) welcome — is a protocol state
+	/// `processIncoming` cannot process; only the explicit `receive()` entry
+	/// point joins those. The app section is a real sealed `privateMessage`
+	/// (borrowed from an actual frame) so the check under test is actually
+	/// reached, past the earlier `Message` decode.
+	func testProcessIncomingRejectsFullWelcomeStaple() throws {
+		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
+		_ = try bob.prepareToEncrypt()
+		let realFrame = try bob.encrypt(Data("payload".utf8))
+		let (_, _, appSection) = try Frames.decodeMessageFrame(realFrame)
+
+		let fullWelcomeStaple = Frames.encodeAPQWelcome(
+			t: Data("fake-t".utf8), pq: Data("fake-pq".utf8))
+		let proposalSection = Frames.encodeProposalSection(
+			proposing: Data("client".utf8), message: Data("dummy".utf8))
+		let forgedFrame = Frames.encodeMessageFrame(
+			staple: fullWelcomeStaple, proposal: proposalSection, app: appSection)
+
+		XCTAssertThrowsError(try alice.processIncoming(forgedFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .fullEstablishmentStapleUnsupported)
+		}
 	}
 }

@@ -75,6 +75,7 @@ enum Frames {
 	/// `[0x03][u32 staple][u32 proposal][u32 app]` — all three sections
 	/// mandatory and non-empty.
 	static func encodeMessageFrame(staple: Data, proposal: Data, app: Data) -> Data {
+		precondition(!staple.isEmpty && !proposal.isEmpty && !app.isEmpty)
 		var buffer = Data([messageFrameTag])
 		pushSection(staple, into: &buffer)
 		pushSection(proposal, into: &buffer)
@@ -95,9 +96,10 @@ enum Frames {
 
 	// MARK: - Proposal sub-section
 
-	/// `[u32 proposing][message]` — `proposing` may be empty (slice 1 always
-	/// sends `Data()`, the born-dedicated `ClientId` staple is a later slice);
-	/// `message` is the remaining bytes and must be non-empty.
+	/// `[u32 proposing][message]` — `proposing` is the sender's current
+	/// `ClientId` and is non-empty on every routine round; a future slice's
+	/// rotation *candidate* `ClientId` rides the same field, but it too is
+	/// never empty. `message` is the remaining bytes and must be non-empty.
 	static func encodeProposalSection(proposing: Data, message: Data) -> Data {
 		var buffer = Data()
 		pushSection(proposing, into: &buffer)
@@ -110,6 +112,7 @@ enum Frames {
 	) {
 		var index = section.startIndex
 		let proposing = try readLengthPrefixedSection(section, at: &index)
+		guard !proposing.isEmpty else { throw TwoMLSError.emptySection }
 		let message = Data(section[index...])
 		guard !message.isEmpty else { throw TwoMLSError.emptySection }
 		return (proposing, message)

@@ -5,9 +5,11 @@ import MLSCrypto
 import MLSProfileRFC9420
 import TwoMLSPQCrypto
 
-/// draft-ietf-mls-combiner-02 §6's sentinel for an unbound epoch field. The
-/// Swift combiner does not export this (it has no deferred-half concept);
-/// twomlspq-swift needs it for Group_B's `pqEpoch`.
+/// Germ's own sentinel for an unbound epoch field on a deferred (pq-less)
+/// half — mirrors the Rust `apq/src/component.rs` `EPOCH_UNBOUND` constant.
+/// draft-ietf-mls-combiner-02 has no deferred-half concept and defines no such
+/// sentinel, so the Swift combiner does not export one; twomlspq-swift needs
+/// it for Group_B's `pqEpoch`.
 let epochUnbound: UInt64 = .max
 
 /// The directional `{classical, pq?}` group pair. Mirrors the Rust
@@ -101,14 +103,14 @@ extension APQGroup {
 				provider, groupID: founder.groupID, leafNode: founder.leafNode,
 				leafSecretKey: founder.leafSecretKey, extensions: [infoExtension],
 				epochSecret: founder.epochSecret)
+			let proposals: [MLS.RFC9420.ProposalOrRef] = [
+				.proposal(.add(founder.peerKeyPackage)),
+				.proposal(crossPSK.proposal(nonce: nonce)),
+			]
+			try TwoPartyRules.validateCreationProposals(proposals)
 			let transition = try epoch0.committing(
-				provider,
-				proposals: [
-					.proposal(.add(founder.peerKeyPackage)),
-					.proposal(crossPSK.proposal(nonce: nonce)),
-				],
-				signingKey: founder.signingKey, randomness: founder.randomness,
-				psk: pskStore.resolver())
+				provider, proposals: proposals, signingKey: founder.signingKey,
+				randomness: founder.randomness, psk: pskStore.resolver())
 			let adopted = transition.group
 			let sent = transition.takeOutput()
 			guard let welcome = sent.welcome else {
@@ -153,7 +155,9 @@ extension APQGroup {
 	/// because the combiner has no deferred verifier: `APQInfo` present and
 	/// naming this group; `tEpoch` matches the observed epoch and is bound
 	/// (`!= epochUnbound`); `pqEpoch` is unbound; a pq group id is
-	/// pre-allocated; and the suite pair is `(classical, 0xFDEA)`.
+	/// pre-allocated; and the suite pair is `(classical, 0xFDEA)`. Reads the
+	/// `APQInfo` off the live group and delegates the pure comparison to
+	/// `checkAPQInfoDeferred`.
 	static func verifyAPQInfoDeferred(
 		on group: MLS.RFC9420.Group, codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws {
@@ -164,15 +168,31 @@ extension APQGroup {
 		else {
 			throw TwoMLSError.deferredApqInfoMismatch
 		}
+		try checkAPQInfoDeferred(
+			info: info, observedGroupID: group.context.groupID,
+			observedEpoch: group.context.epoch,
+			classicalSuite: group.context.cipherSuite,
+			pqSuite: MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID))
+	}
+
+	/// The pure half of `verifyAPQInfoDeferred`: a decoded `APQInfo` against
+	/// the observed group id/epoch and the expected suite pair, taking no
+	/// `Group` — exercisable against hand-built values.
+	static func checkAPQInfoDeferred(
+		info: MLS.Combiner.APQInfo,
+		observedGroupID: Data,
+		observedEpoch: UInt64,
+		classicalSuite: MLS.CipherSuite,
+		pqSuite: MLS.CipherSuite
+	) throws {
 		guard
-			info.tSessionGroupID == group.context.groupID,
-			info.tEpoch == group.context.epoch,
+			info.tSessionGroupID == observedGroupID,
+			info.tEpoch == observedEpoch,
 			info.tEpoch != epochUnbound,
 			info.pqEpoch == epochUnbound,
 			!info.pqSessionGroupID.isEmpty,
-			info.tCipherSuite == group.context.cipherSuite,
-			info.pqCipherSuite
-				== MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID)
+			info.tCipherSuite == classicalSuite,
+			info.pqCipherSuite == pqSuite
 		else {
 			throw TwoMLSError.deferredApqInfoMismatch
 		}

@@ -23,6 +23,14 @@ public struct PrepareResult: Sendable {
 	public let didCommit: Bool
 }
 
+/// The peer's staged proposal, carried uninterpreted alongside a
+/// `DecryptResult` — `digest` is `sha256` of the proposal bytes, `proposing`
+/// is the sender's `ClientId`.
+public struct QueuedProposal: Sendable {
+	public let digest: Data
+	public let proposing: Data
+}
+
 /// The result of `processIncoming`: the decrypted application payload, its
 /// epoch-bound sender, and the peer's staged proposal — carried, not folded,
 /// in slice 1 (the fold path lands with commits in slice 2).
@@ -34,7 +42,7 @@ public struct DecryptResult: Sendable {
 	/// proposal bytes the sender framed alongside it. Round-trips as a value;
 	/// `unprotect` never checks it against `queuedProposal` (M1).
 	public let authenticatedData: Data
-	public let queuedProposal: (digest: Data, proposing: Data)
+	public let queuedProposal: QueuedProposal
 }
 
 /// One directional APQ session: a send group (`sendGroup` — my Group_B,
@@ -147,6 +155,11 @@ extension TwoMLSSession {
 		let apqWelcome = MLS.Combiner.APQWelcome(
 			tWelcome: try MLS.RFC9420.Welcome(mlsEncoded: tBytes),
 			pqWelcome: try MLS.RFC9420.Welcome(mlsEncoded: pqBytes))
+		// Slice-2 seam: this does not check the creator's leaf credential
+		// against `theirClassicalKeyPackage` (Rust's `RemoteIdentityMismatch` /
+		// `expected_remote`). It currently fails closed regardless — a
+		// mismatched party cannot derive the same 0xFF02 cross-party PSK below,
+		// since that PSK is exported off THIS freshly-joined Group_A.classical.
 
 		var groupA = try APQGroup.joinFull(
 			welcome: apqWelcome,
@@ -230,8 +243,12 @@ extension TwoMLSSession {
 		recvGroup = recv
 
 		let proposalBytes = try message.mlsEncoded()
+		// `sha256` for the deployed classical suite (curve25519Aes128), matching
+		// the book's fixed sha256 for `proposal_hash`.
 		let proposalHash = try classicalProvider.hash(proposalBytes)
-		pendingProposal = (proposing: Data(), message: proposalBytes, hash: proposalHash)
+		pendingProposal = (
+			proposing: identity.clientID, message: proposalBytes, hash: proposalHash
+		)
 		return PrepareResult(
 			proposalMessage: proposalBytes, proposalHash: proposalHash, didCommit: false
 		)
@@ -282,13 +299,15 @@ extension TwoMLSSession {
 		}
 
 		let (proposing, proposalMessage) = try Frames.decodeProposalSection(proposalSection)
+		// `sha256` for the deployed classical suite, matching the book's fixed
+		// sha256 for `proposal_hash`.
 		let digest = try classicalProvider.hash(proposalMessage)
 
 		return DecryptResult(
 			applicationMessage: data, sender: unprotected.sender,
 			epoch: unprotected.epoch,
 			authenticatedData: unprotected.authenticatedData,
-			queuedProposal: (digest: digest, proposing: proposing))
+			queuedProposal: QueuedProposal(digest: digest, proposing: proposing))
 	}
 
 	/// `0x01` welcome → join Group_B if this staple hasn't been joined yet
@@ -308,7 +327,12 @@ extension TwoMLSSession {
 	}
 
 	private mutating func joinGroupBIfNeeded(fromStaple staple: Data) throws {
+		// `sha256` for the deployed classical suite, matching the book's fixed
+		// sha256 for the welcome digest.
 		let digest = try classicalProvider.hash(staple)
+		if let joined = joinedWelcomeDigest, joined != digest {
+			throw TwoMLSError.unexpectedWelcome
+		}
 		guard joinedWelcomeDigest != digest else { return }
 
 		let (tBytes, pqBytes) = try Frames.decodeAPQWelcome(staple)
