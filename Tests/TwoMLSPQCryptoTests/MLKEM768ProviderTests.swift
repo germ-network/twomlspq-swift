@@ -21,6 +21,17 @@ final class MLKEM768ProviderTests: XCTestCase {
 
 	private func rawBytes(_ secret: SecretBytes) -> Data { secret.withUnsafeBytes { Data($0) } }
 
+	private func hexData(_ hex: String) -> Data {
+		var out = Data(capacity: hex.count / 2)
+		var index = hex.startIndex
+		while index < hex.endIndex {
+			let next = hex.index(index, offsetBy: 2)
+			out.append(UInt8(hex[index..<next], radix: 16)!)
+			index = next
+		}
+		return out
+	}
+
 	// MARK: - Identity / sizes
 
 	func testCipherSuiteAndSizes() {
@@ -192,6 +203,34 @@ final class MLKEM768ProviderTests: XCTestCase {
 		XCTAssertEqual(
 			ss.withUnsafeBytes { Data($0) },
 			encapsulation.sharedSecret.withUnsafeBytes { Data($0) })
+	}
+
+	// MARK: - Known-answer vectors from the Rust oracle (cross-runtime conformance)
+
+	/// Deterministic DeriveKeyPair KAT against the deployed Rust CryptoKit provider:
+	/// a fixed `ikm` must yield the exact public key and 96-byte archive the oracle
+	/// produces. Catches a wrong `dkp_prk` suite_id, a labeled-vs-plain expand, a wrong
+	/// seed length, or `I2OSP` endianness — none of which a self-round-trip would see.
+	func testDeriveKATMatchesRustOracle() throws {
+		let ikm = Data(repeating: 0x2A, count: 32)
+		let (secret, publicKey) = try provider.hpkeDeriveKeyPair(ikm: ikm)
+		XCTAssertEqual(publicKey.data, hexData(RustOracleVectors.derivePublic))
+		XCTAssertEqual(rawBytes(secret.data), hexData(RustOracleVectors.deriveSecret))
+	}
+
+	/// Open a ciphertext SEALED BY THE RUST ORACLE: reconstruct the oracle's 96-byte
+	/// archive, decapsulate its `enc`, run the key schedule over its `info`, and recover
+	/// the plaintext. Exercises the whole open path (archive reconstruction, decap,
+	/// LabeledExtract/Expand, AEAD) against real oracle bytes, not a Swift self-seal.
+	func testOpenFromRustOracle() throws {
+		let secret = try MLS.HpkeSecretKey(hexData(RustOracleVectors.deriveSecret))
+		let opened = try provider.hpkeOpen(
+			enc: hexData(RustOracleVectors.sealEnc),
+			secretKey: secret,
+			info: hexData(RustOracleVectors.info),
+			aad: nil,
+			ciphertext: hexData(RustOracleVectors.sealCt))
+		XCTAssertEqual(opened, hexData(RustOracleVectors.plaintext))
 	}
 
 	// MARK: - Symmetric parity with suite-1 (pins the forwarding wiring)
