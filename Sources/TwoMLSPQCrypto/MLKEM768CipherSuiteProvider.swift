@@ -30,17 +30,17 @@ public struct MLKEM768CipherSuiteProvider: MLS.CipherSuiteProvider {
 	/// `seedRepresentation` initializer expects.
 	static let mlKemSeedSize = 64
 
-	/// RFC 9180 §5.1 HPKE `suite_id = "HPKE" ‖ kem_id ‖ kdf_id ‖ aead_id`
-	/// (each `UInt16`, big-endian). kem_id `0xFDEA`, kdf_id `0x0001`
-	/// (HKDF-SHA256), aead_id `0x0001` (AES-128-GCM) — the 10-byte string
-	/// `48 50 4B 45 FD EA 00 01 00 01`. Never transmitted; a KDF domain
-	/// separator recomputed identically by both peers.
-	static let hpkeSuiteID =
-		Data("HPKE".utf8) + i2osp(cipherSuiteID) + i2osp(0x0001) + i2osp(0x0001)
+	/// RFC 9180 §5.1 HPKE `suite_id = "HPKE" ‖ kem_id ‖ kdf_id ‖ aead_id`: kem_id
+	/// `0xFDEA`, kdf_id `0x0001` (HKDF-SHA256), aead_id `0x0001` (AES-128-GCM) —
+	/// the 10-byte string `48 50 4B 45 FD EA 00 01 00 01`. Never transmitted; a KDF
+	/// domain separator recomputed identically by both peers. Built with swift-mls's
+	/// provider-authoring toolkit.
+	static let hpkeSuiteID = MLS.hpkeSuiteID(
+		kemID: cipherSuiteID, kdfID: 0x0001, aeadID: 0x0001)
 
 	/// RFC 9180 §4.1 KEM `suite_id = "KEM" ‖ kem_id`, used only by DeriveKeyPair
 	/// (`4B 45 4D FD EA`) — never on the seal/open path.
-	static let kemSuiteID = Data("KEM".utf8) + i2osp(cipherSuiteID)
+	static let kemSuiteID = MLS.hpkeKEMSuiteID(kemID: cipherSuiteID)
 
 	/// swift-mls suite-1 — the symmetric stack `0xFDEA` shares byte-for-byte.
 	private let symmetric: any MLS.CipherSuiteProvider
@@ -115,7 +115,7 @@ public struct MLKEM768CipherSuiteProvider: MLS.CipherSuiteProvider {
 		// to 64 with a plain HKDF-Expand (empty info) — exactly what the deployed
 		// provider's `generate_deterministic` does for a non-64-byte input.
 		let ikmData = ikm.withUnsafeBytes { Data($0) }
-		let dkpPRK = try labeledExtract(
+		let dkpPRK = try hpkeLabeledExtract(
 			suiteID: Self.kemSuiteID, salt: Data(), label: "dkp_prk", ikm: ikmData)
 		let seed = try kdfExpand(prk: dkpPRK, info: Data(), length: Self.mlKemSeedSize)
 		let key = try CryptoKit.MLKEM768.PrivateKey(
@@ -155,27 +155,7 @@ public struct MLKEM768CipherSuiteProvider: MLS.CipherSuiteProvider {
 			ciphertext: ciphertext)
 	}
 
-	// MARK: - RFC 9180 labeled KDF + base-mode key schedule
-
-	/// `LabeledExtract(salt, label, ikm) = Extract(salt, "HPKE-v1" ‖ suite_id ‖ label ‖ ikm)`.
-	private func labeledExtract(
-		suiteID: Data, salt: some ContiguousBytes, label: String, ikm: Data
-	)
-		throws -> Data
-	{
-		try kdfExtract(
-			salt: salt, ikm: Data("HPKE-v1".utf8) + suiteID + Data(label.utf8) + ikm)
-	}
-
-	/// `LabeledExpand(prk, label, info, L) = Expand(prk, I2OSP(L,2) ‖ "HPKE-v1" ‖ suite_id ‖ label ‖ info, L)`.
-	private func labeledExpand(
-		suiteID: Data, prk: some ContiguousBytes, label: String, info: Data, length: Int
-	) throws -> Data {
-		let labeledInfo =
-			i2osp(UInt16(length)) + Data("HPKE-v1".utf8) + suiteID + Data(label.utf8)
-			+ info
-		return try kdfExpand(prk: prk, info: labeledInfo, length: length)
-	}
+	// MARK: - RFC 9180 base-mode key schedule (labeled KDF from swift-mls)
 
 	/// RFC 9180 §5.1 base-mode key schedule with an empty PSK. Returns only the
 	/// AEAD `key` and `base_nonce` — single-shot seal/open uses sequence 0, so
@@ -184,26 +164,20 @@ public struct MLKEM768CipherSuiteProvider: MLS.CipherSuiteProvider {
 		key: Data, baseNonce: Data
 	) {
 		let suiteID = Self.hpkeSuiteID
-		let pskIDHash = try labeledExtract(
+		let pskIDHash = try hpkeLabeledExtract(
 			suiteID: suiteID, salt: Data(), label: "psk_id_hash", ikm: Data())
-		let infoHash = try labeledExtract(
+		let infoHash = try hpkeLabeledExtract(
 			suiteID: suiteID, salt: Data(), label: "info_hash", ikm: info)
-		let secret = try labeledExtract(
+		let secret = try hpkeLabeledExtract(
 			suiteID: suiteID, salt: sharedSecret, label: "secret", ikm: Data())
 		// key_schedule_context = mode ‖ psk_id_hash ‖ info_hash, mode 0x00 = base.
 		let context = Data([0x00]) + pskIDHash + infoHash
-		let key = try labeledExpand(
+		let key = try hpkeLabeledExpand(
 			suiteID: suiteID, prk: secret, label: "key", info: context,
 			length: aeadKeySize)
-		let baseNonce = try labeledExpand(
+		let baseNonce = try hpkeLabeledExpand(
 			suiteID: suiteID, prk: secret, label: "base_nonce", info: context,
 			length: aeadNonceSize)
 		return (key, baseNonce)
 	}
-}
-
-/// RFC 9180 §3 `I2OSP(n, w)` with the width pinned to 2 (`UInt16`, big-endian) —
-/// every HPKE use here has `w == 2`.
-private func i2osp(_ value: UInt16) -> Data {
-	withUnsafeBytes(of: value.bigEndian) { Data($0) }
 }
