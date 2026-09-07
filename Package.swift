@@ -17,7 +17,7 @@ let package = Package(
 		// swift-mls has no tags; pin by commit. `MLSCrypto` is the CipherSuiteProvider seam.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			revision: "3a44811f861b32047ffb16d4ef0c2f8d8244254b"
+			revision: "8c6e7bf94bf1d11545c01a51e02dbe362ffa64b1"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		.package(
