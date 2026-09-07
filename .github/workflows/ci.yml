@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build & Test (macOS)
+    # macOS 26 for CryptoKit ML-KEM-768; the provider is @available(iOS 26, macOS 26).
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+
+  lint:
+    name: Swift format lint
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint (strict)
+        run: swift format lint --strict --recursive --configuration .swift-format Sources Tests Package.swift
