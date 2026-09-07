@@ -11,13 +11,15 @@ let package = Package(
 		.iOS(.v17),
 	],
 	products: [
-		.library(name: "TwoMLSPQCrypto", targets: ["TwoMLSPQCrypto"])
+		.library(name: "TwoMLSPQCrypto", targets: ["TwoMLSPQCrypto"]),
+		.library(name: "TwoMLSPQSession", targets: ["TwoMLSPQSession"]),
 	],
 	dependencies: [
 		// swift-mls has no tags; pin by commit. `MLSCrypto` is the CipherSuiteProvider seam.
+		// f525e01 = main HEAD at the time of this pin, adding `Sources/MLSCombiner`.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			revision: "8c6e7bf94bf1d11545c01a51e02dbe362ffa64b1"
+			revision: "f525e01fcfccb9419dbe081c068d12df1cb227e1"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		.package(
@@ -41,6 +43,33 @@ let package = Package(
 				"TwoMLSPQCrypto",
 				.product(name: "MLSCodec", package: "swift-mls"),
 				.product(name: "MLSCrypto", package: "swift-mls"),
+				.product(name: "SecretBytes", package: "swift-secret-bytes"),
+			]
+		),
+		.target(
+			name: "TwoMLSPQSession",
+			dependencies: [
+				"TwoMLSPQCrypto",
+				.product(name: "MLSCombiner", package: "swift-mls"),
+				.product(name: "MLSProfileRFC9420", package: "swift-mls"),
+				.product(name: "MLSExtensions", package: "swift-mls"),
+				.product(name: "MLSCodec", package: "swift-mls"),
+				.product(name: "MLSCrypto", package: "swift-mls"),
+				.product(name: "MLSTreeMath", package: "swift-mls"),
+				.product(name: "SecretBytes", package: "swift-secret-bytes"),
+			]
+		),
+		.testTarget(
+			name: "TwoMLSPQSessionTests",
+			dependencies: [
+				"TwoMLSPQSession",
+				"TwoMLSPQCrypto",
+				.product(name: "MLSCombiner", package: "swift-mls"),
+				.product(name: "MLSProfileRFC9420", package: "swift-mls"),
+				.product(name: "MLSExtensions", package: "swift-mls"),
+				.product(name: "MLSCodec", package: "swift-mls"),
+				.product(name: "MLSCrypto", package: "swift-mls"),
+				.product(name: "MLSTreeMath", package: "swift-mls"),
 				.product(name: "SecretBytes", package: "swift-secret-bytes"),
 			]
 		),
