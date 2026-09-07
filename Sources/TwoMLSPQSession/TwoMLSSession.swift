@@ -6,9 +6,10 @@ import MLSExtensions
 import MLSProfileRFC9420
 import MLSTreeMath
 
-/// The result of `initiate`/`receive`: the session plus the plaintext welcome
-/// staple to hand the peer out of band (the §A.1 HPKE envelope is a later
-/// slice).
+/// The result of `initiate`/`receive`: the session plus the welcome staple to
+/// hand the peer out of band. Slice 1 omits the §A.1 header-encryption
+/// envelope, so the frame rides un-sealed — the Welcome still HPKE-seals its
+/// own group secrets to the joiner; only the outer envelope is deferred.
 @available(iOS 26, macOS 26, *)
 public struct EstablishResult: Sendable {
 	public let session: TwoMLSSession
@@ -47,7 +48,7 @@ public struct DecryptResult: Sendable {
 
 /// One directional APQ session: a send group (`sendGroup` — my Group_B,
 /// classical-only) and a receive group (`recvGroup` — my copy of the peer's
-/// Group_A, the full pair), plus the plaintext staple re-sent with every
+/// Group_A, the full pair), plus the un-header-sealed staple re-sent with every
 /// frame until the first commit (slice 2+). Value type with `mutating`
 /// methods, matching the profile `Group` idiom: a single-owner, non-forkable
 /// state machine.
@@ -101,7 +102,7 @@ public struct TwoMLSSession: Sendable {
 
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
-	/// Found Group_A (a full pair) and return the plaintext `APQWelcome_A` to
+	/// Found Group_A (a full pair) and return the un-header-sealed `APQWelcome_A` to
 	/// hand the acceptor out of band. `isEstablished` is false until the
 	/// acceptor's first frame is processed (no receive group yet).
 	public static func initiate(
