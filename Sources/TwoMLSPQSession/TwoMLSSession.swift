@@ -705,7 +705,7 @@ extension TwoMLSSession {
 					let exported = try MLS.Combiner.ExportedPsk.export(
 						from: &sendPQ, pqProvider,
 						componentID: Self.crossPartyComponentID)
-					return exported.psk.withUnsafeBytes { Data($0) }
+					return exported.psk
 				})
 			let pqEffects = pqPending.effects
 			try TwoPartyRules.validateBindPQEffects(pqEffects)
@@ -906,7 +906,7 @@ extension TwoMLSSession {
 			recv.pq = pqForExport
 			recvGroup = recv
 			lastCrossInjectedPQ = recvPQEpochBeforeExport
-			let s = sExport.psk.withUnsafeBytes { Data($0) }
+			let s = sExport.psk
 
 			let attestation = MLS.Combiner.ApqInfoUpdate(
 				tEpoch: send.classical.context.epoch + 1,

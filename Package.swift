@@ -16,11 +16,12 @@ let package = Package(
 	],
 	dependencies: [
 		// swift-mls has no tags; pin by commit. `MLSCrypto` is the CipherSuiteProvider seam.
-		// c594f2b = main HEAD at the time of this pin, picking up the Data→SecretBytes
-		// zeroization of the epoch seed, TreeKEM path-secret chain, and signing key.
+		// 55444f6 = main HEAD at the time of this pin, picking up PR #86's PSK resolver
+		// migration: `(PreSharedKeyIdentifier) throws -> Data?` -> `-> SecretBytes?`,
+		// so PSK secrets stay zeroizing through the resolver instead of copying to Data.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			revision: "c594f2b827d0808ae0edaa55d3dcf43547252c7a"
+			revision: "55444f63fc2708c8cc513d8971804d1edd2d860f"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		.package(
