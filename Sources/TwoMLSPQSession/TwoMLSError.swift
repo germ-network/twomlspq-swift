@@ -109,4 +109,16 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// `prepareToEncrypt`/`encrypt` requires both the send and receive groups
 	/// (i.e. `isEstablished`).
 	case notEstablished
+
+	// MARK: §A.4 ratchet
+
+	/// An inbound §A.4 leg's epoch was strictly below the receiver's classical
+	/// epoch — a stale re-delivery, rejected by the epoch floor rather than
+	/// processed.
+	case staleFrame
+	/// `CTSeal.open` failed to recover `S` — a bounds-checked `wireCT` decode
+	/// failure, or the AEAD open itself. The AEAD open is the explicit reject
+	/// for a stale/misdirected CT: ML-KEM decapsulation alone never throws on a
+	/// mismatched ciphertext, it just returns the wrong bytes.
+	case decryptionFailed
 }
