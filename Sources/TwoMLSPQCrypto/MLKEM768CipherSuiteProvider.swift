@@ -114,6 +114,10 @@ public struct MLKEM768CipherSuiteProvider: MLS.CipherSuiteProvider {
 		// `d‖z` (64 B), but dkp_prk is HKDF-SHA256's 32-byte extract, so expand it
 		// to 64 with a plain HKDF-Expand (empty info) — exactly what the deployed
 		// provider's `generate_deterministic` does for a non-64-byte input.
+		// RFC 9180 §4 LabeledExtract concatenates `ikm` into the byte string it
+		// hashes, so the seed must be materialized as `Data` for the hash input
+		// regardless of custody — the same inherent copy swift-mls's own provider
+		// makes, not a stray plaintext copy of a long-lived secret.
 		let ikmData = ikm.withUnsafeBytes { Data($0) }
 		let dkpPRK = try hpkeLabeledExtract(
 			suiteID: Self.kemSuiteID, salt: Data(), label: "dkp_prk", ikm: ikmData)
@@ -133,7 +137,7 @@ public struct MLKEM768CipherSuiteProvider: MLS.CipherSuiteProvider {
 	{
 		let recipient = try CryptoKit.MLKEM768.PublicKey(rawRepresentation: publicKey.data)
 		let encapsulation = try recipient.encapsulate()
-		let sharedSecret = encapsulation.sharedSecret.withUnsafeBytes { Data($0) }
+		let sharedSecret = try SecretBytes(bytes: encapsulation.sharedSecret)
 		let schedule = try keySchedule(sharedSecret: sharedSecret, info: info)
 		let ciphertext = try aeadSeal(
 			key: schedule.key, nonce: schedule.baseNonce, aad: aad, plaintext: plaintext
@@ -146,9 +150,9 @@ public struct MLKEM768CipherSuiteProvider: MLS.CipherSuiteProvider {
 		enc: Data, secretKey: MLS.HpkeSecretKey, info: Data, aad: Data?, ciphertext: Data
 	) throws -> Data {
 		let privateKey = try secretKey.data.withUnsafeBytes { raw in
-			try CryptoKit.MLKEM768.PrivateKey(integrityCheckedRepresentation: Data(raw))
+			try CryptoKit.MLKEM768.PrivateKey(integrityCheckedRepresentation: raw)
 		}
-		let sharedSecret = try privateKey.decapsulate(enc).withUnsafeBytes { Data($0) }
+		let sharedSecret = try SecretBytes(bytes: privateKey.decapsulate(enc))
 		let schedule = try keySchedule(sharedSecret: sharedSecret, info: info)
 		return try aeadOpen(
 			key: schedule.key, nonce: schedule.baseNonce, aad: aad,
@@ -160,7 +164,7 @@ public struct MLKEM768CipherSuiteProvider: MLS.CipherSuiteProvider {
 	/// RFC 9180 §5.1 base-mode key schedule with an empty PSK. Returns only the
 	/// AEAD `key` and `base_nonce` — single-shot seal/open uses sequence 0, so
 	/// the nonce is `base_nonce` unchanged, and the seam needs no exporter secret.
-	private func keySchedule(sharedSecret: Data, info: Data) throws -> (
+	private func keySchedule(sharedSecret: SecretBytes, info: Data) throws -> (
 		key: Data, baseNonce: Data
 	) {
 		let suiteID = Self.hpkeSuiteID
