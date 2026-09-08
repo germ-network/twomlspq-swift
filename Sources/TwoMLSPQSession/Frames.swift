@@ -5,11 +5,15 @@ import Foundation
 enum Frames {
 	static let messageFrameTag: UInt8 = 0x03
 	static let apqWelcomeTag: UInt8 = 0x01
+	static let apqPrivateMessageTag: UInt8 = 0x05
+	static let pqBootstrapKPTag: UInt8 = 0x13
+	static let pqBootstrapWelcomeTag: UInt8 = 0x15
 
 	/// The staple slot self-discriminates by its first byte.
 	enum StapleKind: Equatable {
 		case welcome
 		case mlsMessage
+		case apqPrivateMessage
 		case unsupported(UInt8)
 	}
 
@@ -17,6 +21,7 @@ enum Frames {
 		switch firstByte {
 		case apqWelcomeTag: .welcome
 		case 0x00: .mlsMessage
+		case apqPrivateMessageTag: .apqPrivateMessage
 		default: .unsupported(firstByte)
 		}
 	}
@@ -135,6 +140,57 @@ enum Frames {
 		let sections = try readSections(
 			staple[staple.index(after: staple.startIndex)...], count: 2)
 		guard !sections[0].isEmpty else { throw TwoMLSError.emptySection }
+		return (sections[0], sections[1])
+	}
+
+	// MARK: - `0x13`/`0x15` PQ bootstrap side-band frames
+
+	/// `[0x13][KP′ bytes]` — bare remainder, no inner length prefix.
+	/// `messageBytes` is an MLSMessage-wrapped `KeyPackage` (§11 #7).
+	static func encodePQBootstrapKP(_ messageBytes: Data) -> Data {
+		Data([pqBootstrapKPTag]) + messageBytes
+	}
+
+	static func decodePQBootstrapKP(_ frame: Data) throws -> Data {
+		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
+		guard tag == pqBootstrapKPTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
+		return Data(frame[frame.index(after: frame.startIndex)...])
+	}
+
+	/// `[0x15][Welcome′ bytes]` — bare remainder, no inner length prefix.
+	/// `messageBytes` is an MLSMessage-wrapped `Welcome` (§11 #7).
+	static func encodePQBootstrapWelcome(_ messageBytes: Data) -> Data {
+		Data([pqBootstrapWelcomeTag]) + messageBytes
+	}
+
+	static func decodePQBootstrapWelcome(_ frame: Data) throws -> Data {
+		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
+		guard tag == pqBootstrapWelcomeTag else {
+			throw TwoMLSError.unsupportedSideBandTag(tag)
+		}
+		return Data(frame[frame.index(after: frame.startIndex)...])
+	}
+
+	// MARK: - `0x05` APQ private message (bind staple)
+
+	/// `[0x05][u32 t][u32 pq]` — both sections mandatory and non-empty; `t`
+	/// and `pq` are each a full `MLS.RFC9420.Message`.
+	static func encodeAPQPrivateMessage(t: Data, pq: Data) -> Data {
+		precondition(!t.isEmpty && !pq.isEmpty)
+		var buffer = Data([apqPrivateMessageTag])
+		pushSection(t, into: &buffer)
+		pushSection(pq, into: &buffer)
+		return buffer
+	}
+
+	static func decodeAPQPrivateMessage(_ staple: Data) throws -> (t: Data, pq: Data) {
+		guard let tag = staple.first else { throw TwoMLSError.truncatedSection }
+		guard tag == apqPrivateMessageTag else {
+			throw TwoMLSError.unsupportedStapleTag(tag)
+		}
+		let sections = try readSections(
+			staple[staple.index(after: staple.startIndex)...], count: 2)
+		guard sections.allSatisfy({ !$0.isEmpty }) else { throw TwoMLSError.emptySection }
 		return (sections[0], sections[1])
 	}
 }

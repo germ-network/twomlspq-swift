@@ -41,6 +41,41 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	case appSectionNotPrivateMessage
 	/// A decrypted app-section message was not `.application` content.
 	case unprotectedContentNotApplication
+	/// A PQ bootstrap side-band frame's leading tag byte matched neither
+	/// `PQ_BOOTSTRAP_KP_TAG` (`0x13`) nor `PQ_BOOTSTRAP_WELCOME_TAG` (`0x15`).
+	case unsupportedSideBandTag(UInt8)
+	/// A decoded PQ bootstrap side-band frame's `MLS.RFC9420.Message` was not
+	/// the case its tag promised (`.keyPackage` for `0x13`, `.welcome` for
+	/// `0x15`).
+	case malformedSideBandMessage
+
+	// MARK: §A.3 PQ bootstrap
+
+	/// `pqBootstrapRespond`'s `H(KP′)` did not match the commitment pinned at
+	/// `receive`, or an incoming commitment was not the required 32 bytes.
+	case bootstrapKPMismatch
+	/// `verifyDeferredPQMirrorInfo` found the joined PQ half's mirror
+	/// `APQInfo` inconsistent with Group_B's classical half — a wrong
+	/// mode/suite, an unbound `pqEpoch`, a bound `tEpoch`, or an identity
+	/// field the two halves disagree on.
+	case deferredPQMirrorMismatch
+	/// A host method requiring specific turn/establishment state
+	/// (`pqBootstrapBegin`, `pqBootstrapRespond`, `pqBootstrapJoin`) was
+	/// called outside that state.
+	case sessionNotReady
+
+	// MARK: §A.3 bind (chunk B)
+
+	/// A `0x05` bind staple classified ahead of the receive group's live
+	/// epoch (`applyBind`), or a licensed discharge's own re-check found its
+	/// parked `owedBind` epochs no longer matching the live send groups
+	/// (`prepareToEncrypt`).
+	case epochDesync
+	/// `applyBind`'s applied `CommitEffects` were not the bind's exact
+	/// whitelisted shape — PQ-half `[epochAdvanced, appDataUpdate]` or
+	/// classical-half `[epochAdvanced, updated(committer), appDataUpdate]` —
+	/// an unexpected Add/Remove/credential replacement rode the bind.
+	case invalidBindEffects
 
 	// MARK: Two-party rules
 

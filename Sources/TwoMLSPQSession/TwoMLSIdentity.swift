@@ -130,4 +130,23 @@ public struct TwoMLSIdentity: Sendable {
 			keyPackage: CombinerKeyPackage(
 				classical: classicalKeyPackage, pq: pqKeyPackage))
 	}
+
+	/// Mint a fresh PQ `KeyPackage` KP′ — a brand-new leaf+init HPKE keypair
+	/// (suite `0xFDEA`), signed with `self.signingKey`/`signatureKey` and
+	/// `leafCapabilities` — distinct from `keyPackage.pq` (this identity's own
+	/// leaf IN Group_A). KP′ is what the peer Adds into the new Group_B.pq at
+	/// §A.3 bootstrap.
+	public func freshPQKeyPackage(pqProvider: any MLS.CipherSuiteProvider) throws -> (
+		keyPackage: MLS.RFC9420.KeyPackage, leafSecretKey: MLS.HpkeSecretKey,
+		initSecretKey: MLS.HpkeSecretKey
+	) {
+		let (leafSecretKey, leafPublicKey) = try pqProvider.hpkeGenerateKeyPair()
+		let (initSecretKey, initPublicKey) = try pqProvider.hpkeGenerateKeyPair()
+		let keyPackage = try Self.signedKeyPackage(
+			cipherSuite: MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID),
+			provider: pqProvider, clientID: clientID, signingKey: signingKey,
+			signatureKey: signatureKey, leafPublicKey: leafPublicKey,
+			initPublicKey: initPublicKey)
+		return (keyPackage, leafSecretKey, initSecretKey)
+	}
 }
