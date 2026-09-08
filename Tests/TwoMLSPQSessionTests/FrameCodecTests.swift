@@ -126,4 +126,53 @@ final class FrameCodecTests: XCTestCase {
 			XCTAssertEqual(error as? TwoMLSError, .unsupportedStapleTag(0x02))
 		}
 	}
+
+	// MARK: - `0x17`/`0x19` §A.4 PQ ratchet legs (outer frame)
+
+	func testPQLegRoundTripsEKTag() throws {
+		let messageBytes = Data("ek-mlsmessage-bytes".utf8)
+		let frame = Frames.encodePQLeg(tag: Frames.pqEKTag, messageBytes: messageBytes)
+		let decoded = try Frames.decodePQLeg(frame)
+		XCTAssertEqual(decoded.tag, Frames.pqEKTag)
+		XCTAssertEqual(decoded.messageBytes, messageBytes)
+	}
+
+	func testPQLegRoundTripsCTTag() throws {
+		let messageBytes = Data("ct-mlsmessage-bytes".utf8)
+		let frame = Frames.encodePQLeg(tag: Frames.pqCTTag, messageBytes: messageBytes)
+		let decoded = try Frames.decodePQLeg(frame)
+		XCTAssertEqual(decoded.tag, Frames.pqCTTag)
+		XCTAssertEqual(decoded.messageBytes, messageBytes)
+	}
+
+	func testPQLegRejectsWrongOuterTag() {
+		let frame = Frames.encodePQLeg(tag: 0x21, messageBytes: Data([1, 2, 3]))
+		XCTAssertThrowsError(try Frames.decodePQLeg(frame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unsupportedSideBandTag(0x21))
+		}
+	}
+
+	// MARK: - `0x17`/`0x19` §A.4 PQ ratchet legs (inner authenticated content)
+
+	func testPQLegContentRoundTripsEKTag() throws {
+		let payload = Data("ek-bytes".utf8)
+		let content = Frames.encodePQLegContent(tag: Frames.pqEKTag, payload: payload)
+		let decoded = try Frames.decodePQLegContent(content)
+		XCTAssertEqual(decoded.tag, Frames.pqEKTag)
+		XCTAssertEqual(decoded.payload, payload)
+	}
+
+	func testPQLegContentRoundTripsCTTag() throws {
+		let payload = Data("wire-ct-bytes".utf8)
+		let content = Frames.encodePQLegContent(tag: Frames.pqCTTag, payload: payload)
+		let decoded = try Frames.decodePQLegContent(content)
+		XCTAssertEqual(decoded.tag, Frames.pqCTTag)
+		XCTAssertEqual(decoded.payload, payload)
+	}
+
+	func testPQLegContentRejectsEmptyContent() {
+		XCTAssertThrowsError(try Frames.decodePQLegContent(Data())) { error in
+			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
+		}
+	}
 }

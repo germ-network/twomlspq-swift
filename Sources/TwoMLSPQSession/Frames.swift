@@ -8,6 +8,8 @@ enum Frames {
 	static let apqPrivateMessageTag: UInt8 = 0x05
 	static let pqBootstrapKPTag: UInt8 = 0x13
 	static let pqBootstrapWelcomeTag: UInt8 = 0x15
+	static let pqEKTag: UInt8 = 0x17
+	static let pqCTTag: UInt8 = 0x19
 
 	/// The staple slot self-discriminates by its first byte.
 	enum StapleKind: Equatable {
@@ -169,6 +171,37 @@ enum Frames {
 			throw TwoMLSError.unsupportedSideBandTag(tag)
 		}
 		return Data(frame[frame.index(after: frame.startIndex)...])
+	}
+
+	// MARK: - `0x17`/`0x19` §A.4 PQ ratchet legs
+
+	/// **Outer frame:** `[0x17][MLSMessage bytes]` / `[0x19][MLSMessage bytes]`
+	/// — bare remainder, no inner length prefix, like `encodePQBootstrapKP`.
+	/// The `MLSMessage` is the app-message carrier (a `PrivateMessage` wrapping
+	/// the inner-tagged content below).
+	static func encodePQLeg(tag: UInt8, messageBytes: Data) -> Data {
+		Data([tag]) + messageBytes
+	}
+
+	static func decodePQLeg(_ frame: Data) throws -> (tag: UInt8, messageBytes: Data) {
+		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
+		guard tag == pqEKTag || tag == pqCTTag else {
+			throw TwoMLSError.unsupportedSideBandTag(tag)
+		}
+		return (tag, Data(frame[frame.index(after: frame.startIndex)...]))
+	}
+
+	/// **Inner authenticated content** — the app message's plaintext:
+	/// `[0x17][ek]` / `[0x19][wireCT]`. The inner tag rides inside the MLS
+	/// signature, so it is checked against the outer tag by the caller, not
+	/// here.
+	static func encodePQLegContent(tag: UInt8, payload: Data) -> Data {
+		Data([tag]) + payload
+	}
+
+	static func decodePQLegContent(_ content: Data) throws -> (tag: UInt8, payload: Data) {
+		guard let tag = content.first else { throw TwoMLSError.truncatedSection }
+		return (tag, Data(content[content.index(after: content.startIndex)...]))
 	}
 
 	// MARK: - `0x05` APQ private message (bind staple)

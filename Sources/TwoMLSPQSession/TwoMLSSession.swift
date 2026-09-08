@@ -6,6 +6,7 @@ import MLSExtensions
 import MLSProfileRFC9420
 import MLSTreeMath
 import SecretBytes
+import TwoMLSPQCrypto
 
 /// The result of `initiate`/`receive`: the session plus the welcome staple to
 /// hand the peer out of band. Slice 1 omits the §A.1 header-encryption
@@ -26,12 +27,30 @@ public struct PrepareResult: Sendable {
 	public let didCommit: Bool
 }
 
-/// Which §A.3 bootstrap side-band step is outstanding on this session, if
-/// any — `pqBootstrapBegin`/`pqBootstrapRespond` set it; `applyBind` clears
-/// it once the bind lands.
-enum PQInflight: Sendable, Equatable {
+/// Which side-band round is outstanding on this session, if any — the §A.3
+/// bootstrap (`pqBootstrapBegin`/`pqBootstrapRespond`, cleared by
+/// `pqBootstrapJoin`/`applyBind`) or the §A.4 ratchet (`stageRatchet`/
+/// `pqRatchetRespond`, cleared by `pqRatchetBind`/`applyBind`). Payloaded, so
+/// it is no longer `Equatable`-`=='able — sites that used to compare against
+/// a bare case now pattern-match.
+enum PQInflight: Sendable {
 	case bootstrapInitiated
 	case bootstrapResponded
+	/// The initiator's §A.4 round: the ephemeral KEM secret is held, awaiting
+	/// the responder's CT leg.
+	case initiating(PQEphemeral)
+	/// The responder's §A.4 round: `S` and the sealed CT are held — `S` for
+	/// `applyBind`'s held-S arm (no re-export needed), `wireCT` for
+	/// `rewrapSideBand`'s re-mint.
+	case responding(secret: SecretBytes, wireCT: Data)
+}
+
+/// The initiator's held §A.4 ephemeral: the ML-KEM secret key kept until the
+/// responder's CT leg arrives, plus the encapsulation key already staged on
+/// the wire (kept for `rewrapSideBand`'s re-mint).
+struct PQEphemeral: Sendable {
+	let secretKey: MLS.HpkeSecretKey
+	let ek: Data
 }
 
 /// Alice's parked PQ-half bind commit (`owePQBind`), owed to
@@ -380,6 +399,7 @@ extension TwoMLSSession {
 			throw TwoMLSError.notEstablished
 		}
 		let didCommit = try dischargeOwedBindIfLicensed()
+		rewrapSideBand()
 
 		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
 		let (message, _) = try recv.classical.proposeUpdate(
@@ -418,8 +438,16 @@ extension TwoMLSSession {
 		let appBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
 		let proposalSection = Frames.encodeProposalSection(
 			proposing: pending.proposing, message: pending.message)
-		return Frames.encodeMessageFrame(
+		let frame = Frames.encodeMessageFrame(
 			staple: currentStaple, proposal: proposalSection, app: appBytes)
+
+		// §A.4 self-drive: both best-effort (never throw out of `encrypt`) —
+		// `rewrapSideBand` re-mints a stale parked leg at the epoch this send
+		// just moved to; `maybeStageNextRound` then stages the next EK if it's
+		// my turn and nothing else is outstanding.
+		rewrapSideBand()
+		maybeStageNextRound()
+		return frame
 	}
 
 	/// Decode a frame, join Group_B off its staple if this is the first inbound
@@ -677,7 +705,10 @@ extension TwoMLSSession {
 			guard tPub.content.epoch == recv.classical.context.epoch else {
 				throw TwoMLSError.epochDesync
 			}
-			guard pqInflight == .bootstrapResponded else {
+			switch pqInflight {
+			case .bootstrapResponded, .responding:
+				break
+			default:
 				throw TwoMLSError.sessionNotReady
 			}
 
@@ -702,6 +733,12 @@ extension TwoMLSSession {
 					else {
 						return nil
 					}
+					// §A.4: `S` was already sealed/held at `pqRatchetRespond` —
+					// reuse it rather than exporting a fresh one off `sendPQ`
+					// (which A.4 never spends here at all).
+					if case .responding(let secret, _) = pqInflight {
+						return secret
+					}
 					let exported = try MLS.Combiner.ExportedPsk.export(
 						from: &sendPQ, pqProvider,
 						componentID: Self.crossPartyComponentID)
@@ -712,7 +749,9 @@ extension TwoMLSSession {
 			let pqTransition = try pqPending.apply(onto: recv.pq!)
 			recv.pq = pqTransition.group
 			send.pq = sendPQ
-			lastSendPQExported = sendPQEpochBeforeExport
+			if case .bootstrapResponded = pqInflight {
+				lastSendPQExported = sendPQEpochBeforeExport
+			}
 
 			var apqSource = recv.pq!
 			let apqPSK = try MLS.Combiner.ExportedPsk.export(
@@ -769,7 +808,7 @@ extension TwoMLSSession {
 	/// still nil, so a spent round (the bind already landed) falls through
 	/// to the normal guard instead of re-emitting a stale `0x13`.
 	public mutating func pqBootstrapBegin() throws -> Data {
-		if pqInflight == .bootstrapInitiated, let pending = pendingSideBand,
+		if case .bootstrapInitiated = pqInflight, let pending = pendingSideBand,
 			recvGroup?.pq == nil
 		{
 			return pending
@@ -842,8 +881,9 @@ extension TwoMLSSession {
 	}
 
 	/// The initiator (Alice) joins Group_B.pq off Bob's Welcome′, using the
-	/// KP′ secrets minted at `initiate` as joiner credentials, then owes the
-	/// bind (`owePQBind`, §4a). Alice is `isFullyEstablished` once this
+	/// KP′ secrets minted at `initiate` as joiner credentials, exports the
+	/// cross-party `S` off the freshly-joined epoch-1 leaf, then owes the
+	/// bind (`owePQBind(s:)`, §4a). Alice is `isFullyEstablished` once this
 	/// returns. `pendingProposal == nil` guards against staple-stacking
 	/// (§11 #4): a routine `Upd(self)` must already be discharged (`encrypt`)
 	/// before the bootstrap can add its own commit to the pile. Clears
@@ -861,15 +901,22 @@ extension TwoMLSSession {
 		let credentials = MLS.RFC9420.Group.JoinerCredentials(
 			keyPackage: secret.keyPackage, initKey: secret.initSecretKey,
 			encryptionKey: secret.leafSecretKey)
-		let pqGroup = try APQGroup.joinPQHalf(
+		var pqGroup = try APQGroup.joinPQHalf(
 			welcome: welcome, credentials: credentials,
 			classicalHalfForPairCheck: recv.classical, pqProvider: pqProvider,
 			codepoints: codepoints)
-		recv.pq = pqGroup
-		recvGroup = recv
 		bootstrapKPSecret = nil
 
-		try owePQBind()
+		try withDeployedWireWidth {
+			let recvPQEpochBeforeExport = pqGroup.context.epoch
+			let sExport = try MLS.Combiner.ExportedPsk.export(
+				from: &pqGroup, pqProvider,
+				componentID: Self.crossPartyComponentID)
+			recv.pq = pqGroup
+			recvGroup = recv
+			lastCrossInjectedPQ = recvPQEpochBeforeExport
+			try owePQBind(s: sExport.psk)
+		}
 		// The `0x13`/`0x15` side-band round is now fully spent (Group_B.pq is
 		// joined and the bind is owed) — clear the retained frame and inflight
 		// marker so a stray re-call of `pqBootstrapBegin`/`pqBootstrapRespond`
@@ -878,43 +925,32 @@ extension TwoMLSSession {
 		pendingSideBand = nil
 	}
 
-	/// §4a: immediately after `pqBootstrapJoin` sets `recvGroup.pq`, export
-	/// the cross-party `S` off the freshly-joined Group_B.pq epoch-1 leaf,
-	/// re-inject it as an external PSK into a pathless PARTIAL commit on
-	/// `sendGroup.pq` (Group_A.pq), and park the resulting commit message as
-	/// `owedBind` until a licensed `prepareToEncrypt` can discharge it (§4b).
+	/// §4a/§4c: fold `s` into a pathless PARTIAL commit on `sendGroup.pq`
+	/// and park the resulting commit message as `owedBind` until a licensed
+	/// `prepareToEncrypt` can discharge it (§4b). Callers supply `s` however
+	/// their round obtained it — the A.3 bootstrap exports it off the
+	/// freshly-joined Group_B.pq (`pqBootstrapJoin`); the A.4 ratchet opens
+	/// it from a KEM ciphertext (`pqRatchetBind`) — this function only ever
+	/// reads/writes `sendGroup`/`send.pq`.
 	///
-	/// Seam: `S`'s leaf is consumed (the export below) before `committing`
-	/// is attempted; a throw from `committing` wedges the session with
-	/// `isFullyEstablished == true` but no `owedBind` and no way to
-	/// re-derive `S` (Rust latches a `BindTriggerFailed` state for this).
-	/// Not handled here.
-	private mutating func owePQBind() throws {
-		guard var recv = recvGroup, let recvPQ = recv.pq else {
-			throw TwoMLSError.notEstablished
-		}
+	/// Seam: `s`'s single-shot leaf (however the caller obtained it) is
+	/// already spent by the time this runs; a throw from `committing` wedges
+	/// the session with `isFullyEstablished == true` but no `owedBind` and no
+	/// way to re-derive `s` (Rust latches a `BindTriggerFailed` state for
+	/// this). Not handled here.
+	private mutating func owePQBind(s: SecretBytes) throws {
 		guard var send = sendGroup, let sendPQ = send.pq else {
 			throw TwoMLSError.notEstablished
 		}
 
 		try withDeployedWireWidth {
-			let recvPQEpochBeforeExport = recvPQ.context.epoch
-			var pqForExport = recvPQ
-			let sExport = try MLS.Combiner.ExportedPsk.export(
-				from: &pqForExport, pqProvider,
-				componentID: Self.crossPartyComponentID)
-			recv.pq = pqForExport
-			recvGroup = recv
-			lastCrossInjectedPQ = recvPQEpochBeforeExport
-			let s = sExport.psk
-
 			let attestation = MLS.Combiner.ApqInfoUpdate(
 				tEpoch: send.classical.context.epoch + 1,
 				pqEpoch: sendPQ.context.epoch + 1)
 
 			// Id = LE64(epoch) ‖ groupID ‖ [0x52] — hand-rolled per §4, never
-			// re-derived from the wire; Bob recomputes this same id from his
-			// own `recv.pq!` and matches on it exactly, not on `.external`
+			// re-derived from the wire; the peer recomputes this same id from
+			// its own mirror and matches on it exactly, not on `.external`
 			// alone (§11 #5).
 			let injectedID =
 				withUnsafeBytes(of: sendPQ.context.epoch.littleEndian) { Data($0) }
@@ -951,5 +987,203 @@ extension TwoMLSSession {
 				pqCommitMessage: commitBytes, tEpoch: attestation.tEpoch,
 				pqEpoch: attestation.pqEpoch)
 		}
+	}
+}
+
+// MARK: - §A.4 PQ ratchet
+
+@available(iOS 26, macOS 26, *)
+extension TwoMLSSession {
+	/// Decrypt+authenticate one §A.4 leg (shared by `pqRatchetRespond` and
+	/// `pqRatchetBind`): the content-type gate runs BEFORE decrypting — a
+	/// Commit smuggled behind the tag must not spend a handshake generation —
+	/// then `unprotect`, the inner-tag check, and a peer-sender check. Any
+	/// failure to decrypt an untrusted leg (a tampered/replayed/foreign-epoch
+	/// frame) surfaces as the non-fatal `.decryptionFailed`, never a raw
+	/// `MLS.*` teardown error (§12). Mutates `group` (spends a generation);
+	/// call only after the inflight/epoch-floor guards already passed.
+	private mutating func processA4Leg(
+		on group: inout MLS.RFC9420.Group, innerTag: UInt8, message: MLS.RFC9420.Message
+	) throws -> Data {
+		guard case .privateMessage(let pm) = message, pm.contentType == .application else {
+			throw TwoMLSError.decryptionFailed
+		}
+		let out: MLS.RFC9420.Group.Unprotected
+		do {
+			out = try group.unprotect(classicalProvider, message: pm)
+		} catch {
+			throw TwoMLSError.decryptionFailed
+		}
+		guard case .application(let content) = out.content else {
+			throw TwoMLSError.decryptionFailed
+		}
+		let (tag, payload) = try Frames.decodePQLegContent(content)
+		guard tag == innerTag, out.sender != group.myLeafIndex else {
+			throw TwoMLSError.decryptionFailed
+		}
+		return payload
+	}
+
+	/// Self-driven, whichever side holds `pqTurnMine`: generate a fresh
+	/// ML-KEM ephemeral, frame its `ek` as a `0x17` leg on `sendGroup.classical`,
+	/// and park it awaiting the peer's CT. Classical-only mutation.
+	private mutating func stageRatchet() throws {
+		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
+		let eph = try MLKEM768KEM.generateEphemeral()
+		let inner = Frames.encodePQLegContent(tag: Frames.pqEKTag, payload: eph.ek)
+		let appPM = try send.classical.protect(
+			classicalProvider, applicationData: inner, authenticatedData: Data(),
+			signingKey: identity.signingKey)
+		sendGroup = send
+
+		let messageBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
+		pendingSideBand = Frames.encodePQLeg(
+			tag: Frames.pqEKTag, messageBytes: messageBytes)
+		pqInflight = .initiating(PQEphemeral(secretKey: eph.secretKey, ek: eph.ek))
+	}
+
+	/// The responder: receive the initiator's `0x17` EK (decrypted off my
+	/// `recvGroup.classical` — the initiator's send group), seal a fresh `S`
+	/// to it under the `ctSealPSK` both sides can derive off `recvGroup.pq`
+	/// (my mirror of the initiator's PQ half, at its current epoch), and emit
+	/// the `0x19` CT on my OWN `sendGroup.classical` — not the mirror the EK
+	/// arrived in, which may hold an uncommitted proposal of my own.
+	public mutating func pqRatchetRespond(_ frame: Data) throws -> Data {
+		let (tag, messageBytes) = try Frames.decodePQLeg(frame)
+		guard tag == Frames.pqEKTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
+		let msg = try MLS.RFC9420.Message(mlsEncoded: messageBytes)
+		guard case .privateMessage(let pm) = msg else { throw TwoMLSError.decryptionFailed }
+
+		guard var recv = recvGroup, recv.pq != nil else { throw TwoMLSError.notEstablished }
+		guard pm.epoch >= recv.classical.context.epoch else { throw TwoMLSError.staleFrame }
+		if case .responding = pqInflight {
+			throw TwoMLSError.duplicateSideBand
+		} else if pqInflight != nil {
+			throw TwoMLSError.sessionNotReady
+		}
+		guard pendingProposal == nil else { throw TwoMLSError.sessionNotReady }
+		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
+
+		let ek = try processA4Leg(
+			on: &recv.classical, innerTag: Frames.pqEKTag, message: msg)
+		recvGroup = recv
+
+		let psk = try CTSeal.ctSealPSK(group: recv.pq!, pqProvider: pqProvider)
+		let (s, wireCT) = try CTSeal.seal(ek: ek, ctSealPSK: psk, aead: classicalProvider)
+
+		let inner = Frames.encodePQLegContent(tag: Frames.pqCTTag, payload: wireCT)
+		let appPM = try send.classical.protect(
+			classicalProvider, applicationData: inner, authenticatedData: Data(),
+			signingKey: identity.signingKey)
+		sendGroup = send
+
+		let outMessageBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
+		let outFrame = Frames.encodePQLeg(
+			tag: Frames.pqCTTag, messageBytes: outMessageBytes)
+		pqInflight = .responding(secret: s, wireCT: wireCT)
+		pendingSideBand = outFrame
+		return outFrame
+	}
+
+	/// The initiator: receive the responder's `0x19` CT (decrypted off my
+	/// `recvGroup.classical` — the responder's send group), open `S` against
+	/// the `ctSealPSK` derived off `sendGroup.pq` (the same group/epoch the
+	/// responder sealed against, via its `recvGroup.pq` mirror) using the
+	/// ephemeral secret key held since `stageRatchet`, then owe the bind
+	/// (`owePQBind(s:)`, §4c). `CTSeal.open`'s AEAD failure is the explicit
+	/// reject for a tampered/misdirected CT — it propagates as thrown, not a
+	/// silent no-op.
+	public mutating func pqRatchetBind(_ frame: Data) throws {
+		let (tag, messageBytes) = try Frames.decodePQLeg(frame)
+		guard tag == Frames.pqCTTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
+		let msg = try MLS.RFC9420.Message(mlsEncoded: messageBytes)
+		guard case .privateMessage(let pm) = msg else { throw TwoMLSError.decryptionFailed }
+
+		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
+		guard pm.epoch >= recv.classical.context.epoch else { throw TwoMLSError.staleFrame }
+		guard pendingProposal == nil, owedBind == nil else {
+			throw TwoMLSError.sessionNotReady
+		}
+		guard case .initiating(let eph) = pqInflight else {
+			throw TwoMLSError.sessionNotReady
+		}
+		guard let sendPQ = sendGroup?.pq else { throw TwoMLSError.notEstablished }
+
+		let wireCT = try processA4Leg(
+			on: &recv.classical, innerTag: Frames.pqCTTag, message: msg)
+		recvGroup = recv
+
+		let psk = try CTSeal.ctSealPSK(group: sendPQ, pqProvider: pqProvider)
+		let s = try CTSeal.open(
+			wireCT: wireCT, secretKey: eph.secretKey, ctSealPSK: psk,
+			aead: classicalProvider)
+
+		try owePQBind(s: s)
+		// §13g/§12#2: clear BOTH — the spent EK must not be re-handed by
+		// `pqPendingOutbound`, and `maybeStageNextRound`'s
+		// `pendingSideBand == nil` gate must reopen, or the self-driver
+		// wedges for life.
+		pqInflight = nil
+		pendingSideBand = nil
+	}
+
+	/// Peek the parked `0x17`/`0x19` side-band frame, if any — non-mutating
+	/// re the round; the host sends it alongside the message frame.
+	public func pqPendingOutbound() -> Data? {
+		pendingSideBand
+	}
+
+	/// Best-effort: if the parked side-band leg was minted at an epoch
+	/// `sendGroup.classical` has since moved past, re-mint it (EK from the
+	/// held `.initiating` ephemeral, CT from the held `.responding` wireCT)
+	/// at the current epoch and re-park. Classical carrier only. Never
+	/// throws — a failure here just leaves the stale leg parked for the next
+	/// call to retry.
+	private mutating func rewrapSideBand() {
+		guard let pending = pendingSideBand, var send = sendGroup else { return }
+		guard let (tag, messageBytes) = try? Frames.decodePQLeg(pending) else { return }
+		guard let message = try? MLS.RFC9420.Message(mlsEncoded: messageBytes),
+			case .privateMessage(let pm) = message
+		else { return }
+		guard pm.epoch < send.classical.context.epoch else { return }
+
+		let payload: Data
+		switch tag {
+		case Frames.pqEKTag:
+			guard case .initiating(let eph) = pqInflight else { return }
+			payload = eph.ek
+		case Frames.pqCTTag:
+			guard case .responding(_, let wireCT) = pqInflight else { return }
+			payload = wireCT
+		default:
+			return
+		}
+
+		guard
+			let appPM = try? send.classical.protect(
+				classicalProvider,
+				applicationData: Frames.encodePQLegContent(
+					tag: tag, payload: payload),
+				authenticatedData: Data(), signingKey: identity.signingKey),
+			let reEncoded = try? MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
+		else {
+			return
+		}
+		sendGroup = send
+		pendingSideBand = Frames.encodePQLeg(tag: tag, messageBytes: reEncoded)
+	}
+
+	/// Self-drive (A.4 arm only — the A.5 `send_pq_leaf_lags` branch is
+	/// deferred). No-op unless it's my turn, both halves are established, and
+	/// nothing else is outstanding (an inflight round, an owed bind, or an
+	/// already-parked side-band leg). Best-effort: swallows `stageRatchet`'s
+	/// throw rather than surfacing it out of `encrypt`.
+	private mutating func maybeStageNextRound() {
+		guard pqTurnMine, isFullyEstablished, pqInflight == nil, owedBind == nil,
+			pendingSideBand == nil
+		else {
+			return
+		}
+		try? stageRatchet()
 	}
 }
