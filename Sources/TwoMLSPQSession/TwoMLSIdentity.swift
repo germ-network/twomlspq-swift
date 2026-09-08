@@ -54,10 +54,7 @@ public struct TwoMLSIdentity: Sendable {
 	static var leafCapabilities: MLS.RFC9420.Capabilities {
 		MLS.RFC9420.Capabilities(
 			versions: [.mls10],
-			cipherSuites: [
-				.curve25519ChaCha,
-				MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID),
-			],
+			cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
 			extensions: [MLS.Combiner.Codepoints.deployed.apqInfoExtensionType],
 			proposals: [MLS.RFC9420.ProposalType(.appDataUpdate)],
 			credentials: [MLS.RFC9420.CredentialType(.basic)])
@@ -99,6 +96,10 @@ public struct TwoMLSIdentity: Sendable {
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider
 	) throws -> TwoMLSIdentity {
+		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
+			pqProvider.cipherSuite == TwoMLSSuite.pq
+		else { throw TwoMLSError.cipherSuiteMismatch }
+
 		let signingPrivateKey = Curve25519.Signing.PrivateKey()
 		let signingKey = try MLS.SignatureSecretKey(signingPrivateKey.rawRepresentation)
 		let signatureKey = MLS.SignaturePublicKey(
@@ -112,7 +113,7 @@ public struct TwoMLSIdentity: Sendable {
 		let (pqInitSecretKey, pqInitPublicKey) = try pqProvider.hpkeGenerateKeyPair()
 
 		let classicalKeyPackage = try signedKeyPackage(
-			cipherSuite: .curve25519ChaCha, provider: classicalProvider,
+			cipherSuite: TwoMLSSuite.classical, provider: classicalProvider,
 			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
 			leafPublicKey: classicalLeafPublicKey, initPublicKey: classicalInitPublicKey
 		)

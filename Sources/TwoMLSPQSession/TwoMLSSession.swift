@@ -204,6 +204,10 @@ extension TwoMLSSession {
 		pqProvider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> EstablishResult {
+		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
+			pqProvider.cipherSuite == TwoMLSSuite.pq
+		else { throw TwoMLSError.cipherSuiteMismatch }
+
 		let classicalHalf = try halfCreation(
 			identity: identity, half: identity.keyPackage.classical,
 			leafSecretKey: identity.classicalLeafSecretKey,
@@ -271,6 +275,10 @@ extension TwoMLSSession {
 		pqProvider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> EstablishResult {
+		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
+			pqProvider.cipherSuite == TwoMLSSuite.pq
+		else { throw TwoMLSError.cipherSuiteMismatch }
+
 		guard bootstrapKPCommitment.count == 32 else {
 			throw TwoMLSError.bootstrapKPMismatch
 		}
