@@ -218,6 +218,9 @@ extension APQGroup {
 	/// group id is the one pre-allocated in `sendGroupClassical`'s own
 	/// `APQInfo.pqSessionGroupID` at establishment. Must run under the
 	/// deployed `ComponentID` wire width.
+	///
+	/// Seam: does not check `peerBootstrapKP`'s leaf credential names the
+	/// already-established peer (see `TwoMLSSession.pqBootstrapRespond`).
 	static func foundPQHalf(
 		sendGroupClassical: MLS.RFC9420.Group,
 		ownPQLeaf: MLS.RFC9420.LeafNode,
@@ -238,12 +241,11 @@ extension APQGroup {
 			let pqGroupID = classicalInfo.pqSessionGroupID
 
 			let mirrorInfo = MLS.Combiner.APQInfo(
-				tSessionGroupID: sendGroupClassical.context.groupID,
+				tSessionGroupID: classicalInfo.tSessionGroupID,
 				pqSessionGroupID: pqGroupID,
-				mode: 0,
-				tCipherSuite: .curve25519Aes128,
-				pqCipherSuite: MLS.CipherSuite(
-					id: MLKEM768CipherSuiteProvider.cipherSuiteID),
+				mode: classicalInfo.mode,
+				tCipherSuite: classicalInfo.tCipherSuite,
+				pqCipherSuite: classicalInfo.pqCipherSuite,
 				tEpoch: epochUnbound,
 				pqEpoch: 1)
 			let mirrorExtension = try mirrorInfo.asExtension(

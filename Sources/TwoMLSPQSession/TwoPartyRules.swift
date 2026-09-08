@@ -6,8 +6,9 @@ import MLSProfileRFC9420
 /// filter seam (explicit proposal-list `committing`/`validating` instead), so
 /// this is (a) construction discipline over the proposal lists this module
 /// builds and (b) ingest validation on joins. The fold-side clauses (≤1 peer
-/// Update, custom-only-AppDataUpdate, epoch discipline) apply only once a
-/// commit can be applied, which is a slice ≥2 concern.
+/// Update, custom-only-AppDataUpdate, epoch discipline) apply only once the
+/// peer's routine staged proposal can be folded, which is a slice ≥3
+/// concern.
 enum TwoPartyRules {
 	/// Every non-blank leaf count must be exactly two — run after every join
 	/// (both halves) and, from slice 2, after every applied commit.

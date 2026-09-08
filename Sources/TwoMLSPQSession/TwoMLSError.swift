@@ -14,7 +14,8 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	case truncatedSection
 	/// Bytes remained after every declared section was consumed.
 	case trailingBytes
-	/// The staple's leading tag byte matched none of slice 1's cases.
+	/// The staple's leading tag byte matched none of this module's
+	/// supported staple kinds.
 	case unsupportedStapleTag(UInt8)
 	/// The frame's leading tag byte was not `MESSAGE_FRAME_TAG`.
 	case unsupportedFrameTag(UInt8)
@@ -25,8 +26,9 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// deferred (pq-less) pair — a wrong mode/suite, a bound `pqEpoch`, or an
 	/// identity field that does not match the group it rides in.
 	case deferredApqInfoMismatch
-	/// A commit staple arrived — slice 1 sends no commits, so receiving one is
-	/// a protocol state this slice cannot process.
+	/// A bare `mlsMessage` (`0x00`) staple arrived — this module only ever
+	/// staples commits under `0x05` (`apqPrivateMessage`), so receiving the
+	/// bare tag is a protocol state it cannot process.
 	case commitStapleUnsupported
 	/// A staple welcome not already joined carried a non-empty pq slot — a
 	/// full (Group_A-shaped) welcome. Slice 1 only ever joins one of those via
@@ -54,6 +56,11 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// `pqBootstrapRespond`'s `H(KP′)` did not match the commitment pinned at
 	/// `receive`, or an incoming commitment was not the required 32 bytes.
 	case bootstrapKPMismatch
+	/// `pqBootstrapRespond` was called again after `sendGroup.pq` was already
+	/// founded, and no retained `0x15` was available to idempotently
+	/// re-return — a re-delivered `0x13` must never found a second
+	/// Group_B.pq.
+	case duplicateSideBand
 	/// `verifyDeferredPQMirrorInfo` found the joined PQ half's mirror
 	/// `APQInfo` inconsistent with Group_B's classical half — a wrong
 	/// mode/suite, an unbound `pqEpoch`, a bound `tEpoch`, or an identity
@@ -64,7 +71,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// called outside that state.
 	case sessionNotReady
 
-	// MARK: §A.3 bind (chunk B)
+	// MARK: §A.3 bind
 
 	/// A `0x05` bind staple classified ahead of the receive group's live
 	/// epoch (`applyBind`), or a licensed discharge's own re-check found its

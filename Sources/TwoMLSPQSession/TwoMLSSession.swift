@@ -16,8 +16,9 @@ public struct EstablishResult: Sendable {
 	public let welcome: Data
 }
 
-/// The result of `prepareToEncrypt`: slice 1's routine no-commit path always
-/// stages an `Upd(self)` into the receive group rather than committing.
+/// The result of `prepareToEncrypt`: first discharges an owed bind if one is
+/// licensed (§4b — `didCommit` reports whether that happened), then always
+/// stages a routine `Upd(self)` into the receive group regardless.
 public struct PrepareResult: Sendable {
 	public let proposalMessage: Data
 	public let proposalHash: Data
@@ -51,7 +52,7 @@ public struct QueuedProposal: Sendable {
 
 /// The result of `processIncoming`: the decrypted application payload, its
 /// epoch-bound sender, and the peer's staged proposal — carried, not folded,
-/// in slice 1 (the fold path lands with commits in slice 2).
+/// so far (the fold path lands in slice 3).
 public struct DecryptResult: Sendable {
 	public let applicationMessage: Data
 	public let sender: MLS.LeafIndex
@@ -322,9 +323,10 @@ extension TwoMLSSession {
 			currentStaple: apqWelcomeB, pendingProposal: nil,
 			joinedWelcomeDigest: try classicalProvider.hash(welcome), initiated: false,
 			expectedBootstrapKPCommitment: bootstrapKPCommitment, pqTurnMine: false,
-			// §11 #1: mirrors the establishment-time cross-party binding epoch
-			// — Bob's own send group (Group_B.classical) is founded at epoch 1
-			// here, so its watermark starts there too.
+			// §11 #1: `lastCrossInjected` tracks the epoch of `recvGroup.classical`
+			// (Group_A, joined above) at the last cross-party PSK injection —
+			// Bob's freshly-joined copy is already at epoch 1, so the watermark
+			// seeds there too.
 			lastCrossInjected: 1)
 		return EstablishResult(session: session, welcome: apqWelcomeB)
 	}
@@ -392,7 +394,7 @@ extension TwoMLSSession {
 	/// carried `authenticated_data`, and frame it alongside that proposal and
 	/// the current staple. The AEAD binds the hash to *this* app message, not
 	/// to the frame's separate proposal section — proposal integrity is its own
-	/// MLS leaf signature, checked when folded (slice 2) (M1).
+	/// MLS leaf signature, checked when folded (slice 3) (M1).
 	public mutating func encrypt(_ app: Data) throws -> Data {
 		guard let pending = pendingProposal else { throw TwoMLSError.noPendingProposal }
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
@@ -414,7 +416,8 @@ extension TwoMLSSession {
 	/// Decode a frame, join Group_B off its staple if this is the first inbound
 	/// frame (or skip idempotently if already joined), decrypt the app section
 	/// against the receive group, and surface the peer's staged proposal
-	/// uninterpreted (carried, not folded, in slice 1).
+	/// uninterpreted (carried, not folded, so far — the fold lands in slice
+	/// 3).
 	public mutating func processIncoming(_ frame: Data) throws -> DecryptResult {
 		let (staple, proposalSection, appSection) = try Frames.decodeMessageFrame(frame)
 		let appMessage = try MLS.RFC9420.Message(mlsEncoded: appSection)
@@ -473,6 +476,13 @@ extension TwoMLSSession {
 	/// silently not-a-license, not an error — this is an additional read on
 	/// data `processIncoming` already carries uninterpreted, not a required
 	/// decode.
+	///
+	/// Seam: this checks the Update verifies against `sendGroup.classical`
+	/// and was framed by a leaf other than my own, but never compares the
+	/// Update's credential against `proposing` (the frame's carried sender
+	/// id) — not a forgery vector today, since the Update is itself
+	/// signature- and membership-tag-authenticated; only relevant once
+	/// `proposing` names something other than "my one peer."
 	private mutating func stampLicenseIfOffered(_ proposalMessage: Data) {
 		withDeployedWireWidth {
 			guard let message = try? MLS.RFC9420.Message(mlsEncoded: proposalMessage),
@@ -615,11 +625,17 @@ extension TwoMLSSession {
 	/// Gated on `pqInflight == .bootstrapResponded` so a bind cannot land
 	/// outside a founded-and-not-yet-bound state. Applies the PQ half before
 	/// the classical half — the classical discharge's `apq_psk` (`0xFF01`) is
-	/// exported off the PQ half's POST-commit epoch. `S` (and the classical
-	/// half's cross-party/`apq_psk` PSKs) are resolved lazily inside each
-	/// `validating` call's `psk` closure, which the profile invokes only
-	/// after the commit's framing signature and membership tag verify — so a
-	/// forged staple cannot burn `sendGroup.pq`'s single-shot `0xFF02` leaf.
+	/// exported off the PQ half's POST-commit epoch. Only `S` is resolved
+	/// lazily, inside the PQ `validating` call's `psk` closure (the profile
+	/// invokes it only after that commit's framing signature and membership
+	/// tag verify); the classical half's `apq_psk`/cross-party PSKs are
+	/// exported eagerly, ahead of its own `validating` call. The actual
+	/// guard against a forged staple burning either single-shot leaf is not
+	/// that laziness but value semantics: the whole body works on local
+	/// copies (`recv`/`send`), written back to `recvGroup`/`sendGroup` only
+	/// on success at the very end — any throw above that point (a bad
+	/// signature, a bad membership tag, a bad effects shape, or a failed
+	/// attestation) discards every export this call made.
 	private mutating func applyBind(_ staple: Data) throws {
 		// The commit messages decoded below carry `ComponentID`-bearing
 		// proposals (the injected external PSK and both `AppDataUpdate`s) —
@@ -656,11 +672,27 @@ extension TwoMLSSession {
 				throw TwoMLSError.sessionNotReady
 			}
 
+			// Mirrors the id `owePQBind` builds on Alice's side (LE64(epoch) ‖
+			// groupID ‖ [0x52]) against `recv.pq!`'s PRE-apply epoch/group id —
+			// the same `(group, epoch)` Alice's `sendPQ` named there — so the
+			// resolver matches the exact injected id, not any `.external` PSK
+			// (§11 #5).
+			let expectedInjectedID =
+				withUnsafeBytes(of: recv.pq!.context.epoch.littleEndian) {
+					Data($0)
+				}
+				+ recv.pq!.context.groupID + Data([0x52])
+
 			var sendPQ = send.pq!
+			let sendPQEpochBeforeExport = sendPQ.context.epoch
 			let pqPending = try recv.pq!.validating(
 				pqProvider, commit: pqPub, proposals: MLS.RFC9420.ProposalStore(),
 				psk: { identifier in
-					guard case .external = identifier else { return nil }
+					guard case .external(let pskID, _) = identifier,
+						pskID == expectedInjectedID
+					else {
+						return nil
+					}
 					let exported = try MLS.Combiner.ExportedPsk.export(
 						from: &sendPQ, pqProvider,
 						componentID: Self.crossPartyComponentID)
@@ -671,7 +703,7 @@ extension TwoMLSSession {
 			let pqTransition = try pqPending.apply(onto: recv.pq!)
 			recv.pq = pqTransition.group
 			send.pq = sendPQ
-			lastSendPQExported = 1
+			lastSendPQExported = sendPQEpochBeforeExport
 
 			var apqSource = recv.pq!
 			let apqPSK = try MLS.Combiner.ExportedPsk.export(
@@ -724,9 +756,13 @@ extension TwoMLSSession {
 	/// groups founded, and Group_B.pq not yet founded. Idempotent while a
 	/// begin is already outstanding: re-returns the retained frame rather
 	/// than re-checking turn/state (a re-send should not depend on nothing
-	/// having moved since the first call).
+	/// having moved since the first call) — but only while `recvGroup.pq` is
+	/// still nil, so a spent round (the bind already landed) falls through
+	/// to the normal guard instead of re-emitting a stale `0x13`.
 	public mutating func pqBootstrapBegin() throws -> Data {
-		if pqInflight == .bootstrapInitiated, let pending = pendingSideBand {
+		if pqInflight == .bootstrapInitiated, let pending = pendingSideBand,
+			recvGroup?.pq == nil
+		{
 			return pending
 		}
 		guard
@@ -745,7 +781,24 @@ extension TwoMLSSession {
 	/// pinned at `receive`, founds Group_B.pq (`APQGroup.foundPQHalf`) with
 	/// KP′ as the sole Add, and returns the resulting Welcome′ as a `0x15`
 	/// side-band frame. Bob is `isFullyEstablished` once this returns.
+	/// Idempotent once `sendGroup.pq` is founded: re-returns the retained
+	/// `0x15` rather than founding a second Group_B.pq off a re-delivered
+	/// `0x13` (a re-delivery with no retained frame to re-serve, e.g. after
+	/// a restart, is `.duplicateSideBand` — this module does not persist
+	/// `pendingSideBand` across process restarts).
+	///
+	/// Seam: this does not check KP′'s leaf credential names the already-
+	/// established peer (Rust's AS `validate_member`; no AS exists until a
+	/// later slice). It fails closed regardless — a wrong-peer KP′ founds a
+	/// Group_B.pq the real peer never agrees to join, so the bind can never
+	/// complete.
 	public mutating func pqBootstrapRespond(_ frame: Data) throws -> Data {
+		if sendGroup?.pq != nil {
+			guard let pending = pendingSideBand else {
+				throw TwoMLSError.duplicateSideBand
+			}
+			return pending
+		}
 		let kpBytes = try Frames.decodePQBootstrapKP(frame)
 		guard
 			let expected = expectedBootstrapKPCommitment,
@@ -808,6 +861,12 @@ extension TwoMLSSession {
 		bootstrapKPSecret = nil
 
 		try owePQBind()
+		// The `0x13`/`0x15` side-band round is now fully spent (Group_B.pq is
+		// joined and the bind is owed) — clear the retained frame and inflight
+		// marker so a stray re-call of `pqBootstrapBegin`/`pqBootstrapRespond`
+		// cannot re-emit them.
+		pqInflight = nil
+		pendingSideBand = nil
 	}
 
 	/// §4a: immediately after `pqBootstrapJoin` sets `recvGroup.pq`, export
@@ -815,6 +874,12 @@ extension TwoMLSSession {
 	/// re-inject it as an external PSK into a pathless PARTIAL commit on
 	/// `sendGroup.pq` (Group_A.pq), and park the resulting commit message as
 	/// `owedBind` until a licensed `prepareToEncrypt` can discharge it (§4b).
+	///
+	/// Seam: `S`'s leaf is consumed (the export below) before `committing`
+	/// is attempted; a throw from `committing` wedges the session with
+	/// `isFullyEstablished == true` but no `owedBind` and no way to
+	/// re-derive `S` (Rust latches a `BindTriggerFailed` state for this).
+	/// Not handled here.
 	private mutating func owePQBind() throws {
 		guard var recv = recvGroup, let recvPQ = recv.pq else {
 			throw TwoMLSError.notEstablished
@@ -824,13 +889,14 @@ extension TwoMLSSession {
 		}
 
 		try withDeployedWireWidth {
+			let recvPQEpochBeforeExport = recvPQ.context.epoch
 			var pqForExport = recvPQ
 			let sExport = try MLS.Combiner.ExportedPsk.export(
 				from: &pqForExport, pqProvider,
 				componentID: Self.crossPartyComponentID)
 			recv.pq = pqForExport
 			recvGroup = recv
-			lastCrossInjectedPQ = 1
+			lastCrossInjectedPQ = recvPQEpochBeforeExport
 			let s = sExport.psk.withUnsafeBytes { Data($0) }
 
 			let attestation = MLS.Combiner.ApqInfoUpdate(
@@ -838,8 +904,9 @@ extension TwoMLSSession {
 				pqEpoch: sendPQ.context.epoch + 1)
 
 			// Id = LE64(epoch) ‖ groupID ‖ [0x52] — hand-rolled per §4, never
-			// re-derived from the wire (Bob matches on `.external` alone,
-			// §11 #5).
+			// re-derived from the wire; Bob recomputes this same id from his
+			// own `recv.pq!` and matches on it exactly, not on `.external`
+			// alone (§11 #5).
 			let injectedID =
 				withUnsafeBytes(of: sendPQ.context.epoch.littleEndian) { Data($0) }
 				+ sendPQ.context.groupID + Data([0x52])
