@@ -43,6 +43,7 @@ enum SessionTestSupport {
 		let received = try TwoMLSSession.receive(
 			identity: bob, welcome: initiated.welcome,
 			theirClassicalKeyPackage: alice.keyPackage.classical,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
 
 		return (

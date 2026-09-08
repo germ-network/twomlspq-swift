@@ -16,10 +16,11 @@ let package = Package(
 	],
 	dependencies: [
 		// swift-mls has no tags; pin by commit. `MLSCrypto` is the CipherSuiteProvider seam.
-		// f525e01 = main HEAD at the time of this pin, adding `Sources/MLSCombiner`.
+		// c594f2b = main HEAD at the time of this pin, picking up the Data→SecretBytes
+		// zeroization of the epoch seed, TreeKEM path-secret chain, and signing key.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			revision: "f525e01fcfccb9419dbe081c068d12df1cb227e1"
+			revision: "c594f2b827d0808ae0edaa55d3dcf43547252c7a"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		.package(

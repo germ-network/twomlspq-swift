@@ -3,6 +3,7 @@ import MLSCodec
 import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
+import SecretBytes
 import TwoMLSPQCrypto
 
 /// Germ's own sentinel for an unbound epoch field on a deferred (pq-less)
@@ -204,4 +205,151 @@ extension APQGroup {
 	/// Non-blank leaf count — `TwoPartyRules.ensureTwoParty`'s reading of
 	/// either half.
 	var classicalRosterCount: Int { classical.tree.nonBlankLeaves().count }
+}
+
+// MARK: - §A.3 PQ bootstrap: Group_B.pq create-with-member and join
+
+@available(iOS 26, macOS 26, *)
+extension APQGroup {
+	/// The responder (Bob) founds Group_B.pq: a one-member PQ creation
+	/// carrying the **mirror** `APQInfo` (`{tEpoch: EPOCH_UNBOUND, pqEpoch:
+	/// 1}` — the mirror of the classical half's `{tEpoch: 1, pqEpoch:
+	/// EPOCH_UNBOUND}`), then a bare `Add(peerBootstrapKP)` commit — no
+	/// `AppDataUpdate` attestation, a draft-02 PARTIAL creation. The pq
+	/// group id is the one pre-allocated in `sendGroupClassical`'s own
+	/// `APQInfo.pqSessionGroupID` at establishment. Must run under the
+	/// deployed `ComponentID` wire width.
+	///
+	/// Seam: does not check `peerBootstrapKP`'s leaf credential names the
+	/// already-established peer (see `TwoMLSSession.pqBootstrapRespond`).
+	static func foundPQHalf(
+		sendGroupClassical: MLS.RFC9420.Group,
+		ownPQLeaf: MLS.RFC9420.LeafNode,
+		ownPQLeafSecret: MLS.HpkeSecretKey,
+		signingKey: MLS.SignatureSecretKey,
+		peerBootstrapKP: MLS.RFC9420.KeyPackage,
+		randomness: MLS.RFC9420.Group.CommitRandomness,
+		epochSecret: SecretBytes,
+		pqProvider: any MLS.CipherSuiteProvider,
+		codepoints: MLS.Combiner.Codepoints = .deployed
+	) throws -> (pqGroup: MLS.RFC9420.Group, welcome: MLS.RFC9420.Welcome) {
+		try withDeployedWireWidth {
+			guard
+				let classicalInfo = try MLS.Combiner.APQInfo.read(
+					fromExtensionsOf: sendGroupClassical.context,
+					type: codepoints.apqInfoExtensionType)
+			else { throw TwoMLSError.deferredApqInfoMismatch }
+			let pqGroupID = classicalInfo.pqSessionGroupID
+
+			let mirrorInfo = MLS.Combiner.APQInfo(
+				tSessionGroupID: classicalInfo.tSessionGroupID,
+				pqSessionGroupID: pqGroupID,
+				mode: classicalInfo.mode,
+				tCipherSuite: classicalInfo.tCipherSuite,
+				pqCipherSuite: classicalInfo.pqCipherSuite,
+				tEpoch: epochUnbound,
+				pqEpoch: 1)
+			let mirrorExtension = try mirrorInfo.asExtension(
+				type: codepoints.apqInfoExtensionType)
+
+			let epoch0 = try MLS.RFC9420.Group.create(
+				pqProvider, groupID: pqGroupID, leafNode: ownPQLeaf,
+				leafSecretKey: ownPQLeafSecret, extensions: [mirrorExtension],
+				epochSecret: epochSecret)
+
+			let proposals: [MLS.RFC9420.ProposalOrRef] = [
+				.proposal(.add(peerBootstrapKP))
+			]
+			try TwoPartyRules.validateCreationProposals(proposals)
+			let transition = try epoch0.committing(
+				pqProvider, proposals: proposals, signingKey: signingKey,
+				randomness: randomness, includePath: true, psk: { _ in nil })
+			let adopted = transition.group
+			let sent = transition.takeOutput()
+			guard let welcome = sent.welcome else {
+				throw MLS.Combiner.Error.missingWelcome
+			}
+			let advanced = try sent.takePending().apply(onto: adopted)
+
+			return (advanced.group, welcome)
+		}
+	}
+
+	/// The initiator (Alice) joins Group_B.pq off the responder's Welcome′,
+	/// using the session-owned bootstrap-KP secrets (KP′) as joiner
+	/// credentials, then verifies the mirror `APQInfo` against Group_B's
+	/// already-joined classical half. Must run under the deployed
+	/// `ComponentID` wire width.
+	static func joinPQHalf(
+		welcome: MLS.RFC9420.Welcome,
+		credentials: MLS.RFC9420.Group.JoinerCredentials,
+		classicalHalfForPairCheck: MLS.RFC9420.Group,
+		pqProvider: any MLS.CipherSuiteProvider,
+		codepoints: MLS.Combiner.Codepoints = .deployed
+	) throws -> MLS.RFC9420.Group {
+		try withDeployedWireWidth {
+			let pending = try MLS.RFC9420.Group.joining(
+				pqProvider, welcome: welcome, credentials: credentials,
+				psk: { _ in nil })
+			let group = pending.apply().group
+			try verifyDeferredPQMirrorInfo(
+				pqGroup: group, classicalGroup: classicalHalfForPairCheck,
+				codepoints: codepoints)
+			try TwoPartyRules.ensureTwoParty(group)
+			return group
+		}
+	}
+
+	/// The joined pq group's mirror `APQInfo` against Group_B's classical
+	/// half: names this pq group, `pqEpoch == 1` (the observed epoch),
+	/// `tEpoch` unbound, and the 5 identity fields (everything but the two
+	/// epoch fields) equal to the classical half's `APQInfo` — `identityFieldsMatch`
+	/// is combiner-internal, so those 5 fields are compared by hand in
+	/// `checkDeferredPQMirror`.
+	static func verifyDeferredPQMirrorInfo(
+		pqGroup: MLS.RFC9420.Group,
+		classicalGroup: MLS.RFC9420.Group,
+		codepoints: MLS.Combiner.Codepoints = .deployed
+	) throws {
+		guard
+			let pqInfo = try MLS.Combiner.APQInfo.read(
+				fromExtensionsOf: pqGroup.context,
+				type: codepoints.apqInfoExtensionType)
+		else { throw TwoMLSError.deferredPQMirrorMismatch }
+		guard
+			let classicalInfo = try MLS.Combiner.APQInfo.read(
+				fromExtensionsOf: classicalGroup.context,
+				type: codepoints.apqInfoExtensionType)
+		else { throw TwoMLSError.deferredPQMirrorMismatch }
+		try checkDeferredPQMirror(
+			pqInfo: pqInfo, classicalInfo: classicalInfo,
+			observedPQGroupID: pqGroup.context.groupID,
+			observedPQEpoch: pqGroup.context.epoch)
+	}
+
+	/// The pure half of `verifyDeferredPQMirrorInfo`: two decoded `APQInfo`s
+	/// against the observed pq group id/epoch, taking no `Group` —
+	/// exercisable against hand-built values.
+	static func checkDeferredPQMirror(
+		pqInfo: MLS.Combiner.APQInfo,
+		classicalInfo: MLS.Combiner.APQInfo,
+		observedPQGroupID: Data,
+		observedPQEpoch: UInt64
+	) throws {
+		guard
+			pqInfo.pqSessionGroupID == observedPQGroupID,
+			pqInfo.tEpoch == epochUnbound,
+			pqInfo.pqEpoch == observedPQEpoch,
+			pqInfo.tSessionGroupID == classicalInfo.tSessionGroupID,
+			pqInfo.pqSessionGroupID == classicalInfo.pqSessionGroupID,
+			pqInfo.mode == classicalInfo.mode,
+			pqInfo.tCipherSuite == classicalInfo.tCipherSuite,
+			pqInfo.pqCipherSuite == classicalInfo.pqCipherSuite,
+			pqInfo.tCipherSuite == .curve25519Aes128,
+			pqInfo.pqCipherSuite
+				== MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID)
+		else {
+			throw TwoMLSError.deferredPQMirrorMismatch
+		}
+	}
 }

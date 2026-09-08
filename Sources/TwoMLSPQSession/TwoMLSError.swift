@@ -14,7 +14,8 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	case truncatedSection
 	/// Bytes remained after every declared section was consumed.
 	case trailingBytes
-	/// The staple's leading tag byte matched none of slice 1's cases.
+	/// The staple's leading tag byte matched none of this module's
+	/// supported staple kinds.
 	case unsupportedStapleTag(UInt8)
 	/// The frame's leading tag byte was not `MESSAGE_FRAME_TAG`.
 	case unsupportedFrameTag(UInt8)
@@ -25,8 +26,9 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// deferred (pq-less) pair — a wrong mode/suite, a bound `pqEpoch`, or an
 	/// identity field that does not match the group it rides in.
 	case deferredApqInfoMismatch
-	/// A commit staple arrived — slice 1 sends no commits, so receiving one is
-	/// a protocol state this slice cannot process.
+	/// A bare `mlsMessage` (`0x00`) staple arrived — this module only ever
+	/// staples commits under `0x05` (`apqPrivateMessage`), so receiving the
+	/// bare tag is a protocol state it cannot process.
 	case commitStapleUnsupported
 	/// A staple welcome not already joined carried a non-empty pq slot — a
 	/// full (Group_A-shaped) welcome. Slice 1 only ever joins one of those via
@@ -41,6 +43,46 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	case appSectionNotPrivateMessage
 	/// A decrypted app-section message was not `.application` content.
 	case unprotectedContentNotApplication
+	/// A PQ bootstrap side-band frame's leading tag byte matched neither
+	/// `PQ_BOOTSTRAP_KP_TAG` (`0x13`) nor `PQ_BOOTSTRAP_WELCOME_TAG` (`0x15`).
+	case unsupportedSideBandTag(UInt8)
+	/// A decoded PQ bootstrap side-band frame's `MLS.RFC9420.Message` was not
+	/// the case its tag promised (`.keyPackage` for `0x13`, `.welcome` for
+	/// `0x15`).
+	case malformedSideBandMessage
+
+	// MARK: §A.3 PQ bootstrap
+
+	/// `pqBootstrapRespond`'s `H(KP′)` did not match the commitment pinned at
+	/// `receive`, or an incoming commitment was not the required 32 bytes.
+	case bootstrapKPMismatch
+	/// `pqBootstrapRespond` was called again after `sendGroup.pq` was already
+	/// founded, and no retained `0x15` was available to idempotently
+	/// re-return — a re-delivered `0x13` must never found a second
+	/// Group_B.pq.
+	case duplicateSideBand
+	/// `verifyDeferredPQMirrorInfo` found the joined PQ half's mirror
+	/// `APQInfo` inconsistent with Group_B's classical half — a wrong
+	/// mode/suite, an unbound `pqEpoch`, a bound `tEpoch`, or an identity
+	/// field the two halves disagree on.
+	case deferredPQMirrorMismatch
+	/// A host method requiring specific turn/establishment state
+	/// (`pqBootstrapBegin`, `pqBootstrapRespond`, `pqBootstrapJoin`) was
+	/// called outside that state.
+	case sessionNotReady
+
+	// MARK: §A.3 bind
+
+	/// A `0x05` bind staple classified ahead of the receive group's live
+	/// epoch (`applyBind`), or a licensed discharge's own re-check found its
+	/// parked `owedBind` epochs no longer matching the live send groups
+	/// (`prepareToEncrypt`).
+	case epochDesync
+	/// `applyBind`'s applied `CommitEffects` were not the bind's exact
+	/// whitelisted shape — PQ-half `[epochAdvanced, appDataUpdate]` or
+	/// classical-half `[epochAdvanced, updated(committer), appDataUpdate]` —
+	/// an unexpected Add/Remove/credential replacement rode the bind.
+	case invalidBindEffects
 
 	// MARK: Two-party rules
 

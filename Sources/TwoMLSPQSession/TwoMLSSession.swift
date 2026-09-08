@@ -5,6 +5,7 @@ import MLSCrypto
 import MLSExtensions
 import MLSProfileRFC9420
 import MLSTreeMath
+import SecretBytes
 
 /// The result of `initiate`/`receive`: the session plus the welcome staple to
 /// hand the peer out of band. Slice 1 omits the §A.1 header-encryption
@@ -16,12 +17,30 @@ public struct EstablishResult: Sendable {
 	public let welcome: Data
 }
 
-/// The result of `prepareToEncrypt`: slice 1's routine no-commit path always
-/// stages an `Upd(self)` into the receive group rather than committing.
+/// The result of `prepareToEncrypt`: first discharges an owed bind if one is
+/// licensed (§4b — `didCommit` reports whether that happened), then always
+/// stages a routine `Upd(self)` into the receive group regardless.
 public struct PrepareResult: Sendable {
 	public let proposalMessage: Data
 	public let proposalHash: Data
 	public let didCommit: Bool
+}
+
+/// Which §A.3 bootstrap side-band step is outstanding on this session, if
+/// any — `pqBootstrapBegin`/`pqBootstrapRespond` set it; `applyBind` clears
+/// it once the bind lands.
+enum PQInflight: Sendable, Equatable {
+	case bootstrapInitiated
+	case bootstrapResponded
+}
+
+/// Alice's parked PQ-half bind commit (`owePQBind`), owed to
+/// `sendGroup.classical` until a licensed `prepareToEncrypt` can discharge it
+/// (§4).
+struct OwedBind: Sendable {
+	var pqCommitMessage: Data
+	var tEpoch: UInt64
+	var pqEpoch: UInt64
 }
 
 /// The peer's staged proposal, carried uninterpreted alongside a
@@ -34,7 +53,7 @@ public struct QueuedProposal: Sendable {
 
 /// The result of `processIncoming`: the decrypted application payload, its
 /// epoch-bound sender, and the peer's staged proposal — carried, not folded,
-/// in slice 1 (the fold path lands with commits in slice 2).
+/// so far (the fold path lands in slice 3).
 public struct DecryptResult: Sendable {
 	public let applicationMessage: Data
 	public let sender: MLS.LeafIndex
@@ -70,8 +89,55 @@ public struct TwoMLSSession: Sendable {
 	var pendingProposal: (proposing: Data, message: Data, hash: Data)?
 	var joinedWelcomeDigest: Data?
 	let initiated: Bool
+	/// The initiator's (Alice's) pre-committed bootstrap `KeyPackage` KP′,
+	/// MLSMessage-wrapped (§11 #7) — `nil` on the responder (Bob). Minted at
+	/// `initiate`, spent by `pqBootstrapRespond`.
+	var bootstrapKP: Data?
+	/// KP′'s own leaf+init secrets plus the `KeyPackage` itself — the
+	/// initiator's joiner credentials for `pqBootstrapJoin`. `nil` on the
+	/// responder.
+	var bootstrapKPSecret:
+		(
+			leafSecretKey: MLS.HpkeSecretKey, initSecretKey: MLS.HpkeSecretKey,
+			keyPackage: MLS.RFC9420.KeyPackage
+		)?
+	/// The responder's (Bob's) pinned `H(KP′)`, validated at `receive` —
+	/// `nil` on the initiator.
+	var expectedBootstrapKPCommitment: Data?
+	/// Whose turn it is to drive the next PQ-bootstrap/bind step — `true` on
+	/// the initiator (Alice owns the bootstrap), `false` on the responder,
+	/// until the bind passes it back (`applyBind`).
+	var pqTurnMine: Bool
+	/// Alice's PQ-half bind commit, parked after `owePQBind` until a licensed
+	/// `prepareToEncrypt` can discharge it (§4). `nil` once discharged.
+	var owedBind: OwedBind?
+	/// Which §A.3 side-band step is outstanding, if any.
+	var pqInflight: PQInflight?
+	/// The retained `0x13`/`0x15` side-band frame, for `pqBootstrapBegin`'s
+	/// idempotent re-send.
+	var pendingSideBand: Data?
+	/// The discharge license (§5): `sendGroup.classical`'s epoch, as evidenced
+	/// by the peer's inbound `Upd(self)` proposal validating against it
+	/// (`processIncoming`'s `stampLicenseIfOffered`).
+	var peerAppliedSendEpoch: UInt64?
+	/// The last `recvGroup.classical` epoch whose cross-party `0xFF02` PSK
+	/// Alice has injected into a discharge — a watermark, not a full ledger
+	/// (§11 #1). Bob seeds this to `1` in `receive` (mirroring the
+	/// establishment-time cross-party binding epoch); Alice's stays `nil`
+	/// until her first discharge.
+	var lastCrossInjected: UInt64?
+	/// The `recvGroup.pq` epoch `owePQBind` exported the cross-party `0xFF02`
+	/// PSK (`S`) from — carried for A.5, not guarded here.
+	var lastCrossInjectedPQ: UInt64?
+	/// The `sendGroup.pq` epoch `applyBind` re-exported `S` from — carried for
+	/// A.5, not guarded here.
+	var lastSendPQExported: UInt64?
 
 	public var isEstablished: Bool { sendGroup != nil && recvGroup != nil }
+	/// Both directional pairs have their PQ half present — the §A.3
+	/// bootstrap's completion condition.
+	public var isFullyEstablished: Bool { sendGroup?.pq != nil && recvGroup?.pq != nil }
+	public var myPQTurn: Bool { pqTurnMine }
 
 	init(
 		classicalProvider: any MLS.CipherSuiteProvider,
@@ -83,7 +149,22 @@ public struct TwoMLSSession: Sendable {
 		currentStaple: Data,
 		pendingProposal: (proposing: Data, message: Data, hash: Data)?,
 		joinedWelcomeDigest: Data?,
-		initiated: Bool
+		initiated: Bool,
+		bootstrapKP: Data? = nil,
+		bootstrapKPSecret:
+			(
+				leafSecretKey: MLS.HpkeSecretKey, initSecretKey: MLS.HpkeSecretKey,
+				keyPackage: MLS.RFC9420.KeyPackage
+			)? = nil,
+		expectedBootstrapKPCommitment: Data? = nil,
+		pqTurnMine: Bool,
+		owedBind: OwedBind? = nil,
+		pqInflight: PQInflight? = nil,
+		pendingSideBand: Data? = nil,
+		peerAppliedSendEpoch: UInt64? = nil,
+		lastCrossInjected: UInt64? = nil,
+		lastCrossInjectedPQ: UInt64? = nil,
+		lastSendPQExported: UInt64? = nil
 	) {
 		self.classicalProvider = classicalProvider
 		self.pqProvider = pqProvider
@@ -95,6 +176,17 @@ public struct TwoMLSSession: Sendable {
 		self.pendingProposal = pendingProposal
 		self.joinedWelcomeDigest = joinedWelcomeDigest
 		self.initiated = initiated
+		self.bootstrapKP = bootstrapKP
+		self.bootstrapKPSecret = bootstrapKPSecret
+		self.expectedBootstrapKPCommitment = expectedBootstrapKPCommitment
+		self.pqTurnMine = pqTurnMine
+		self.owedBind = owedBind
+		self.pqInflight = pqInflight
+		self.pendingSideBand = pendingSideBand
+		self.peerAppliedSendEpoch = peerAppliedSendEpoch
+		self.lastCrossInjected = lastCrossInjected
+		self.lastCrossInjectedPQ = lastCrossInjectedPQ
+		self.lastSendPQExported = lastSendPQExported
 	}
 }
 
@@ -131,27 +223,57 @@ extension TwoMLSSession {
 			t: try welcome.tWelcome.mlsEncoded(), pq: try welcome.pqWelcome.mlsEncoded()
 		)
 
+		// Mint the §A.3 bootstrap KeyPackage KP′ now: a fresh leaf+init
+		// keypair distinct from `identity.keyPackage.pq` (Alice's leaf IN
+		// Group_A) — what Bob Adds into the new Group_B.pq. Its commitment
+		// `H(KP′)` hashes the MLSMessage-wrapped bytes (§11 #7).
+		let bootstrap = try identity.freshPQKeyPackage(pqProvider: pqProvider)
+		let bootstrapKPBytes = try MLS.RFC9420.Message.keyPackage(bootstrap.keyPackage)
+			.mlsEncoded()
+
 		let session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: codepoints, identity: identity, sendGroup: groupA,
 			recvGroup: nil,
 			currentStaple: apqWelcomeA, pendingProposal: nil, joinedWelcomeDigest: nil,
-			initiated: true)
+			initiated: true, bootstrapKP: bootstrapKPBytes,
+			bootstrapKPSecret: (
+				leafSecretKey: bootstrap.leafSecretKey,
+				initSecretKey: bootstrap.initSecretKey,
+				keyPackage: bootstrap.keyPackage
+			), pqTurnMine: true)
 		return EstablishResult(session: session, welcome: apqWelcomeA)
+	}
+
+	/// `sha256(bootstrapKP)` — the commitment the initiator hands the
+	/// responder out of band (typically stapled alongside `welcome`, or
+	/// threaded into the peer's `receive` call), and the responder later
+	/// checks the §A.3 `pqBootstrapBegin` frame's KP′ against.
+	public func bootstrapKPCommitment() throws -> Data {
+		guard let bootstrapKP else { throw TwoMLSError.sessionNotReady }
+		return try classicalProvider.hash(bootstrapKP)
 	}
 
 	/// Join Group_A from the initiator's welcome, then found Group_B
 	/// (classical-only, deferred PQ) with the cross-party PSK exported off the
 	/// freshly-joined Group_A.classical. `isEstablished` is true immediately —
 	/// the acceptor never waits on an inbound frame.
+	///
+	/// `bootstrapKPCommitment` is the initiator's `H(KP′)` (its
+	/// `bootstrapKPCommitment()`), pinned here before any state is claimed —
+	/// it must be exactly 32 bytes, else `.bootstrapKPMismatch`.
 	public static func receive(
 		identity: TwoMLSIdentity,
 		welcome: Data,
 		theirClassicalKeyPackage: MLS.RFC9420.KeyPackage,
+		bootstrapKPCommitment: Data,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> EstablishResult {
+		guard bootstrapKPCommitment.count == 32 else {
+			throw TwoMLSError.bootstrapKPMismatch
+		}
 		let (tBytes, pqBytes) = try Frames.decodeAPQWelcome(welcome)
 		let apqWelcome = MLS.Combiner.APQWelcome(
 			tWelcome: try MLS.RFC9420.Welcome(mlsEncoded: tBytes),
@@ -200,7 +322,13 @@ extension TwoMLSSession {
 			codepoints: codepoints, identity: identity, sendGroup: groupB,
 			recvGroup: groupA,
 			currentStaple: apqWelcomeB, pendingProposal: nil,
-			joinedWelcomeDigest: try classicalProvider.hash(welcome), initiated: false)
+			joinedWelcomeDigest: try classicalProvider.hash(welcome), initiated: false,
+			expectedBootstrapKPCommitment: bootstrapKPCommitment, pqTurnMine: false,
+			// §11 #1: `lastCrossInjected` tracks the epoch of `recvGroup.classical`
+			// (Group_A, joined above) at the last cross-party PSK injection —
+			// Bob's freshly-joined copy is already at epoch 1, so the watermark
+			// seeds there too.
+			lastCrossInjected: 1)
 		return EstablishResult(session: session, welcome: apqWelcomeB)
 	}
 
@@ -219,7 +347,7 @@ extension TwoMLSSession {
 			leafNode: half.leafNode,
 			leafSecretKey: leafSecretKey,
 			signingKey: identity.signingKey,
-			epochSecret: provider.randomBytes(provider.hashSize),
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize),
 			randomness: try .generate(provider),
 			peerKeyPackage: peerKeyPackage)
 	}
@@ -229,16 +357,23 @@ extension TwoMLSSession {
 
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
-	/// Slice 1's only send path: no queued proposal, no owed bind, so
-	/// `didCommit` is always false. Stage a routine `Upd(self)` into the
-	/// **receive** group (the peer's send group, where the peer folds it) —
-	/// framed `.publicMessage` to match the Rust reference's control-message
-	/// framing (m4). Requires `isEstablished`: the initiator cannot send before
-	/// its first inbound frame joins Group_B.
+	/// Stage a routine `Upd(self)` into the **receive** group (the peer's send
+	/// group, where the peer folds it) — framed `.publicMessage` to match the
+	/// Rust reference's control-message framing (m4). Requires `isEstablished`:
+	/// the initiator cannot send before its first inbound frame joins Group_B.
+	///
+	/// First discharges an owed bind if one is licensed
+	/// (`dischargeOwedBindIfLicensed`, §4b) — folding it into a FULL commit on
+	/// `sendGroup.classical` and stapling the pq+classical commit pair as the
+	/// `0x05` bind, so `encrypt` then protects the app on the newly-advanced
+	/// epoch. `didCommit` reports whether that happened.
 	public mutating func prepareToEncrypt() throws -> PrepareResult {
-		guard var recv = recvGroup, sendGroup != nil else {
+		guard recvGroup != nil, sendGroup != nil else {
 			throw TwoMLSError.notEstablished
 		}
+		let didCommit = try dischargeOwedBindIfLicensed()
+
+		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
 		let (message, _) = try recv.classical.proposeUpdate(
 			classicalProvider, signingKey: identity.signingKey, framing: .publicMessage)
 		recvGroup = recv
@@ -251,7 +386,8 @@ extension TwoMLSSession {
 			proposing: identity.clientID, message: proposalBytes, hash: proposalHash
 		)
 		return PrepareResult(
-			proposalMessage: proposalBytes, proposalHash: proposalHash, didCommit: false
+			proposalMessage: proposalBytes, proposalHash: proposalHash,
+			didCommit: didCommit
 		)
 	}
 
@@ -259,7 +395,7 @@ extension TwoMLSSession {
 	/// carried `authenticated_data`, and frame it alongside that proposal and
 	/// the current staple. The AEAD binds the hash to *this* app message, not
 	/// to the frame's separate proposal section — proposal integrity is its own
-	/// MLS leaf signature, checked when folded (slice 2) (M1).
+	/// MLS leaf signature, checked when folded (slice 3) (M1).
 	public mutating func encrypt(_ app: Data) throws -> Data {
 		guard let pending = pendingProposal else { throw TwoMLSError.noPendingProposal }
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
@@ -281,7 +417,8 @@ extension TwoMLSSession {
 	/// Decode a frame, join Group_B off its staple if this is the first inbound
 	/// frame (or skip idempotently if already joined), decrypt the app section
 	/// against the receive group, and surface the peer's staged proposal
-	/// uninterpreted (carried, not folded, in slice 1).
+	/// uninterpreted (carried, not folded, so far — the fold lands in slice
+	/// 3).
 	public mutating func processIncoming(_ frame: Data) throws -> DecryptResult {
 		let (staple, proposalSection, appSection) = try Frames.decodeMessageFrame(frame)
 		let appMessage = try MLS.RFC9420.Message(mlsEncoded: appSection)
@@ -303,6 +440,7 @@ extension TwoMLSSession {
 		// `sha256` for the deployed classical suite, matching the book's fixed
 		// sha256 for `proposal_hash`.
 		let digest = try classicalProvider.hash(proposalMessage)
+		stampLicenseIfOffered(proposalMessage)
 
 		return DecryptResult(
 			applicationMessage: data, sender: unprotected.sender,
@@ -314,7 +452,7 @@ extension TwoMLSSession {
 	/// `0x01` welcome → join Group_B if this staple hasn't been joined yet
 	/// (idempotent otherwise, matching the reference's welcome dedup); `0x00`
 	/// mlsMessage (commit) → slice 1 sends no commits, so receiving one is an
-	/// unsupported protocol state.
+	/// unsupported protocol state. `0x05` apqPrivateMessage → `applyBind`.
 	private mutating func handleStaple(_ staple: Data) throws {
 		guard let tag = staple.first else { throw TwoMLSError.truncatedSection }
 		switch Frames.stapleKind(tag) {
@@ -322,8 +460,47 @@ extension TwoMLSSession {
 			try joinGroupBIfNeeded(fromStaple: staple)
 		case .mlsMessage:
 			throw TwoMLSError.commitStapleUnsupported
+		case .apqPrivateMessage:
+			try applyBind(staple)
 		case .unsupported(let tag):
 			throw TwoMLSError.unsupportedStapleTag(tag)
+		}
+	}
+
+	/// §5/§11 #8: the discharge license. If `proposalMessage` (every frame's
+	/// routine staged proposal) decodes as a `PublicMessage` `Update` that
+	/// verifies against MY OWN `sendGroup.classical` — framed by the peer's
+	/// own leaf there, not mine — the peer has evidently applied at least my
+	/// current send epoch, so `prepareToEncrypt` may discharge an owed bind
+	/// against it. Any other shape (a decode failure, a stale/foreign epoch,
+	/// a failed signature, or a proposal apparently framed by my own leaf) is
+	/// silently not-a-license, not an error — this is an additional read on
+	/// data `processIncoming` already carries uninterpreted, not a required
+	/// decode.
+	///
+	/// Seam: this checks the Update verifies against `sendGroup.classical`
+	/// and was framed by a leaf other than my own, but never compares the
+	/// Update's credential against `proposing` (the frame's carried sender
+	/// id) — not a forgery vector today, since the Update is itself
+	/// signature- and membership-tag-authenticated; only relevant once
+	/// `proposing` names something other than "my one peer."
+	private mutating func stampLicenseIfOffered(_ proposalMessage: Data) {
+		withDeployedWireWidth {
+			guard let message = try? MLS.RFC9420.Message(mlsEncoded: proposalMessage),
+				case .publicMessage(let updatePub) = message,
+				let send = sendGroup
+			else {
+				return
+			}
+			guard
+				let verified = try? send.classical.verifying(
+					classicalProvider, proposal: updatePub),
+				case .member(let senderLeaf) = verified.sender,
+				senderLeaf != send.classical.myLeafIndex
+			else {
+				return
+			}
+			peerAppliedSendEpoch = send.classical.context.epoch
 		}
 	}
 
@@ -356,5 +533,415 @@ extension TwoMLSSession {
 
 		recvGroup = groupB
 		joinedWelcomeDigest = digest
+	}
+
+	/// §4b, called from `prepareToEncrypt`: if a bind is owed AND licensed
+	/// (`peerAppliedSendEpoch >= sendGroup.classical.context.epoch` — `>=`,
+	/// not `==`: the peer's evidenced epoch may be stale relative to a commit
+	/// this discharge is about to make, but never ahead of the one it is
+	/// discharging against), fold it into a FULL commit on
+	/// `sendGroup.classical` carrying the `apq_psk` chain, the cross-party
+	/// `0xFF02` PSK (§11 #1, when `recvGroup.classical` has moved since the
+	/// last injection), and the attestation — then staple the pq+classical
+	/// commit pair as the `0x05` bind and pass the turn back. Returns whether
+	/// a commit happened.
+	private mutating func dischargeOwedBindIfLicensed() throws -> Bool {
+		guard let owed = owedBind, let peerApplied = peerAppliedSendEpoch,
+			var send = sendGroup, let sendPQHalf = send.pq
+		else {
+			return false
+		}
+		guard peerApplied >= send.classical.context.epoch else { return false }
+
+		return try withDeployedWireWidth {
+			guard
+				send.classical.context.epoch + 1 == owed.tEpoch,
+				sendPQHalf.context.epoch == owed.pqEpoch
+			else {
+				throw TwoMLSError.epochDesync
+			}
+
+			var pqForExport = sendPQHalf
+			let apqPSK = try MLS.Combiner.ExportedPsk.export(
+				from: &pqForExport, pqProvider,
+				componentID: codepoints.apqComponentID)
+			send.pq = pqForExport
+
+			let attestation = MLS.Combiner.ApqInfoUpdate(
+				tEpoch: owed.tEpoch, pqEpoch: owed.pqEpoch)
+
+			var store = MLS.Combiner.PSKStore()
+			store.register(apqPSK)
+			var proposals: [MLS.RFC9420.ProposalOrRef] = [
+				.proposal(
+					apqPSK.proposal(
+						nonce: classicalProvider.randomBytes(
+							classicalProvider.hashSize))),
+				.proposal(
+					try attestation.proposal(
+						componentID: codepoints.apqComponentID)),
+			]
+
+			if var recv = recvGroup, recv.classical.context.epoch != lastCrossInjected {
+				var crossForExport = recv.classical
+				let crossPSK = try MLS.Combiner.ExportedPsk.export(
+					from: &crossForExport, classicalProvider,
+					componentID: Self.crossPartyComponentID)
+				recv.classical = crossForExport
+				recvGroup = recv
+				store.register(crossPSK)
+				lastCrossInjected = crossForExport.context.epoch
+				proposals.append(
+					.proposal(
+						crossPSK.proposal(
+							nonce: classicalProvider.randomBytes(
+								classicalProvider.hashSize))))
+			}
+
+			let transition = try send.classical.committing(
+				classicalProvider, proposals: proposals,
+				signingKey: identity.signingKey,
+				randomness: try .generate(classicalProvider), includePath: true,
+				framing: .publicMessage, psk: store.resolver())
+			let adopted = transition.group
+			let sent = transition.takeOutput()
+			let commitBytes = try sent.message.mlsEncoded()
+			let advanced = try sent.takePending().apply(onto: adopted)
+			send.classical = advanced.group
+			sendGroup = send
+
+			currentStaple = Frames.encodeAPQPrivateMessage(
+				t: commitBytes, pq: owed.pqCommitMessage)
+			owedBind = nil
+			pqTurnMine = false
+			return true
+		}
+	}
+
+	/// §4c/§11 #2/#5, Bob: apply Alice's `0x05` bind staple. Classifies the
+	/// classical commit's epoch against `recvGroup.classical`'s live epoch
+	/// BEFORE consuming anything — behind it (`<`) is an idempotent re-ride
+	/// (the staple rides every frame until Alice's next commit) and a no-op;
+	/// ahead of it (`>`) is `.epochDesync`; equal is the one live application.
+	/// Gated on `pqInflight == .bootstrapResponded` so a bind cannot land
+	/// outside a founded-and-not-yet-bound state. Applies the PQ half before
+	/// the classical half — the classical discharge's `apq_psk` (`0xFF01`) is
+	/// exported off the PQ half's POST-commit epoch. Only `S` is resolved
+	/// lazily, inside the PQ `validating` call's `psk` closure (the profile
+	/// invokes it only after that commit's framing signature and membership
+	/// tag verify); the classical half's `apq_psk`/cross-party PSKs are
+	/// exported eagerly, ahead of its own `validating` call. The actual
+	/// guard against a forged staple burning either single-shot leaf is not
+	/// that laziness but value semantics: the whole body works on local
+	/// copies (`recv`/`send`), written back to `recvGroup`/`sendGroup` only
+	/// on success at the very end — any throw above that point (a bad
+	/// signature, a bad membership tag, a bad effects shape, or a failed
+	/// attestation) discards every export this call made.
+	private mutating func applyBind(_ staple: Data) throws {
+		// The commit messages decoded below carry `ComponentID`-bearing
+		// proposals (the injected external PSK and both `AppDataUpdate`s) —
+		// their decode, not just their construction, must run at the
+		// deployed wire width (§11 #6), so the whole body lives in one scope.
+		try withDeployedWireWidth {
+			let (tBytes, pqBytes) = try Frames.decodeAPQPrivateMessage(staple)
+			guard
+				case .publicMessage(let tPub) = try MLS.RFC9420.Message(
+					mlsEncoded: tBytes)
+			else {
+				throw TwoMLSError.malformedSideBandMessage
+			}
+			guard
+				case .publicMessage(let pqPub) = try MLS.RFC9420.Message(
+					mlsEncoded: pqBytes)
+			else {
+				throw TwoMLSError.malformedSideBandMessage
+			}
+			guard var recv = recvGroup, recv.pq != nil else {
+				throw TwoMLSError.notEstablished
+			}
+			guard var send = sendGroup, send.pq != nil else {
+				throw TwoMLSError.notEstablished
+			}
+
+			if tPub.content.epoch < recv.classical.context.epoch {
+				return
+			}
+			guard tPub.content.epoch == recv.classical.context.epoch else {
+				throw TwoMLSError.epochDesync
+			}
+			guard pqInflight == .bootstrapResponded else {
+				throw TwoMLSError.sessionNotReady
+			}
+
+			// Mirrors the id `owePQBind` builds on Alice's side (LE64(epoch) ‖
+			// groupID ‖ [0x52]) against `recv.pq!`'s PRE-apply epoch/group id —
+			// the same `(group, epoch)` Alice's `sendPQ` named there — so the
+			// resolver matches the exact injected id, not any `.external` PSK
+			// (§11 #5).
+			let expectedInjectedID =
+				withUnsafeBytes(of: recv.pq!.context.epoch.littleEndian) {
+					Data($0)
+				}
+				+ recv.pq!.context.groupID + Data([0x52])
+
+			var sendPQ = send.pq!
+			let sendPQEpochBeforeExport = sendPQ.context.epoch
+			let pqPending = try recv.pq!.validating(
+				pqProvider, commit: pqPub, proposals: MLS.RFC9420.ProposalStore(),
+				psk: { identifier in
+					guard case .external(let pskID, _) = identifier,
+						pskID == expectedInjectedID
+					else {
+						return nil
+					}
+					let exported = try MLS.Combiner.ExportedPsk.export(
+						from: &sendPQ, pqProvider,
+						componentID: Self.crossPartyComponentID)
+					return exported.psk.withUnsafeBytes { Data($0) }
+				})
+			let pqEffects = pqPending.effects
+			try TwoPartyRules.validateBindPQEffects(pqEffects)
+			let pqTransition = try pqPending.apply(onto: recv.pq!)
+			recv.pq = pqTransition.group
+			send.pq = sendPQ
+			lastSendPQExported = sendPQEpochBeforeExport
+
+			var apqSource = recv.pq!
+			let apqPSK = try MLS.Combiner.ExportedPsk.export(
+				from: &apqSource, pqProvider, componentID: codepoints.apqComponentID
+			)
+			recv.pq = apqSource
+
+			var crossSource = send.classical
+			let crossPSK = try MLS.Combiner.ExportedPsk.export(
+				from: &crossSource, classicalProvider,
+				componentID: Self.crossPartyComponentID)
+			send.classical = crossSource
+
+			var store = MLS.Combiner.PSKStore()
+			store.register(apqPSK)
+			store.register(crossPSK)
+
+			let tPending = try recv.classical.validating(
+				classicalProvider, commit: tPub,
+				proposals: MLS.RFC9420.ProposalStore(),
+				psk: store.resolver())
+			let classicalEffects = tPending.effects
+			try TwoPartyRules.validateBindClassicalEffects(classicalEffects)
+			let tTransition = try tPending.apply(onto: recv.classical)
+			recv.classical = tTransition.group
+
+			_ = try MLS.Combiner.verifyFullCommitAttestation(
+				classicalEffects: classicalEffects, pqEffects: pqEffects,
+				classicalEpoch: recv.classical.context.epoch,
+				pqEpoch: recv.pq!.context.epoch, codepoints: codepoints)
+
+			try TwoPartyRules.ensureTwoParty(recv.pq!)
+			try TwoPartyRules.ensureTwoParty(recv.classical)
+
+			recvGroup = recv
+			sendGroup = send
+			pqTurnMine = true
+			pqInflight = nil
+			pendingSideBand = nil
+		}
+	}
+}
+
+// MARK: - §A.3 PQ bootstrap
+
+@available(iOS 26, macOS 26, *)
+extension TwoMLSSession {
+	/// The initiator (Alice) begins the bootstrap: hand the pre-committed KP′
+	/// to the peer as a `0x13` side-band frame. Requires it be my turn, both
+	/// groups founded, and Group_B.pq not yet founded. Idempotent while a
+	/// begin is already outstanding: re-returns the retained frame rather
+	/// than re-checking turn/state (a re-send should not depend on nothing
+	/// having moved since the first call) — but only while `recvGroup.pq` is
+	/// still nil, so a spent round (the bind already landed) falls through
+	/// to the normal guard instead of re-emitting a stale `0x13`.
+	public mutating func pqBootstrapBegin() throws -> Data {
+		if pqInflight == .bootstrapInitiated, let pending = pendingSideBand,
+			recvGroup?.pq == nil
+		{
+			return pending
+		}
+		guard
+			pqTurnMine, sendGroup != nil, let recv = recvGroup, recv.pq == nil,
+			let bootstrapKP
+		else {
+			throw TwoMLSError.sessionNotReady
+		}
+		let frame = Frames.encodePQBootstrapKP(bootstrapKP)
+		pqInflight = .bootstrapInitiated
+		pendingSideBand = frame
+		return frame
+	}
+
+	/// The responder (Bob) receives KP′, checks it against the commitment
+	/// pinned at `receive`, founds Group_B.pq (`APQGroup.foundPQHalf`) with
+	/// KP′ as the sole Add, and returns the resulting Welcome′ as a `0x15`
+	/// side-band frame. Bob is `isFullyEstablished` once this returns.
+	/// Idempotent once `sendGroup.pq` is founded: re-returns the retained
+	/// `0x15` rather than founding a second Group_B.pq off a re-delivered
+	/// `0x13` (a re-delivery with no retained frame to re-serve, e.g. after
+	/// a restart, is `.duplicateSideBand` — this module does not persist
+	/// `pendingSideBand` across process restarts).
+	///
+	/// Seam: this does not check KP′'s leaf credential names the already-
+	/// established peer (Rust's AS `validate_member`; no AS exists until a
+	/// later slice). It fails closed regardless — a wrong-peer KP′ founds a
+	/// Group_B.pq the real peer never agrees to join, so the bind can never
+	/// complete.
+	public mutating func pqBootstrapRespond(_ frame: Data) throws -> Data {
+		if sendGroup?.pq != nil {
+			guard let pending = pendingSideBand else {
+				throw TwoMLSError.duplicateSideBand
+			}
+			return pending
+		}
+		let kpBytes = try Frames.decodePQBootstrapKP(frame)
+		guard
+			let expected = expectedBootstrapKPCommitment,
+			try classicalProvider.hash(kpBytes) == expected
+		else {
+			throw TwoMLSError.bootstrapKPMismatch
+		}
+		guard
+			case .keyPackage(let peerBootstrapKP) = try MLS.RFC9420.Message(
+				mlsEncoded: kpBytes)
+		else {
+			throw TwoMLSError.malformedSideBandMessage
+		}
+		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
+
+		let (pqGroup, welcome) = try APQGroup.foundPQHalf(
+			sendGroupClassical: send.classical,
+			ownPQLeaf: identity.keyPackage.pq.leafNode,
+			ownPQLeafSecret: identity.pqLeafSecretKey, signingKey: identity.signingKey,
+			peerBootstrapKP: peerBootstrapKP, randomness: try .generate(pqProvider),
+			epochSecret: SecretBytes(randomByteCount: pqProvider.hashSize),
+			pqProvider: pqProvider,
+			codepoints: codepoints)
+		send.pq = pqGroup
+		sendGroup = send
+
+		let welcomeBytes = try MLS.RFC9420.Message.welcome(welcome).mlsEncoded()
+		let responseFrame = Frames.encodePQBootstrapWelcome(welcomeBytes)
+		pqInflight = .bootstrapResponded
+		pendingSideBand = responseFrame
+		return responseFrame
+	}
+
+	/// The initiator (Alice) joins Group_B.pq off Bob's Welcome′, using the
+	/// KP′ secrets minted at `initiate` as joiner credentials, then owes the
+	/// bind (`owePQBind`, §4a). Alice is `isFullyEstablished` once this
+	/// returns. `pendingProposal == nil` guards against staple-stacking
+	/// (§11 #4): a routine `Upd(self)` must already be discharged (`encrypt`)
+	/// before the bootstrap can add its own commit to the pile. Clears
+	/// `bootstrapKPSecret` once spent (§11 #11).
+	public mutating func pqBootstrapJoin(_ frame: Data) throws {
+		guard pendingProposal == nil else { throw TwoMLSError.sessionNotReady }
+		let welcomeBytes = try Frames.decodePQBootstrapWelcome(frame)
+		guard case .welcome(let welcome) = try MLS.RFC9420.Message(mlsEncoded: welcomeBytes)
+		else {
+			throw TwoMLSError.malformedSideBandMessage
+		}
+		guard let secret = bootstrapKPSecret else { throw TwoMLSError.sessionNotReady }
+		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
+
+		let credentials = MLS.RFC9420.Group.JoinerCredentials(
+			keyPackage: secret.keyPackage, initKey: secret.initSecretKey,
+			encryptionKey: secret.leafSecretKey)
+		let pqGroup = try APQGroup.joinPQHalf(
+			welcome: welcome, credentials: credentials,
+			classicalHalfForPairCheck: recv.classical, pqProvider: pqProvider,
+			codepoints: codepoints)
+		recv.pq = pqGroup
+		recvGroup = recv
+		bootstrapKPSecret = nil
+
+		try owePQBind()
+		// The `0x13`/`0x15` side-band round is now fully spent (Group_B.pq is
+		// joined and the bind is owed) — clear the retained frame and inflight
+		// marker so a stray re-call of `pqBootstrapBegin`/`pqBootstrapRespond`
+		// cannot re-emit them.
+		pqInflight = nil
+		pendingSideBand = nil
+	}
+
+	/// §4a: immediately after `pqBootstrapJoin` sets `recvGroup.pq`, export
+	/// the cross-party `S` off the freshly-joined Group_B.pq epoch-1 leaf,
+	/// re-inject it as an external PSK into a pathless PARTIAL commit on
+	/// `sendGroup.pq` (Group_A.pq), and park the resulting commit message as
+	/// `owedBind` until a licensed `prepareToEncrypt` can discharge it (§4b).
+	///
+	/// Seam: `S`'s leaf is consumed (the export below) before `committing`
+	/// is attempted; a throw from `committing` wedges the session with
+	/// `isFullyEstablished == true` but no `owedBind` and no way to
+	/// re-derive `S` (Rust latches a `BindTriggerFailed` state for this).
+	/// Not handled here.
+	private mutating func owePQBind() throws {
+		guard var recv = recvGroup, let recvPQ = recv.pq else {
+			throw TwoMLSError.notEstablished
+		}
+		guard var send = sendGroup, let sendPQ = send.pq else {
+			throw TwoMLSError.notEstablished
+		}
+
+		try withDeployedWireWidth {
+			let recvPQEpochBeforeExport = recvPQ.context.epoch
+			var pqForExport = recvPQ
+			let sExport = try MLS.Combiner.ExportedPsk.export(
+				from: &pqForExport, pqProvider,
+				componentID: Self.crossPartyComponentID)
+			recv.pq = pqForExport
+			recvGroup = recv
+			lastCrossInjectedPQ = recvPQEpochBeforeExport
+			let s = sExport.psk.withUnsafeBytes { Data($0) }
+
+			let attestation = MLS.Combiner.ApqInfoUpdate(
+				tEpoch: send.classical.context.epoch + 1,
+				pqEpoch: sendPQ.context.epoch + 1)
+
+			// Id = LE64(epoch) ‖ groupID ‖ [0x52] — hand-rolled per §4, never
+			// re-derived from the wire; Bob recomputes this same id from his
+			// own `recv.pq!` and matches on it exactly, not on `.external`
+			// alone (§11 #5).
+			let injectedID =
+				withUnsafeBytes(of: sendPQ.context.epoch.littleEndian) { Data($0) }
+				+ sendPQ.context.groupID + Data([0x52])
+			let nonce = pqProvider.randomBytes(pqProvider.hashSize)
+
+			let proposals: [MLS.RFC9420.ProposalOrRef] = [
+				.proposal(
+					.preSharedKey(.external(pskID: injectedID, nonce: nonce))),
+				.proposal(
+					try attestation.proposal(
+						componentID: codepoints.apqComponentID)),
+			]
+			let transition = try sendPQ.committing(
+				pqProvider, proposals: proposals, signingKey: identity.signingKey,
+				randomness: try .generate(pqProvider), includePath: false,
+				framing: .publicMessage,
+				psk: { identifier in
+					guard case .external(let pskID, _) = identifier,
+						pskID == injectedID
+					else {
+						return nil
+					}
+					return s
+				})
+			let adopted = transition.group
+			let sent = transition.takeOutput()
+			let commitBytes = try sent.message.mlsEncoded()
+			let advanced = try sent.takePending().apply(onto: adopted)
+			send.pq = advanced.group
+			sendGroup = send
+
+			owedBind = OwedBind(
+				pqCommitMessage: commitBytes, tEpoch: attestation.tEpoch,
+				pqEpoch: attestation.pqEpoch)
+		}
 	}
 }

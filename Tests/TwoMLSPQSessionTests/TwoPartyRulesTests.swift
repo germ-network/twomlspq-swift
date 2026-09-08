@@ -3,6 +3,7 @@ import MLSCodec
 import MLSCrypto
 import MLSProfileRFC9420
 import MLSTreeMath
+import SecretBytes
 import XCTest
 
 @testable import TwoMLSPQSession
@@ -24,7 +25,7 @@ final class TwoPartyRulesTests: XCTestCase {
 			provider, groupID: provider.randomBytes(provider.hashSize),
 			leafNode: alice.keyPackage.classical.leafNode,
 			leafSecretKey: alice.classicalLeafSecretKey,
-			epochSecret: provider.randomBytes(provider.hashSize))
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
 		XCTAssertThrowsError(try TwoPartyRules.ensureTwoParty(group)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .notTwoParty(count: 1))
 		}
@@ -40,7 +41,7 @@ final class TwoPartyRulesTests: XCTestCase {
 			provider, groupID: provider.randomBytes(provider.hashSize),
 			leafNode: alice.keyPackage.classical.leafNode,
 			leafSecretKey: alice.classicalLeafSecretKey,
-			epochSecret: provider.randomBytes(provider.hashSize))
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
 		let transition = try epoch0.committing(
 			provider,
 			proposals: [
