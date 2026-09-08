@@ -268,7 +268,7 @@ final class MLKEM768ProviderTests: XCTestCase {
 
 	func testSignVerifyRoundTrips() throws {
 		let signingKey = Curve25519.Signing.PrivateKey()
-		let secret = MLS.SignatureSecretKey(signingKey.rawRepresentation)
+		let secret = try MLS.SignatureSecretKey(signingKey.rawRepresentation)
 		let publicKey = MLS.SignaturePublicKey(signingKey.publicKey.rawRepresentation)
 		let content = Data("sign me".utf8)
 		let signature = try provider.sign(privateKey: secret, content: content)

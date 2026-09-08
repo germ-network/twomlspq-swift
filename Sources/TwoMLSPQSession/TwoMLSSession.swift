@@ -5,6 +5,7 @@ import MLSCrypto
 import MLSExtensions
 import MLSProfileRFC9420
 import MLSTreeMath
+import SecretBytes
 
 /// The result of `initiate`/`receive`: the session plus the welcome staple to
 /// hand the peer out of band. Slice 1 omits the §A.1 header-encryption
@@ -346,7 +347,7 @@ extension TwoMLSSession {
 			leafNode: half.leafNode,
 			leafSecretKey: leafSecretKey,
 			signingKey: identity.signingKey,
-			epochSecret: provider.randomBytes(provider.hashSize),
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize),
 			randomness: try .generate(provider),
 			peerKeyPackage: peerKeyPackage)
 	}
@@ -819,7 +820,7 @@ extension TwoMLSSession {
 			ownPQLeaf: identity.keyPackage.pq.leafNode,
 			ownPQLeafSecret: identity.pqLeafSecretKey, signingKey: identity.signingKey,
 			peerBootstrapKP: peerBootstrapKP, randomness: try .generate(pqProvider),
-			epochSecret: pqProvider.randomBytes(pqProvider.hashSize),
+			epochSecret: SecretBytes(randomByteCount: pqProvider.hashSize),
 			pqProvider: pqProvider,
 			codepoints: codepoints)
 		send.pq = pqGroup

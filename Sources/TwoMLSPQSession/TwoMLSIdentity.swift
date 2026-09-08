@@ -100,7 +100,7 @@ public struct TwoMLSIdentity: Sendable {
 		pqProvider: any MLS.CipherSuiteProvider
 	) throws -> TwoMLSIdentity {
 		let signingPrivateKey = Curve25519.Signing.PrivateKey()
-		let signingKey = MLS.SignatureSecretKey(signingPrivateKey.rawRepresentation)
+		let signingKey = try MLS.SignatureSecretKey(signingPrivateKey.rawRepresentation)
 		let signatureKey = MLS.SignaturePublicKey(
 			signingPrivateKey.publicKey.rawRepresentation)
 

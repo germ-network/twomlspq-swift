@@ -3,6 +3,7 @@ import MLSCodec
 import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
+import SecretBytes
 import TwoMLSPQCrypto
 
 /// Germ's own sentinel for an unbound epoch field on a deferred (pq-less)
@@ -228,7 +229,7 @@ extension APQGroup {
 		signingKey: MLS.SignatureSecretKey,
 		peerBootstrapKP: MLS.RFC9420.KeyPackage,
 		randomness: MLS.RFC9420.Group.CommitRandomness,
-		epochSecret: Data,
+		epochSecret: SecretBytes,
 		pqProvider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> (pqGroup: MLS.RFC9420.Group, welcome: MLS.RFC9420.Welcome) {
