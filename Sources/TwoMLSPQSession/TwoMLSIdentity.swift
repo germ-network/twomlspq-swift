@@ -55,7 +55,7 @@ public struct TwoMLSIdentity: Sendable {
 		MLS.RFC9420.Capabilities(
 			versions: [.mls10],
 			cipherSuites: [
-				.curve25519Aes128,
+				.curve25519ChaCha,
 				MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID),
 			],
 			extensions: [MLS.Combiner.Codepoints.deployed.apqInfoExtensionType],
@@ -112,7 +112,7 @@ public struct TwoMLSIdentity: Sendable {
 		let (pqInitSecretKey, pqInitPublicKey) = try pqProvider.hpkeGenerateKeyPair()
 
 		let classicalKeyPackage = try signedKeyPackage(
-			cipherSuite: .curve25519Aes128, provider: classicalProvider,
+			cipherSuite: .curve25519ChaCha, provider: classicalProvider,
 			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
 			leafPublicKey: classicalLeafPublicKey, initPublicKey: classicalInitPublicKey
 		)

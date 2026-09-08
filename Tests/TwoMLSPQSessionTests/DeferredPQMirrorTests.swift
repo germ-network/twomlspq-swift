@@ -15,7 +15,7 @@ import XCTest
 /// test.
 @available(iOS 26, macOS 26, *)
 final class DeferredPQMirrorTests: XCTestCase {
-	private static let classicalSuite = MLS.CipherSuite.curve25519Aes128
+	private static let classicalSuite = MLS.CipherSuite.curve25519ChaCha
 	private static let pqSuite = MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID)
 	private static let tSessionGroupID = Data([1, 2, 3])
 	private static let pqSessionGroupID = Data([4, 5, 6])
