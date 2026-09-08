@@ -345,9 +345,8 @@ extension APQGroup {
 			pqInfo.mode == classicalInfo.mode,
 			pqInfo.tCipherSuite == classicalInfo.tCipherSuite,
 			pqInfo.pqCipherSuite == classicalInfo.pqCipherSuite,
-			pqInfo.tCipherSuite == .curve25519Aes128,
-			pqInfo.pqCipherSuite
-				== MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID)
+			pqInfo.tCipherSuite == TwoMLSSuite.classical,
+			pqInfo.pqCipherSuite == TwoMLSSuite.pq
 		else {
 			throw TwoMLSError.deferredPQMirrorMismatch
 		}

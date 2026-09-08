@@ -33,7 +33,7 @@ final class CompositeProviderTests: XCTestCase {
 	}
 
 	func testDispatchRoutesClassicalSuitesToSwiftCryptoProvider() throws {
-		let classical = try XCTUnwrap(provider.cipherSuiteProvider(for: .curve25519Aes128))
+		let classical = try XCTUnwrap(provider.cipherSuiteProvider(for: .curve25519ChaCha))
 		let (_, publicKey) = try classical.hpkeGenerateKeyPair()
 		XCTAssertEqual(publicKey.data.count, 32)
 	}

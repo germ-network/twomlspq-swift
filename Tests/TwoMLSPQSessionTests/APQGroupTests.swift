@@ -15,7 +15,7 @@ import XCTest
 /// single-field mismatch is independently pinned.
 @available(iOS 26, macOS 26, *)
 final class APQGroupTests: XCTestCase {
-	private static let classicalSuite = MLS.CipherSuite.curve25519Aes128
+	private static let classicalSuite = MLS.CipherSuite.curve25519ChaCha
 	private static let pqSuite = MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID)
 	private static let observedGroupID = Data([1, 2, 3])
 	private static let observedEpoch: UInt64 = 1

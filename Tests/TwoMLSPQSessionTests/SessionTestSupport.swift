@@ -13,7 +13,7 @@ import TwoMLSPQCrypto
 @available(iOS 26, macOS 26, *)
 enum SessionTestSupport {
 	static let classicalProvider = SwiftCryptoProvider().cipherSuiteProvider(
-		for: .curve25519Aes128)!
+		for: .curve25519ChaCha)!
 	static let pqProvider = MLKEM768CipherSuiteProvider()
 
 	static func identity(_ name: String) throws -> TwoMLSIdentity {

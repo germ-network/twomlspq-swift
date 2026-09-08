@@ -23,6 +23,7 @@ provider.
 
 | Role | Value | Suite |
 |------|-------|-------|
+| Classical | `0x0003` | `MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519` (curve25519ChaCha) |
 | Post-quantum | `0xFDEA` | `MLS_128_ML_KEM_768_AES128GCM_SHA256_Ed25519` (FIPS 203, private range) |
 
 Public keys (1184 B) and ciphertexts (1088 B) are the standard FIPS 203 wire

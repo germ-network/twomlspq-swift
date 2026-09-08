@@ -5,6 +5,16 @@ import Foundation
 /// for. Combiner (`MLS.Combiner.Error`) and profile (`MLS.RFC9420.GroupError`)
 /// errors are not wrapped here; they propagate as thrown.
 public enum TwoMLSError: Error, Sendable, Equatable {
+	// MARK: Cipher suite
+
+	/// A `classicalProvider`/`pqProvider` passed to `TwoMLSIdentity.generate`,
+	/// `TwoMLSSession.initiate`, or `TwoMLSSession.receive` did not match
+	/// `TwoMLSSuite.classical`/`TwoMLSSuite.pq` — checked up front, before any
+	/// state is claimed. Mirrors the Rust reference's own early
+	/// `CipherSuiteMismatch` check (`session/mod.rs`), rather than surfacing a
+	/// deep, opaque mls-rs error once construction is already underway.
+	case cipherSuiteMismatch
+
 	// MARK: Frame codec
 
 	/// A length-prefixed section was empty where the wire format requires
