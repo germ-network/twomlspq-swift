@@ -376,7 +376,7 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore)
 	}
 
-	// MARK: - Credential-rotation rejection (the fold/rekey boundary, slice 6)
+	// MARK: - Credential rotation now accepted (the fold/rekey boundary, slice 6)
 
 	/// Author a credential-ROTATING `Upd(self)` for bob's own leaf: a fresh
 	/// Ed25519 keypair minted exactly like `TwoMLSIdentity.generate`
@@ -414,11 +414,13 @@ final class FoldTests: XCTestCase {
 
 	/// §15/slice 6 boundary, layer (a): a genuinely-signed credential
 	/// rotation offered as bob's `Upd(self)` — same clientID, fresh signature
-	/// key — is `.proposalRejected` at `queueProposal`, exactly like any
-	/// other malformed offer (§11 MF5/M1): slice 5 is fold-only, and
-	/// `validateOfferedUpdate`'s credential/signature-key-unchanged guard is
-	/// what catches it BEFORE it ever reaches a commit.
-	func testQueueProposalRejectsCredentialRotation() throws {
+	/// key — is now ACCEPTED at `queueProposal`: slice 6 widens
+	/// `validateOfferedUpdate` to admit a `.credentialReplaced` shape,
+	/// consulting the Authentication Service
+	/// (`auth.theirs.validSuccessorOfCurrent`, trivially true here since the
+	/// id is unchanged) rather than rejecting any credential/signature-key
+	/// change outright the way slice 5 did.
+	func testQueueProposalAcceptsSameIDCredentialRotation() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let rotatingMessage = try authorBobCredentialRotation(bob: &bob)
 
@@ -431,28 +433,25 @@ final class FoldTests: XCTestCase {
 			staple: staple, proposal: craftedProposal, app: app)
 
 		let decrypted = try alice.processIncoming(craftedFrame)
-		XCTAssertThrowsError(
-			try alice.queueProposal(digest: decrypted.queuedProposal.digest)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .proposalRejected)
-		}
+		XCTAssertNoThrow(
+			try alice.queueProposal(digest: decrypted.queuedProposal.digest))
 	}
 
 	/// §15/slice 6 boundary, layer (b): the apply-side counterpart. A
 	/// hand-built commit that FOLDS bob's credential-rotating Upd BY
 	/// REFERENCE (mirroring `testFoldEffectsWithAnAddThrowsInvalidFoldEffects`'s
-	/// over-broad-commit construction, swapping the extra Add for the
-	/// poisoned proposal itself) is `.invalidFoldEffects` on delivery, never
-	/// applied — the fold-only whitelist
-	/// (`TwoPartyRules.validateTwoPartyUpdateCommit`) throws on
-	/// `.credentialReplaced` exactly like it does on an Add, and the
-	/// recipient's epoch is unchanged (no state burned). The rotating
-	/// message is seeded directly into bob's `stagedUpdates` (`@testable`
-	/// internal accessor) standing in for what `prepareToEncrypt` would have
-	/// appended had bob's own authoring path ever produced a rotation —
-	/// today it never does, so this pins the RECEIVE-side backstop rather
-	/// than assuming the authoring guard is the only line of defense.
-	func testFoldedCredentialRotationThrowsInvalidFoldEffects() throws {
+	/// construction, swapping the extra Add for the rotating proposal itself)
+	/// now applies cleanly: the reshaped `TwoPartyRules.
+	/// validateTwoPartyUpdateCommit` treats a moved `.credentialReplaced` leaf
+	/// as an equivalent leaf-move signal to `.updated`, and
+	/// `AuthCore.adjudicate` accepts a same-id rotation (`pred == succ`
+	/// trivially). Contrast `testFoldEffectsWithAnAddThrowsInvalidFoldEffects`,
+	/// which still rejects a genuine roster change riding the identical
+	/// commit shape — slice 6 widens exactly the credential axis, not the
+	/// membership one. The rotating message is seeded directly into bob's
+	/// `stagedUpdates` (`@testable` internal accessor) standing in for what
+	/// `prepareToEncrypt(rotating:)` would have appended.
+	func testFoldedCredentialRotationIsAcceptedAndAdvancesEpoch() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let rotatingMessage = try authorBobCredentialRotation(bob: &bob)
 		bob.stagedUpdates.append(
@@ -467,7 +466,13 @@ final class FoldTests: XCTestCase {
 			return
 		}
 
-		let badCommitBytes = try withDeployedWireWidth { () throws -> Data in
+		// The app section must decrypt against bob's `recvGroup` (Group_A)
+		// AFTER this fold lands — sealed on the SAME hypothetical post-fold
+		// group the crafted commit produces, not on bob's own unrelated
+		// Group_B (unlike the sibling roster-violation test above, this
+		// commit is no longer expected to throw before reaching `unprotect`).
+		let (commitBytes, appBytes) = try withDeployedWireWidth {
+			() throws -> (Data, Data) in
 			guard
 				case .publicMessage(let updatePub) = try MLS.RFC9420.Message(
 					mlsEncoded: rotatingMessage)
@@ -486,21 +491,33 @@ final class FoldTests: XCTestCase {
 				proposalStore: proposalStore, signingKey: alice.identity.signingKey,
 				randomness: try .generate(SessionTestSupport.classicalProvider),
 				includePath: true, framing: .publicMessage)
-			return try transition.takeOutput().message.mlsEncoded()
+			let adopted = transition.group
+			let sent = transition.takeOutput()
+			let commitBytes = try sent.message.mlsEncoded()
+			let advanced = try sent.takePending().apply(onto: adopted)
+			var postFold = advanced.group
+			let appPM = try postFold.protect(
+				SessionTestSupport.classicalProvider,
+				applicationData: Data("carrier".utf8), authenticatedData: Data(),
+				signingKey: alice.identity.signingKey)
+			let appBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
+			return (commitBytes, appBytes)
 		}
 
-		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
-		_ = try bob.prepareToEncrypt()
-		let carrierFrame = try bob.encrypt(Data("carrier".utf8))
-		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
-		let badFrame = Frames.encodeMessageFrame(
-			staple: badStaple, proposal: proposal, app: app)
+		let staple = Frames.encodeMlsMessageStaple(commitBytes)
+		let proposal = Frames.encodeProposalSection(
+			proposing: Data("bob".utf8), message: rotatingMessage)
+		let frame = Frames.encodeMessageFrame(
+			staple: staple, proposal: proposal, app: appBytes)
 
-		let recvEpochBefore = bob.recvGroup?.classical.context.epoch
-		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidFoldEffects)
-		}
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore)
+		let recvEpochBefore = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
+		let decrypted = try bob.processIncoming(frame)
+		XCTAssertTrue(decrypted.didApplyRemoteCommit)
+		// Bob's OWN leaf is what moved (his own rotating Upd, folded by
+		// alice) — `ownCredentialCanonicalized`, never `newSender`.
+		XCTAssertTrue(decrypted.ownCredentialCanonicalized)
+		XCTAssertNil(decrypted.newSender)
+		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore + 1)
 	}
 
 	// MARK: - Epoch classification (MF7, shared by `0x00` and `0x05`)

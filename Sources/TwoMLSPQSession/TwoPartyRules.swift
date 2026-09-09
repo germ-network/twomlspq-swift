@@ -72,20 +72,32 @@ enum TwoPartyRules {
 		}
 	}
 
-	/// The general two-party update-commit shape (§11 MF2), generalizing what
-	/// were two separately hand-rolled checks: exactly `foldedPeerUpdate ? 2
-	/// : 1` DISTINCT `.updated` leaves (one of them the committer's own
-	/// path-refresh — `epochAdvanced`'s `committer`), plus `.appDataUpdate`
+	/// The general two-party update-commit shape (§11 MF2; reshaped for
+	/// slice 6's classical principal rotation): exactly `foldedPeerUpdate ? 2
+	/// : 1` DISTINCT MOVED leaves — `moved = leaves(.updated) ∪
+	/// leaves(.credentialReplaced)` — one of them the committer's own
+	/// path-refresh (`epochAdvanced`'s `committer`), plus `.appDataUpdate`
 	/// present iff `allowAppDataUpdate` — and never an Add/Remove/
-	/// `.credentialReplaced`/`membershipRemoved`. `foldedPeerUpdate: false`
-	/// is a bind-only discharge (the committer's own refresh only);
-	/// `foldedPeerUpdate: true` additionally folds one peer Update — the §A.5
-	/// mechanical rekey and the classical fold are the same shape.
-	/// `allowAppDataUpdate` is really "required": every commit this module
-	/// builds that carries the bind's attestation proposal has exactly one
-	/// `.appDataUpdate` event, never zero. `error` is what a caller wants
-	/// thrown for its own call site (bind vs. rekey vs. fold each keep a
-	/// distinct identity).
+	/// `membershipRemoved`. Before slice 6 every leaf move was an `.updated`
+	/// (a rotation never rode this shape); now a moved leaf is `.updated`
+	/// XOR `.credentialReplaced` — the committer's own leaf reports the
+	/// latter when `committingRound`'s own-leaf catch-up threads a
+	/// `newIdentity` (`CommitProcessing.swift`'s `old == new` emission rule),
+	/// and a folded peer rotation reports it for the peer's leaf — so this
+	/// treats the two as equivalent leaf-move signals rather than asserting
+	/// `.updated` specifically. `foldedPeerUpdate: false` is a bind-only
+	/// discharge or a solo own-leaf catch-up (the committer's own refresh
+	/// only); `foldedPeerUpdate: true` additionally folds one peer Update/
+	/// rotation — the §A.5 mechanical rekey and the classical fold are the
+	/// same shape. Up to two `.credentialReplaced` events can co-occur (a
+	/// folded peer rotation AND an own-leaf catch-up on one commit) — both
+	/// land in `moved` and count normally. This validates SHAPE only, never
+	/// credential semantics — `AuthCore.adjudicate` is the seam that
+	/// validates a `.credentialReplaced`'s succession. `allowAppDataUpdate`
+	/// is really "required": every commit this module builds that carries
+	/// the bind's attestation proposal has exactly one `.appDataUpdate`
+	/// event, never zero. `error` is what a caller wants thrown for its own
+	/// call site (bind vs. rekey vs. fold each keep a distinct identity).
 	static func validateTwoPartyUpdateCommit(
 		_ effects: MLS.RFC9420.CommitEffects,
 		foldedPeerUpdate: Bool,
@@ -93,22 +105,23 @@ enum TwoPartyRules {
 		orThrow error: TwoMLSError
 	) throws {
 		var committerLeaf: MLS.LeafIndex?
-		var updatedLeaves: [MLS.LeafIndex] = []
+		var movedLeaves: [MLS.LeafIndex] = []
 		var sawAppDataUpdate = false
 		for event in effects.events {
 			switch event {
 			case .epochAdvanced(_, _, let committer): committerLeaf = committer
-			case .updated(let leaf): updatedLeaves.append(leaf)
+			case .updated(let leaf): movedLeaves.append(leaf)
+			case .credentialReplaced(let leaf, _, _): movedLeaves.append(leaf)
 			case .appDataUpdate: sawAppDataUpdate = true
-			case .added, .removed, .credentialReplaced, .membershipRemoved:
+			case .added, .removed, .membershipRemoved:
 				throw error
 			}
 		}
-		let expectedUpdated = foldedPeerUpdate ? 2 : 1
+		let expectedMoved = foldedPeerUpdate ? 2 : 1
 		guard let committerLeaf,
-			updatedLeaves.count == expectedUpdated,
-			Set(updatedLeaves).count == expectedUpdated,
-			updatedLeaves.contains(committerLeaf),
+			movedLeaves.count == expectedMoved,
+			Set(movedLeaves).count == expectedMoved,
+			movedLeaves.contains(committerLeaf),
 			sawAppDataUpdate == allowAppDataUpdate
 		else {
 			throw error
