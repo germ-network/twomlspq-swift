@@ -72,27 +72,66 @@ enum TwoPartyRules {
 		}
 	}
 
-	/// The classical-half bind commit's (`dischargeOwedBindIfLicensed`, a
-	/// FULL discharge) applied `CommitEffects` must be exactly `[epochAdvanced,
-	/// updated(committer), appDataUpdate]` — the committer's own path-leaf
-	/// refresh is expected (`includePath: true`), but no membership or
-	/// credential change. Same resumption-ban caveat as `validateBindPQEffects`.
-	static func validateBindClassicalEffects(_ effects: MLS.RFC9420.CommitEffects) throws {
-		var sawEpochAdvanced = false
-		var sawUpdated = false
+	/// The general two-party update-commit shape (§11 MF2), generalizing what
+	/// were two separately hand-rolled checks: exactly `foldedPeerUpdate ? 2
+	/// : 1` DISTINCT `.updated` leaves (one of them the committer's own
+	/// path-refresh — `epochAdvanced`'s `committer`), plus `.appDataUpdate`
+	/// present iff `allowAppDataUpdate` — and never an Add/Remove/
+	/// `.credentialReplaced`/`membershipRemoved`. `foldedPeerUpdate: false`
+	/// is a bind-only discharge (the committer's own refresh only);
+	/// `foldedPeerUpdate: true` additionally folds one peer Update — the §A.5
+	/// mechanical rekey and the classical fold are the same shape.
+	/// `allowAppDataUpdate` is really "required": every commit this module
+	/// builds that carries the bind's attestation proposal has exactly one
+	/// `.appDataUpdate` event, never zero. `error` is what a caller wants
+	/// thrown for its own call site (bind vs. rekey vs. fold each keep a
+	/// distinct identity).
+	static func validateTwoPartyUpdateCommit(
+		_ effects: MLS.RFC9420.CommitEffects,
+		foldedPeerUpdate: Bool,
+		allowAppDataUpdate: Bool,
+		orThrow error: TwoMLSError
+	) throws {
+		var committerLeaf: MLS.LeafIndex?
+		var updatedLeaves: [MLS.LeafIndex] = []
 		var sawAppDataUpdate = false
 		for event in effects.events {
 			switch event {
-			case .epochAdvanced: sawEpochAdvanced = true
-			case .updated: sawUpdated = true
+			case .epochAdvanced(_, _, let committer): committerLeaf = committer
+			case .updated(let leaf): updatedLeaves.append(leaf)
 			case .appDataUpdate: sawAppDataUpdate = true
 			case .added, .removed, .credentialReplaced, .membershipRemoved:
-				throw TwoMLSError.invalidBindEffects
+				throw error
 			}
 		}
-		guard sawEpochAdvanced, sawUpdated, sawAppDataUpdate else {
-			throw TwoMLSError.invalidBindEffects
+		let expectedUpdated = foldedPeerUpdate ? 2 : 1
+		guard let committerLeaf,
+			updatedLeaves.count == expectedUpdated,
+			Set(updatedLeaves).count == expectedUpdated,
+			updatedLeaves.contains(committerLeaf),
+			sawAppDataUpdate == allowAppDataUpdate
+		else {
+			throw error
 		}
+	}
+
+	/// The classical-half bind commit's (`committingRound`, a FULL discharge
+	/// carrying the `apq_psk`/attestation chain) applied `CommitEffects` must
+	/// be exactly `[epochAdvanced, updated(committer), appDataUpdate]` when no
+	/// fold rides alongside it, or the same plus a second `updated(proposer)`
+	/// when one does (§11 MF1/MF2 — a fold+bind `0x05` folds the peer's Upd by
+	/// reference on the SAME commit that discharges the bind). Either way the
+	/// committer's own path-leaf refresh is expected (`includePath: true`),
+	/// but no membership or credential change. Same resumption-ban caveat as
+	/// `validateBindPQEffects`. A thin `validateTwoPartyUpdateCommit` wrapper
+	/// preserving this call site's own error identity regardless of
+	/// `foldedPeerUpdate`.
+	static func validateBindClassicalEffects(
+		_ effects: MLS.RFC9420.CommitEffects, foldedPeerUpdate: Bool
+	) throws {
+		try validateTwoPartyUpdateCommit(
+			effects, foldedPeerUpdate: foldedPeerUpdate, allowAppDataUpdate: true,
+			orThrow: .invalidBindEffects)
 	}
 
 	/// The §A.5 mechanical rekey Commit's (`pqRekeyRespond`, an `includePath:
@@ -102,24 +141,13 @@ enum TwoPartyRules {
 	/// path-refresh (`epochAdvanced`'s `committer`). No membership or
 	/// credential change: a rotating Upd′ (`.credentialReplaced`) is Chunk 2
 	/// (§15), out of scope here. Mirrors `validateBindPQEffects`/
-	/// `validateBindClassicalEffects`.
+	/// `validateBindClassicalEffects` — and, per §11 MF2, is the exact same
+	/// shape the classical fold-only commit validates, just over the PQ
+	/// group. A thin `validateTwoPartyUpdateCommit` wrapper preserving this
+	/// call site's own error identity.
 	static func validateRekeyCommitEffects(_ effects: MLS.RFC9420.CommitEffects) throws {
-		var committerLeaf: MLS.LeafIndex?
-		var updatedLeaves: [MLS.LeafIndex] = []
-		for event in effects.events {
-			switch event {
-			case .epochAdvanced(_, _, let committer): committerLeaf = committer
-			case .updated(let leaf): updatedLeaves.append(leaf)
-			case .added, .removed, .credentialReplaced, .membershipRemoved,
-				.appDataUpdate:
-				throw TwoMLSError.invalidRekeyEffects
-			}
-		}
-		guard let committerLeaf, updatedLeaves.count == 2,
-			updatedLeaves[0] != updatedLeaves[1],
-			updatedLeaves.contains(committerLeaf)
-		else {
-			throw TwoMLSError.invalidRekeyEffects
-		}
+		try validateTwoPartyUpdateCommit(
+			effects, foldedPeerUpdate: true, allowAppDataUpdate: false,
+			orThrow: .invalidRekeyEffects)
 	}
 }

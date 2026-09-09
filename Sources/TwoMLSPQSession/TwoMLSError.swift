@@ -134,4 +134,22 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// Add/Remove/credential replacement/membership removal/`AppDataUpdate`
 	/// rode the Commit′.
 	case invalidRekeyEffects
+
+	// MARK: §5 classical FOLD (slice 5, no credential rotation)
+
+	/// `queueProposal` found no matching/valid offer: no `offeredProposal` was
+	/// outstanding, the supplied digest did not match it, the offered message
+	/// did not verify as a peer `.update` proposal (`.member` sender, not this
+	/// session's own leaf), its leaf's credential/signature key differed from
+	/// the current one (slice 5 rejects any `.credentialReplaced` fold —
+	/// rotation is a later slice), or its verified leaf's `.basic` identity
+	/// did not match the frame's unauthenticated `proposing` claim (§11 MF5).
+	/// A digest mismatch is this error too, never a silent no-op.
+	case proposalRejected
+	/// A fold-carrying commit's applied `CommitEffects` were not its exact
+	/// whitelisted shape — bare fold `[epochAdvanced, updated(proposer),
+	/// updated(committer)]`, or the same plus `appDataUpdate` when a bind rode
+	/// the same commit — an unexpected Add/Remove/`.credentialReplaced`/
+	/// `membershipRemoved` rode it.
+	case invalidFoldEffects
 }
