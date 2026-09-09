@@ -23,6 +23,17 @@ extension TwoMLSSession {
 			pqProvider.cipherSuite == TwoMLSSuite.pq
 		else { throw TwoMLSError.cipherSuiteMismatch }
 
+		// AS binding: `their.classical` and `their.pq` are two separate
+		// caller-supplied `KeyPackage`s — nothing else ties them to the same
+		// party. Require the two halves to present the SAME Basic identity, and
+		// seed `theirs` from it (the peer this session is established against).
+		let theirClassicalID = try basicIdentifier(their.classical.leafNode.credential)
+		guard try basicIdentifier(their.pq.leafNode.credential) == theirClassicalID else {
+			throw TwoMLSError.remoteIdentityMismatch
+		}
+		let auth = AuthCore(
+			mine: .seeded(identity.clientID), theirs: .seeded(theirClassicalID))
+
 		let classicalHalf = try halfCreation(
 			identity: identity, half: identity.keyPackage.classical,
 			leafSecretKey: identity.classicalLeafSecretKey,
@@ -52,7 +63,7 @@ extension TwoMLSSession {
 
 		let session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: codepoints, identity: identity, sendGroup: groupA,
+			codepoints: codepoints, identity: identity, auth: auth, sendGroup: groupA,
 			recvGroup: nil,
 			currentStaple: apqWelcomeA, pendingProposal: nil, joinedWelcomeDigest: nil,
 			initiated: true, bootstrapKP: bootstrapKPBytes,
@@ -101,11 +112,6 @@ extension TwoMLSSession {
 		let apqWelcome = MLS.Combiner.APQWelcome(
 			tWelcome: try MLS.RFC9420.Welcome(mlsEncoded: tBytes),
 			pqWelcome: try MLS.RFC9420.Welcome(mlsEncoded: pqBytes))
-		// Slice-2 seam: this does not check the creator's leaf credential
-		// against `theirClassicalKeyPackage` (Rust's `RemoteIdentityMismatch` /
-		// `expected_remote`). It currently fails closed regardless — a
-		// mismatched party cannot derive the same 0xFF02 cross-party PSK below,
-		// since that PSK is exported off THIS freshly-joined Group_A.classical.
 
 		var groupA = try APQGroup.joinFull(
 			welcome: apqWelcome,
@@ -117,6 +123,21 @@ extension TwoMLSSession {
 		if let pq = groupA.pq {
 			try TwoPartyRules.ensureTwoParty(pq)
 		}
+
+		// Slice-2 seam CLOSED: the AS seeds `theirs` from the creator leaf this
+		// join actually landed — read straight off the joined tree, not a claim
+		// — then requires the caller-supplied `theirClassicalKeyPackage` to
+		// present that SAME identity (Rust's mandatory welcome-creator ≡ KP
+		// binding, `two-mls-pq/src/session/mod.rs`). A KeyPackage naming any
+		// other party — including this device's own id — is rejected here,
+		// rather than relying solely on the 0xFF02 cross-party PSK export
+		// failing later.
+		let peerLeaf = try Self.joinedCreatorLeaf(of: groupA.classical)
+		let peerID = try basicIdentifier(peerLeaf.credential)
+		guard try basicIdentifier(theirClassicalKeyPackage.leafNode.credential) == peerID
+		else { throw TwoMLSError.remoteIdentityMismatch }
+		let auth = AuthCore(
+			mine: .seeded(identity.clientID), theirs: .seeded(peerID))
 
 		let crossPSK = try MLS.Combiner.ExportedPsk.export(
 			from: &groupA.classical, classicalProvider,
@@ -142,7 +163,7 @@ extension TwoMLSSession {
 
 		let session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: codepoints, identity: identity, sendGroup: groupB,
+			codepoints: codepoints, identity: identity, auth: auth, sendGroup: groupB,
 			recvGroup: groupA,
 			currentStaple: apqWelcomeB, pendingProposal: nil,
 			joinedWelcomeDigest: try classicalProvider.hash(welcome), initiated: false,
@@ -153,6 +174,21 @@ extension TwoMLSSession {
 			// seeds there too.
 			lastCrossInjected: 1)
 		return EstablishResult(session: session, welcome: apqWelcomeB)
+	}
+
+	/// The peer's occupied leaf in a freshly-joined 2-party group, read
+	/// straight off the tree — the AS's admission check must be cryptographic
+	/// fact, not a caller-supplied claim. Reached only after
+	/// `TwoPartyRules.ensureTwoParty`, so exactly one non-self leaf exists.
+	private static func joinedCreatorLeaf(of group: MLS.RFC9420.Group) throws
+		-> MLS.RFC9420.LeafNode
+	{
+		guard
+			let entry = group.tree.nonBlankLeaves().first(where: {
+				$0.index != group.myLeafIndex
+			})
+		else { throw TwoMLSError.unknownIdentity }
+		return try MLS.RFC9420.LeafNode(mlsEncoded: entry.record.encoded)
 	}
 
 	/// A `HalfCreation` for `identity`'s own already-signed half adding `peer`,

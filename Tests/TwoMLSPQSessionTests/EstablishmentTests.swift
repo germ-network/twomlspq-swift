@@ -155,4 +155,70 @@ final class EstablishmentTests: XCTestCase {
 			XCTAssertEqual(error as? TwoMLSError, .fullEstablishmentStapleUnsupported)
 		}
 	}
+
+	// MARK: - AS establishment identity binding
+
+	/// `receive` must reject a caller-supplied `theirClassicalKeyPackage` that
+	/// names a third party rather than the creator the Welcome actually joined.
+	func testReceiveRejectsWrongPeerKeyPackage() throws {
+		let alice = try SessionTestSupport.identity("as-alice")
+		let bob = try SessionTestSupport.identity("as-bob")
+		let carol = try SessionTestSupport.identity("as-carol")
+		let initiated = try TwoMLSSession.initiate(
+			identity: alice, their: bob.keyPackage,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertThrowsError(
+			try TwoMLSSession.receive(
+				identity: bob, welcome: initiated.welcome,
+				theirClassicalKeyPackage: carol.keyPackage.classical,
+				bootstrapKPCommitment: try initiated.session
+					.bootstrapKPCommitment(),
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .remoteIdentityMismatch)
+		}
+	}
+
+	/// The self-id case: Bob's OWN KeyPackage passed as the peer's must be
+	/// rejected — the check is equality with the joined creator, not mere
+	/// membership (Bob's own id is "known" via `mine`, but is not the creator).
+	func testReceiveRejectsSelfIdentityKeyPackage() throws {
+		let alice = try SessionTestSupport.identity("as-alice-2")
+		let bob = try SessionTestSupport.identity("as-bob-2")
+		let initiated = try TwoMLSSession.initiate(
+			identity: alice, their: bob.keyPackage,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertThrowsError(
+			try TwoMLSSession.receive(
+				identity: bob, welcome: initiated.welcome,
+				theirClassicalKeyPackage: bob.keyPackage.classical,
+				bootstrapKPCommitment: try initiated.session
+					.bootstrapKPCommitment(),
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .remoteIdentityMismatch)
+		}
+	}
+
+	/// `initiate` must reject a peer whose classical and PQ `KeyPackage` halves
+	/// present different identities.
+	func testInitiateRejectsMismatchedPeerHalves() throws {
+		let alice = try SessionTestSupport.identity("as-alice-3")
+		let bob = try SessionTestSupport.identity("as-bob-3")
+		let carol = try SessionTestSupport.identity("as-carol-3")
+		let mismatched = CombinerKeyPackage(
+			classical: bob.keyPackage.classical, pq: carol.keyPackage.pq)
+		XCTAssertThrowsError(
+			try TwoMLSSession.initiate(
+				identity: alice, their: mismatched,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .remoteIdentityMismatch)
+		}
+	}
 }

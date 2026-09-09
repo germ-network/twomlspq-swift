@@ -127,6 +127,12 @@ public struct TwoMLSSession: Sendable {
 	let pqProvider: any MLS.CipherSuiteProvider
 	let codepoints: MLS.Combiner.Codepoints
 	let identity: TwoMLSIdentity
+	/// The credential-sequence Authentication Service state (Germ policy,
+	/// RFC 9420 §5.3.1's "application responsibility") — seeded at
+	/// `initiate`/`receive` and consulted there against the peer's other
+	/// half; a future rotation slice consults it further at the
+	/// commit-effect seam (`AuthCore.adjudicate`).
+	var auth: AuthCore
 	var sendGroup: APQGroup?
 	var recvGroup: APQGroup?
 	var currentStaple: Data
@@ -237,6 +243,7 @@ public struct TwoMLSSession: Sendable {
 		pqProvider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints,
 		identity: TwoMLSIdentity,
+		auth: AuthCore,
 		sendGroup: APQGroup?,
 		recvGroup: APQGroup?,
 		currentStaple: Data,
@@ -263,6 +270,7 @@ public struct TwoMLSSession: Sendable {
 		self.pqProvider = pqProvider
 		self.codepoints = codepoints
 		self.identity = identity
+		self.auth = auth
 		self.sendGroup = sendGroup
 		self.recvGroup = recvGroup
 		self.currentStaple = currentStaple
