@@ -5,6 +5,7 @@ import Foundation
 enum Frames {
 	static let messageFrameTag: UInt8 = 0x03
 	static let apqWelcomeTag: UInt8 = 0x01
+	static let mlsMessageStapleTag: UInt8 = 0x00
 	static let apqPrivateMessageTag: UInt8 = 0x05
 	static let pqBootstrapKPTag: UInt8 = 0x13
 	static let pqBootstrapWelcomeTag: UInt8 = 0x15
@@ -24,7 +25,7 @@ enum Frames {
 	static func stapleKind(_ firstByte: UInt8) -> StapleKind {
 		switch firstByte {
 		case apqWelcomeTag: .welcome
-		case 0x00: .mlsMessage
+		case mlsMessageStapleTag: .mlsMessage
 		case apqPrivateMessageTag: .apqPrivateMessage
 		default: .unsupported(firstByte)
 		}
@@ -125,6 +126,27 @@ enum Frames {
 		let message = Data(section[index...])
 		guard !message.isEmpty else { throw TwoMLSError.emptySection }
 		return (proposing, message)
+	}
+
+	// MARK: - `0x00` bare mlsMessage staple (classical fold-only commit)
+
+	/// `[0x00][Commit MLSMessage bytes]` — bare remainder, no inner length
+	/// prefix, like `encodePQBootstrapKP`. Slice 5's fold-only staple: a
+	/// classical commit that folds a peer Update but carries no bind (a bind
+	/// riding the same commit staples `0x05` instead, `encodeAPQPrivateMessage`).
+	static func encodeMlsMessageStaple(_ message: Data) -> Data {
+		precondition(!message.isEmpty)
+		return Data([mlsMessageStapleTag]) + message
+	}
+
+	static func decodeMlsMessageStaple(_ staple: Data) throws -> Data {
+		guard let tag = staple.first else { throw TwoMLSError.truncatedSection }
+		guard tag == mlsMessageStapleTag else {
+			throw TwoMLSError.unsupportedStapleTag(tag)
+		}
+		let message = Data(staple[staple.index(after: staple.startIndex)...])
+		guard !message.isEmpty else { throw TwoMLSError.emptySection }
+		return message
 	}
 
 	// MARK: - `0x01` APQ welcome
