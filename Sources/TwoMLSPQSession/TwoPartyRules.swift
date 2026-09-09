@@ -94,4 +94,32 @@ enum TwoPartyRules {
 			throw TwoMLSError.invalidBindEffects
 		}
 	}
+
+	/// The §A.5 mechanical rekey Commit's (`pqRekeyRespond`, an `includePath:
+	/// true` commit folding exactly one peer Update) applied `CommitEffects`
+	/// must be exactly `[epochAdvanced, updated(proposer), updated(committer)]`
+	/// — two DISTINCT `.updated` leaves, one of them the committer's own
+	/// path-refresh (`epochAdvanced`'s `committer`). No membership or
+	/// credential change: a rotating Upd′ (`.credentialReplaced`) is Chunk 2
+	/// (§15), out of scope here. Mirrors `validateBindPQEffects`/
+	/// `validateBindClassicalEffects`.
+	static func validateRekeyCommitEffects(_ effects: MLS.RFC9420.CommitEffects) throws {
+		var committerLeaf: MLS.LeafIndex?
+		var updatedLeaves: [MLS.LeafIndex] = []
+		for event in effects.events {
+			switch event {
+			case .epochAdvanced(_, _, let committer): committerLeaf = committer
+			case .updated(let leaf): updatedLeaves.append(leaf)
+			case .added, .removed, .credentialReplaced, .membershipRemoved,
+				.appDataUpdate:
+				throw TwoMLSError.invalidRekeyEffects
+			}
+		}
+		guard let committerLeaf, updatedLeaves.count == 2,
+			updatedLeaves[0] != updatedLeaves[1],
+			updatedLeaves.contains(committerLeaf)
+		else {
+			throw TwoMLSError.invalidRekeyEffects
+		}
+	}
 }

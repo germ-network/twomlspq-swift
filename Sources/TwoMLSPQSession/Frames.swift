@@ -10,6 +10,8 @@ enum Frames {
 	static let pqBootstrapWelcomeTag: UInt8 = 0x15
 	static let pqEKTag: UInt8 = 0x17
 	static let pqCTTag: UInt8 = 0x19
+	static let pqRekeyUpdTag: UInt8 = 0x1B
+	static let pqRekeyCommitTag: UInt8 = 0x1D
 
 	/// The staple slot self-discriminates by its first byte.
 	enum StapleKind: Equatable {
@@ -202,6 +204,35 @@ enum Frames {
 	static func decodePQLegContent(_ content: Data) throws -> (tag: UInt8, payload: Data) {
 		guard let tag = content.first else { throw TwoMLSError.truncatedSection }
 		return (tag, Data(content[content.index(after: content.startIndex)...]))
+	}
+
+	// MARK: - `0x1B`/`0x1D` §A.5 PQ re-key legs
+
+	/// `[0x1B][Upd′ MLSMessage bytes]` — bare remainder, no inner length
+	/// prefix, like `encodePQBootstrapKP`. The Upd′ is a `.publicMessage`
+	/// proposal, MLS-authenticated in its own right (no app-message carrier,
+	/// unlike the `0x17`/`0x19` ratchet legs).
+	static func encodePQRekeyUpd(_ messageBytes: Data) -> Data {
+		Data([pqRekeyUpdTag]) + messageBytes
+	}
+
+	static func decodePQRekeyUpd(_ frame: Data) throws -> Data {
+		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
+		guard tag == pqRekeyUpdTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
+		return Data(frame[frame.index(after: frame.startIndex)...])
+	}
+
+	/// `[0x1D][Commit′ MLSMessage bytes]` — bare remainder, no inner length
+	/// prefix. The Commit′ is a `.publicMessage` commit, MLS-authenticated in
+	/// its own right.
+	static func encodePQRekeyCommit(_ messageBytes: Data) -> Data {
+		Data([pqRekeyCommitTag]) + messageBytes
+	}
+
+	static func decodePQRekeyCommit(_ frame: Data) throws -> Data {
+		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
+		guard tag == pqRekeyCommitTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
+		return Data(frame[frame.index(after: frame.startIndex)...])
 	}
 
 	// MARK: - `0x05` APQ private message (bind staple)

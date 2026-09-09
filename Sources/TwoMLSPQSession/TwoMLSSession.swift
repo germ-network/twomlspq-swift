@@ -29,10 +29,11 @@ public struct PrepareResult: Sendable {
 
 /// Which side-band round is outstanding on this session, if any — the §A.3
 /// bootstrap (`pqBootstrapBegin`/`pqBootstrapRespond`, cleared by
-/// `pqBootstrapJoin`/`applyBind`) or the §A.4 ratchet (`stageRatchet`/
-/// `pqRatchetRespond`, cleared by `pqRatchetBind`/`applyBind`). Payloaded, so
-/// it is no longer `Equatable`-`=='able — sites that used to compare against
-/// a bare case now pattern-match.
+/// `pqBootstrapJoin`/`applyBind`), the §A.4 ratchet (`stageRatchet`/
+/// `pqRatchetRespond`, cleared by `pqRatchetBind`/`applyBind`), or the §A.5
+/// mechanical re-key (`pqRekeyBegin`/`pqRekeyRespond`, cleared by
+/// `pqRekeyApply`/`applyBind`). Payloaded, so it is no longer `Equatable`-
+/// `=='able — sites that used to compare against a bare case now pattern-match.
 enum PQInflight: Sendable {
 	case bootstrapInitiated
 	case bootstrapResponded
@@ -43,6 +44,16 @@ enum PQInflight: Sendable {
 	/// `applyBind`'s held-S arm (no re-export needed), `wireCT` for
 	/// `rewrapSideBand`'s re-mint.
 	case responding(secret: SecretBytes, wireCT: Data)
+	/// The initiator's §A.5 round: the parked Upd′ MLSMessage bytes, held so
+	/// `pqRekeyApply` can re-`verifying` and re-insert it into a
+	/// `ProposalStore` — `validating` resolves a Commit's `.reference` only
+	/// from the store the same call supplies (§13 M1); swift-mls keeps no
+	/// cross-call proposal cache.
+	case rekeyInitiated(updMessage: Data)
+	/// The committer's §A.5 round: the rekey Commit′ is already applied to
+	/// `sendGroup.pq`, awaiting the initiator's bind ack. `applyBind`'s
+	/// re-export arm resolves `S` off it, like `.bootstrapResponded`.
+	case rekeyResponded
 }
 
 /// The initiator's held §A.4 ephemeral: the ML-KEM secret key kept until the
@@ -145,11 +156,18 @@ public struct TwoMLSSession: Sendable {
 	/// establishment-time cross-party binding epoch); Alice's stays `nil`
 	/// until her first discharge.
 	var lastCrossInjected: UInt64?
-	/// The `recvGroup.pq` epoch `owePQBind` exported the cross-party `0xFF02`
-	/// PSK (`S`) from — carried for A.5, not guarded here.
+	/// The `recvGroup.pq` epoch this session last exported the cross-party
+	/// `0xFF02` PSK from — stamped by `pqBootstrapJoin`/`pqRekeyApply` (the
+	/// initiator's post-round `S` export) and by `pqRekeyRespond` (the
+	/// committer's cross-PSK injection into the rekey Commit′). Gates every
+	/// such export against a second, failing export of the same `(group,
+	/// epoch, component)` (§13 A1/M2/M3).
 	var lastCrossInjectedPQ: UInt64?
-	/// The `sendGroup.pq` epoch `applyBind` re-exported `S` from — carried for
-	/// A.5, not guarded here.
+	/// The `sendGroup.pq` epoch this session last exported the cross-party
+	/// `0xFF02` PSK from — stamped by `applyBind`'s re-export arm (the
+	/// committer resolving `S`) and by `pqRekeyApply`'s pre-register step
+	/// (the initiator resolving the committer's cross-PSK). Same guard as
+	/// `lastCrossInjectedPQ`, over `sendGroup.pq` instead.
 	var lastSendPQExported: UInt64?
 
 	public var isEstablished: Bool { sendGroup != nil && recvGroup != nil }
@@ -659,8 +677,9 @@ extension TwoMLSSession {
 	/// BEFORE consuming anything — behind it (`<`) is an idempotent re-ride
 	/// (the staple rides every frame until Alice's next commit) and a no-op;
 	/// ahead of it (`>`) is `.epochDesync`; equal is the one live application.
-	/// Gated on `pqInflight == .bootstrapResponded` so a bind cannot land
-	/// outside a founded-and-not-yet-bound state. Applies the PQ half before
+	/// Gated on `pqInflight` being `.bootstrapResponded`/`.responding`/
+	/// `.rekeyResponded` so a bind cannot land outside a founded-and-not-yet-
+	/// bound state. Applies the PQ half before
 	/// the classical half — the classical discharge's `apq_psk` (`0xFF01`) is
 	/// exported off the PQ half's POST-commit epoch. Only `S` is resolved
 	/// lazily, inside the PQ `validating` call's `psk` closure (the profile
@@ -706,7 +725,7 @@ extension TwoMLSSession {
 				throw TwoMLSError.epochDesync
 			}
 			switch pqInflight {
-			case .bootstrapResponded, .responding:
+			case .bootstrapResponded, .responding, .rekeyResponded:
 				break
 			default:
 				throw TwoMLSError.sessionNotReady
@@ -749,8 +768,11 @@ extension TwoMLSSession {
 			let pqTransition = try pqPending.apply(onto: recv.pq!)
 			recv.pq = pqTransition.group
 			send.pq = sendPQ
-			if case .bootstrapResponded = pqInflight {
+			switch pqInflight {
+			case .bootstrapResponded, .rekeyResponded:
 				lastSendPQExported = sendPQEpochBeforeExport
+			default:
+				break
 			}
 
 			var apqSource = recv.pq!
@@ -1127,8 +1149,9 @@ extension TwoMLSSession {
 		pendingSideBand = nil
 	}
 
-	/// Peek the parked `0x17`/`0x19` side-band frame, if any — non-mutating
-	/// re the round; the host sends it alongside the message frame.
+	/// Peek the parked `0x17`/`0x19`/`0x1B`/`0x1D` side-band frame, if any —
+	/// non-mutating re the round; the host sends it alongside the message
+	/// frame.
 	public func pqPendingOutbound() -> Data? {
 		pendingSideBand
 	}
@@ -1141,6 +1164,10 @@ extension TwoMLSSession {
 	/// call to retry.
 	private mutating func rewrapSideBand() {
 		guard let pending = pendingSideBand, var send = sendGroup else { return }
+		// Also the intended no-op for a parked `0x1B`/`0x1D` §A.5 leg:
+		// `decodePQLeg` only recognizes `0x17`/`0x19`, so it throws and `try?`
+		// early-returns here. Correct — a PQ-group Upd′/Commit′ sits at a
+		// `pq_epoch` that cannot move mid-round, so it never needs re-minting.
 		guard let (tag, messageBytes) = try? Frames.decodePQLeg(pending) else { return }
 		guard let message = try? MLS.RFC9420.Message(mlsEncoded: messageBytes),
 			case .privateMessage(let pm) = message
@@ -1185,5 +1212,240 @@ extension TwoMLSSession {
 			return
 		}
 		try? stageRatchet()
+	}
+}
+
+// MARK: - §A.5 PQ re-key (mechanical — no credential rotation; Chunk 2)
+
+/// Host tag routing for every side-band frame this module parks or expects:
+/// `0x03` `processIncoming` (app message); `0x13`/`0x15` bootstrap
+/// (`pqBootstrapRespond`/`pqBootstrapJoin`); `0x17`/`0x19` ratchet
+/// (`pqRatchetRespond`/`pqRatchetBind`); `0x1B`/`0x1D` re-key
+/// (`pqRekeyRespond`/`pqRekeyApply`, this section). A host dispatches on the
+/// frame's leading tag byte; `pqPendingOutbound()` peeks whichever of these
+/// this session has parked.
+///
+/// A §A.5 round re-keys ONE PQ group with a standalone `updatePath` Commit′,
+/// ending in the reused A.4/A.3 bind: the turn-holder (INITIATOR) proposes a
+/// plain self-Update into her `recvGroup.pq` mirror (`pqRekeyBegin`); the
+/// peer (COMMITTER) folds it into an `includePath: true` commit on the
+/// group it actually owns — `sendGroup.pq` (`pqRekeyRespond`); the
+/// initiator applies that Commit′, exports `S` off the freshly-rekeyed
+/// group, and owes the classical bind (`pqRekeyApply`, reusing `owePQBind`).
+/// This mechanical form carries no credential/signature-key rotation — every
+/// leaf keeps its identity (`.updated`, never `.credentialReplaced`); that
+/// handoff is Chunk 2 (§15).
+@available(iOS 26, macOS 26, *)
+extension TwoMLSSession {
+	/// The initiator (whoever holds `pqTurnMine`) begins an §A.5 round:
+	/// propose a plain (non-rotating) self-Update into `recvGroup.pq` — the
+	/// peer's own PQ group, mirrored here, and the one about to be re-keyed
+	/// — and park it as a `0x1B` side-band frame. Idempotent while a begin
+	/// is already outstanding, like `pqBootstrapBegin`.
+	public mutating func pqRekeyBegin() throws -> Data {
+		if case .rekeyInitiated = pqInflight, let pending = pendingSideBand {
+			return pending
+		}
+		guard pqTurnMine, isFullyEstablished, pqInflight == nil, owedBind == nil,
+			pendingProposal == nil, pendingSideBand == nil
+		else {
+			throw TwoMLSError.sessionNotReady
+		}
+		guard var recv = recvGroup, var recvPQ = recv.pq else {
+			throw TwoMLSError.notEstablished
+		}
+
+		let (message, _) = try recvPQ.proposeUpdate(
+			pqProvider, signingKey: identity.signingKey, framing: .publicMessage)
+		recv.pq = recvPQ
+		recvGroup = recv
+
+		let updBytes = try message.mlsEncoded()
+		let frame = Frames.encodePQRekeyUpd(updBytes)
+		pqInflight = .rekeyInitiated(updMessage: updBytes)
+		pendingSideBand = frame
+		return frame
+	}
+
+	/// The committer — never the turn-holder (§13 M5: `!pqTurnMine`) —
+	/// receives the peer's `0x1B` Upd′, verifies it against `sendGroup.pq`
+	/// (the group actually being re-keyed), folds it into an `includePath:
+	/// true` commit there — optionally carrying a fresh cross-party `0xFF02`
+	/// PSK exported off `recvGroup.pq` (the initiator's own send-PQ mirror,
+	/// event-driven off `lastCrossInjectedPQ`, §13 F3) — and parks the
+	/// result as a `0x1D` side-band frame. Every export/write-back is
+	/// deferred to the success point after the commit lands (§13 M3): a
+	/// throw above that discards the local `recv`/`send` copies untouched.
+	public mutating func pqRekeyRespond(_ frame: Data) throws -> Data {
+		guard !pqTurnMine, pqInflight == nil, owedBind == nil else {
+			throw TwoMLSError.sessionNotReady
+		}
+		guard var send = sendGroup, var sendPQ = send.pq else {
+			throw TwoMLSError.notEstablished
+		}
+		guard var recv = recvGroup, recv.pq != nil else {
+			throw TwoMLSError.notEstablished
+		}
+
+		return try withDeployedWireWidth {
+			let updBytes = try Frames.decodePQRekeyUpd(frame)
+			guard
+				case .publicMessage(let updPub) = try MLS.RFC9420.Message(
+					mlsEncoded: updBytes)
+			else {
+				throw TwoMLSError.malformedSideBandMessage
+			}
+
+			let verified: MLS.RFC9420.VerifiedProposal
+			do {
+				verified = try sendPQ.verifying(pqProvider, proposal: updPub)
+			} catch {
+				throw TwoMLSError.decryptionFailed
+			}
+			guard case .update = verified.proposal,
+				case .member(let senderLeaf) = verified.sender,
+				senderLeaf != sendPQ.myLeafIndex
+			else {
+				throw TwoMLSError.rekeyProposalRejected
+			}
+
+			var proposalStore = MLS.RFC9420.ProposalStore()
+			let ref = try proposalStore.insert(verified, pqProvider)
+
+			var pskStore = MLS.Combiner.PSKStore()
+			var proposals: [MLS.RFC9420.ProposalOrRef] = [.reference(ref)]
+			let recvPQEpoch = recv.pq!.context.epoch
+			var crossInjectedEpoch: UInt64?
+			if lastCrossInjectedPQ != recvPQEpoch {
+				var recvPQForExport = recv.pq!
+				let crossPSK = try MLS.Combiner.ExportedPsk.export(
+					from: &recvPQForExport, pqProvider,
+					componentID: Self.crossPartyComponentID)
+				recv.pq = recvPQForExport
+				pskStore.register(crossPSK)
+				proposals.append(
+					.proposal(
+						crossPSK.proposal(
+							nonce: pqProvider.randomBytes(
+								pqProvider.hashSize))))
+				crossInjectedEpoch = recvPQEpoch
+			}
+
+			let transition = try sendPQ.committing(
+				pqProvider, proposals: proposals, proposalStore: proposalStore,
+				signingKey: identity.signingKey,
+				randomness: try .generate(pqProvider),
+				includePath: true, framing: .publicMessage, psk: pskStore.resolver()
+			)
+			let adopted = transition.group
+			let sent = transition.takeOutput()
+			let commitBytes = try sent.message.mlsEncoded()
+			let pending = sent.takePending()
+			try TwoPartyRules.validateRekeyCommitEffects(pending.effects)
+			let advanced = try pending.apply(onto: adopted)
+			sendPQ = advanced.group
+			try TwoPartyRules.ensureTwoParty(sendPQ)
+
+			send.pq = sendPQ
+			sendGroup = send
+			if let crossInjectedEpoch {
+				recvGroup = recv
+				lastCrossInjectedPQ = crossInjectedEpoch
+			}
+
+			let responseFrame = Frames.encodePQRekeyCommit(commitBytes)
+			pqInflight = .rekeyResponded
+			pendingSideBand = responseFrame
+			return responseFrame
+		}
+	}
+
+	/// The initiator applies the committer's `0x1D` Commit′: re-verifies the
+	/// parked Upd′ and re-inserts it into a fresh `ProposalStore` (§13 M1 —
+	/// `validating` resolves a `.reference` only from the store this call
+	/// itself supplies), pre-registers the committer's cross-party PSK off a
+	/// throwaway copy of `sendGroup.pq` (§13 M3 — never written back, so a
+	/// retry after a later failure re-derives the same value rather than
+	/// risking `componentSecretConsumed` on the real group), validates the
+	/// mechanical rekey effects, applies the Commit′ to `recvGroup.pq`,
+	/// exports `S` off the freshly-rekeyed group, and owes the classical
+	/// bind (`owePQBind(s:)`, slice 3 reuse).
+	public mutating func pqRekeyApply(_ frame: Data) throws {
+		guard pendingProposal == nil, owedBind == nil else {
+			throw TwoMLSError.sessionNotReady
+		}
+		guard case .rekeyInitiated(let updMessage) = pqInflight else {
+			throw TwoMLSError.sessionNotReady
+		}
+		guard var recv = recvGroup, var recvPQ = recv.pq else {
+			throw TwoMLSError.notEstablished
+		}
+		guard let sendPQ = sendGroup?.pq else { throw TwoMLSError.notEstablished }
+
+		try withDeployedWireWidth {
+			let commitBytes = try Frames.decodePQRekeyCommit(frame)
+			guard
+				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(
+					mlsEncoded: commitBytes)
+			else {
+				throw TwoMLSError.malformedSideBandMessage
+			}
+			guard
+				case .publicMessage(let updPub) = try MLS.RFC9420.Message(
+					mlsEncoded: updMessage)
+			else {
+				throw TwoMLSError.malformedSideBandMessage
+			}
+
+			let verifiedUpd: MLS.RFC9420.VerifiedProposal
+			do {
+				verifiedUpd = try recvPQ.verifying(pqProvider, proposal: updPub)
+			} catch {
+				throw TwoMLSError.decryptionFailed
+			}
+			var proposalStore = MLS.RFC9420.ProposalStore()
+			_ = try proposalStore.insert(verifiedUpd, pqProvider)
+
+			let sendPQEpoch = sendPQ.context.epoch
+			var pskStore = MLS.Combiner.PSKStore()
+			let needsPreRegister = lastSendPQExported != sendPQEpoch
+			if needsPreRegister {
+				var pqForExport = sendPQ
+				let crossPSK = try MLS.Combiner.ExportedPsk.export(
+					from: &pqForExport, pqProvider,
+					componentID: Self.crossPartyComponentID)
+				pskStore.register(crossPSK)
+			}
+
+			let pending: MLS.RFC9420.PendingCommit
+			do {
+				pending = try recvPQ.validating(
+					pqProvider, commit: commitPub, proposals: proposalStore,
+					psk: pskStore.resolver())
+			} catch {
+				throw TwoMLSError.decryptionFailed
+			}
+			try TwoPartyRules.validateRekeyCommitEffects(pending.effects)
+			let transition = try pending.apply(onto: recvPQ)
+			recvPQ = transition.group
+			try TwoPartyRules.ensureTwoParty(recvPQ)
+
+			// §13 M2: export `S` off the just-rekeyed group and stamp the
+			// watermark right after — mirrors `pqBootstrapJoin` (the export
+			// consumes this exact `(group, epoch, component)` leaf).
+			let recvPQEpochAfterRekey = recvPQ.context.epoch
+			let sExport = try MLS.Combiner.ExportedPsk.export(
+				from: &recvPQ, pqProvider, componentID: Self.crossPartyComponentID)
+			recv.pq = recvPQ
+			recvGroup = recv
+			lastCrossInjectedPQ = recvPQEpochAfterRekey
+
+			try owePQBind(s: sExport.psk)
+			if needsPreRegister {
+				lastSendPQExported = sendPQEpoch
+			}
+			pqInflight = nil
+			pendingSideBand = nil
+		}
 	}
 }
