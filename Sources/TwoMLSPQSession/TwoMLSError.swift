@@ -152,4 +152,32 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// the same commit — an unexpected Add/Remove/`.credentialReplaced`/
 	/// `membershipRemoved` rode it.
 	case invalidFoldEffects
+
+	// MARK: Credential authentication (AS)
+
+	/// A credential's `CredentialType` was not `.basic` — the only type this
+	/// session layer's leaves ever advertise
+	/// (`TwoMLSIdentity.leafCapabilities`).
+	case unsupportedCredential
+	/// A credential's Basic identifier is not known to either party's
+	/// `PartySequence` — absent from `history`, `authorizedNext`, and
+	/// `pinned` alike (the Authentication Service's admission check, RFC
+	/// 9420 §5.3.1).
+	case unknownIdentity
+	/// A credential succession failed the Authentication Service's successor
+	/// check (RFC 9420 §5.3.1): the new identifier is not a valid successor
+	/// to the old one under either party's sequence. Fail-closed. No
+	/// `.externalSender` case here: the profile already rejects every
+	/// external sender with `unsupportedSender` before a credential ever
+	/// reaches this AS (this protocol is strictly 2-party and P2P, with no
+	/// external-sender path).
+	case invalidSuccession
+	/// The peer's presented identity does not match the party actually bound
+	/// at establishment: at `receive`, the caller-supplied
+	/// `theirClassicalKeyPackage` names a different party than the creator leaf
+	/// the Welcome actually joined; at `initiate`, the peer's classical and PQ
+	/// `KeyPackage` halves present different identities. Rust's
+	/// `RemoteIdentityMismatch`. Distinct from `.unknownIdentity` (the AS's
+	/// membership-admission check) — this is the establishment identity binding.
+	case remoteIdentityMismatch
 }
