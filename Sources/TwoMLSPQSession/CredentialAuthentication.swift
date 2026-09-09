@@ -229,22 +229,26 @@ struct AuthCore: Sendable, Equatable {
 		guard ok else { throw TwoMLSError.invalidSuccession }
 	}
 
-	/// The consult point a future rotation slice calls at the
-	/// `.credentialReplaced` seam. That slice also needs three consult
-	/// points this method does NOT perform — documented here so it is not
-	/// reinvented, but NOT wired: `theirs.authorize` at peer-proposal
-	/// approval (`validateOfferedUpdate`, a 2nd reject site alongside
-	/// `TwoMLSSession.queueProposal`, `TwoMLSSession+ClassicalCommit.swift`);
-	/// `theirs.commit` at our fold commit (`committingRound`);
-	/// `theirs.commit`/`mine.commit` at peer-commit apply
-	/// (`applyFoldCommit`/`applyBind`). Since `commit` now throws on a rollback,
-	/// that slice MUST run the succession check (this `adjudicate`, or `commit`
-	/// itself) BEFORE it applies the commit to the group — a throw after the
-	/// group has advanced would desync the group from the AS. Nor is the
-	/// join-roster seam wired: a later join (`joinClassicalOnly` in +Messaging,
-	/// `joinPQHalf` in APQGroup) discards `PendingJoin.roster` without checking
-	/// the creator against `theirs` — fail-closed today via the 0xFF02
-	/// cross-party PSK, so this is defense-in-depth for that slice.
+	/// The consult point `applyFoldCommit`/`applyBind` call at the
+	/// `.credentialReplaced` seam, once a rotation's commit has already
+	/// passed the shape whitelist
+	/// (`TwoPartyRules.validateTwoPartyUpdateCommit`). Slice 6 wires the
+	/// three sibling consult points this method does NOT itself perform:
+	/// `theirs.authorize` at peer-proposal approval (`validateOfferedUpdate`,
+	/// a 2nd reject site alongside `TwoMLSSession.queueProposal`, both in
+	/// `TwoMLSSession+ClassicalCommit.swift`); `theirs.commit` at our own
+	/// fold commit (`committingRound`); and `theirs.commit`/`mine.commit` at
+	/// peer-commit apply (`applyFoldCommit`/`applyBind`'s own
+	/// `canonicalize`, run immediately after this `adjudicate` call
+	/// succeeds). Since `commit` throws on a rollback, each of those sites
+	/// runs its own succession check (this `adjudicate`, or `commit` itself)
+	/// BEFORE the commit applies to the group — a throw after the group has
+	/// advanced would desync the group from the AS. The join-roster seam
+	/// stays unwired: a later join (`joinClassicalOnly` in +Messaging,
+	/// `joinPQHalf` in APQGroup) discards `PendingJoin.roster` without
+	/// checking the creator against `theirs` — fail-closed today via the
+	/// 0xFF02 cross-party PSK, so this remains defense-in-depth, not a gap
+	/// slice 6 closes.
 	///
 	/// External senders need no seam here: the profile already rejects
 	/// every external sender with `unsupportedSender` before any credential

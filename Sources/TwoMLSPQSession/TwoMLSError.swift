@@ -189,4 +189,30 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// window AND unpinned is no longer remembered, so a deep recurrence is ruled
 	/// out by the always-fresh-key invariant, not by this check.
 	case credentialRollback
+
+	// MARK: Classical principal rotation (slice 6)
+
+	/// The custody resolver (`classicalSigningKey(presenting:)`) found no
+	/// principal — founding identity or the single in-flight
+	/// `rotationCandidate` — whose `signatureKey` matches what a classical
+	/// leaf currently presents; fail-closed rather than sign with the wrong
+	/// key. Also thrown by `prepareToEncrypt(rotating:)` for an empty
+	/// candidate id, or for a `rotating` that names this session's OWN
+	/// recv-leaf CURRENT id: that "rotation" could never canonicalize
+	/// (`PartySequence.commit`'s own `current == id` early return is a
+	/// no-op), so admitting it would leave the offer `.pending` forever.
+	case credentialUnknown
+	/// `prepareToEncrypt(rotating:)` was asked to author a SECOND classical
+	/// rotation while the outstanding `rotationCandidate` is either still
+	/// foldable by the peer OR has already canonicalized (F2's
+	/// one-generation cap). The wedge relaxation
+	/// (`recvGroup.classical`'s epoch has moved past the epoch the
+	/// outstanding candidate's `Upd` was staged at) only ever lets a DEAD
+	/// candidate — one that never canonicalized (absent from
+	/// `auth.mine.history`) — be replaced; once a rotation HAS
+	/// canonicalized, a second one must wait for a later slice's PQ
+	/// catch-up rather than silently dropping the converged candidate's
+	/// key (which both classical leaves may already present). Naming the
+	/// SAME candidate again is idempotent, not this error.
+	case rotationInFlight
 }

@@ -89,6 +89,21 @@ public struct TwoMLSIdentity: Sendable {
 		return keyPackage
 	}
 
+	/// Mint a fresh Ed25519 signing keypair — exactly `generate`'s signing
+	/// half, factored out for a classical principal rotation (slice 6): a
+	/// signature-key rotation needs only this, never a full `TwoMLSIdentity`
+	/// (no `KeyPackage`, no HPKE leaf/init keys — swift-mls mints the rotated
+	/// leaf's own encryption key inside `proposeUpdate`/`committing`).
+	static func mintSignatureKeypair() throws -> (
+		signingKey: MLS.SignatureSecretKey, signatureKey: MLS.SignaturePublicKey
+	) {
+		let signingPrivateKey = Curve25519.Signing.PrivateKey()
+		let signingKey = try MLS.SignatureSecretKey(signingPrivateKey.rawRepresentation)
+		let signatureKey = MLS.SignaturePublicKey(
+			signingPrivateKey.publicKey.rawRepresentation)
+		return (signingKey, signatureKey)
+	}
+
 	/// Generate a fresh principal: one signing keypair, a leaf/init HPKE
 	/// keypair per half, and both halves' signed `KeyPackage`s.
 	public static func generate(
@@ -100,10 +115,7 @@ public struct TwoMLSIdentity: Sendable {
 			pqProvider.cipherSuite == TwoMLSSuite.pq
 		else { throw TwoMLSError.cipherSuiteMismatch }
 
-		let signingPrivateKey = Curve25519.Signing.PrivateKey()
-		let signingKey = try MLS.SignatureSecretKey(signingPrivateKey.rawRepresentation)
-		let signatureKey = MLS.SignaturePublicKey(
-			signingPrivateKey.publicKey.rawRepresentation)
+		let (signingKey, signatureKey) = try mintSignatureKeypair()
 
 		let (classicalLeafSecretKey, classicalLeafPublicKey) =
 			try classicalProvider.hpkeGenerateKeyPair()

@@ -102,7 +102,67 @@ public struct DecryptResult: Sendable {
 	/// fold or a `0x05` bind) — `false` for a welcome staple, or an
 	/// idempotent re-ride of a commit already applied off an earlier frame.
 	public let didApplyRemoteCommit: Bool
+	/// The peer's NEW credential, when this apply moved the PEER's leaf in
+	/// this recv group to a credential different from before (their own-leaf
+	/// rotation catch-up, or the first fold of their rotating `Upd`) — `nil`
+	/// otherwise. Slice 6.
+	public let newSender: Data?
+	/// Whether this apply moved MY OWN leaf in this recv group to a new
+	/// credential — the first canonicalization of a rotation I authored via
+	/// `prepareToEncrypt(rotating:)`. Named for what it reports (a Bool), not
+	/// Rust's always-present `new_recipient` id. Slice 6.
+	public let ownCredentialCanonicalized: Bool
 	public let queuedProposal: QueuedProposal
+}
+
+/// One party's classical-credential state, as this session currently tracks
+/// it (mirrors the Rust reference's `PrincipalState`, `lib.rs:654-667`) —
+/// derived from the Authentication Service's own `PartySequence`, never
+/// separately cached: `.sync` once the tracked party's sequence has no
+/// outstanding authorization, `.pending` while one does.
+public enum PrincipalState: Sendable, Equatable {
+	case sync(Data)
+	case pending(old: Data, new: Data)
+
+	/// The live id this state names — the synced one, or the OLD one while a
+	/// rotation is `.pending` (mirrors `lib.rs:660-666`).
+	public var clientID: Data {
+		switch self {
+		case .sync(let id): id
+		case .pending(let old, _): old
+		}
+	}
+}
+
+/// A minted classical successor, held while a rotation is in flight (F2:
+/// a single candidate at a time) — the second entry in the F4 custody
+/// keyring alongside the founding `identity`. Its `.basic(clientID)` +
+/// `signatureKey` is what `NewSigningIdentity` carries when authoring the
+/// rotation or catching up the lagging leaf; `signingKey` is the ring's
+/// `.leafNode`/`.groupInfo` half.
+struct RotationCandidate: Sendable {
+	let clientID: Data
+	let signingKey: MLS.SignatureSecretKey
+	let signatureKey: MLS.SignaturePublicKey
+	/// The `recvGroup.classical` epoch this candidate's rotating `Upd(self)`
+	/// was staged at — `prepareToEncrypt(rotating:)`'s wedge relaxation
+	/// compares this against that group's LIVE epoch: once it has moved on,
+	/// the peer can no longer fold this now-stale proposal, so a fresh
+	/// rotation may replace this candidate even though it has not yet
+	/// canonicalized.
+	let proposedAtRecvEpoch: UInt64
+}
+
+/// `handleStaple`'s internal result — `applyFoldCommit`/`applyBind` widened
+/// (slice 6) to also report a credential change this apply just canonicalized,
+/// alongside whether a commit applied at all.
+struct StapleApplyResult: Sendable {
+	let applied: Bool
+	let newSender: Data?
+	let ownCredentialCanonicalized: Bool
+
+	static let notApplied = StapleApplyResult(
+		applied: false, newSender: nil, ownCredentialCanonicalized: false)
 }
 
 /// One directional APQ session: a send group (`sendGroup` — my Group_B,
@@ -130,8 +190,11 @@ public struct TwoMLSSession: Sendable {
 	/// The credential-sequence Authentication Service state (Germ policy,
 	/// RFC 9420 §5.3.1's "application responsibility") — seeded at
 	/// `initiate`/`receive` and consulted there against the peer's other
-	/// half; a future rotation slice consults it further at the
-	/// commit-effect seam (`AuthCore.adjudicate`).
+	/// half; slice 6 wires it further at every rotation seam:
+	/// `validateOfferedUpdate` (peer-offer authorization, +ClassicalCommit),
+	/// `committingRound` (canonicalizing our own fold), and
+	/// `applyFoldCommit`/`applyBind` (the commit-effect adjudication seam,
+	/// `AuthCore.adjudicate`).
 	var auth: AuthCore
 	var sendGroup: APQGroup?
 	var recvGroup: APQGroup?
@@ -232,11 +295,88 @@ public struct TwoMLSSession: Sendable {
 	/// in flight, matching the Rust reference's own `SEND_PSK_WINDOW`.
 	static let sendCrossPSKLedgerWindow = 8
 
+	// MARK: §15 classical principal rotation (slice 6)
+
+	/// The classical successor minted by our own `prepareToEncrypt(rotating:)`
+	/// (F2: a single in-flight candidate) — `nil` until we author a rotation.
+	/// Retained for the life of the session once set (F4's minimal cut: the
+	/// custody resolver below reads the tree, so a stale candidate is
+	/// harmless — a real custodian would retire it once no leaf presents it,
+	/// which needs the PQ catch-up of a later slice).
+	var rotationCandidate: RotationCandidate? = nil
+
 	public var isEstablished: Bool { sendGroup != nil && recvGroup != nil }
 	/// Both directional pairs have their PQ half present — the §A.3
 	/// bootstrap's completion condition.
 	public var isFullyEstablished: Bool { sendGroup?.pq != nil && recvGroup?.pq != nil }
 	public var myPQTurn: Bool { pqTurnMine }
+
+	/// My own classical-credential state, DERIVED from the Authentication
+	/// Service's `auth.mine` (never separately cached, so it cannot desync
+	/// from the sequence `commit`/`authorize` actually maintain): `.pending`
+	/// while an authorized-but-not-yet-canonical successor is outstanding
+	/// (`prepareToEncrypt(rotating:)`, before the peer's fold commit lands),
+	/// `.sync` once it has (mirrors `mod.rs:2115-2120`).
+	public var myPrincipalState: PrincipalState { Self.principalState(auth.mine) }
+	/// The peer's classical-credential state, as this session's `auth.theirs`
+	/// currently tracks it — `.pending` from the moment we approve their
+	/// offered rotation (`queueProposal`) until we fold it
+	/// (`committingRound`'s `theirs.commit`).
+	public var theirPrincipalState: PrincipalState { Self.principalState(auth.theirs) }
+
+	private static func principalState(_ sequence: PartySequence) -> PrincipalState {
+		let current = sequence.current ?? Data()
+		if let next = sequence.authorizedNext.last {
+			return .pending(old: current, new: next)
+		}
+		return .sync(current)
+	}
+
+	/// F4/MF5 custody: resolve the signing secret for whichever principal
+	/// currently presents `signatureKey` on some classical leaf — the
+	/// founding identity or the single in-flight `rotationCandidate`. Keyed
+	/// on `signatureKey`, not the `.basic` id (what a peer's `verifying`/
+	/// `unprotect` actually checks against), so a same-id/new-key rotation is
+	/// unambiguous. Fail-closed: unreachable in the trusting 2-party model
+	/// this module implements — every classical leaf presents either the
+	/// founding key or the outstanding candidate's.
+	private func classicalSigningKey(presenting signatureKey: MLS.SignaturePublicKey) throws
+		-> MLS.SignatureSecretKey
+	{
+		if signatureKey == identity.signatureKey { return identity.signingKey }
+		if let candidate = rotationCandidate, candidate.signatureKey == signatureKey {
+			return candidate.signingKey
+		}
+		throw TwoMLSError.credentialUnknown
+	}
+
+	/// A classical group's own occupied leaf, read straight off its tree —
+	/// the one read every custody/rotation site needs (my own leaf's
+	/// CURRENTLY presented credential/key), never a cached claim.
+	static func ownLeaf(of group: MLS.RFC9420.Group) throws -> MLS.RFC9420.LeafNode {
+		guard let record = group.tree.leaf(at: group.myLeafIndex) else {
+			throw TwoMLSError.credentialUnknown
+		}
+		return try MLS.RFC9420.LeafNode(mlsEncoded: record.encoded)
+	}
+
+	/// Resolve `sendGroup.classical`'s own leaf's CURRENT signing key — every
+	/// classical send-group-leaf site's key (F4 custody): `encrypt`'s
+	/// `protect`, `committingRound`'s `committing`, and the three §A.4
+	/// ratchet legs' `protect` (`+Ratchet.swift`).
+	func sendClassicalSigningKey() throws -> MLS.SignatureSecretKey {
+		guard let send = sendGroup else { throw TwoMLSError.notEstablished }
+		return try classicalSigningKey(
+			presenting: Self.ownLeaf(of: send.classical).signatureKey)
+	}
+
+	/// Resolve `recvGroup.classical`'s own leaf's CURRENT signing key —
+	/// `prepareToEncrypt`'s `proposeUpdate` (F4 custody).
+	func recvClassicalSigningKey() throws -> MLS.SignatureSecretKey {
+		guard let recv = recvGroup else { throw TwoMLSError.notEstablished }
+		return try classicalSigningKey(
+			presenting: Self.ownLeaf(of: recv.classical).signatureKey)
+	}
 
 	init(
 		classicalProvider: any MLS.CipherSuiteProvider,

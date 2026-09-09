@@ -46,7 +46,7 @@ extension TwoMLSSession {
 		let inner = Frames.encodePQLegContent(tag: Frames.pqEKTag, payload: eph.ek)
 		let appPM = try send.classical.protect(
 			classicalProvider, applicationData: inner, authenticatedData: Data(),
-			signingKey: identity.signingKey)
+			signingKey: try sendClassicalSigningKey())
 		sendGroup = send
 
 		let messageBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
@@ -87,7 +87,7 @@ extension TwoMLSSession {
 		let inner = Frames.encodePQLegContent(tag: Frames.pqCTTag, payload: wireCT)
 		let appPM = try send.classical.protect(
 			classicalProvider, applicationData: inner, authenticatedData: Data(),
-			signingKey: identity.signingKey)
+			signingKey: try sendClassicalSigningKey())
 		sendGroup = send
 
 		let outMessageBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
@@ -179,11 +179,12 @@ extension TwoMLSSession {
 		}
 
 		guard
+			let signingKey = try? sendClassicalSigningKey(),
 			let appPM = try? send.classical.protect(
 				classicalProvider,
 				applicationData: Frames.encodePQLegContent(
 					tag: tag, payload: payload),
-				authenticatedData: Data(), signingKey: identity.signingKey),
+				authenticatedData: Data(), signingKey: signingKey),
 			let reEncoded = try? MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
 		else {
 			return
