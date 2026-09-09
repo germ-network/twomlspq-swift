@@ -21,8 +21,10 @@ final class RatchetTests: XCTestCase {
 
 	/// `SessionTestSupport.establishedAndExchanged()` plus the full §A.3
 	/// bootstrap-and-bind round (mirroring `BootstrapTests`'s own sequence),
-	/// landing on a fully-established pair with the turn on Bob.
-	private func fullyEstablishedTurnOnBob() throws -> (
+	/// landing on a fully-established pair with the turn on Bob. `static` and
+	/// non-`private` so `RekeyTests` can reuse it as its own §A.5 starting
+	/// fixture.
+	static func fullyEstablishedTurnOnBob() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession
 	) {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -47,7 +49,7 @@ final class RatchetTests: XCTestCase {
 	/// applies the bind — landing Group_B.pq at epoch 2 on both sides and
 	/// passing the turn back to Alice.
 	func testBobInitiatedRatchetRoundAdvancesGroupBPQAndReturnsTurn() throws {
-		var (alice, bob) = try fullyEstablishedTurnOnBob()
+		var (alice, bob) = try Self.fullyEstablishedTurnOnBob()
 
 		XCTAssertEqual(bob.sendGroup?.pq?.context.epoch, 1)
 		XCTAssertEqual(alice.recvGroup?.pq?.context.epoch, 1)
@@ -105,7 +107,7 @@ final class RatchetTests: XCTestCase {
 	/// (Bob's own copy, Alice's mirror) must agree — the whole seal/open
 	/// exchange depends on it.
 	func testCrossPartyCtSealPSKMatchesOnGroupBPQMirror() throws {
-		let (alice, bob) = try fullyEstablishedTurnOnBob()
+		let (alice, bob) = try Self.fullyEstablishedTurnOnBob()
 
 		let bobPSK = try CTSeal.ctSealPSK(
 			group: try XCTUnwrap(bob.sendGroup?.pq),
@@ -124,7 +126,7 @@ final class RatchetTests: XCTestCase {
 	/// OWN explicit reject, for a mis-sealed / wrong-`ctSealPSK` CT that only a
 	/// validly-framing responder could produce, is pinned in `CTSealTests`.
 	func testWireTamperedCTIsRejectedAndDoesNotBurnState() throws {
-		var (alice, bob) = try fullyEstablishedTurnOnBob()
+		var (alice, bob) = try Self.fullyEstablishedTurnOnBob()
 
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
@@ -155,7 +157,7 @@ final class RatchetTests: XCTestCase {
 	/// of Bob's ROUND-1 EK after the round's own bind has advanced Group_B's
 	/// classical epoch.
 	func testReplayedEKBelowEpochFloorThrowsStaleFrame() throws {
-		var (alice, bob) = try fullyEstablishedTurnOnBob()
+		var (alice, bob) = try Self.fullyEstablishedTurnOnBob()
 
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
@@ -179,7 +181,7 @@ final class RatchetTests: XCTestCase {
 	/// turn, and does not overwrite an already-parked side-band leg when it
 	/// is.
 	func testSelfDriveGateSkipsWhenNotMyTurnOrSideBandBusy() throws {
-		var (alice, bob) = try fullyEstablishedTurnOnBob()
+		var (alice, bob) = try Self.fullyEstablishedTurnOnBob()
 
 		// Not alice's turn: her own send path must not self-stage an EK.
 		_ = try alice.prepareToEncrypt()

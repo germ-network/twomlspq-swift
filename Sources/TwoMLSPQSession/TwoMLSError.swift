@@ -121,4 +121,17 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// for a stale/misdirected CT: ML-KEM decapsulation alone never throws on a
 	/// mismatched ciphertext, it just returns the wrong bytes.
 	case decryptionFailed
+
+	// MARK: §A.5 PQ re-key (mechanical)
+
+	/// A `0x1B` Upd′ did not verify as a peer `.update` proposal
+	/// (`pqRekeyRespond`) — a different proposal type, a commit smuggled
+	/// behind the tag, or one framed by this session's own leaf.
+	case rekeyProposalRejected
+	/// `pqRekeyApply`'s applied `CommitEffects` were not the mechanical rekey
+	/// Commit's exact whitelisted shape — `[epochAdvanced, updated(proposer),
+	/// updated(committer)]` with the two leaves distinct — an unexpected
+	/// Add/Remove/credential replacement/membership removal/`AppDataUpdate`
+	/// rode the Commit′.
+	case invalidRekeyEffects
 }
