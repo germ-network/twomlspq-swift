@@ -180,4 +180,13 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// `RemoteIdentityMismatch`. Distinct from `.unknownIdentity` (the AS's
 	/// membership-admission check) — this is the establishment identity binding.
 	case remoteIdentityMismatch
+	/// `commit` was asked to canonicalize a credential already retired for the
+	/// party — still in its `history` (but not the current head) or `pinned` — a
+	/// rollback to a retired identity. In this protocol every identity is a
+	/// freshly generated key, so a recurrence is never legitimate; `commit`
+	/// rejects it (fail-closed, before any state change) rather than re-promoting
+	/// it. The check is bounded to `history` + `pinned`: an id evicted past the
+	/// window AND unpinned is no longer remembered, so a deep recurrence is ruled
+	/// out by the always-fresh-key invariant, not by this check.
+	case credentialRollback
 }

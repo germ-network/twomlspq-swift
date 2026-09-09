@@ -72,25 +72,38 @@ final class CredentialAuthenticationTests: XCTestCase {
 	func testCommitAppendsAndAdvancesCurrent() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		XCTAssertEqual(sequence.current, id("a"))
-		sequence.commit(id("b"))
+		try sequence.commit(id("b"))
 		XCTAssertEqual(sequence.current, id("b"))
 		XCTAssertEqual(sequence.history, [id("a"), id("b")])
 	}
 
-	/// `[A,B,C].commit(A)` ⇒ history `[B,C,A]`, current `A`, no dup. Mutation:
-	/// dropping `history.removeAll { $0 == id }` is the ONLY line that makes
-	/// this fail — without the dedupe/move-to-newest step, `commit(A)` would
-	/// append a second `A` instead of relocating the existing one.
-	func testCommitDedupesAndMovesToNewest() throws {
+	/// Rollback is an error: re-committing an id that is in `history` but no
+	/// longer current throws `.credentialRollback` and leaves history untouched
+	/// (identities are always freshly generated, so a recurrence is never
+	/// convergence). Mutation: restoring the old move-to-newest
+	/// (`history.removeAll { $0 == id }` + append, instead of the throw) is the
+	/// ONLY change that makes this fail.
+	func testCommitRejectsRollbackToRetiredID() throws {
 		var sequence = PartySequence.seeded(id("a"))
-		sequence.commit(id("b"))
-		sequence.commit(id("c"))
+		try sequence.commit(id("b"))
+		try sequence.commit(id("c"))
+		XCTAssertThrowsError(try sequence.commit(id("a"))) { error in
+			XCTAssertEqual(error as? TwoMLSError, .credentialRollback)
+		}
 		XCTAssertEqual(sequence.history, [id("a"), id("b"), id("c")])
+		XCTAssertEqual(sequence.current, id("c"))
+	}
 
-		sequence.commit(id("a"))
-		XCTAssertEqual(sequence.history, [id("b"), id("c"), id("a")])
-		XCTAssertEqual(sequence.current, id("a"))
-		XCTAssertTrue(sequence.validSuccessor(pred: id("b"), succ: id("a")))
+	/// `commit` also rejects re-committing a `pinned` (retired-but-held) id, not
+	/// just one still in the live window. Mutation: dropping `|| pinned.contains(id)`
+	/// makes this fail.
+	func testCommitRejectsRollbackToPinnedID() throws {
+		var sequence = PartySequence.seeded(id("c0"))
+		try sequence.commit(id("c1"))
+		sequence.pin(id("retired"))
+		XCTAssertThrowsError(try sequence.commit(id("retired"))) { error in
+			XCTAssertEqual(error as? TwoMLSError, .credentialRollback)
+		}
 	}
 
 	/// Mutation: moving `authorizedNext.removeAll()` to run BEFORE the
@@ -100,7 +113,7 @@ final class CredentialAuthenticationTests: XCTestCase {
 	func testCommitOfCurrentPreservesAuthorizedNext() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		sequence.authorize(id("b"))
-		sequence.commit(id("a"))  // no-op: already current
+		try sequence.commit(id("a"))  // no-op: already current
 		XCTAssertTrue(sequence.validSuccessor(pred: id("a"), succ: id("b")))
 	}
 
@@ -123,8 +136,8 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// separate authorization.
 	func testCatchUpToNewerHistoryElementIsAccepted() throws {
 		var sequence = PartySequence.seeded(id("a"))
-		sequence.commit(id("b"))
-		sequence.commit(id("c"))
+		try sequence.commit(id("b"))
+		try sequence.commit(id("c"))
 		XCTAssertTrue(sequence.validSuccessor(pred: id("a"), succ: id("c")))
 	}
 
@@ -133,7 +146,7 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// for (exercised for real in the integration test below).
 	func testUnrelatedSuccessorIsRejected() throws {
 		var sequence = PartySequence.seeded(id("a"))
-		sequence.commit(id("b"))
+		try sequence.commit(id("b"))
 		XCTAssertFalse(sequence.validSuccessor(pred: id("b"), succ: id("z")))
 	}
 
@@ -171,6 +184,29 @@ final class CredentialAuthenticationTests: XCTestCase {
 		XCTAssertTrue(sequence.validSuccessor(pred: id("ancient"), succ: id("current")))
 	}
 
+	/// A rollback dressed as an authorization is still rejected: authorizing an
+	/// id already retired in `history` does NOT make it a valid successor — the
+	/// authorization shortcut admits only genuinely new ids. Mutation: dropping
+	/// the `!history.contains(succ)` guard on the authorized arm makes this fail.
+	func testAuthorizingARetiredIDDoesNotResurrectIt() throws {
+		var sequence = PartySequence.seeded(id("c0"))
+		try sequence.commit(id("c1"))
+		try sequence.commit(id("c2"))
+		sequence.authorize(id("c0"))  // app error: c0 is retired
+		XCTAssertFalse(sequence.validSuccessor(pred: id("c2"), succ: id("c0")))
+		XCTAssertFalse(sequence.validSuccessorOfCurrent(id("c0")))
+	}
+
+	/// Same for a `pinned` (evicted) id: authorizing it does not make it a valid
+	/// `succ`, so the no-downgrade guarantee holds even against an authorization.
+	/// Mutation: dropping the `!pinned.contains(succ)` guard makes this fail.
+	func testAuthorizingAPinnedIDDoesNotMakeItAValidSuccessor() throws {
+		var sequence = PartySequence.seeded(id("current"))
+		sequence.pin(id("ancient"))
+		sequence.authorize(id("ancient"))
+		XCTAssertFalse(sequence.validSuccessor(pred: id("current"), succ: id("ancient")))
+	}
+
 	// MARK: - History window
 
 	/// Mutation: relaxing `history.count > Self.credentialHistoryWindow` (or
@@ -179,7 +215,7 @@ final class CredentialAuthenticationTests: XCTestCase {
 	func testWindowEvictsOldestPastCapacity() throws {
 		var sequence = PartySequence.seeded(id("id-0"))
 		for i in 1...PartySequence.credentialHistoryWindow {
-			sequence.commit(id("id-\(i)"))
+			try sequence.commit(id("id-\(i)"))
 		}
 		XCTAssertEqual(sequence.history.count, PartySequence.credentialHistoryWindow)
 		XCTAssertFalse(sequence.contains(id("id-0")))
@@ -190,7 +226,7 @@ final class CredentialAuthenticationTests: XCTestCase {
 	func testEvictedIDIsNoLongerAValidPredUnlessPinned() throws {
 		var sequence = PartySequence.seeded(id("id-0"))
 		for i in 1...PartySequence.credentialHistoryWindow {
-			sequence.commit(id("id-\(i)"))
+			try sequence.commit(id("id-\(i)"))
 		}
 		let newest = id("id-\(PartySequence.credentialHistoryWindow)")
 		XCTAssertFalse(sequence.validSuccessor(pred: id("id-0"), succ: newest))
@@ -230,7 +266,7 @@ final class CredentialAuthenticationTests: XCTestCase {
 	func testValidateMemberAdmitsPinnedEvictedIdentity() throws {
 		var sequence = PartySequence.seeded(id("id-0"))
 		for i in 1...PartySequence.credentialHistoryWindow {
-			sequence.commit(id("id-\(i)"))
+			try sequence.commit(id("id-\(i)"))
 		}
 		XCTAssertFalse(sequence.contains(id("id-0")))
 		sequence.pin(id("id-0"))
@@ -241,7 +277,7 @@ final class CredentialAuthenticationTests: XCTestCase {
 	func testValidateMemberRejectsEvictedAndUnpinnedIdentity() throws {
 		var sequence = PartySequence.seeded(id("id-0"))
 		for i in 1...PartySequence.credentialHistoryWindow {
-			sequence.commit(id("id-\(i)"))
+			try sequence.commit(id("id-\(i)"))
 		}
 		let auth = AuthCore(mine: .seeded(id("me")), theirs: sequence)
 		XCTAssertThrowsError(try auth.validateMember(.basic(identity: id("id-0")))) {
@@ -272,6 +308,39 @@ final class CredentialAuthenticationTests: XCTestCase {
 	func testSameIdentifierIsAcceptedByDesignRegardlessOfKeyChange() throws {
 		let sequence = PartySequence.seeded(id("stable-id"))
 		XCTAssertTrue(sequence.validSuccessor(pred: id("stable-id"), succ: id("stable-id")))
+	}
+
+	// MARK: - API 1 (succeeding current) / forward gaps / backward rollback
+
+	/// API 1 pins the predecessor to the head: an authorized successor of the
+	/// current head is accepted; an older-than-head id is not (going back to it
+	/// is not a succession); and there is nothing valid with no head.
+	func testValidSuccessorOfCurrentUsesTheHead() throws {
+		var sequence = PartySequence.seeded(id("c0"))
+		try sequence.commit(id("c1"))  // head = c1
+		sequence.authorize(id("c2"))
+		XCTAssertTrue(sequence.validSuccessorOfCurrent(id("c2")))
+		XCTAssertFalse(sequence.validSuccessorOfCurrent(id("c0")))  // older than head
+		XCTAssertFalse(PartySequence().validSuccessorOfCurrent(id("x")))  // no head
+	}
+
+	/// Forward gap: the app authorizes a far successor, skipping intermediates it
+	/// never saw; both APIs accept it from the current head even though nothing
+	/// between them entered `history`.
+	func testForwardGapIsAcceptedWhenAuthorized() throws {
+		var sequence = PartySequence.seeded(id("c0"))
+		sequence.authorize(id("c3"))  // c1, c2 skipped
+		XCTAssertTrue(sequence.validSuccessor(pred: id("c0"), succ: id("c3")))
+		XCTAssertTrue(sequence.validSuccessorOfCurrent(id("c3")))
+	}
+
+	/// A backward move within the window is rejected — an older-in-history succ
+	/// is not a successor of a newer pred.
+	func testBackwardMoveIsRejected() throws {
+		var sequence = PartySequence.seeded(id("c0"))
+		try sequence.commit(id("c1"))
+		try sequence.commit(id("c2"))
+		XCTAssertFalse(sequence.validSuccessor(pred: id("c2"), succ: id("c0")))
 	}
 
 	// MARK: - Integration (ungated): a real rotation through `adjudicate`
@@ -345,7 +414,8 @@ final class CredentialAuthenticationTests: XCTestCase {
 			let credentialReplaced = rotationEffects.events.first(where: {
 				if case .credentialReplaced = $0 { return true }
 				return false
-			}), case .credentialReplaced(let leaf, _, let new) = credentialReplaced
+			}),
+			case .credentialReplaced(let leaf, let old, let new) = credentialReplaced
 		else {
 			return XCTFail("expected a credentialReplaced effect")
 		}
@@ -379,6 +449,16 @@ final class CredentialAuthenticationTests: XCTestCase {
 			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
 
+		// Lease successor-half: `old` IS the head (bob), yet a rotation to an
+		// unauthorized `new` is still rejected — the lease checks BOTH `old ==
+		// head` AND that `new` is a valid successor of it. Mutation: dropping the
+		// `validSuccessorOfCurrent` half of the lease makes this pass wrongly.
+		XCTAssertThrowsError(
+			try rejectingAuth.validateSuccessionAgainstCurrent(old: old, new: new)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		}
+
 		// Reject via the `.added` arm: an AS whose `theirs` never knew Bob's id
 		// rejects the founding commit's `.added(bob)` — pins that `adjudicate`
 		// validates added members, not only credential replacements. Mutation:
@@ -388,5 +468,23 @@ final class CredentialAuthenticationTests: XCTestCase {
 		XCTAssertThrowsError(try strangerAuth.adjudicate(foundingEffects)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .unknownIdentity)
 		}
+
+		// API 1 (lease) vs API 2 (explicit pred), on the SAME real effect. With
+		// the peer's head still at `bob`, the lease accepts the rotation. Advance
+		// the peer's head past `bob` and the lease (API 1) rejects a rotation
+		// still built on `bob`, while API 2 accepts it as a gap-spanning handoff
+		// from a known-but-not-current predecessor.
+		XCTAssertNoThrow(
+			try acceptingAuth.validateSuccessionAgainstCurrent(old: old, new: new))
+		var movedOn = AuthCore(
+			mine: .seeded(alice.identity), theirs: .seeded(bob.identity))
+		try movedOn.theirs.commit(Data("bob-moved".utf8))
+		movedOn.theirs.authorize(rotated.identity)
+		XCTAssertThrowsError(
+			try movedOn.validateSuccessionAgainstCurrent(old: old, new: new)
+		) {
+			error in XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		}
+		XCTAssertNoThrow(try movedOn.validateSuccession(old: old, new: new))
 	}
 }

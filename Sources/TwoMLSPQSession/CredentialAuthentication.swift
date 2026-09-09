@@ -4,8 +4,12 @@ import MLSProfileRFC9420
 
 // MARK: - Credential Authentication Service (AS)
 //
-// A faithful port of the Rust `apq::authentication` credential-sequence AS
-// (peer resource — logic ported, text not copied). This is Germ/TwoMLS
+// Started from the Rust `apq::authentication` credential-sequence AS (a peer
+// resource — logic ported, text not copied), then adapted to this protocol's
+// rules; fidelity to the reference is NOT a goal (and wire-compat does not
+// apply — this is in-memory state). Notably, rollback is a hard error here
+// (identities are always freshly generated keys), which the reference's
+// move-to-newest `commit` did not enforce. This is Germ/TwoMLS
 // policy, not RFC 9420- or draft-defined behavior: swift-mls has no
 // Authentication Service (`NewSigningIdentity.swift`) and instead surfaces the
 // credential change (its D17 `CommitEffect.credentialReplaced` seam, RFC 9420
@@ -49,7 +53,7 @@ struct PartySequence: Sendable, Equatable {
 
 	static func seeded(_ id: Data) -> PartySequence {
 		var sequence = PartySequence()
-		sequence.commit(id)
+		sequence.history = [id]
 		return sequence
 	}
 
@@ -82,15 +86,24 @@ struct PartySequence: Sendable, Equatable {
 
 	var knownIDs: [Data] { history + authorizedNext + pinned }
 
-	/// Canonicalize `id`: it becomes the newest `history` element and every
-	/// other in-flight authorization expires. The no-op check runs BEFORE
-	/// clearing `authorizedNext` — a re-commit of the already-current id
-	/// must not discard an authorization already in flight for the NEXT
-	/// step.
-	mutating func commit(_ id: Data) {
+	/// Canonicalize `id` as the newest `history` element, expiring every
+	/// in-flight authorization. In this protocol every identity is a freshly
+	/// generated key, so a recurrence is never legitimate convergence — it is a
+	/// rollback, and rejected: `id == current` is an idempotent no-op (kept
+	/// BEFORE clearing `authorizedNext`, so re-committing the head does not drop
+	/// an authorization already in flight for the NEXT step); an `id` already
+	/// retired — still in `history`, or `pinned` (evicted but held) — throws
+	/// `.credentialRollback`; a brand-new `id` is appended (oldest evicted past
+	/// the window). Fail-closed: the throw happens before any mutation. The
+	/// recurrence check is bounded to `history` + `pinned`; an id evicted past
+	/// the window AND unpinned is no longer remembered, so the always-fresh-key
+	/// invariant (not this check) is what rules out a deep recurrence.
+	mutating func commit(_ id: Data) throws {
 		if current == id { return }
+		if history.contains(id) || pinned.contains(id) {
+			throw TwoMLSError.credentialRollback
+		}
 		authorizedNext.removeAll()
-		history.removeAll { $0 == id }
 		history.append(id)
 		while history.count > Self.credentialHistoryWindow {
 			history.removeFirst()
@@ -104,18 +117,36 @@ struct PartySequence: Sendable, Equatable {
 	/// `pred` that is only `pinned` (evicted from `history`) counts as known
 	/// and OLDEST — older than every `history` element — so a leaf still
 	/// bearing an evicted credential can catch up to any current one;
-	/// `pinned` is never itself a valid `succ` (never in `history` or
-	/// `authorizedNext`), so this can never authorize a downgrade onto it.
+	/// `pinned` is never itself a valid `succ` — the authorization shortcut
+	/// below admits only a `succ` absent from both `history` and `pinned` — so
+	/// this can never authorize a downgrade onto a retired credential.
 	func validSuccessor(pred: Data, succ: Data) -> Bool {
 		if pred == succ { return true }
 		let predPosition = position(pred)
 		if predPosition == nil && !pinned.contains(pred) { return false }
-		if authorizedNext.contains(succ) { return true }
+		// An authorization admits only a genuinely NEW id: an authorized id that
+		// is already retired (in `history`, or `pinned` and evicted) falls
+		// through to the ordering check below, which rejects it — a rollback
+		// dressed as an authorization is still a rollback.
+		if authorizedNext.contains(succ), !history.contains(succ),
+			!pinned.contains(succ)
+		{
+			return true
+		}
 		switch (predPosition, position(succ)) {
 		case (_, nil): return false
 		case (let pp?, let sp?): return sp > pp
 		case (nil, _?): return true  // pred pinned+evicted (oldest) < any history succ
 		}
+	}
+
+	/// API 1 — "succeeding current" (force-with-lease): is `succ` a valid
+	/// successor of THIS party's canonical head? The predecessor is pinned to
+	/// `current`, so a caller building on a stale view is rejected. `false` when
+	/// there is no current credential.
+	func validSuccessorOfCurrent(_ succ: Data) -> Bool {
+		guard let current else { return false }
+		return validSuccessor(pred: current, succ: succ)
 	}
 }
 
@@ -163,6 +194,9 @@ struct AuthCore: Sendable, Equatable {
 		try validateMember(presentation.credential)
 	}
 
+	/// API 2 — "A succeeding B": validate `new` as a successor of the predecessor
+	/// the effect NAMES (`old`), which may be a known but non-current credential,
+	/// so a direct handoff that skips intermediates (a forward gap) is accepted.
 	/// RFC 9420 §5.3.1: "the AS MUST also verify that the set of presented
 	/// identifiers in the new credential is valid as a successor to the set
 	/// of presented identifiers in the old credential, according to the
@@ -179,6 +213,22 @@ struct AuthCore: Sendable, Equatable {
 		}
 	}
 
+	/// API 1 — "succeeding current" (force-with-lease): like `validateSuccession`,
+	/// but the presented `old` MUST be a party's current canonical head — a
+	/// rotation built on a stale predecessor is rejected even when `old` is still
+	/// a known past credential. Use this where the receiver expects to be up to
+	/// date; use `validateSuccession` for a handoff that may span a gap.
+	func validateSuccessionAgainstCurrent(
+		old: MLS.RFC9420.CredentialPresentation, new: MLS.RFC9420.CredentialPresentation
+	) throws {
+		let oldID = try basicIdentifier(old.credential)
+		let newID = try basicIdentifier(new.credential)
+		let ok =
+			(mine.current == oldID && mine.validSuccessorOfCurrent(newID))
+			|| (theirs.current == oldID && theirs.validSuccessorOfCurrent(newID))
+		guard ok else { throw TwoMLSError.invalidSuccession }
+	}
+
 	/// The consult point a future rotation slice calls at the
 	/// `.credentialReplaced` seam. That slice also needs three consult
 	/// points this method does NOT perform — documented here so it is not
@@ -187,11 +237,14 @@ struct AuthCore: Sendable, Equatable {
 	/// `TwoMLSSession.queueProposal`, `TwoMLSSession+ClassicalCommit.swift`);
 	/// `theirs.commit` at our fold commit (`committingRound`);
 	/// `theirs.commit`/`mine.commit` at peer-commit apply
-	/// (`applyFoldCommit`/`applyBind`). Nor is the join-roster seam wired: a
-	/// later join (`joinClassicalOnly` in +Messaging, `joinPQHalf` in APQGroup)
-	/// discards `PendingJoin.roster` without checking the creator against
-	/// `theirs` — fail-closed today via the 0xFF02 cross-party PSK, so this is
-	/// defense-in-depth for that slice.
+	/// (`applyFoldCommit`/`applyBind`). Since `commit` now throws on a rollback,
+	/// that slice MUST run the succession check (this `adjudicate`, or `commit`
+	/// itself) BEFORE it applies the commit to the group — a throw after the
+	/// group has advanced would desync the group from the AS. Nor is the
+	/// join-roster seam wired: a later join (`joinClassicalOnly` in +Messaging,
+	/// `joinPQHalf` in APQGroup) discards `PendingJoin.roster` without checking
+	/// the creator against `theirs` — fail-closed today via the 0xFF02
+	/// cross-party PSK, so this is defense-in-depth for that slice.
 	///
 	/// External senders need no seam here: the profile already rejects
 	/// every external sender with `unsupportedSender` before any credential
