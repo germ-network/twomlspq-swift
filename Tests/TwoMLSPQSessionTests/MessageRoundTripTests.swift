@@ -53,4 +53,21 @@ final class MessageRoundTripTests: XCTestCase {
 		XCTAssertEqual(result.authenticatedData, expectedHash)
 		XCTAssertEqual(result.queuedProposal.digest, expectedHash)
 	}
+
+	/// The app section is AEAD-sealed (`Group.protect`), not merely encoded:
+	/// a distinctive plaintext payload must not appear anywhere in the wire
+	/// frame's bytes, including inside the un-header-sealed staple/proposal
+	/// sections that ride alongside it in the clear.
+	func testEncryptedFrameCarriesNoPlaintextCopyOfTheApplicationPayload() throws {
+		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
+		let plaintext = Data("the-quick-brown-fox-jumps-over-the-lazy-dog-0xDEADBEEF".utf8)
+
+		let prepared = try bob.prepareToEncrypt()
+		let frame = try bob.encrypt(plaintext)
+		XCTAssertNil(frame.range(of: plaintext))
+
+		let result = try alice.processIncoming(frame)
+		XCTAssertEqual(result.applicationMessage, plaintext)
+		XCTAssertFalse(prepared.didCommit)
+	}
 }

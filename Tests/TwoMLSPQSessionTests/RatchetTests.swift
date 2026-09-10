@@ -101,6 +101,39 @@ final class RatchetTests: XCTestCase {
 		XCTAssertEqual(alice.recvGroup?.classical.context.epoch, 2)
 	}
 
+	// MARK: - Side-band retention
+
+	/// Once the round genuinely completes — Bob's discharge commit applied
+	/// on Alice's side too (`0x05`, via `applyBind`) — both parties' parked
+	/// side-band leg is gone: `pqPendingOutbound()` returns `nil` on BOTH
+	/// sides, not just the discharging one. Bob's own leg is cleared at his
+	/// own `pqRatchetBind`; Alice's (the CT she parked at
+	/// `pqRatchetRespond`) is cleared only once she applies Bob's bind
+	/// staple — a site the full-round test above never asserts on Alice's
+	/// side.
+	func testSideBandFallsSilentOnBothSidesAfterRatchetRoundCompletes() throws {
+		var (alice, bob) = try Self.fullyEstablishedTurnOnBob()
+
+		_ = try bob.prepareToEncrypt()
+		_ = try bob.encrypt(Data("m".utf8))
+		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ctFrame = try alice.pqRatchetRespond(ekFrame)
+		XCTAssertNotNil(alice.pqPendingOutbound())
+
+		try bob.pqRatchetBind(ctFrame)
+		XCTAssertNil(bob.pqPendingOutbound())
+
+		let prepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(prepared.didCommit)
+		let boundFrame = try bob.encrypt(Data("bound".utf8))
+		_ = try alice.processIncoming(boundFrame)
+
+		XCTAssertNil(alice.pqPendingOutbound())
+		XCTAssertNil(bob.pqPendingOutbound())
+		XCTAssertNil(alice.pqInflight)
+		XCTAssertNil(bob.pqInflight)
+	}
+
 	// MARK: - Mutation-verify
 
 	/// The exporter both sides derive off Group_B.pq's shared epoch state
