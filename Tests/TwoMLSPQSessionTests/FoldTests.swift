@@ -592,4 +592,22 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(redelivered.applicationMessage, Data("post-fold".utf8))
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, epochAfter)
 	}
+
+	// MARK: - §11 MF8: single-occupancy, latest-wins
+
+	/// A second offer, surfaced before the first is approved, replaces it
+	/// outright: `processIncoming` unconditionally overwrites
+	/// `offeredProposal` on every inbound frame (§11 MF8), so the earlier
+	/// digest is no longer approvable — only the latest one is.
+	func testLaterOfferReplacesEarlierUnapprovedOfferSingleOccupancyLatestWins() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let offer1 = try surfaceOffer(from: &bob, to: &alice, app: Data("first".utf8))
+		let offer2 = try surfaceOffer(from: &bob, to: &alice, app: Data("second".utf8))
+		XCTAssertNotEqual(offer1.digest, offer2.digest)
+
+		XCTAssertThrowsError(try alice.queueProposal(digest: offer1.digest)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .proposalRejected)
+		}
+		XCTAssertNoThrow(try alice.queueProposal(digest: offer2.digest))
+	}
 }
