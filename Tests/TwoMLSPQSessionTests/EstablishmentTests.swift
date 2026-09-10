@@ -96,7 +96,7 @@ final class EstablishmentTests: XCTestCase {
 
 		// `PendingJoin` is `~Copyable`, so `XCTAssertThrowsError`'s `Copyable`-bound
 		// generic cannot wrap this call — a plain do/catch instead.
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			do {
 				_ = try MLS.RFC9420.Group.joining(
 					SessionTestSupport.classicalProvider, welcome: welcome,

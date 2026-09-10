@@ -311,15 +311,28 @@ final class BootstrapTests: XCTestCase {
 		// Deliberately WRONG: the real post-commit pq epoch is `owed.pqEpoch`.
 		let badAttestation = MLS.Combiner.ApqInfoUpdate(
 			tEpoch: owed.tEpoch, pqEpoch: owed.pqEpoch + 1)
+		// The `.custom` wrapped form, matching what `applyBind`'s
+		// `withDeployedWireConventions` ambient now expects to decode — a bare
+		// `.appDataUpdate` would misparse under that ambient instead of
+		// reaching the attestation check this test targets. The body encode
+		// itself must run under the same ambient (the deployed `.uint32`
+		// `ComponentID` width), since — unlike the typed `.appDataUpdate` arm,
+		// which defers encoding until `committing` below — `.custom`'s `body`
+		// is already-encoded `Data` at construction time.
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
 			.proposal(
 				apqPSK.proposal(
 					nonce: SessionTestSupport.classicalProvider.randomBytes(
 						SessionTestSupport.classicalProvider.hashSize))),
 			.proposal(
-				try badAttestation.proposal(
-					componentID: MLS.Combiner.Codepoints.deployed.apqComponentID
-				)),
+				.custom(
+					type: .init(.appDataUpdate),
+					body: try withDeployedWireConventions {
+						try badAttestation.appDataUpdate(
+							componentID: MLS.Combiner.Codepoints
+								.deployed.apqComponentID
+						).mlsEncoded()
+					})),
 		]
 
 		let (proposalMessage, _) = try recv.classical.proposeUpdate(
@@ -329,11 +342,11 @@ final class BootstrapTests: XCTestCase {
 		let proposalHash = try SessionTestSupport.classicalProvider.hash(proposalBytes)
 
 		// `Transition`/`SentCommit`/`PendingCommit` are `~Copyable`, so they
-		// cannot cross `withDeployedWireWidth`'s generic `<T>` boundary — the
+		// cannot cross `withDeployedWireConventions`'s generic `<T>` boundary — the
 		// whole commit/adopt/apply sequence runs inside the closure, which
 		// hands back only the `Copyable` results needed outside it.
 		let (commitBytes, advancedClassical): (Data, MLS.RFC9420.Group) =
-			try withDeployedWireWidth {
+			try withDeployedWireConventions {
 				let transition = try send.classical.committing(
 					SessionTestSupport.classicalProvider, proposals: proposals,
 					signingKey: aliceIdentity.signingKey,
@@ -390,7 +403,7 @@ final class BootstrapTests: XCTestCase {
 		let (staple, _, _) = try Frames.decodeMessageFrame(frame)
 		let (tBytes, _) = try Frames.decodeAPQPrivateMessage(staple)
 
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			guard
 				case .publicMessage(let tPub) = try MLS.RFC9420.Message(
 					mlsEncoded: tBytes)
@@ -414,7 +427,10 @@ final class BootstrapTests: XCTestCase {
 				switch proposal {
 				case .preSharedKey(.application(let componentID, _, _)):
 					pskComponentIDs.insert(componentID.rawValue)
-				case .appDataUpdate:
+				case .custom(let type, _) where type == .init(.appDataUpdate):
+					// The deployed wrapped form — `Proposal.custom`, decoded
+					// under the `customProposalTypes` ambient — not the typed
+					// `.appDataUpdate` arm.
 					appDataUpdateCount += 1
 				default:
 					XCTFail("unexpected proposal type in bind commit")

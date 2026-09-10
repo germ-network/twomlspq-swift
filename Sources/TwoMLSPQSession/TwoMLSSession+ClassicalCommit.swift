@@ -1,6 +1,7 @@
 import Foundation
 import MLSCodec
 import MLSCombiner
+import MLSExtensions
 import MLSProfileRFC9420
 
 // MARK: - Send / receive (one app message; no commit) — classical fold/bind commit machinery
@@ -64,7 +65,7 @@ extension TwoMLSSession {
 		_ offered: (digest: Data, proposing: Data, message: Data)
 	) throws {
 		guard let send = sendGroup else { throw TwoMLSError.proposalRejected }
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			guard
 				let offeredMessage = try? MLS.RFC9420.Message(
 					mlsEncoded: offered.message),
@@ -247,7 +248,7 @@ extension TwoMLSSession {
 		}
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
 
-		return try withDeployedWireWidth {
+		return try withDeployedWireConventions {
 			var proposalStore = MLS.RFC9420.ProposalStore()
 			var proposals: [MLS.RFC9420.ProposalOrRef] = []
 			var store = MLS.Combiner.PSKStore()
@@ -313,10 +314,18 @@ extension TwoMLSSession {
 						apqPSK.proposal(
 							nonce: classicalProvider.randomBytes(
 								classicalProvider.hashSize))))
+				// Deployed Rust carries this as an mls-rs `CustomProposal` —
+				// `0x0008 ‖ opaque<V>(body)` — not swift-mls's typed,
+				// unwrapped `.appDataUpdate` arm. `.custom` reproduces that
+				// wrapper byte-for-byte.
 				proposals.append(
 					.proposal(
-						try attestation.proposal(
-							componentID: codepoints.apqComponentID)))
+						.custom(
+							type: .init(.appDataUpdate),
+							body: try attestation.appDataUpdate(
+								componentID: codepoints
+									.apqComponentID
+							).mlsEncoded())))
 				pqCommitMessageForStaple = owedValue.pqCommitMessage
 			}
 
@@ -437,7 +446,7 @@ extension TwoMLSSession {
 		// The commit's injected `0xFF02` PSK is `ComponentID`-bearing, like
 		// the `0x05` bind's — decode and construct at the deployed width
 		// (§11 #6/MF7), so the whole body lives in one scope.
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			guard
 				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(
 					mlsEncoded: commitBytes)
@@ -543,6 +552,64 @@ extension TwoMLSSession {
 		return (updated, newSender, ownCredentialCanonicalized)
 	}
 
+	/// The single wrapped `0x0008` attestation a commit's effects carry, if any —
+	/// `applyBind`'s self-parsed stand-in for `MLS.Combiner.ApqInfoUpdate.extract`,
+	/// which scans only the TYPED `.appDataUpdate` effect and so never finds the
+	/// deployed wrapped form (`CommitEffect.customProposal`, from the ambient
+	/// `withDeployedWireConventions` sets up). Mirrors `extract`'s own contract
+	/// exactly: `nil` for none, `MLS.Combiner.Error.attestationMismatch` for more
+	/// than one or for a malformed/wrong-component one — never silently ignored.
+	private static func extractWrappedAttestation(
+		from effects: MLS.RFC9420.CommitEffects, componentID: MLS.Extensions.ComponentID
+	) throws -> MLS.Combiner.ApqInfoUpdate? {
+		var found: MLS.Combiner.ApqInfoUpdate?
+		for event in effects.events {
+			guard case .customProposal(let type, let body) = event,
+				type == .init(.appDataUpdate)
+			else {
+				continue
+			}
+			guard found == nil else { throw MLS.Combiner.Error.attestationMismatch }
+			let appDataUpdate = try MLS.Extensions.AppDataUpdate(mlsEncoded: body)
+			found = try MLS.Combiner.ApqInfoUpdate.decode(
+				from: appDataUpdate, componentID: componentID)
+		}
+		return found
+	}
+
+	/// Self-parsed stand-in for `MLS.Combiner.verifyFullCommitAttestation`
+	/// (draft §6.1's FULL-commit epoch attestation check), sourced from the
+	/// deployed wrapped `0x0008` proposal instead of swift-mls's typed
+	/// `.appDataUpdate` arm — see `extractWrappedAttestation`. Replicates the
+	/// combiner helper's checks exactly: each half carries exactly one
+	/// attestation, the two copies agree, and each attests the ACTUAL
+	/// post-apply epoch of both halves — so a tampered, absent, or
+	/// cross-half-mismatched attestation is rejected identically to the
+	/// typed-arm path this replaces.
+	private static func verifyWrappedFullCommitAttestation(
+		classicalEffects: MLS.RFC9420.CommitEffects,
+		pqEffects: MLS.RFC9420.CommitEffects,
+		classicalEpoch: UInt64,
+		pqEpoch: UInt64,
+		codepoints: MLS.Combiner.Codepoints
+	) throws -> MLS.Combiner.ApqInfoUpdate {
+		guard
+			let classical = try extractWrappedAttestation(
+				from: classicalEffects, componentID: codepoints.apqComponentID),
+			let pq = try extractWrappedAttestation(
+				from: pqEffects, componentID: codepoints.apqComponentID)
+		else {
+			throw MLS.Combiner.Error.attestationMismatch
+		}
+		guard classical == pq,
+			classical.tEpoch == classicalEpoch,
+			classical.pqEpoch == pqEpoch
+		else {
+			throw MLS.Combiner.Error.attestationMismatch
+		}
+		return classical
+	}
+
 	/// §4c/§11 #2/#5, Bob: apply Alice's `0x05` bind staple (a fold may ride
 	/// it too — the SAME commit that discharges the bind can fold an approved
 	/// peer Update by reference, §11 MF1). Classifies the classical commit's
@@ -575,7 +642,7 @@ extension TwoMLSSession {
 		// proposals (the injected external PSK and both `AppDataUpdate`s) —
 		// their decode, not just their construction, must run at the
 		// deployed wire width (§11 #6), so the whole body lives in one scope.
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			let (tBytes, pqBytes) = try Frames.decodeAPQPrivateMessage(staple)
 			guard
 				case .publicMessage(let tPub) = try MLS.RFC9420.Message(
@@ -695,7 +762,7 @@ extension TwoMLSSession {
 			let tTransition = try tPending.apply(onto: recv.classical)
 			recv.classical = tTransition.group
 
-			_ = try MLS.Combiner.verifyFullCommitAttestation(
+			_ = try Self.verifyWrappedFullCommitAttestation(
 				classicalEffects: classicalEffects, pqEffects: pqEffects,
 				classicalEpoch: recv.classical.context.epoch,
 				pqEpoch: recv.pq!.context.epoch, codepoints: codepoints)

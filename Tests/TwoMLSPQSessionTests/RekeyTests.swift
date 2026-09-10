@@ -363,7 +363,7 @@ final class RekeyTests: XCTestCase {
 	/// injected PSK, when present, carries a `ComponentID`, §11 #6).
 	private func rekeyCommitProposalCount(_ commitFrame: Data) throws -> Int {
 		let commitBytes = try Frames.decodePQRekeyCommit(commitFrame)
-		return try withDeployedWireWidth {
+		return try withDeployedWireConventions {
 			guard
 				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(
 					mlsEncoded: commitBytes),

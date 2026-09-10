@@ -116,7 +116,7 @@ extension TwoMLSSession {
 			codepoints: codepoints)
 		bootstrapKPSecret = nil
 
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			let recvPQEpochBeforeExport = pqGroup.context.epoch
 			let sExport = try MLS.Combiner.ExportedPsk.export(
 				from: &pqGroup, pqProvider,
@@ -153,7 +153,7 @@ extension TwoMLSSession {
 			throw TwoMLSError.notEstablished
 		}
 
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			let attestation = MLS.Combiner.ApqInfoUpdate(
 				tEpoch: send.classical.context.epoch + 1,
 				pqEpoch: sendPQ.context.epoch + 1)
@@ -167,12 +167,19 @@ extension TwoMLSSession {
 				+ sendPQ.context.groupID + Data([0x52])
 			let nonce = pqProvider.randomBytes(pqProvider.hashSize)
 
+			// Deployed Rust carries this as an mls-rs `CustomProposal` —
+			// `0x0008 ‖ opaque<V>(body)` — not swift-mls's typed, unwrapped
+			// `.appDataUpdate` arm. `.custom` reproduces that wrapper
+			// byte-for-byte.
 			let proposals: [MLS.RFC9420.ProposalOrRef] = [
 				.proposal(
 					.preSharedKey(.external(pskID: injectedID, nonce: nonce))),
 				.proposal(
-					try attestation.proposal(
-						componentID: codepoints.apqComponentID)),
+					.custom(
+						type: .init(.appDataUpdate),
+						body: try attestation.appDataUpdate(
+							componentID: codepoints.apqComponentID
+						).mlsEncoded())),
 			]
 			let transition = try sendPQ.committing(
 				pqProvider, proposals: proposals, signingKey: identity.signingKey,

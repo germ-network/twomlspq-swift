@@ -75,7 +75,7 @@ extension TwoMLSSession {
 			throw TwoMLSError.notEstablished
 		}
 
-		return try withDeployedWireWidth {
+		return try withDeployedWireConventions {
 			let updBytes = try Frames.decodePQRekeyUpd(frame)
 			guard
 				case .publicMessage(let updPub) = try MLS.RFC9420.Message(
@@ -170,7 +170,7 @@ extension TwoMLSSession {
 		}
 		guard let sendPQ = sendGroup?.pq else { throw TwoMLSError.notEstablished }
 
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			let commitBytes = try Frames.decodePQRekeyCommit(frame)
 			guard
 				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(

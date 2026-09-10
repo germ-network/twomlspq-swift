@@ -8,10 +8,10 @@ import XCTest
 
 /// Differential byte-identity tests against the deployed Rust reference (golden hex +
 /// regeneration recipe in `RustWireVectors.swift`): (b) the §7 Germ message-frame /
-/// proposal-section u32-LE framing, and (c) the deployed uint32 `ComponentID` width
-/// feeding the AppDataUpdate attestation body. (a) is recorded as a documented,
-/// non-passing divergence — see
-/// `testAppDataUpdateWrapperDivergesFromDeployedRustPendingUpstreamSeam`.
+/// proposal-section u32-LE framing, (c) the deployed uint32 `ComponentID` width
+/// feeding the AppDataUpdate attestation body, and (a) the deployed `opaque<V>`
+/// wrapper around the AppDataUpdate (`0x0008`) proposal — see
+/// `testAppDataUpdateWrapperByteMatchesDeployedRust`.
 @available(iOS 26, macOS 26, *)
 final class RustWireVectorsTests: XCTestCase {
 
@@ -70,63 +70,68 @@ final class RustWireVectorsTests: XCTestCase {
 
 	/// `component_id(uint32 BE) ‖ op ‖ opaque update<V>` — the AppDataUpdate BODY,
 	/// built through the port's actual production call
-	/// (`ApqInfoUpdate.proposal(componentID:)`, `TwoMLSSession+ClassicalCommit.swift`
+	/// (`ApqInfoUpdate.appDataUpdate(componentID:)`, `TwoMLSSession+ClassicalCommit.swift`
 	/// / `+Bootstrap.swift`), byte-matches deployed Rust once the port's ambient
 	/// `ComponentID` wire width is the deployed `.uint32` (draft-08) instead of
-	/// swift-mls's `.uint16` default (draft-09).
+	/// swift-mls's `.uint16` default (draft-09). Then round-trips as the wrapped
+	/// `.custom` proposal the port actually emits (see (a) below) under the same
+	/// `withDeployedWireConventions` scope the receive path requires.
 	func testAppDataUpdateBodyMatchesDeployedUint32Width() throws {
 		let attestation = MLS.Combiner.ApqInfoUpdate(tEpoch: 2, pqEpoch: 1)
 		let componentID = MLS.Combiner.Codepoints.deployed.apqComponentID
-		let proposal = try attestation.proposal(componentID: componentID)
 
-		let fullEncoded = try withDeployedWireWidth { try proposal.mlsEncoded() }
+		let body = try withDeployedWireConventions {
+			try attestation.appDataUpdate(componentID: componentID).mlsEncoded()
+		}
+		XCTAssertEqual(body, hexData(RustWireVectors.appDataUpdateBody))
 
-		// Leading 2 bytes are the RFC 9420 ProposalType (0x0008, big-endian) — strip
-		// them to isolate the AppDataUpdate BODY the divergence (a) is about.
-		XCTAssertEqual(fullEncoded.prefix(2), Data([0x00, 0x08]))
-		XCTAssertEqual(
-			Data(fullEncoded.dropFirst(2)), hexData(RustWireVectors.appDataUpdateBody))
-
-		// Round-trips under the same width scope.
-		let decoded = try withDeployedWireWidth {
+		let proposal = MLS.RFC9420.Proposal.custom(type: .init(.appDataUpdate), body: body)
+		let fullEncoded = try withDeployedWireConventions { try proposal.mlsEncoded() }
+		let decoded = try withDeployedWireConventions {
 			try MLS.RFC9420.Proposal(mlsEncoded: fullEncoded)
 		}
 		XCTAssertEqual(decoded, proposal)
 	}
 
-	// MARK: - (a) documented divergence — NOT a passing byte-match
+	// MARK: - (a) the deployed `opaque<V>` wrapper
 
 	/// The AppDataUpdate `0x0008` wrapper: deployed Rust builds this proposal as an
 	/// mls-rs `CustomProposal`, whose `Proposal::Custom` encoding adds an outer
 	/// `opaque<V>`/VarInt length prefix around the body
-	/// (`0x0008 ‖ VarInt(body.len) ‖ body`). swift-mls's `.appDataUpdate` arm is a
-	/// typed, spec-correct decoder with no such wrapper — it emits the BARE body
-	/// (`0x0008 ‖ body`). Closing this requires a swift-mls custom/raw-proposal seam
-	/// (authorized, tracked as a separate upstream change) that has not landed; until
-	/// it does, the port emits the bare, spec-correct form and does NOT byte-match
-	/// deployed Rust's FULL commit bytes for this one proposal. This test pins that
-	/// gap precisely rather than leaving it undocumented: the two forms differ by
-	/// EXACTLY the outer VarInt length-prefix byte.
-	func testAppDataUpdateWrapperDivergesFromDeployedRustPendingUpstreamSeam() throws {
+	/// (`0x0008 ‖ VarInt(body.len) ‖ body`). The port now reproduces that
+	/// byte-for-byte via `Proposal.custom(type:body:)`
+	/// (`TwoMLSSession+ClassicalCommit.swift` / `+Bootstrap.swift`), so the FULL
+	/// commit-carried proposal bytes byte-match deployed Rust — not just the body.
+	func testAppDataUpdateWrapperByteMatchesDeployedRust() throws {
 		let attestation = MLS.Combiner.ApqInfoUpdate(tEpoch: 2, pqEpoch: 1)
 		let componentID = MLS.Combiner.Codepoints.deployed.apqComponentID
-		let proposal = try attestation.proposal(componentID: componentID)
-		let swiftBareFull = try withDeployedWireWidth { try proposal.mlsEncoded() }
 
-		let rustWrappedFull = hexData(RustWireVectors.appDataUpdateFullWrapped)
+		let fullEncoded = try withDeployedWireConventions {
+			try MLS.RFC9420.Proposal.custom(
+				type: .init(.appDataUpdate),
+				body: try attestation.appDataUpdate(componentID: componentID)
+					.mlsEncoded()
+			).mlsEncoded()
+		}
 
-		XCTAssertNotEqual(swiftBareFull, rustWrappedFull)
+		XCTAssertEqual(fullEncoded, hexData(RustWireVectors.appDataUpdateFullWrapped))
+	}
 
-		// Rust = 0x0008 ‖ VarInt(body.len) ‖ body; swift = 0x0008 ‖ body. Splicing the
-		// one-byte VarInt out of Rust's bytes (index 2, right after the 2-byte
-		// ProposalType) must recover swift's bare bytes exactly — the ONLY delta.
-		XCTAssertEqual(rustWrappedFull.count, swiftBareFull.count + 1)
-		let body = swiftBareFull.dropFirst(2)
-		let rustVarIntByte = rustWrappedFull[rustWrappedFull.startIndex + 2]
-		XCTAssertEqual(Int(rustVarIntByte), body.count)
+	/// The accept direction of the same wrapper: the deployed-Rust golden wire
+	/// decodes, under the `customProposalTypes` ambient, as a `.custom` proposal
+	/// naming the `appDataUpdate` type and carrying the same BODY (c) pins.
+	func testAppDataUpdateWrapperAcceptsDeployedRustWireUnderAmbient() throws {
+		let golden = hexData(RustWireVectors.appDataUpdateFullWrapped)
 
-		var reconstructed = rustWrappedFull
-		reconstructed.remove(at: reconstructed.startIndex + 2)
-		XCTAssertEqual(reconstructed, swiftBareFull)
+		let decoded = try withDeployedWireConventions {
+			try MLS.RFC9420.Proposal(mlsEncoded: golden)
+		}
+
+		guard case .custom(let type, let body) = decoded else {
+			XCTFail("expected a wrapped .custom proposal, got \(decoded)")
+			return
+		}
+		XCTAssertEqual(type, .init(.appDataUpdate))
+		XCTAssertEqual(body, hexData(RustWireVectors.appDataUpdateBody))
 	}
 }

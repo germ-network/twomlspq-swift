@@ -337,7 +337,7 @@ final class FoldTests: XCTestCase {
 		}
 		let mallory = try SessionTestSupport.identity("mallory-fold")
 
-		let badCommitBytes = try withDeployedWireWidth { () throws -> Data in
+		let badCommitBytes = try withDeployedWireConventions { () throws -> Data in
 			guard
 				case .publicMessage(let updatePub) = try MLS.RFC9420.Message(
 					mlsEncoded: offer.message)
@@ -471,7 +471,7 @@ final class FoldTests: XCTestCase {
 		// group the crafted commit produces, not on bob's own unrelated
 		// Group_B (unlike the sibling roster-violation test above, this
 		// commit is no longer expected to throw before reaching `unprotect`).
-		let (commitBytes, appBytes) = try withDeployedWireWidth {
+		let (commitBytes, appBytes) = try withDeployedWireConventions {
 			() throws -> (Data, Data) in
 			guard
 				case .publicMessage(let updatePub) = try MLS.RFC9420.Message(
