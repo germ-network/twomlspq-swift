@@ -261,7 +261,8 @@ struct AuthCore: Sendable, Equatable {
 				try validateMember(presentation)
 			case .credentialReplaced(_, let old, let new):
 				try validateSuccession(old: old, new: new)
-			case .epochAdvanced, .updated, .removed, .membershipRemoved, .appDataUpdate:
+			case .epochAdvanced, .updated, .removed, .membershipRemoved, .appDataUpdate,
+				.customProposal:
 				break
 			}
 		}

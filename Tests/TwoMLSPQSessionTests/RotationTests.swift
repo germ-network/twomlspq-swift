@@ -672,7 +672,7 @@ final class RotationTests: XCTestCase {
 		}
 		let mallory = try SessionTestSupport.identity("mallory-rotation")
 
-		let badCommitBytes = try withDeployedWireWidth { () throws -> Data in
+		let badCommitBytes = try withDeployedWireConventions { () throws -> Data in
 			guard
 				case .publicMessage(let updatePub) = try MLS.RFC9420.Message(
 					mlsEncoded: rotatingMessage)
@@ -733,7 +733,7 @@ final class RotationTests: XCTestCase {
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let neverOfferedID = Data("mallory-never-offered".utf8)
 
-		let badCommitBytes = try withDeployedWireWidth { () throws -> Data in
+		let badCommitBytes = try withDeployedWireConventions { () throws -> Data in
 			let transition = try sendGroupB.classical.committing(
 				SessionTestSupport.classicalProvider,
 				proposals: [],
@@ -807,7 +807,14 @@ final class RotationTests: XCTestCase {
 		store.register(apqPSK)
 
 		// The CORRECT attestation (unlike the sibling attestation test) —
-		// only the never-offered `newIdentity` below is malicious.
+		// only the never-offered `newIdentity` below is malicious. The `.custom`
+		// wrapped form, matching what `applyBind`'s `withDeployedWireConventions`
+		// ambient now expects to decode — a bare `.appDataUpdate` would misparse
+		// under that ambient instead of reaching the adjudicate seam this test
+		// targets. The body encode itself must run under the same ambient (the
+		// deployed `.uint32` `ComponentID` width), since — unlike the typed
+		// `.appDataUpdate` arm, which defers encoding until `committing` below —
+		// `.custom`'s `body` is already-encoded `Data` at construction time.
 		let attestation = MLS.Combiner.ApqInfoUpdate(
 			tEpoch: owed.tEpoch, pqEpoch: owed.pqEpoch)
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
@@ -816,9 +823,14 @@ final class RotationTests: XCTestCase {
 					nonce: SessionTestSupport.classicalProvider.randomBytes(
 						SessionTestSupport.classicalProvider.hashSize))),
 			.proposal(
-				try attestation.proposal(
-					componentID: MLS.Combiner.Codepoints.deployed.apqComponentID
-				)
+				.custom(
+					type: .init(.appDataUpdate),
+					body: try withDeployedWireConventions {
+						try attestation.appDataUpdate(
+							componentID: MLS.Combiner.Codepoints
+								.deployed.apqComponentID
+						).mlsEncoded()
+					})
 			),
 		]
 
@@ -832,7 +844,7 @@ final class RotationTests: XCTestCase {
 		let proposalHash = try SessionTestSupport.classicalProvider.hash(proposalBytes)
 
 		let (commitBytes, advancedClassical): (Data, MLS.RFC9420.Group) =
-			try withDeployedWireWidth {
+			try withDeployedWireConventions {
 				let transition = try send.classical.committing(
 					SessionTestSupport.classicalProvider, proposals: proposals,
 					sign: MLS.RFC9420.signingClosure(

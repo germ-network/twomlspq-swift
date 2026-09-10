@@ -74,11 +74,11 @@ enum RustWireVectors {
 	static let appDataUpdateBody = "0000ff01011000000000000000020000000000000001"
 
 	/// `Proposal::Custom(custom).mls_encode_to_vec()` — the FULL deployed-Rust wire
-	/// bytes: `0x0008 ‖ VarInt(body.len) ‖ body`. Diverges from swift's spec-correct
-	/// bare `0x0008 ‖ body` by exactly the VarInt length prefix — one byte here only
-	/// because this body is 22 bytes (< 64, so the MLS VarInt is a single byte); a
-	/// regenerated vector with a ≥64-byte body would carry a multi-byte prefix (see
-	/// `testAppDataUpdateWrapperDivergesFromDeployedRustPendingUpstreamSeam`).
+	/// bytes the port now reproduces byte-for-byte via `Proposal.custom(type:body:)`:
+	/// `0x0008 ‖ VarInt(body.len) ‖ body`. One byte of length prefix here only because
+	/// this body is 22 bytes (< 64, so the MLS VarInt is a single byte); a regenerated
+	/// vector with a ≥64-byte body would carry a multi-byte prefix (see
+	/// `testAppDataUpdateWrapperByteMatchesDeployedRust`).
 	static let appDataUpdateFullWrapped =
 		"0008160000ff01011000000000000000020000000000000001"
 }

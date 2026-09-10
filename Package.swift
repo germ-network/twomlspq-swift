@@ -16,14 +16,14 @@ let package = Package(
 	],
 	dependencies: [
 		// swift-mls has no tags; pin by commit. `MLSCrypto` is the CipherSuiteProvider seam.
-		// 241ed48 = main HEAD at this pin, picking up the signer-closure seam (ADR 0002)
-		// and credential / signature-key rotation authoring (`NewSigningIdentity`,
-		// `signingClosure(_:current:new:)`) — the capability the §A.5 re-key handoff needs.
-		// Additive: `signingKey:` stays first-class sugar over the closure, so existing
-		// call sites are unchanged.
+		// 22cfb6a = main HEAD, adding the general RFC 9420 §12 custom / raw proposal seam
+		// (`Proposal.custom(type:body:)` + the `customProposalTypes` receive-scope ambient):
+		// the capability this layer needs to emit and accept the deployed-Rust `opaque<V>`
+		// wrapper on the AppDataUpdate (0x0008) attestation. Additive over the prior pin
+		// (241ed48: the signer-closure seam and credential / signature-key rotation authoring).
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			revision: "241ed489952f6fd83391f56d3fdcf7d8617d8639"
+			revision: "22cfb6adede1ffda262c3085d670bd707dc5f469"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		.package(

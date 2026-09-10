@@ -268,7 +268,7 @@ extension TwoMLSSession {
 	/// signature- and membership-tag-authenticated; only relevant once
 	/// `proposing` names something other than "my one peer."
 	private mutating func stampLicenseIfOffered(_ proposalMessage: Data) {
-		withDeployedWireWidth {
+		withDeployedWireConventions {
 			guard let message = try? MLS.RFC9420.Message(mlsEncoded: proposalMessage),
 				case .publicMessage(let updatePub) = message,
 				let send = sendGroup

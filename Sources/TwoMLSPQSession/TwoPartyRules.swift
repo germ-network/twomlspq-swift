@@ -43,6 +43,11 @@ enum TwoPartyRules {
 				break
 			case .remove, .reInit, .externalInit, .groupContextExtensions:
 				throw TwoMLSError.invalidCreationProposals
+			case .custom:
+				// A creation commit never carries a wrapped attestation (or any
+				// other non-default proposal) — fail closed rather than silently
+				// accepting an unvetted custom proposal on group formation.
+				throw TwoMLSError.invalidCreationProposals
 			}
 		}
 		guard addCount == 1, updateCount == 0 else {
@@ -63,7 +68,10 @@ enum TwoPartyRules {
 			switch event {
 			case .epochAdvanced: sawEpochAdvanced = true
 			case .appDataUpdate: sawAppDataUpdate = true
-			case .added, .removed, .credentialReplaced, .updated, .membershipRemoved:
+			case .customProposal(let type, _) where type == .init(.appDataUpdate):
+				sawAppDataUpdate = true
+			case .added, .removed, .credentialReplaced, .updated, .membershipRemoved,
+				.customProposal:
 				throw TwoMLSError.invalidBindEffects
 			}
 		}
@@ -113,7 +121,9 @@ enum TwoPartyRules {
 			case .updated(let leaf): movedLeaves.append(leaf)
 			case .credentialReplaced(let leaf, _, _): movedLeaves.append(leaf)
 			case .appDataUpdate: sawAppDataUpdate = true
-			case .added, .removed, .membershipRemoved:
+			case .customProposal(let type, _) where type == .init(.appDataUpdate):
+				sawAppDataUpdate = true
+			case .added, .removed, .membershipRemoved, .customProposal:
 				throw error
 			}
 		}

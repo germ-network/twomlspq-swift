@@ -84,7 +84,7 @@ extension APQGroup {
 		provider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> (group: APQGroup, welcome: MLS.RFC9420.Welcome) {
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			let info = MLS.Combiner.APQInfo(
 				tSessionGroupID: founder.groupID,
 				pqSessionGroupID: pqGroupID,
@@ -137,7 +137,7 @@ extension APQGroup {
 		provider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> APQGroup {
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			var pskStore = MLS.Combiner.PSKStore()
 			pskStore.register(crossPSK)
 			let pending = try MLS.RFC9420.Group.joining(
@@ -233,7 +233,7 @@ extension APQGroup {
 		pqProvider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> (pqGroup: MLS.RFC9420.Group, welcome: MLS.RFC9420.Welcome) {
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			guard
 				let classicalInfo = try MLS.Combiner.APQInfo.read(
 					fromExtensionsOf: sendGroupClassical.context,
@@ -287,7 +287,7 @@ extension APQGroup {
 		pqProvider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> MLS.RFC9420.Group {
-		try withDeployedWireWidth {
+		try withDeployedWireConventions {
 			let pending = try MLS.RFC9420.Group.joining(
 				pqProvider, welcome: welcome, credentials: credentials,
 				psk: { _ in nil })
