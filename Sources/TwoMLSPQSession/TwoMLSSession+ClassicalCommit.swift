@@ -220,14 +220,18 @@ extension TwoMLSSession {
 	/// enough to trigger a commit (the catch-up-only trigger is new: a plain
 	/// `prepareToEncrypt()` with nothing queued or owed must still fire a
 	/// commit once a rotation has canonicalized my recv-leaf but not yet my
-	/// send-leaf). An owed bind rides ANY committing round this triggers,
-	/// licensed or not (MF6): a fold (or a catch-up) that commits advances
-	/// `sendGroup.classical` regardless, which would make an owed bind's
-	/// reserved epoch stale and doom it, so any of those that commits must
-	/// carry an outstanding bind along. Staple selection keys off `owed !=
-	/// nil` (→ `0x05`), not `didCommit` (MF6). Reports whether a commit
-	/// happened, and — fold only — the folded peer leaf's verified identity
-	/// (MF5, never the unauthenticated wire `proposing`).
+	/// send-leaf). Evidence-gating (`protocol-flows.md` §Evidence-gating): the
+	/// catch-up fires only on a LICENSED round, so every committing round is
+	/// either a fold (holding the peer's proposal is evidence) or licensed —
+	/// which is exactly why an owed bind rides every round that commits (MF6):
+	/// every such round already carries evidence, and one that committed past
+	/// an unapplied bind would keep the bind's reserved epoch forever
+	/// `.epochDesync` (`protocol-flows.md` §Evidence-gating). An unlicensed
+	/// catch-up is deferred, never dropped — `rotationCandidate` persists and
+	/// the peer's next inbound frame re-stamps the license. Staple selection
+	/// keys off `owed != nil` (→ `0x05`), not `didCommit` (MF6). Reports
+	/// whether a commit happened, and — fold only — the folded peer leaf's
+	/// verified identity (MF5, never the unauthenticated wire `proposing`).
 	// internal: used by Messaging.prepareToEncrypt
 	internal mutating func committingRound() throws -> (
 		didCommit: Bool, committedRemoteClientID: Data?
@@ -246,8 +250,20 @@ extension TwoMLSSession {
 		// It stays so a fold can never strand an owed bind by advancing the
 		// epoch without discharging it, should that invariant ever change.
 		let willDischargeBind = owed != nil && (folded != nil || licensed)
-		let catchUpCandidate = try Self.ownLeafCatchUpTarget(
-			send: sendGroup, recv: recvGroup, candidate: rotationCandidate)
+		// F4/§3c, now evidence-gated (`protocol-flows.md` §Evidence-gating):
+		// the catch-up fires only on a LICENSED round, so every committing
+		// round is either a fold (holding the peer's proposal IS the evidence)
+		// or licensed — an unlicensed commit could otherwise produce a staple
+		// nothing bridges and permanently lose a PQ epoch at the peer. The
+		// catch-up is DEFERRED, never dropped: `rotationCandidate` persists,
+		// and the peer's next inbound frame re-stamps the license
+		// (`stampLicenseIfOffered`), so the very next `prepareToEncrypt`
+		// performs it.
+		let catchUpCandidate =
+			licensed
+			? try Self.ownLeafCatchUpTarget(
+				send: sendGroup, recv: recvGroup, candidate: rotationCandidate)
+			: nil
 		guard folded != nil || willDischargeBind || catchUpCandidate != nil else {
 			return (false, nil)
 		}
