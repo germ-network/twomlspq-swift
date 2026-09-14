@@ -392,9 +392,13 @@ final class BootstrapTests: XCTestCase {
 
 	/// The classical-half arm: the GENUINE PQ commit rides along (so the guard
 	/// under test, not an earlier one, fires), but the classical half omits
-	/// the `apq_psk` (`0xFF01`) proposal. `.missingBindPSK`; nothing on Bob
-	/// moves — in particular `lastSendPQExported` stays unwritten, which is
-	/// what the deferred-stamp fix buys.
+	/// the `apq_psk` (`0xFF01`) proposal. De-conflated onto the library's
+	/// `MLS.Combiner.verifyFullCommit` (`verifyApqPskBound` half): the
+	/// `ResolutionRecord` never observed the current PQ epoch's `apq_psk`, so
+	/// this now throws `MLS.Combiner.Error.apqPskNotBound` rather than the
+	/// port's own (deleted) `.missingBindPSK` guard. Nothing on Bob moves —
+	/// in particular `lastSendPQExported` stays unwritten, which is what the
+	/// deferred-stamp fix buys.
 	func testBindWithoutTheClassicalAPQPSKIsRejected() throws {
 		let established = try SessionTestSupport.established()
 		var alice = established.alice
@@ -427,7 +431,7 @@ final class BootstrapTests: XCTestCase {
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
 		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .missingBindPSK)
+			XCTAssertEqual(error as? MLS.Combiner.Error, .apqPskNotBound)
 		}
 		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore)
@@ -518,7 +522,7 @@ final class BootstrapTests: XCTestCase {
 	}
 
 	/// A classical bind commit carrying NO attestation proposal cannot pass the
-	/// shape whitelist (a FULL bind requires its `.appDataUpdate` event) — the
+	/// shape allow-list (a FULL bind requires its `.appDataUpdate` event) — the
 	/// absent-attestation rejection, thrown before any apply. Nothing on Bob
 	/// moves, and the genuine bind still applies afterward.
 	func testBindRejectsAbsentAttestation() throws {
@@ -549,7 +553,7 @@ final class BootstrapTests: XCTestCase {
 
 	/// A classical bind commit carrying TWO identical wrapped attestation
 	/// proposals (the PQ half remains the genuine one) clears the shape
-	/// whitelist and is then rejected by the attestation check's duplicate arm
+	/// allow-list and is then rejected by the attestation check's duplicate arm
 	/// (`.attestationMismatch`), again before anything applies.
 	func testBindRejectsDuplicateAttestations() throws {
 		let (alice, bobFixture, aliceIdentity, owed) = try bootstrapToOwedBind()

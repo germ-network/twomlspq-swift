@@ -55,6 +55,53 @@ enum TwoPartyRules {
 		}
 	}
 
+	/// Assert that an applied commit's INLINE proposals are EXACTLY the
+	/// permitted set for the receive apply path calling this — every
+	/// `.application`/`.external` PSK id not in the caller's expected sets,
+	/// every `.resumption` PSK, and every proposal type/shape the path does
+	/// not name is rejected, never silently ignored. Runs over the commit's
+	/// raw `proposals` list (a `.reference` entry is skipped: it names a
+	/// proposal already bounded by this session's own staged/registered
+	/// store, not attacker-controlled content riding the commit itself), so
+	/// callers can and should run it BEFORE the commit is handed to
+	/// `validating` — it fires ahead of signature/membership-tag
+	/// verification, not after. `expectedApplicationStorageIDs` compares the
+	/// width-pinned storage id (`PreSharedKeyIdentifier.applicationStorageID`
+	/// — the same key `PSKStore`/`recordingResolver` key by), not the raw
+	/// `(componentID, pskID)` pair, so it agrees with what the resolver
+	/// actually bound.
+	static func validateInlineProposals(
+		_ proposals: [MLS.RFC9420.ProposalOrRef],
+		expectedApplicationStorageIDs: Set<Data>,
+		expectedExternalPSKIDs: Set<Data>,
+		allowAttestation: Bool
+	) throws {
+		for entry in proposals {
+			guard case .proposal(let proposal) = entry else { continue }
+			switch proposal {
+			case .preSharedKey(.application(let componentID, let pskID, _)):
+				let identifier = MLS.RFC9420.PreSharedKeyIdentifier.application(
+					componentID: componentID, pskID: pskID, nonce: Data())
+				guard let id = try identifier.applicationStorageID(),
+					expectedApplicationStorageIDs.contains(id)
+				else {
+					throw TwoMLSError.unexpectedProposal
+				}
+			case .preSharedKey(.external(let pskID, _)):
+				guard expectedExternalPSKIDs.contains(pskID) else {
+					throw TwoMLSError.unexpectedProposal
+				}
+			case .preSharedKey(.resumption):
+				throw TwoMLSError.unexpectedProposal
+			case .custom(let type, _) where type == .init(.appDataUpdate):
+				guard allowAttestation else { throw TwoMLSError.unexpectedProposal }
+			case .add, .update, .remove, .reInit, .externalInit,
+				.groupContextExtensions, .appDataUpdate, .custom:
+				throw TwoMLSError.unexpectedProposal
+			}
+		}
+	}
+
 	/// The PQ-half bind commit's (`owePQBind`, a pathless PARTIAL) applied
 	/// `CommitEffects` must be exactly `[epochAdvanced, appDataUpdate]` — no
 	/// membership or credential change, and no path-leaf refresh (pathless).

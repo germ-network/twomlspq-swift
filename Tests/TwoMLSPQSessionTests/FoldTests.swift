@@ -340,14 +340,14 @@ final class FoldTests: XCTestCase {
 		}
 	}
 
-	// MARK: - Fold effects whitelist
+	// MARK: - Fold effects allow-list
 
 	/// A commit that folds the approved peer Update AND an extra Add is
 	/// rejected as `.invalidFoldEffects` before it is ever applied —
 	/// `CommitEffects` has no public initializer, so this drives a real
 	/// over-broad commit through swift-mls directly (mirroring
 	/// `RekeyTests.testRekeyApplyRejectsCommitWithExtraAddEffect`).
-	func testFoldEffectsWithAnAddThrowsInvalidFoldEffects() throws {
+	func testFoldEffectsWithAnAddThrowsUnexpectedProposal() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
 		try alice.queueProposal(digest: offer.digest)
@@ -390,9 +390,85 @@ final class FoldTests: XCTestCase {
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposal, app: app)
 
+		// The exact-id inline allow-list (`TwoPartyRules.validateInlineProposals`)
+		// now catches the smuggled `Add` before `validating` ever runs — the
+		// fold-only path's expected set never includes `.add` — so this now
+		// throws `.unexpectedProposal` rather than reaching the post-apply
+		// `.invalidFoldEffects` shape check. Same rejection, earlier gate.
 		let recvEpochBefore = bob.recvGroup?.classical.context.epoch
 		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidFoldEffects)
+			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
+		}
+		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore)
+	}
+
+	/// The exact-id tightening itself: a commit that folds the approved peer
+	/// Update AND an EXTRA `application` PSK naming the cross-party
+	/// component (`0xFF02`) but a pskID Bob never ledgered is rejected as
+	/// `.unexpectedProposal` — Alice (the constructing side) supplies her
+	/// own throwaway value for the forged id via `committing`'s `psk:`
+	/// closure so the commit builds and signs genuinely; Bob's allow-list
+	/// rejects it from the proposal list alone, never needing (or getting
+	/// the chance) to resolve it. Proves the ordering claim: the allow-list
+	/// runs on `applyFoldCommit`'s decoded `commitValue.proposals` BEFORE
+	/// `recv.classical.validating` — an unresolvable/unexpected PSK id would
+	/// otherwise surface as a `validating` failure instead.
+	func testFoldWithExtraWrongIDApplicationPSKThrowsUnexpectedProposal() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let offer = try surfaceOffer(from: &bob, to: &alice)
+		try alice.queueProposal(digest: offer.digest)
+
+		guard let sendGroupA = alice.sendGroup else {
+			XCTFail("expected alice to be established")
+			return
+		}
+
+		let forgedIdentifier = MLS.RFC9420.PreSharedKeyIdentifier.application(
+			componentID: TwoMLSSession.crossPartyComponentID,
+			pskID: Data("forged-cross-party-psk".utf8),
+			nonce: SessionTestSupport.classicalProvider.randomBytes(
+				SessionTestSupport.classicalProvider.hashSize))
+		let forgedSecret = SecretBytes(
+			randomByteCount: SessionTestSupport.classicalProvider.hashSize)
+
+		let badCommitBytes = try withDeployedWireConventions { () throws -> Data in
+			guard
+				case .publicMessage(let updatePub) = try MLS.RFC9420.Message(
+					mlsEncoded: offer.message)
+			else {
+				throw TwoMLSError.malformedSideBandMessage
+			}
+			let verified = try sendGroupA.classical.verifying(
+				SessionTestSupport.classicalProvider, proposal: updatePub)
+			var proposalStore = MLS.RFC9420.ProposalStore()
+			let ref = try proposalStore.insert(
+				verified, SessionTestSupport.classicalProvider)
+
+			let transition = try sendGroupA.classical.committing(
+				SessionTestSupport.classicalProvider,
+				proposals: [
+					.reference(ref),
+					.proposal(.preSharedKey(forgedIdentifier)),
+				],
+				proposalStore: proposalStore, signingKey: alice.identity.signingKey,
+				randomness: try .generate(SessionTestSupport.classicalProvider),
+				includePath: true, framing: .publicMessage,
+				psk: { identifier in
+					identifier == forgedIdentifier ? forgedSecret : nil
+				})
+			return try transition.takeOutput().message.mlsEncoded()
+		}
+
+		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
+		_ = try bob.prepareToEncrypt()
+		let carrierFrame = try bob.encrypt(Data("carrier".utf8))
+		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
+		let badFrame = Frames.encodeMessageFrame(
+			staple: badStaple, proposal: proposal, app: app)
+
+		let recvEpochBefore = bob.recvGroup?.classical.context.epoch
+		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
 		}
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore)
 	}
@@ -460,13 +536,13 @@ final class FoldTests: XCTestCase {
 
 	/// §15/slice 6 boundary, layer (b): the apply-side counterpart. A
 	/// hand-built commit that FOLDS bob's credential-rotating Upd BY
-	/// REFERENCE (mirroring `testFoldEffectsWithAnAddThrowsInvalidFoldEffects`'s
+	/// REFERENCE (mirroring `testFoldEffectsWithAnAddThrowsUnexpectedProposal`'s
 	/// construction, swapping the extra Add for the rotating proposal itself)
 	/// now applies cleanly: the reshaped `TwoPartyRules.
 	/// validateTwoPartyUpdateCommit` treats a moved `.credentialReplaced` leaf
 	/// as an equivalent leaf-move signal to `.updated`, and
 	/// `AuthCore.adjudicate` accepts a same-id rotation (`pred == succ`
-	/// trivially). Contrast `testFoldEffectsWithAnAddThrowsInvalidFoldEffects`,
+	/// trivially). Contrast `testFoldEffectsWithAnAddThrowsUnexpectedProposal`,
 	/// which still rejects a genuine roster change riding the identical
 	/// commit shape — slice 6 widens exactly the credential axis, not the
 	/// membership one. The rotating message is seeded directly into bob's
