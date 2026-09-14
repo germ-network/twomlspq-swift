@@ -16,22 +16,26 @@ extension TwoMLSSession {
 	/// having moved since the first call) — but only while `recvGroup.pq` is
 	/// still nil, so a spent round (the bind already landed) falls through
 	/// to the normal guard instead of re-emitting a stale `0x13`.
-	public mutating func pqBootstrapBegin() throws -> Data {
+	public mutating func pqBootstrapBegin() throws -> SideBandResult {
 		if case .bootstrapInitiated = pqInflight, let pending = pendingSideBand,
 			recvGroup?.pq == nil
 		{
-			return pending
+			advanceStateSeq()
+			return SideBandResult(frame: pending, update: try stateUpdate(kind: .core))
 		}
 		guard
 			pqTurnMine, sendGroup != nil, let recv = recvGroup, recv.pq == nil,
-			let bootstrapKP
+			let bootstrapKP = try bootstrapKPBytes()
 		else {
 			throw TwoMLSError.sessionNotReady
 		}
 		let frame = Frames.encodePQBootstrapKP(bootstrapKP)
 		pqInflight = .bootstrapInitiated
 		pendingSideBand = frame
-		return frame
+
+		// Return cadence (slice 8a): parks the 0x13 frame — classical state only → `.core`.
+		advanceStateSeq()
+		return SideBandResult(frame: frame, update: try stateUpdate(kind: .core))
 	}
 
 	/// The responder (Bob) receives KP′, checks it against the commitment
@@ -40,21 +44,24 @@ extension TwoMLSSession {
 	/// side-band frame. Bob is `isFullyEstablished` once this returns.
 	/// Idempotent once `sendGroup.pq` is founded: re-returns the retained
 	/// `0x15` rather than founding a second Group_B.pq off a re-delivered
-	/// `0x13` (a re-delivery with no retained frame to re-serve, e.g. after
-	/// a restart, is `.duplicateSideBand` — this module does not persist
-	/// `pendingSideBand` across process restarts).
+	/// `0x13` (a re-delivery with no retained frame to re-serve —
+	/// `pendingSideBand` rides the session archive (slice 8a), so it
+	/// survives a restore; a raw in-memory restart with no restore is the
+	/// case with nothing to re-serve — is `.duplicateSideBand`).
 	///
 	/// Seam: this does not check KP′'s leaf credential names the already-
 	/// established peer (Rust's AS `validate_member`; no AS exists until a
 	/// later slice). It fails closed regardless — a wrong-peer KP′ founds a
 	/// Group_B.pq the real peer never agrees to join, so the bind can never
 	/// complete.
-	public mutating func pqBootstrapRespond(_ frame: Data) throws -> Data {
+	public mutating func pqBootstrapRespond(_ frame: Data) throws -> SideBandResult {
 		if sendGroup?.pq != nil {
 			guard let pending = pendingSideBand else {
 				throw TwoMLSError.duplicateSideBand
 			}
-			return pending
+			advanceStateSeq()
+			return SideBandResult(
+				frame: pending, update: try stateUpdate(kind: .checkpoint))
 		}
 		let kpBytes = try Frames.decodePQBootstrapKP(frame)
 		guard
@@ -86,7 +93,11 @@ extension TwoMLSSession {
 		let responseFrame = Frames.encodePQBootstrapWelcome(welcomeBytes)
 		pqInflight = .bootstrapResponded
 		pendingSideBand = responseFrame
-		return responseFrame
+
+		// Return cadence (slice 8a): founded `sendGroup.pq` → `.checkpoint`.
+		advanceStateSeq()
+		return SideBandResult(
+			frame: responseFrame, update: try stateUpdate(kind: .checkpoint))
 	}
 
 	/// The initiator (Alice) joins Group_B.pq off Bob's Welcome′, using the
@@ -97,7 +108,7 @@ extension TwoMLSSession {
 	/// (§11 #4): a routine `Upd(self)` must already be discharged (`encrypt`)
 	/// before the bootstrap can add its own commit to the pile. Clears
 	/// `bootstrapKPSecret` once spent (§11 #11).
-	public mutating func pqBootstrapJoin(_ frame: Data) throws {
+	public mutating func pqBootstrapJoin(_ frame: Data) throws -> StateUpdate {
 		guard pendingProposal == nil else { throw TwoMLSError.sessionNotReady }
 		let welcomeBytes = try Frames.decodePQBootstrapWelcome(frame)
 		guard case .welcome(let welcome) = try MLS.RFC9420.Message(mlsEncoded: welcomeBytes)
@@ -132,6 +143,10 @@ extension TwoMLSSession {
 		// cannot re-emit them.
 		pqInflight = nil
 		pendingSideBand = nil
+
+		// Return cadence (slice 8a): joined `recvGroup.pq` → `.checkpoint`.
+		advanceStateSeq()
+		return try stateUpdate(kind: .checkpoint)
 	}
 
 	/// §4a/§4c: fold `s` into a pathless PARTIAL commit on `sendGroup.pq`

@@ -28,12 +28,12 @@ final class RatchetTests: XCTestCase {
 		alice: TwoMLSSession, bob: TwoMLSSession
 	) {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
-		let kpFrame = try alice.pqBootstrapBegin()
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame)
-		try alice.pqBootstrapJoin(welcomeFrame)
+		let kpFrame = try alice.pqBootstrapBegin().frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		_ = try alice.prepareToEncrypt()
-		let boundFrame = try alice.encrypt(Data("bound".utf8))
+		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		_ = try bob.processIncoming(boundFrame)
 
 		XCTAssertTrue(bob.myPQTurn)
@@ -66,7 +66,7 @@ final class RatchetTests: XCTestCase {
 		}
 
 		// 2: Alice responds with a CT, holding `S`.
-		let ctFrame = try alice.pqRatchetRespond(ekFrame)
+		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 		let (ctTag, _) = try Frames.decodePQLeg(ctFrame)
 		XCTAssertEqual(ctTag, Frames.pqCTTag)
 		XCTAssertEqual(alice.pqPendingOutbound(), ctFrame)
@@ -77,7 +77,7 @@ final class RatchetTests: XCTestCase {
 
 		// 3: Bob binds — owes the PQ commit into Group_B.pq, immediately
 		// applied to his own local copy.
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		XCTAssertNotNil(bob.owedBind)
 		XCTAssertNil(bob.pqPendingOutbound())
 		XCTAssertEqual(bob.sendGroup?.pq?.context.epoch, 2)
@@ -86,7 +86,7 @@ final class RatchetTests: XCTestCase {
 		// frame, per §11 #8) and Alice applies the `0x05` staple.
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
-		let boundFrame = try bob.encrypt(Data("bound".utf8))
+		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 
 		let decrypted = try alice.processIncoming(boundFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
@@ -117,15 +117,15 @@ final class RatchetTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
-		let ctFrame = try alice.pqRatchetRespond(ekFrame)
+		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 		XCTAssertNotNil(alice.pqPendingOutbound())
 
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		XCTAssertNil(bob.pqPendingOutbound())
 
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
-		let boundFrame = try bob.encrypt(Data("bound".utf8))
+		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 		_ = try alice.processIncoming(boundFrame)
 
 		XCTAssertNil(alice.pqPendingOutbound())
@@ -164,7 +164,7 @@ final class RatchetTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
-		let ctFrame = try alice.pqRatchetRespond(ekFrame)
+		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 
 		var tampered = ctFrame
 		tampered[tampered.index(before: tampered.endIndex)] ^= 0xFF
@@ -180,7 +180,7 @@ final class RatchetTests: XCTestCase {
 		}
 
 		// The genuine CT still binds cleanly afterward.
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		XCTAssertNotNil(bob.owedBind)
 		XCTAssertEqual(bob.sendGroup?.pq?.context.epoch, 2)
 	}
@@ -196,11 +196,11 @@ final class RatchetTests: XCTestCase {
 		_ = try bob.encrypt(Data("m".utf8))
 		let staleEKFrame = try XCTUnwrap(bob.pqPendingOutbound())
 
-		let ctFrame = try alice.pqRatchetRespond(staleEKFrame)
-		try bob.pqRatchetBind(ctFrame)
+		let ctFrame = try alice.pqRatchetRespond(staleEKFrame).frame
+		_ = try bob.pqRatchetBind(ctFrame)
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
-		let boundFrame = try bob.encrypt(Data("bound".utf8))
+		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 		_ = try alice.processIncoming(boundFrame)
 
 		// Group_B's classical epoch (alice's mirror) has now advanced past

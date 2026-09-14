@@ -236,4 +236,37 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// key (which both classical leaves may already present). Naming the
 	/// SAME candidate again is idempotent, not this error.
 	case rotationInFlight
+
+	// MARK: Session archive (slice 8a)
+
+	/// `TwoMLSSession.restore`'s decoded input failed validation: a leading
+	/// field (`version`/`classicalSuite`/`pqSuite`/`kind`) didn't match what
+	/// was expected of it; a Core and Checkpoint pair disagreed on session
+	/// identity (client id, signature key, or either classical group id) or,
+	/// when the Core is newer, on the PQ-epoch manifest; or a decode-time
+	/// invariant (the pinned bootstrap commitment's 32-byte length) failed.
+	/// Fail-closed: `restore` never partially reconstructs a session off a
+	/// blob it cannot fully trust.
+	case archiveInvalid
+
+	// MARK: Invitations (slice 8b)
+
+	/// `Invitation.receive` rejected a welcome its processed-welcome ledger
+	/// or consumed-remote set already recorded: a re-delivery of the exact
+	/// same welcome (`SHA-256(welcome)` already keys the processed-welcome
+	/// table), or a second, different welcome from an already-consumed
+	/// remote. Raised before any table insert or consume, so a rejected
+	/// welcome claims nothing (book session-lifecycle.md, "Invitations &
+	/// replayed initial frames").
+	case duplicateWelcome
+	/// `Invitation.receive` was called on a single-use invitation whose
+	/// combiner key package's private material was already dropped by an
+	/// earlier accepted welcome (book concepts.md's single-use/last-resort
+	/// distinction).
+	case invitationSpent
+	/// `Session.forwarded(spawnToken:)` was called with a token that does
+	/// not match the one this session was actually spawned under — a
+	/// mis-route (book session-lifecycle.md, "Invitations & replayed initial
+	/// frames").
+	case misroutedSpawnToken
 }

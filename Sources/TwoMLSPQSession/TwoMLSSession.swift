@@ -16,6 +16,9 @@ import TwoMLSPQCrypto
 public struct EstablishResult: Sendable {
 	public let session: TwoMLSSession
 	public let welcome: Data
+	/// The baseline `StateUpdate` (always `.checkpoint`) — there is no
+	/// sink/`installSink`; this return IS the first thing the app saves.
+	public let baseline: StateUpdate
 }
 
 /// The result of `prepareToEncrypt`: first runs a committing round — folding
@@ -31,6 +34,16 @@ public struct PrepareResult: Sendable {
 	/// discharge canonicalizes nothing of the peer's, so it stays `nil` even
 	/// when `didCommit` is true).
 	public let committedRemoteClientID: Data?
+	/// This call's own `StateUpdate` (`.core`).
+	public let update: StateUpdate
+	/// The durability gate: `currentStapleSeq` as of this call. When
+	/// `didCommit` installed a fresh staple, this equals `update.stateSeq` —
+	/// the app must durably save `update` before transmitting the frame this
+	/// staple rides on. Otherwise it names an EARLIER `StateUpdate` the app
+	/// should already have saved (a routine re-staple of an already-persisted
+	/// commit needs no additional wait; MLS's per-message `reuse_guard`
+	/// covers it).
+	public let dependsOnSeq: UInt64
 }
 
 /// Which side-band round is outstanding on this session, if any — the §A.3
@@ -73,10 +86,16 @@ struct PQEphemeral: Sendable {
 /// Alice's parked PQ-half bind commit (`owePQBind`), owed to
 /// `sendGroup.classical` until a licensed `prepareToEncrypt` can discharge it
 /// (§4).
-struct OwedBind: Sendable {
+struct OwedBind: Sendable, Codable {
 	var pqCommitMessage: Data
 	var tEpoch: UInt64
 	var pqEpoch: UInt64
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case pqCommitMessage = 0
+		case tEpoch = 1
+		case pqEpoch = 2
+	}
 }
 
 /// The peer's staged proposal, carried uninterpreted alongside a
@@ -113,6 +132,25 @@ public struct DecryptResult: Sendable {
 	/// Rust's always-present `new_recipient` id. Slice 6.
 	public let ownCredentialCanonicalized: Bool
 	public let queuedProposal: QueuedProposal
+	/// This call's own `StateUpdate` — `.checkpoint` when the applied staple
+	/// (if any) moved a PQ tree (`applyBind` rides this method), else `.core`.
+	public let update: StateUpdate
+}
+
+/// `encrypt`'s result: the sealed frame plus this call's own `StateUpdate`
+/// (`.core` — `encrypt` never touches a PQ tree).
+public struct EncryptResult: Sendable {
+	public let frame: Data
+	public let update: StateUpdate
+}
+
+/// The shared result shape for every side-band round-starter/responder that
+/// returns a bare frame today (`pqBootstrapBegin`/`pqBootstrapRespond`/
+/// `pqRatchetRespond`/`pqRekeyBegin`/`pqRekeyRespond`) — the frame to hand the
+/// peer, plus this call's own `StateUpdate`.
+public struct SideBandResult: Sendable {
+	public let frame: Data
+	public let update: StateUpdate
 }
 
 /// One party's classical-credential state, as this session currently tracks
@@ -186,7 +224,10 @@ public struct TwoMLSSession: Sendable {
 	let classicalProvider: any MLS.CipherSuiteProvider
 	let pqProvider: any MLS.CipherSuiteProvider
 	let codepoints: MLS.Combiner.Codepoints
-	let identity: TwoMLSIdentity
+	/// `var`, not `let`: the initiator clears its own classical init secret
+	/// in place once `joinGroupBIfNeeded` (Messaging) has spent it —
+	/// everything else about an identity is fixed for the session's life.
+	var identity: TwoMLSIdentity
 	/// The credential-sequence Authentication Service state (Germ policy,
 	/// RFC 9420 §5.3.1's "application responsibility") — seeded at
 	/// `initiate`/`receive` and consulted there against the peer's other
@@ -202,13 +243,11 @@ public struct TwoMLSSession: Sendable {
 	var pendingProposal: (proposing: Data, message: Data, hash: Data)?
 	var joinedWelcomeDigest: Data?
 	let initiated: Bool
-	/// The initiator's (Alice's) pre-committed bootstrap `KeyPackage` KP′,
-	/// MLSMessage-wrapped (§11 #7) — `nil` on the responder (Bob). Minted at
-	/// `initiate`, spent by `pqBootstrapRespond`.
-	var bootstrapKP: Data?
 	/// KP′'s own leaf+init secrets plus the `KeyPackage` itself — the
 	/// initiator's joiner credentials for `pqBootstrapJoin`. `nil` on the
-	/// responder.
+	/// responder. The public KP′ (MLSMessage-wrapped, §11 #7) is never stored
+	/// separately — it is derived on demand from `keyPackage` here
+	/// (`bootstrapKPBytes()`), so it structurally cannot outlive this secret.
 	var bootstrapKPSecret:
 		(
 			leafSecretKey: MLS.HpkeSecretKey, initSecretKey: MLS.HpkeSecretKey,
@@ -252,6 +291,13 @@ public struct TwoMLSSession: Sendable {
 	/// (the initiator resolving the committer's cross-PSK). Same guard as
 	/// `lastCrossInjectedPQ`, over `sendGroup.pq` instead.
 	var lastSendPQExported: UInt64?
+	/// The opaque, replay-stable token this session was spawned under via
+	/// `Invitation.receive` — `nil` on the initiator (who has no spawn
+	/// token) or a session accepted through the lower-level
+	/// `receive(identity:...)` entry point directly. `forwarded(spawnToken:)`
+	/// validates a replayed initial frame's routing against this (book
+	/// session-lifecycle.md, "Invitations & replayed initial frames").
+	let spawnToken: Data?
 
 	// MARK: §5 classical FOLD (slice 5, no credential rotation)
 
@@ -304,6 +350,36 @@ public struct TwoMLSSession: Sendable {
 	/// harmless — a real custodian would retire it once no leaf presents it,
 	/// which needs the PQ catch-up of a later slice).
 	var rotationCandidate: RotationCandidate? = nil
+
+	// MARK: Return cadence (slice 8a)
+
+	/// This session's own persistence sequence number — every state-advancing
+	/// method bumps it (checked add; stops rather than wraps past
+	/// `UInt64.max`, `advanceStateSeq()`) and stamps its returned
+	/// `StateUpdate` with the result. `restore` seeds it from the reconciled
+	/// blob's own `stateSeq`. Public with an `internal` setter: any file in
+	/// this module may advance it, but only a `StateUpdate` ever surfaces the
+	/// value to the app — a same-named public accessor func is impossible
+	/// alongside a stored property of that name (Swift, not a design choice).
+	public internal(set) var stateSeq: UInt64 = 0
+	/// The `stateSeq` at which `currentStaple` was last (re)installed by a
+	/// real fold/bind commit (`committingRound`, the only writer of
+	/// `currentStaple` past construction) — `PrepareResult.dependsOnSeq`'s
+	/// durability watermark. `restore` seeds it to the reconciled `stateSeq`
+	/// too: a safe, never-under value (that blob is already durable, or the
+	/// app could not have restored from it), even though it may overstate
+	/// exactly when `currentStaple` was first installed.
+	var currentStapleSeq: UInt64 = 0
+	/// The PQ-epoch manifest as of the last `.checkpoint` `StateUpdate` this
+	/// session actually minted — `stateUpdate(kind:)`'s sticky invariant
+	/// upgrades a `.core` request to `.checkpoint` whenever the LIVE manifest
+	/// has since moved past this, so a PQ-tree move that lands on `self` but
+	/// is cut short of ever returning its own `StateUpdate` (a throw further
+	/// down the same call) cannot silently persist as an un-checkpointed
+	/// Core. Seeded at the establishment baseline (every baseline mints a
+	/// `.checkpoint`) and by `restore` from the reconciled blob's own
+	/// manifest.
+	var lastCheckpointedManifest = PQEpochManifest(sendPQEpoch: nil, recvPQEpoch: nil)
 
 	public var isEstablished: Bool { sendGroup != nil && recvGroup != nil }
 	/// Both directional pairs have their PQ half present — the §A.3
@@ -390,7 +466,6 @@ public struct TwoMLSSession: Sendable {
 		pendingProposal: (proposing: Data, message: Data, hash: Data)?,
 		joinedWelcomeDigest: Data?,
 		initiated: Bool,
-		bootstrapKP: Data? = nil,
 		bootstrapKPSecret:
 			(
 				leafSecretKey: MLS.HpkeSecretKey, initSecretKey: MLS.HpkeSecretKey,
@@ -404,7 +479,8 @@ public struct TwoMLSSession: Sendable {
 		peerAppliedSendEpoch: UInt64? = nil,
 		lastCrossInjected: UInt64? = nil,
 		lastCrossInjectedPQ: UInt64? = nil,
-		lastSendPQExported: UInt64? = nil
+		lastSendPQExported: UInt64? = nil,
+		spawnToken: Data? = nil
 	) {
 		self.classicalProvider = classicalProvider
 		self.pqProvider = pqProvider
@@ -417,7 +493,6 @@ public struct TwoMLSSession: Sendable {
 		self.pendingProposal = pendingProposal
 		self.joinedWelcomeDigest = joinedWelcomeDigest
 		self.initiated = initiated
-		self.bootstrapKP = bootstrapKP
 		self.bootstrapKPSecret = bootstrapKPSecret
 		self.expectedBootstrapKPCommitment = expectedBootstrapKPCommitment
 		self.pqTurnMine = pqTurnMine
@@ -428,5 +503,6 @@ public struct TwoMLSSession: Sendable {
 		self.lastCrossInjected = lastCrossInjected
 		self.lastCrossInjectedPQ = lastCrossInjectedPQ
 		self.lastSendPQExported = lastSendPQExported
+		self.spawnToken = spawnToken
 	}
 }

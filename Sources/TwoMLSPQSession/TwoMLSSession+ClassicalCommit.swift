@@ -18,7 +18,7 @@ extension TwoMLSSession {
 	/// it into — without disturbing that group otherwise: a rejected approval
 	/// leaves `offeredProposal` intact (restored) so a later, different digest
 	/// can still be approved.
-	public mutating func queueProposal(digest: Data) throws {
+	public mutating func queueProposal(digest: Data) throws -> StateUpdate {
 		guard let offered = offeredProposal, offered.digest == digest else {
 			throw TwoMLSError.proposalRejected
 		}
@@ -30,6 +30,10 @@ extension TwoMLSSession {
 			throw error
 		}
 		queuedProposal = offered
+
+		// Return cadence (slice 8a): classical-only mutation → `.core`.
+		advanceStateSeq()
+		return try stateUpdate(kind: .core)
 	}
 
 	/// The validation `queueProposal` runs on an offered Upd; `committingRound`

@@ -34,9 +34,11 @@ extension TwoMLSSession {
 	/// peer's own PQ group, mirrored here, and the one about to be re-keyed
 	/// — and park it as a `0x1B` side-band frame. Idempotent while a begin
 	/// is already outstanding, like `pqBootstrapBegin`.
-	public mutating func pqRekeyBegin() throws -> Data {
+	public mutating func pqRekeyBegin() throws -> SideBandResult {
 		if case .rekeyInitiated = pqInflight, let pending = pendingSideBand {
-			return pending
+			advanceStateSeq()
+			return SideBandResult(
+				frame: pending, update: try stateUpdate(kind: .checkpoint))
 		}
 		guard pqTurnMine, isFullyEstablished, pqInflight == nil, owedBind == nil,
 			pendingProposal == nil, pendingSideBand == nil
@@ -56,7 +58,11 @@ extension TwoMLSSession {
 		let frame = Frames.encodePQRekeyUpd(updBytes)
 		pqInflight = .rekeyInitiated(updMessage: updBytes)
 		pendingSideBand = frame
-		return frame
+
+		// Return cadence (slice 8a): stages an Upd′ into `recvGroup.pq` — no epoch
+		// change, but the PQ tree's pending state changed → `.checkpoint`.
+		advanceStateSeq()
+		return SideBandResult(frame: frame, update: try stateUpdate(kind: .checkpoint))
 	}
 
 	/// The committer — never the turn-holder (§13 M5: `!pqTurnMine`) —
@@ -68,7 +74,7 @@ extension TwoMLSSession {
 	/// result as a `0x1D` side-band frame. Every export/write-back is
 	/// deferred to the success point after the commit lands (§13 M3): a
 	/// throw above that discards the local `recv`/`send` copies untouched.
-	public mutating func pqRekeyRespond(_ frame: Data) throws -> Data {
+	public mutating func pqRekeyRespond(_ frame: Data) throws -> SideBandResult {
 		guard !pqTurnMine, pqInflight == nil, owedBind == nil else {
 			throw TwoMLSError.sessionNotReady
 		}
@@ -167,7 +173,11 @@ extension TwoMLSSession {
 			let responseFrame = Frames.encodePQRekeyCommit(commitBytes)
 			pqInflight = .rekeyResponded
 			pendingSideBand = responseFrame
-			return responseFrame
+
+			// Return cadence (slice 8a): committed `sendGroup.pq` → `.checkpoint`.
+			advanceStateSeq()
+			return SideBandResult(
+				frame: responseFrame, update: try stateUpdate(kind: .checkpoint))
 		}
 	}
 
@@ -181,7 +191,7 @@ extension TwoMLSSession {
 	/// mechanical rekey effects, applies the Commit′ to `recvGroup.pq`,
 	/// exports `S` off the freshly-rekeyed group, and owes the classical
 	/// bind (`owePQBind(s:)`, slice 3 reuse).
-	public mutating func pqRekeyApply(_ frame: Data) throws {
+	public mutating func pqRekeyApply(_ frame: Data) throws -> StateUpdate {
 		guard pendingProposal == nil, owedBind == nil else {
 			throw TwoMLSError.sessionNotReady
 		}
@@ -193,7 +203,7 @@ extension TwoMLSSession {
 		}
 		guard let sendPQ = sendGroup?.pq else { throw TwoMLSError.notEstablished }
 
-		try withDeployedWireConventions {
+		return try withDeployedWireConventions {
 			let commitBytes = try Frames.decodePQRekeyCommit(frame)
 			guard
 				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(
@@ -273,6 +283,11 @@ extension TwoMLSSession {
 			}
 			pqInflight = nil
 			pendingSideBand = nil
+
+			// Return cadence (slice 8a): `owePQBind` just committed `sendGroup.pq`
+			// (and this call committed `recvGroup.pq`) → `.checkpoint`.
+			advanceStateSeq()
+			return try stateUpdate(kind: .checkpoint)
 		}
 	}
 }

@@ -34,7 +34,7 @@ final class FoldTests: XCTestCase {
 		app: Data = Data("offer".utf8)
 	) throws -> (digest: Data, proposing: Data, message: Data) {
 		_ = try proposer.prepareToEncrypt()
-		let frame = try proposer.encrypt(app)
+		let frame = try proposer.encrypt(app).frame
 		_ = try approver.processIncoming(frame)
 		let (_, proposalSection, _) = try Frames.decodeMessageFrame(frame)
 		let (proposing, message) = try Frames.decodeProposalSection(proposalSection)
@@ -55,14 +55,14 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, groupAEpochBefore)
 
 		let offer = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer.digest)
+		_ = try alice.queueProposal(digest: offer.digest)
 
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		XCTAssertEqual(prepared.committedRemoteClientID, Data("bob".utf8))
 		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, groupAEpochBefore + 1)
 
-		let frame = try alice.encrypt(Data("alice-fold".utf8))
+		let frame = try alice.encrypt(Data("alice-fold".utf8)).frame
 		let (staple, _, _) = try Frames.decodeMessageFrame(frame)
 		// The fold-only staple IS the bare MLSMessage: `0x00` is the message's
 		// own `ProtocolVersion` high byte (`mls10` = `00 01`), never a wrapper
@@ -94,12 +94,12 @@ final class FoldTests: XCTestCase {
 
 		// Round-trip both directions post-fold.
 		_ = try alice.prepareToEncrypt()
-		let aliceMsg = try alice.encrypt(Data("post-fold-alice".utf8))
+		let aliceMsg = try alice.encrypt(Data("post-fold-alice".utf8)).frame
 		let fromAlice = try bob.processIncoming(aliceMsg)
 		XCTAssertEqual(fromAlice.applicationMessage, Data("post-fold-alice".utf8))
 
 		_ = try bob.prepareToEncrypt()
-		let bobMsg = try bob.encrypt(Data("post-fold-bob".utf8))
+		let bobMsg = try bob.encrypt(Data("post-fold-bob".utf8)).frame
 		let fromBob = try alice.processIncoming(bobMsg)
 		XCTAssertEqual(fromBob.applicationMessage, Data("post-fold-bob".utf8))
 	}
@@ -116,12 +116,12 @@ final class FoldTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
-		let ctFrame = try alice.pqRatchetRespond(ekFrame)
-		try bob.pqRatchetBind(ctFrame)
+		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
+		_ = try bob.pqRatchetBind(ctFrame)
 		XCTAssertNotNil(bob.owedBind)
 
 		let offer = try surfaceOffer(from: &alice, to: &bob)
-		try bob.queueProposal(digest: offer.digest)
+		_ = try bob.queueProposal(digest: offer.digest)
 
 		let groupBEpochBefore = try XCTUnwrap(bob.sendGroup?.classical.context.epoch)
 		let prepared = try bob.prepareToEncrypt()
@@ -130,7 +130,7 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(bob.sendGroup?.classical.context.epoch, groupBEpochBefore + 1)
 		XCTAssertNil(bob.owedBind)
 
-		let frame = try bob.encrypt(Data("fold-and-bind".utf8))
+		let frame = try bob.encrypt(Data("fold-and-bind".utf8)).frame
 		let (staple, _, _) = try Frames.decodeMessageFrame(frame)
 		XCTAssertEqual(staple.first, Frames.apqPrivateMessageTag)
 
@@ -140,7 +140,7 @@ final class FoldTests: XCTestCase {
 		XCTAssertTrue(alice.myPQTurn)
 
 		_ = try alice.prepareToEncrypt()
-		let msg = try alice.encrypt(Data("post-fold-bind".utf8))
+		let msg = try alice.encrypt(Data("post-fold-bind".utf8)).frame
 		let fromAlice = try bob.processIncoming(msg)
 		XCTAssertEqual(fromAlice.applicationMessage, Data("post-fold-bind".utf8))
 	}
@@ -156,16 +156,16 @@ final class FoldTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		let offer1 = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer1.digest)
+		_ = try alice.queueProposal(digest: offer1.digest)
 		_ = try alice.prepareToEncrypt()
-		let frame1 = try alice.encrypt(Data("fold-1".utf8))
+		let frame1 = try alice.encrypt(Data("fold-1".utf8)).frame
 		let decrypted1 = try bob.processIncoming(frame1)
 		XCTAssertTrue(decrypted1.didApplyRemoteCommit)
 
 		let offer2 = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer2.digest)
+		_ = try alice.queueProposal(digest: offer2.digest)
 		_ = try alice.prepareToEncrypt()
-		let frame2 = try alice.encrypt(Data("fold-2".utf8))
+		let frame2 = try alice.encrypt(Data("fold-2".utf8)).frame
 		let decrypted2 = try bob.processIncoming(frame2)
 		XCTAssertTrue(decrypted2.didApplyRemoteCommit)
 
@@ -194,16 +194,16 @@ final class FoldTests: XCTestCase {
 		// that injects the cross-party PSK off her view of Group_B, still at
 		// epoch 1.
 		let offer1 = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer1.digest)
+		_ = try alice.queueProposal(digest: offer1.digest)
 		_ = try alice.prepareToEncrypt()
-		let aliceFoldFrame = try alice.encrypt(Data("alice-fold".utf8))
+		let aliceFoldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 
 		// Bob independently commits his OWN send group (Group_B) — crossed
 		// with alice's in-flight commit above — advancing it past the epoch
 		// (1) that commit's injected `0xFF02` referenced.
-		try bob.queueProposal(digest: offer2.digest)
+		_ = try bob.queueProposal(digest: offer2.digest)
 		_ = try bob.prepareToEncrypt()
-		let bobFoldFrame = try bob.encrypt(Data("bob-fold".utf8))
+		let bobFoldFrame = try bob.encrypt(Data("bob-fold".utf8)).frame
 		XCTAssertEqual(bob.sendGroup?.classical.context.epoch, 2)
 		XCTAssertNotNil(bob.sendCrossPSKLedger[1])
 
@@ -225,9 +225,9 @@ final class FoldTests: XCTestCase {
 	func testTamperedFoldCommitThrowsAndBurnsNoState() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer.digest)
+		_ = try alice.queueProposal(digest: offer.digest)
 		_ = try alice.prepareToEncrypt()
-		let frame = try alice.encrypt(Data("fold".utf8))
+		let frame = try alice.encrypt(Data("fold".utf8)).frame
 
 		let (staple, proposal, app) = try Frames.decodeMessageFrame(frame)
 		var tamperedStaple = staple
@@ -266,7 +266,7 @@ final class FoldTests: XCTestCase {
 	func testQueueProposalRejectsUndecodableOffer() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try bob.prepareToEncrypt()
-		let bobFrame = try bob.encrypt(Data("bob-app".utf8))
+		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
 		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
 
 		let garbage = Data("not-an-mls-message".utf8)
@@ -299,7 +299,7 @@ final class FoldTests: XCTestCase {
 		let ownUpdateBytes = try ownUpdateMessage.mlsEncoded()
 
 		_ = try bob.prepareToEncrypt()
-		let bobFrame = try bob.encrypt(Data("bob-app".utf8))
+		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
 		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: Data("alice".utf8), message: ownUpdateBytes)
@@ -322,7 +322,7 @@ final class FoldTests: XCTestCase {
 	func testQueueProposalRejectsProposingMismatch() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try bob.prepareToEncrypt()
-		let bobFrame = try bob.encrypt(Data("bob-app".utf8))
+		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
 		let (staple, proposal, app) = try Frames.decodeMessageFrame(bobFrame)
 		let (_, bobUpdateMessage) = try Frames.decodeProposalSection(proposal)
 
@@ -350,7 +350,7 @@ final class FoldTests: XCTestCase {
 	func testFoldEffectsWithAnAddThrowsUnexpectedProposal() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer.digest)
+		_ = try alice.queueProposal(digest: offer.digest)
 
 		guard let sendGroupA = alice.sendGroup else {
 			XCTFail("expected alice to be established")
@@ -385,7 +385,7 @@ final class FoldTests: XCTestCase {
 
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try bob.prepareToEncrypt()
-		let carrierFrame = try bob.encrypt(Data("carrier".utf8))
+		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
 		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposal, app: app)
@@ -522,7 +522,7 @@ final class FoldTests: XCTestCase {
 		let rotatingMessage = try authorBobCredentialRotation(bob: &bob)
 
 		_ = try bob.prepareToEncrypt()
-		let bobFrame = try bob.encrypt(Data("bob-app".utf8))
+		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
 		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: Data("bob".utf8), message: rotatingMessage)
@@ -653,7 +653,7 @@ final class FoldTests: XCTestCase {
 
 		let aheadStaple = Frames.encodeMlsMessageStaple(aheadCommitBytes)
 		_ = try fixtureBob.prepareToEncrypt()
-		let carrierFrame = try fixtureBob.encrypt(Data("carrier".utf8))
+		let carrierFrame = try fixtureBob.encrypt(Data("carrier".utf8)).frame
 		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
 		let aheadFrame = Frames.encodeMessageFrame(
 			staple: aheadStaple, proposal: proposal, app: app)
@@ -672,9 +672,9 @@ final class FoldTests: XCTestCase {
 	func testBehindFoldCommitIsSkippedIdempotently() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer.digest)
+		_ = try alice.queueProposal(digest: offer.digest)
 		_ = try alice.prepareToEncrypt()
-		let frame = try alice.encrypt(Data("fold".utf8))
+		let frame = try alice.encrypt(Data("fold".utf8)).frame
 
 		let decrypted = try bob.processIncoming(frame)
 		XCTAssertTrue(decrypted.didApplyRemoteCommit)
@@ -683,7 +683,7 @@ final class FoldTests: XCTestCase {
 		// Alice's next send re-rides the SAME (now-behind, already-applied)
 		// `0x00` staple until her next commit supersedes it.
 		_ = try alice.prepareToEncrypt()
-		let nextFrame = try alice.encrypt(Data("post-fold".utf8))
+		let nextFrame = try alice.encrypt(Data("post-fold".utf8)).frame
 		let redelivered = try bob.processIncoming(nextFrame)
 		XCTAssertFalse(redelivered.didApplyRemoteCommit)
 		XCTAssertEqual(redelivered.applicationMessage, Data("post-fold".utf8))

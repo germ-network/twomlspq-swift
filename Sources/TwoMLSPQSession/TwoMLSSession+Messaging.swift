@@ -147,9 +147,18 @@ extension TwoMLSSession {
 		// latest — so a `0x00`/`0x05` staple that folds an earlier one by
 		// reference can still resolve it.
 		stagedUpdates.append((digest: proposalHash, message: proposalBytes))
+
+		// Return cadence (slice 8a): classical-only mutation → `.core`. `didCommit`
+		// installed a fresh `currentStaple` (`committingRound`'s success
+		// point) iff it folded/discharged/caught-up — stamp the durability
+		// watermark at THIS call's own (just-bumped) `stateSeq` exactly then.
+		advanceStateSeq()
+		if didCommit { markStapleInstalled() }
+		let update = try stateUpdate(kind: .core)
 		return PrepareResult(
 			proposalMessage: proposalBytes, proposalHash: proposalHash,
-			didCommit: didCommit, committedRemoteClientID: committedRemoteClientID
+			didCommit: didCommit, committedRemoteClientID: committedRemoteClientID,
+			update: update, dependsOnSeq: currentStapleSeq
 		)
 	}
 
@@ -159,7 +168,7 @@ extension TwoMLSSession {
 	/// to the frame's separate proposal section — proposal integrity is its own
 	/// MLS leaf signature, checked when folded (`queueProposal`/
 	/// `committingRound`/`applyFoldCommit`, slice 5) (M1).
-	public mutating func encrypt(_ app: Data) throws -> Data {
+	public mutating func encrypt(_ app: Data) throws -> EncryptResult {
 		guard let pending = pendingProposal else { throw TwoMLSError.noPendingProposal }
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
 		let appPM = try send.classical.protect(
@@ -182,7 +191,11 @@ extension TwoMLSSession {
 		// my turn and nothing else is outstanding.
 		rewrapSideBand()
 		maybeStageNextRound()
-		return frame
+
+		// Return cadence (slice 8a): classical-only mutation → `.core`.
+		advanceStateSeq()
+		let update = try stateUpdate(kind: .core)
+		return EncryptResult(frame: frame, update: update)
 	}
 
 	/// Decode a frame, apply its staple (join Group_B, a `0x00` fold, or a
@@ -197,6 +210,14 @@ extension TwoMLSSession {
 			throw TwoMLSError.appSectionNotPrivateMessage
 		}
 
+		// Return cadence (slice 8a): `applyBind` rides this method's staple
+		// dispatch and moves `recvGroup.pq`, so the kind can't be a static
+		// per-site tag here — snapshot both PQ trees' epoch before/after the
+		// staple applies and tag `.checkpoint` iff either actually moved.
+		// (`stateUpdate(kind:)`'s sticky invariant is the actual guarantee
+		// against an un-checkpointed move surviving a later throw in this
+		// same method; this snapshot only picks the precise kind up front.)
+		let pqManifestBefore = pqEpochManifest
 		let stapleResult = try handleStaple(staple)
 
 		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
@@ -217,6 +238,9 @@ extension TwoMLSSession {
 		// approved tally it feeds.
 		offeredProposal = (digest: digest, proposing: proposing, message: proposalMessage)
 
+		let kind: BlobKind = pqEpochManifest == pqManifestBefore ? .core : .checkpoint
+		advanceStateSeq()
+		let update = try stateUpdate(kind: kind)
 		return DecryptResult(
 			applicationMessage: data, sender: unprotected.sender,
 			epoch: unprotected.epoch,
@@ -224,7 +248,8 @@ extension TwoMLSSession {
 			didApplyRemoteCommit: stapleResult.applied,
 			newSender: stapleResult.newSender,
 			ownCredentialCanonicalized: stapleResult.ownCredentialCanonicalized,
-			queuedProposal: QueuedProposal(digest: digest, proposing: proposing))
+			queuedProposal: QueuedProposal(digest: digest, proposing: proposing),
+			update: update)
 	}
 
 	/// `0x01` welcome → join Group_B if this staple hasn't been joined yet
@@ -326,7 +351,7 @@ extension TwoMLSSession {
 		}
 
 		let groupB = try APQGroup.joinClassicalOnly(
-			welcome: welcome, credentials: identity.classicalJoinCredentials,
+			welcome: welcome, credentials: try identity.classicalJoinCredentials,
 			crossPSK: crossPSK, expectedCreatorID: expectedCreator,
 			provider: classicalProvider, codepoints: codepoints)
 		try TwoPartyRules.ensureTwoParty(groupB.classical)
@@ -337,5 +362,9 @@ extension TwoMLSSession {
 		sendCrossPSKLedger = ledger
 		recvGroup = groupB
 		joinedWelcomeDigest = digest
+		// This was the initiator's own classical init secret's one use
+		// (`initiate` deferred clearing it exactly for this join) — clear it
+		// now so it can never be archived once spent.
+		identity = identity.clearingInitSecrets(classical: true, pq: false)
 	}
 }

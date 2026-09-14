@@ -22,27 +22,61 @@ public struct CombinerKeyPackage: Sendable {
 /// it — `0xFDEA` forwards signing to the same Ed25519 primitive, it is
 /// confidentiality-only) plus a per-half HPKE leaf/init keypair, and the two
 /// already-signed `KeyPackage`s built from them.
+///
+/// The two init secrets are join-only: each is read exactly once, to join
+/// the group its own `KeyPackage` was added to (never to found one — that
+/// takes only the leaf secret). Once that join has happened they are
+/// `nil`ed (`clearingInitSecrets`) and never archived (`IdentityArchive`
+/// carries no init-secret field) — an invitation's identity is the SAME
+/// published key package's private material across every welcome it
+/// accepts, so retaining an already-spent init secret would needlessly
+/// widen one leaked session archive's blast radius to the still-published
+/// key package.
 @available(iOS 26, macOS 26, *)
 public struct TwoMLSIdentity: Sendable {
 	public let clientID: Data
 	public let signingKey: MLS.SignatureSecretKey
 	public let signatureKey: MLS.SignaturePublicKey
 	public let classicalLeafSecretKey: MLS.HpkeSecretKey
-	public let classicalInitSecretKey: MLS.HpkeSecretKey
+	public let classicalInitSecretKey: MLS.HpkeSecretKey?
 	public let pqLeafSecretKey: MLS.HpkeSecretKey
-	public let pqInitSecretKey: MLS.HpkeSecretKey
+	public let pqInitSecretKey: MLS.HpkeSecretKey?
 	public let keyPackage: CombinerKeyPackage
 
+	/// - Throws: `TwoMLSError.sessionNotReady` if the classical init secret
+	///   was already cleared (this identity's classical KP was already
+	///   joined with once).
 	public var classicalJoinCredentials: MLS.RFC9420.Group.JoinerCredentials {
-		.init(
-			keyPackage: keyPackage.classical, initKey: classicalInitSecretKey,
-			encryptionKey: classicalLeafSecretKey)
+		get throws {
+			guard let classicalInitSecretKey else { throw TwoMLSError.sessionNotReady }
+			return .init(
+				keyPackage: keyPackage.classical, initKey: classicalInitSecretKey,
+				encryptionKey: classicalLeafSecretKey)
+		}
 	}
 
+	/// - Throws: `TwoMLSError.sessionNotReady` if the PQ init secret was
+	///   already cleared (this identity's PQ KP was already joined with
+	///   once).
 	public var pqJoinCredentials: MLS.RFC9420.Group.JoinerCredentials {
-		.init(
-			keyPackage: keyPackage.pq, initKey: pqInitSecretKey,
-			encryptionKey: pqLeafSecretKey)
+		get throws {
+			guard let pqInitSecretKey else { throw TwoMLSError.sessionNotReady }
+			return .init(
+				keyPackage: keyPackage.pq, initKey: pqInitSecretKey,
+				encryptionKey: pqLeafSecretKey)
+		}
+	}
+
+	/// A copy with the named init secrets dropped — call once each is
+	/// provably done being read (its own `KeyPackage` has been joined
+	/// with), so a later archive of this identity never carries it.
+	func clearingInitSecrets(classical: Bool, pq: Bool) -> TwoMLSIdentity {
+		TwoMLSIdentity(
+			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
+			classicalLeafSecretKey: classicalLeafSecretKey,
+			classicalInitSecretKey: classical ? nil : classicalInitSecretKey,
+			pqLeafSecretKey: pqLeafSecretKey,
+			pqInitSecretKey: pq ? nil : pqInitSecretKey, keyPackage: keyPackage)
 	}
 
 	/// The leaf capabilities every occupied leaf this module creates
@@ -104,18 +138,21 @@ public struct TwoMLSIdentity: Sendable {
 		return (signingKey, signatureKey)
 	}
 
-	/// Generate a fresh principal: one signing keypair, a leaf/init HPKE
-	/// keypair per half, and both halves' signed `KeyPackage`s.
+	/// Mint a fresh combiner key-package bundle — fresh leaf/init HPKE
+	/// secrets, fresh classical+PQ `KeyPackage`s — signed under an ALREADY
+	/// existing signing identity. This is the shape `Principal` needs (book
+	/// concepts.md: "credential-scoped signer"): every KP or session leaf it
+	/// mints shares its one signing key, rather than each getting its own.
 	public static func generate(
 		clientID: Data,
+		signingKey: MLS.SignatureSecretKey,
+		signatureKey: MLS.SignaturePublicKey,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider
 	) throws -> TwoMLSIdentity {
 		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
 			pqProvider.cipherSuite == TwoMLSSuite.pq
 		else { throw TwoMLSError.cipherSuiteMismatch }
-
-		let (signingKey, signatureKey) = try mintSignatureKeypair()
 
 		let (classicalLeafSecretKey, classicalLeafPublicKey) =
 			try classicalProvider.hpkeGenerateKeyPair()
@@ -142,6 +179,22 @@ public struct TwoMLSIdentity: Sendable {
 			pqLeafSecretKey: pqLeafSecretKey, pqInitSecretKey: pqInitSecretKey,
 			keyPackage: CombinerKeyPackage(
 				classical: classicalKeyPackage, pq: pqKeyPackage))
+	}
+
+	/// Generate a fresh, standalone principal identity: a fresh signing
+	/// keypair plus the signing-key-scoped `generate` above's fresh KP
+	/// bundle. Used directly by tests/internals that need no enclosing
+	/// `Principal`; `Principal` itself always goes through the overload
+	/// above, so every KP/leaf it mints shares its one signing key.
+	public static func generate(
+		clientID: Data,
+		classicalProvider: any MLS.CipherSuiteProvider,
+		pqProvider: any MLS.CipherSuiteProvider
+	) throws -> TwoMLSIdentity {
+		let (signingKey, signatureKey) = try mintSignatureKeypair()
+		return try generate(
+			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
+			classicalProvider: classicalProvider, pqProvider: pqProvider)
 	}
 
 	/// Mint a fresh PQ `KeyPackage` KP′ — a brand-new leaf+init HPKE keypair
