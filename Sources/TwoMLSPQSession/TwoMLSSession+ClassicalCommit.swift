@@ -654,9 +654,10 @@ extension TwoMLSSession {
 	/// body works on local copies (`recv`/`send`/`ledger`), written back to
 	/// `self` only on success at the very end — any throw above that point
 	/// (a bad signature, a bad membership tag, a bad effects shape, or a
-	/// failed attestation) discards every export this call made. Returns
-	/// whether the bind was actually applied (`false` for an idempotent
-	/// re-ride).
+	/// failed attestation) discards every export this call made, and the one
+	/// lone stamp (`lastSendPQExported`) is deferred to the same success
+	/// point rather than written mid-body. Returns whether the bind was
+	/// actually applied (`false` for an idempotent re-ride).
 	// internal: used by Messaging.handleStaple
 	internal mutating func applyBind(_ staple: Data) throws -> StapleApplyResult {
 		// The commit messages decoded below carry `ComponentID`-bearing
@@ -724,6 +725,16 @@ extension TwoMLSSession {
 
 			var sendPQ = send.pq!
 			let sendPQEpochBeforeExport = sendPQ.context.epoch
+			// The `lastSendPQExported` stamp is deferred to this function's
+			// success point (it is a `self` write, and several throwing steps —
+			// including the new classical-half PSK guard below — run after the
+			// PQ apply).
+			var pendingSendPQExportedStamp: UInt64?
+			// swift-mls invokes the resolver exactly once per PSK id the
+			// commit names, so the flag is exact: a bind that applies without
+			// naming the injected external `S` silently skips the fresh PQ
+			// entropy while its attestation claims a FULL commit.
+			var sawInjectedS = false
 			let pqPending = try recv.pq!.validating(
 				pqProvider, commit: pqPub, proposals: MLS.RFC9420.ProposalStore(),
 				psk: { identifier in
@@ -732,6 +743,7 @@ extension TwoMLSSession {
 					else {
 						return nil
 					}
+					sawInjectedS = true
 					// §A.4: `S` was already sealed/held at `pqRatchetRespond` —
 					// reuse it rather than exporting a fresh one off `sendPQ`
 					// (which A.4 never spends here at all).
@@ -745,12 +757,13 @@ extension TwoMLSSession {
 				})
 			let pqEffects = pqPending.effects
 			try TwoPartyRules.validateBindPQEffects(pqEffects)
+			guard sawInjectedS else { throw TwoMLSError.missingBindPSK }
 			let pqTransition = try pqPending.apply(onto: recv.pq!)
 			recv.pq = pqTransition.group
 			send.pq = sendPQ
 			switch pqInflight {
 			case .bootstrapResponded, .rekeyResponded:
-				lastSendPQExported = sendPQEpochBeforeExport
+				pendingSendPQExportedStamp = sendPQEpochBeforeExport
 			default:
 				break
 			}
@@ -768,13 +781,29 @@ extension TwoMLSSession {
 			try rememberSendCrossPSK(classical: &send.classical, ledger: &ledger)
 			for exported in ledger.values { store.register(exported) }
 
+			// Same recording-resolver discipline as the PQ half: the classical
+			// bind must name its half's `apq_psk` (`0xFF01`). The cross-party
+			// `0xFF02` is legitimately absent here (event-driven off
+			// `lastCrossInjected`), so only the `apq_psk` is required.
+			var sawAPQPSK = false
+			let resolve = store.resolver()
 			let tPending = try recv.classical.validating(
 				classicalProvider, commit: tPub,
 				proposals: proposalStore,
-				psk: store.resolver())
+				psk: { identifier in
+					if case .application(let componentID, let pskID, _) =
+						identifier,
+						componentID == codepoints.apqComponentID,
+						pskID == apqPSK.pskID
+					{
+						sawAPQPSK = true
+					}
+					return try resolve(identifier)
+				})
 			let classicalEffects = tPending.effects
 			try TwoPartyRules.validateBindClassicalEffects(
 				classicalEffects, foldedPeerUpdate: foldedPeerUpdate)
+			guard sawAPQPSK else { throw TwoMLSError.missingBindPSK }
 			// AS consult point 3 (slice 6): the PQ half never carries a
 			// `.credentialReplaced` (`validateBindPQEffects` stays strict),
 			// so only the classical half's effects need adjudicating.
@@ -803,6 +832,9 @@ extension TwoMLSSession {
 			pqTurnMine = true
 			pqInflight = nil
 			pendingSideBand = nil
+			if let pendingSendPQExportedStamp {
+				lastSendPQExported = pendingSendPQExportedStamp
+			}
 			auth = authCopy
 			return StapleApplyResult(
 				applied: true, newSender: newSender,

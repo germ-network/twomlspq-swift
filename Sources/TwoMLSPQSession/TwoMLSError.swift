@@ -94,6 +94,14 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// classical-half `[epochAdvanced, updated(committer), appDataUpdate]` —
 	/// an unexpected Add/Remove/credential replacement rode the bind.
 	case invalidBindEffects
+	/// A FULL bind commit applied without naming the PSK its half is bound to:
+	/// the classical half must carry the `apq_psk` (`0xFF01`) exported off the
+	/// post-commit PQ epoch, and the PQ half the injected external `S`
+	/// (`LE64(epoch)‖group_id‖0x52`). draft-ietf-mls-combiner-02 makes the
+	/// sender's inclusion a MUST; a commit that applies without it silently
+	/// skips the fresh PQ entropy while its attestation claims a FULL commit
+	/// (`psk-binding.md`, `protocol-flows.md`).
+	case missingBindPSK
 
 	// MARK: Two-party rules
 

@@ -268,6 +268,315 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("post-bind".utf8))
 	}
 
+	// MARK: - FULL bind must name its half's PSK
+
+	/// A hand-built PQ bind commit carrying the FULL-commit attestation but NO
+	/// injected external `S` (`LE64(epoch)‖group_id‖0x52`) proposal. The commit
+	/// is framed from the caller-supplied `sendPQ` snapshot, which must be the
+	/// PRE-apply Group_A.pq state (epoch 1) — `owePQBind` applies the genuine
+	/// PQ commit to the session's own copy, so building after the join would
+	/// frame at the post-apply epoch and fail framing, not reach the guard.
+	private func bindPQCommitWithoutInjectedS(
+		sendPQ: MLS.RFC9420.Group, aliceIdentity: TwoMLSIdentity,
+		tEpoch: UInt64, pqEpoch: UInt64
+	) throws -> Data {
+		try withDeployedWireConventions {
+			let attestation = MLS.Combiner.ApqInfoUpdate(
+				tEpoch: tEpoch, pqEpoch: pqEpoch)
+			let proposals: [MLS.RFC9420.ProposalOrRef] = [
+				.proposal(
+					.custom(
+						type: .init(.appDataUpdate),
+						body: try attestation.appDataUpdate(
+							componentID: MLS.Combiner.Codepoints
+								.deployed.apqComponentID
+						).mlsEncoded()))
+			]
+			let transition = try sendPQ.committing(
+				SessionTestSupport.pqProvider, proposals: proposals,
+				signingKey: aliceIdentity.signingKey,
+				randomness: try .generate(SessionTestSupport.pqProvider),
+				includePath: false, framing: .publicMessage, psk: { _ in nil })
+			return try transition.takeOutput().message.mlsEncoded()
+		}
+	}
+
+	/// A hand-built classical bind commit carrying the FULL-commit attestation
+	/// but NO `apq_psk` (`0xFF01`) proposal.
+	private func bindClassicalCommitWithoutAPQPSK(
+		alice: TwoMLSSession, aliceIdentity: TwoMLSIdentity, owed: OwedBind
+	) throws -> Data {
+		try withDeployedWireConventions {
+			let sendClassical = try XCTUnwrap(alice.sendGroup?.classical)
+			let attestation = MLS.Combiner.ApqInfoUpdate(
+				tEpoch: owed.tEpoch, pqEpoch: owed.pqEpoch)
+			let proposals: [MLS.RFC9420.ProposalOrRef] = [
+				.proposal(
+					.custom(
+						type: .init(.appDataUpdate),
+						body: try attestation.appDataUpdate(
+							componentID: MLS.Combiner.Codepoints
+								.deployed.apqComponentID
+						).mlsEncoded()))
+			]
+			let transition = try sendClassical.committing(
+				SessionTestSupport.classicalProvider, proposals: proposals,
+				signingKey: aliceIdentity.signingKey,
+				randomness: try .generate(SessionTestSupport.classicalProvider),
+				includePath: true, framing: .publicMessage, psk: { _ in nil })
+			return try transition.takeOutput().message.mlsEncoded()
+		}
+	}
+
+	/// The PQ-half arm: a hand-built bind whose PQ commit carries the
+	/// attestation but omits the injected external `S` is refused with
+	/// `.missingBindPSK` after framing/membership verification. Nothing on
+	/// Bob moves, and the genuine bind still applies afterward.
+	func testBindWithoutTheInjectedPQPSKIsRejected() throws {
+		let established = try SessionTestSupport.established()
+		var alice = established.alice
+		var bob = established.bob
+		let aliceIdentity = established.aliceIdentity
+
+		_ = try bob.prepareToEncrypt()
+		let helloFrame = try bob.encrypt(Data("bob-hello".utf8))
+		_ = try alice.processIncoming(helloFrame)
+
+		let kpFrame = try alice.pqBootstrapBegin()
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame)
+		// Snapshot Group_A.pq at its PRE-apply epoch-1 state and forge the no-S
+		// PQ commit BEFORE the join's `owePQBind` applies the genuine PQ commit
+		// to the session's own copy — after that, the group frames at epoch 2
+		// and would fail framing instead of reaching the PSK guard.
+		let pqCommit = try bindPQCommitWithoutInjectedS(
+			sendPQ: try XCTUnwrap(alice.sendGroup?.pq), aliceIdentity: aliceIdentity,
+			tEpoch: 2, pqEpoch: 2)
+		try alice.pqBootstrapJoin(welcomeFrame)
+		let owed = try XCTUnwrap(alice.owedBind)
+		XCTAssertEqual(owed.tEpoch, 2)
+		XCTAssertEqual(owed.pqEpoch, 2)
+
+		let classicalCommit = try bindClassicalCommitWithoutAPQPSK(
+			alice: alice, aliceIdentity: aliceIdentity, owed: owed)
+		let badStaple = Frames.encodeAPQPrivateMessage(t: classicalCommit, pq: pqCommit)
+
+		let bobPQEpochBefore = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
+		let bobClassicalEpochBefore = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
+		let bobLastSendPQExportedBefore = bob.lastSendPQExported
+		XCTAssertNotNil(bob.pqInflight)
+
+		_ = try bob.prepareToEncrypt()
+		let carrierFrame = try bob.encrypt(Data("carrier".utf8))
+		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(carrierFrame)
+		let badFrame = Frames.encodeMessageFrame(
+			staple: badStaple, proposal: proposalSection, app: appSection)
+
+		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .missingBindPSK)
+		}
+		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
+		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore)
+		XCTAssertTrue(bob.isFullyEstablished)
+		XCTAssertNotNil(bob.pqInflight)
+		XCTAssertEqual(bob.lastSendPQExported, bobLastSendPQExportedBefore)
+
+		// The genuine bind still applies cleanly afterward (rollback proof).
+		let prepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(prepared.didCommit)
+		let boundFrame = try alice.encrypt(Data("bound".utf8))
+		let decrypted = try bob.processIncoming(boundFrame)
+		XCTAssertTrue(decrypted.didApplyRemoteCommit)
+		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore + 1)
+		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore + 1)
+	}
+
+	/// The classical-half arm: the GENUINE PQ commit rides along (so the guard
+	/// under test, not an earlier one, fires), but the classical half omits
+	/// the `apq_psk` (`0xFF01`) proposal. `.missingBindPSK`; nothing on Bob
+	/// moves — in particular `lastSendPQExported` stays unwritten, which is
+	/// what the deferred-stamp fix buys.
+	func testBindWithoutTheClassicalAPQPSKIsRejected() throws {
+		let established = try SessionTestSupport.established()
+		var alice = established.alice
+		var bob = established.bob
+		let aliceIdentity = established.aliceIdentity
+
+		_ = try bob.prepareToEncrypt()
+		let helloFrame = try bob.encrypt(Data("bob-hello".utf8))
+		_ = try alice.processIncoming(helloFrame)
+
+		let kpFrame = try alice.pqBootstrapBegin()
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame)
+		try alice.pqBootstrapJoin(welcomeFrame)
+		let owed = try XCTUnwrap(alice.owedBind)
+
+		let pqCommit = owed.pqCommitMessage
+		let classicalCommit = try bindClassicalCommitWithoutAPQPSK(
+			alice: alice, aliceIdentity: aliceIdentity, owed: owed)
+		let badStaple = Frames.encodeAPQPrivateMessage(t: classicalCommit, pq: pqCommit)
+
+		let bobPQEpochBefore = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
+		let bobClassicalEpochBefore = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
+		XCTAssertNil(bob.lastSendPQExported)
+		XCTAssertNotNil(bob.pqInflight)
+
+		_ = try bob.prepareToEncrypt()
+		let carrierFrame = try bob.encrypt(Data("carrier".utf8))
+		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(carrierFrame)
+		let badFrame = Frames.encodeMessageFrame(
+			staple: badStaple, proposal: proposalSection, app: appSection)
+
+		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .missingBindPSK)
+		}
+		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
+		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore)
+		XCTAssertTrue(bob.isFullyEstablished)
+		XCTAssertNotNil(bob.pqInflight)
+		XCTAssertNil(bob.lastSendPQExported)
+
+		// The genuine bind still applies cleanly afterward.
+		let prepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(prepared.didCommit)
+		let boundFrame = try alice.encrypt(Data("bound".utf8))
+		let decrypted = try bob.processIncoming(boundFrame)
+		XCTAssertTrue(decrypted.didApplyRemoteCommit)
+		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore + 1)
+		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore + 1)
+	}
+
+	// MARK: - Attestation presence/duplication (the wrapped FULL-commit attestation)
+
+	/// Drive the pair to Alice owing the bind (the full §A.3 bootstrap round).
+	private func bootstrapToOwedBind() throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
+		owed: OwedBind
+	) {
+		let established = try SessionTestSupport.established()
+		var alice = established.alice
+		var bob = established.bob
+		let aliceIdentity = established.aliceIdentity
+
+		_ = try bob.prepareToEncrypt()
+		let helloFrame = try bob.encrypt(Data("bob-hello".utf8))
+		_ = try alice.processIncoming(helloFrame)
+
+		let kpFrame = try alice.pqBootstrapBegin()
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame)
+		try alice.pqBootstrapJoin(welcomeFrame)
+		return (
+			alice: alice, bob: bob, aliceIdentity: aliceIdentity,
+			owed: try XCTUnwrap(alice.owedBind)
+		)
+	}
+
+	/// A hand-built classical bind commit carrying the `apq_psk` (`0xFF01`) and
+	/// the given number of wrapped FULL-commit attestation proposals — the
+	/// absent (zero) and duplicate (two) cases the attestation check's nil and
+	/// duplicate arms reject.
+	private func bindClassicalCommit(
+		alice: TwoMLSSession, aliceIdentity: TwoMLSIdentity, owed: OwedBind,
+		attestationCount: Int
+	) throws -> Data {
+		try withDeployedWireConventions {
+			let sendClassical = try XCTUnwrap(alice.sendGroup?.classical)
+			var pqForExport = try XCTUnwrap(alice.sendGroup?.pq)
+			let apqPSK = try MLS.Combiner.ExportedPsk.export(
+				from: &pqForExport, SessionTestSupport.pqProvider,
+				componentID: MLS.Combiner.Codepoints.deployed.apqComponentID)
+			var store = MLS.Combiner.PSKStore()
+			store.register(apqPSK)
+
+			var proposals: [MLS.RFC9420.ProposalOrRef] = [
+				.proposal(
+					apqPSK.proposal(
+						nonce: SessionTestSupport.classicalProvider
+							.randomBytes(
+								SessionTestSupport.classicalProvider
+									.hashSize)))
+			]
+			let attestation = MLS.Combiner.ApqInfoUpdate(
+				tEpoch: owed.tEpoch, pqEpoch: owed.pqEpoch)
+			for _ in 0..<attestationCount {
+				proposals.append(
+					.proposal(
+						.custom(
+							type: .init(.appDataUpdate),
+							body: try attestation.appDataUpdate(
+								componentID: MLS.Combiner.Codepoints
+									.deployed.apqComponentID
+							).mlsEncoded())))
+			}
+
+			let transition = try sendClassical.committing(
+				SessionTestSupport.classicalProvider, proposals: proposals,
+				signingKey: aliceIdentity.signingKey,
+				randomness: try .generate(SessionTestSupport.classicalProvider),
+				includePath: true, framing: .publicMessage, psk: store.resolver())
+			return try transition.takeOutput().message.mlsEncoded()
+		}
+	}
+
+	/// A classical bind commit carrying NO attestation proposal cannot pass the
+	/// shape whitelist (a FULL bind requires its `.appDataUpdate` event) — the
+	/// absent-attestation rejection, thrown before any apply. Nothing on Bob
+	/// moves, and the genuine bind still applies afterward.
+	func testBindRejectsAbsentAttestation() throws {
+		let (alice, bobFixture, aliceIdentity, owed) = try bootstrapToOwedBind()
+		var bob = bobFixture
+
+		let pqCommit = owed.pqCommitMessage
+		let classicalCommit = try bindClassicalCommit(
+			alice: alice, aliceIdentity: aliceIdentity, owed: owed, attestationCount: 0)
+		let badStaple = Frames.encodeAPQPrivateMessage(t: classicalCommit, pq: pqCommit)
+
+		let bobPQEpochBefore = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
+		let bobClassicalEpochBefore = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
+
+		_ = try bob.prepareToEncrypt()
+		let carrierFrame = try bob.encrypt(Data("carrier".utf8))
+		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(carrierFrame)
+		let badFrame = Frames.encodeMessageFrame(
+			staple: badStaple, proposal: proposalSection, app: appSection)
+
+		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .invalidBindEffects)
+		}
+		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
+		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore)
+		XCTAssertNotNil(bob.pqInflight)
+	}
+
+	/// A classical bind commit carrying TWO identical wrapped attestation
+	/// proposals (the PQ half remains the genuine one) clears the shape
+	/// whitelist and is then rejected by the attestation check's duplicate arm
+	/// (`.attestationMismatch`), again before anything applies.
+	func testBindRejectsDuplicateAttestations() throws {
+		let (alice, bobFixture, aliceIdentity, owed) = try bootstrapToOwedBind()
+		var bob = bobFixture
+
+		let pqCommit = owed.pqCommitMessage
+		let classicalCommit = try bindClassicalCommit(
+			alice: alice, aliceIdentity: aliceIdentity, owed: owed, attestationCount: 2)
+		let badStaple = Frames.encodeAPQPrivateMessage(t: classicalCommit, pq: pqCommit)
+
+		let bobPQEpochBefore = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
+		let bobClassicalEpochBefore = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
+
+		_ = try bob.prepareToEncrypt()
+		let carrierFrame = try bob.encrypt(Data("carrier".utf8))
+		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(carrierFrame)
+		let badFrame = Frames.encodeMessageFrame(
+			staple: badStaple, proposal: proposalSection, app: appSection)
+
+		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
+			XCTAssertEqual(error as? MLS.Combiner.Error, .attestationMismatch)
+		}
+		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
+		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore)
+		XCTAssertNotNil(bob.pqInflight)
+	}
+
 	// MARK: - MAJOR-3: the cross-half attestation check, pinned
 
 	/// The receive-side cross-half attestation check (§11 #9,
