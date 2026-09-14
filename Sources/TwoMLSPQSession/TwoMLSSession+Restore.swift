@@ -7,6 +7,7 @@ import SecretBytes
 
 // MARK: - Session restore + reconcile (slice 8a, PR1)
 
+// Gated because it bridges to a live iOS 26 port type — see IdentityArchive in SessionArchive.swift.
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
 	/// Restores a session from a mandatory Checkpoint and an optional, more

@@ -113,6 +113,11 @@ struct IdentityArchive: Codable, Sendable {
 	}
 }
 
+/// Gated because this bridges the plain Codable wire struct to the port's
+/// own live `TwoMLSIdentity`, which is itself `@available(iOS 26, macOS 26, *)`
+/// (it's built on CryptoKit's native ML-KEM-768 provider, macOS 26/iOS 26+
+/// only). The wire structs stay ungated so the archive's byte shape needs no
+/// OS floor to describe or decode.
 @available(iOS 26, macOS 26, *)
 extension IdentityArchive {
 	init(_ identity: TwoMLSIdentity) throws {
@@ -165,6 +170,7 @@ struct GroupEntry: Codable, Sendable, Equatable {
 	}
 }
 
+// Gated because it bridges to a live iOS 26 port type — see IdentityArchive in SessionArchive.swift.
 @available(iOS 26, macOS 26, *)
 extension APQGroup {
 	/// `Core` omits every PQ tree (there is no combiner `export_classical()`
@@ -600,6 +606,7 @@ let sessionArchiveVersion: UInt64 = 1
 
 // MARK: - Encode
 
+// Gated because it bridges to a live iOS 26 port type — see IdentityArchive in SessionArchive.swift.
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
 	/// Builds this session's archive: `kind` selects whether the PQ trees
