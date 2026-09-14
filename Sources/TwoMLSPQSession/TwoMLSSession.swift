@@ -224,7 +224,10 @@ public struct TwoMLSSession: Sendable {
 	let classicalProvider: any MLS.CipherSuiteProvider
 	let pqProvider: any MLS.CipherSuiteProvider
 	let codepoints: MLS.Combiner.Codepoints
-	let identity: TwoMLSIdentity
+	/// `var`, not `let`: the initiator clears its own classical init secret
+	/// in place once `joinGroupBIfNeeded` (Messaging) has spent it —
+	/// everything else about an identity is fixed for the session's life.
+	var identity: TwoMLSIdentity
 	/// The credential-sequence Authentication Service state (Germ policy,
 	/// RFC 9420 §5.3.1's "application responsibility") — seeded at
 	/// `initiate`/`receive` and consulted there against the peer's other

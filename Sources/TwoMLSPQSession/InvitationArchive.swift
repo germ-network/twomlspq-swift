@@ -45,6 +45,7 @@ struct InvitationArchive: Codable, Sendable {
 	var pqSuite: UInt16
 	var stateSeq: UInt64
 	var lastResort: Bool
+	var clientID: Data
 	/// `nil` once a single-use invitation's key package has been consumed.
 	var identity: IdentityArchive?
 	var forwardTable: [InvitationTableEntry]
@@ -63,6 +64,7 @@ struct InvitationArchive: Codable, Sendable {
 		case processedWelcomes = 7
 		case bootstrapRouting = 8
 		case consumedRemotes = 9
+		case clientID = 10
 	}
 }
 
@@ -85,6 +87,7 @@ extension Invitation {
 			pqSuite: TwoMLSSuite.pq.id,
 			stateSeq: stateSeq,
 			lastResort: lastResort,
+			clientID: clientID,
 			identity: try identity.map(IdentityArchive.init),
 			forwardTable: forwardTable.map(InvitationTableEntry.init),
 			processedWelcomes: processedWelcomes.map(InvitationTableEntry.init),
@@ -119,21 +122,12 @@ extension Invitation {
 
 		var invitation = Invitation(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: codepoints, identity: try body.identity?.restore(),
-			lastResort: body.lastResort)
+			codepoints: codepoints, clientID: body.clientID,
+			identity: try body.identity?.restore(), lastResort: body.lastResort)
 		invitation.stateSeq = body.stateSeq
-		invitation.forwardTable = Dictionary(
-			uniqueKeysWithValues: body.forwardTable.map {
-				($0.key, $0.classicalGroupID)
-			})
-		invitation.processedWelcomes = Dictionary(
-			uniqueKeysWithValues: body.processedWelcomes.map {
-				($0.key, $0.classicalGroupID)
-			})
-		invitation.bootstrapRouting = Dictionary(
-			uniqueKeysWithValues: body.bootstrapRouting.map {
-				($0.key, $0.classicalGroupID)
-			})
+		invitation.forwardTable = try dedupedTable(body.forwardTable)
+		invitation.processedWelcomes = try dedupedTable(body.processedWelcomes)
+		invitation.bootstrapRouting = try dedupedTable(body.bootstrapRouting)
 		invitation.consumedRemotes = Set(body.consumedRemotes)
 		return invitation
 	}
@@ -150,5 +144,23 @@ extension Invitation {
 		} catch is SecretArchiveError {
 			throw TwoMLSError.archiveInvalid
 		}
+	}
+
+	/// `Dictionary(uniqueKeysWithValues:)` TRAPS on a duplicate key — never
+	/// acceptable on a decoded archive. `restore` is documented fail-closed
+	/// (`archiveInvalid` on anything it cannot fully trust), so a corrupt or
+	/// adversarial blob with a repeated table key must be rejected, not
+	/// crash the process.
+	private static func dedupedTable(_ entries: [InvitationTableEntry]) throws -> [Data:
+		Data]
+	{
+		var table: [Data: Data] = [:]
+		for entry in entries {
+			guard table.updateValue(entry.classicalGroupID, forKey: entry.key) == nil
+			else {
+				throw TwoMLSError.archiveInvalid
+			}
+		}
+		return table
 	}
 }

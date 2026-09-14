@@ -18,10 +18,10 @@ import SecretBytes
 /// plus the provider config every KP/session leaf/invitation it mints needs.
 /// Every value `Principal` produces is signed by that same key — book
 /// concepts.md: "its job is minting key packages and invitations and
-/// holding their private material only until it is captured" (an invitation)
-/// "or handed off" (a session leaf); `Principal` itself never retains a
-/// minted KP's private material — each mint is fresh, local, and moved
-/// straight into its result.
+/// holding their private material only until it is captured into an
+/// invitation"; `Principal` itself never retains a minted KP's private
+/// material — each mint is fresh, local, and moved straight into its
+/// result.
 @available(iOS 26, macOS 26, *)
 public struct Principal: Sendable {
 	let classicalProvider: any MLS.CipherSuiteProvider
@@ -51,17 +51,6 @@ public struct Principal: Sendable {
 			signatureKey: signatureKey)
 	}
 
-	/// A fresh `{classical, pq}` key-package pair (fresh leaf/init secrets),
-	/// signed by this principal's key. `Principal` retains none of the
-	/// private material — the minted identity is local to this call and its
-	/// secrets are dropped the moment only `.keyPackage` survives it.
-	public func generateCombinerKeyPackage() throws -> CombinerKeyPackage {
-		try TwoMLSIdentity.generate(
-			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
-			classicalProvider: classicalProvider, pqProvider: pqProvider
-		).keyPackage
-	}
-
 	/// Mint a fresh combiner key package, capture ITS private material plus
 	/// a copy of this principal's signing identity into a new `Invitation`,
 	/// and return it with the invitation's initial (Swift-native v1) archive
@@ -81,7 +70,8 @@ public struct Principal: Sendable {
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
 		let invitation = Invitation(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: codepoints, identity: mintedIdentity, lastResort: lastResort)
+			codepoints: codepoints, clientID: clientID, identity: mintedIdentity,
+			lastResort: lastResort)
 		return (invitation, try invitation.makeInvitationArchive())
 	}
 }

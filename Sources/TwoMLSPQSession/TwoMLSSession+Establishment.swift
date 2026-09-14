@@ -91,9 +91,18 @@ extension TwoMLSSession {
 		// `H(KP′)` hashes the MLSMessage-wrapped bytes (§11 #7).
 		let bootstrap = try identity.freshPQKeyPackage(pqProvider: pqProvider)
 
+		// `identity.pqInitSecretKey` founded (not joined) `groupA`'s PQ half
+		// above, and is never read again by the initiator — clear it before
+		// it can ever be archived. The classical init secret stays: the
+		// initiator still needs it later, to join Group_B once the
+		// acceptor's first frame arrives (`joinGroupBIfNeeded`), which
+		// clears it in turn once THAT join completes.
+		let establishedIdentity = identity.clearingInitSecrets(classical: false, pq: true)
+
 		var session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: codepoints, identity: identity, auth: auth, sendGroup: groupA,
+			codepoints: codepoints, identity: establishedIdentity, auth: auth,
+			sendGroup: groupA,
 			recvGroup: nil,
 			currentStaple: apqWelcomeA, pendingProposal: nil, joinedWelcomeDigest: nil,
 			initiated: true,
@@ -214,10 +223,20 @@ extension TwoMLSSession {
 		let apqWelcomeB = Frames.encodeAPQWelcome(
 			t: try classicalWelcomeB.mlsEncoded(), pq: Data())
 
+		// Both of `identity`'s init secrets are now spent: `classicalJoin-
+		// Credentials`/`pqJoinCredentials` already joined `groupA` above (the
+		// only join this identity ever does), and `groupB` was FOUNDED, not
+		// joined (founding takes only the leaf secret). Clear both before
+		// the baseline archive can ever carry them — a reusable invitation's
+		// identity is the SAME published key package across every welcome
+		// it accepts, so a leaked (sealed) session archive must not also
+		// expose the still-published key package's init secret.
+		let establishedIdentity = identity.clearingInitSecrets(classical: true, pq: true)
+
 		var session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: codepoints, identity: identity, auth: auth, sendGroup: groupB,
-			recvGroup: groupA,
+			codepoints: codepoints, identity: establishedIdentity, auth: auth,
+			sendGroup: groupB, recvGroup: groupA,
 			currentStaple: apqWelcomeB, pendingProposal: nil,
 			joinedWelcomeDigest: try classicalProvider.hash(welcome), initiated: false,
 			expectedBootstrapKPCommitment: bootstrapKPCommitment, pqTurnMine: false,

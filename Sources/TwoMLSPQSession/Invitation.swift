@@ -29,6 +29,11 @@ public struct Invitation: Sendable {
 	let classicalProvider: any MLS.CipherSuiteProvider
 	let pqProvider: any MLS.CipherSuiteProvider
 	let codepoints: MLS.Combiner.Codepoints
+	/// Kept independent of `identity` (which goes `nil` once a single-use
+	/// invitation's key package is consumed) so this — book
+	/// api-reference.md's `client_id()` invitation accessor — still answers
+	/// after that.
+	public let clientID: Data
 	var identity: TwoMLSIdentity?
 	public let lastResort: Bool
 	public internal(set) var stateSeq: UInt64 = 0
@@ -52,12 +57,14 @@ public struct Invitation: Sendable {
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints,
+		clientID: Data,
 		identity: TwoMLSIdentity?,
 		lastResort: Bool
 	) {
 		self.classicalProvider = classicalProvider
 		self.pqProvider = pqProvider
 		self.codepoints = codepoints
+		self.clientID = clientID
 		self.identity = identity
 		self.lastResort = lastResort
 	}
@@ -117,15 +124,22 @@ public struct Invitation: Sendable {
 			throw TwoMLSError.sessionNotReady
 		}
 
-		forwardTable[spawnToken] = recvGroupID
-		processedWelcomes[welcomeDigest] = recvGroupID
-		bootstrapRouting[bootstrapKPCommitment] = recvGroupID
-		consumedRemotes.insert(remoteID)
+		// Commit staged on a copy first: if `makeInvitationArchive()` throws
+		// (an encode failure), `self` must be left unclaimed — none of the
+		// four tables written, no consume — rather than half-committed with
+		// no archive to show for it.
+		var next = self
+		next.forwardTable[spawnToken] = recvGroupID
+		next.processedWelcomes[welcomeDigest] = recvGroupID
+		next.bootstrapRouting[bootstrapKPCommitment] = recvGroupID
+		next.consumedRemotes.insert(remoteID)
 		if !lastResort {
-			identity = nil
+			next.identity = nil
 		}
-		advanceStateSeq()
-		return (session: result.session, archive: try makeInvitationArchive())
+		next.advanceStateSeq()
+		let archive = try next.makeInvitationArchive()
+		self = next
+		return (session: result.session, archive: archive)
 	}
 
 	// MARK: - Routing helpers (read-only, no state change)

@@ -210,6 +210,8 @@ final class InvitationTests: XCTestCase {
 		XCTAssertEqual(restored.bootstrapKPGroupID(kpFrame: untaggedKP), expectedGroupID)
 		XCTAssertNotNil(restored.combinerKeyPackage)
 
+		// The exact same welcome re-delivered is caught by the
+		// processed-welcome ledger.
 		XCTAssertThrowsError(
 			try restored.receive(
 				welcome: round.welcome,
@@ -217,6 +219,16 @@ final class InvitationTests: XCTestCase {
 				bootstrapKPCommitment: round.bootstrapKPCommitment,
 				spawnToken: round.spawnToken)
 		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .duplicateWelcome)
+		}
+
+		// A NEW, distinct welcome from the SAME remote isolates the
+		// consumed-remote set from the processed-welcome ledger: it has a
+		// different digest (so the ledger alone would let it through) but
+		// the same remote client id, so only a consumed set that itself
+		// survived restore can reject it.
+		XCTAssertThrowsError(try acceptOneWelcome(from: alicePrincipal, into: &restored)) {
+			error in
 			XCTAssertEqual(error as? TwoMLSError, .duplicateWelcome)
 		}
 	}

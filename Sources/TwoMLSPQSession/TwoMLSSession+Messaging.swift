@@ -351,7 +351,7 @@ extension TwoMLSSession {
 		}
 
 		let groupB = try APQGroup.joinClassicalOnly(
-			welcome: welcome, credentials: identity.classicalJoinCredentials,
+			welcome: welcome, credentials: try identity.classicalJoinCredentials,
 			crossPSK: crossPSK, expectedCreatorID: expectedCreator,
 			provider: classicalProvider, codepoints: codepoints)
 		try TwoPartyRules.ensureTwoParty(groupB.classical)
@@ -362,5 +362,9 @@ extension TwoMLSSession {
 		sendCrossPSKLedger = ledger
 		recvGroup = groupB
 		joinedWelcomeDigest = digest
+		// This was the initiator's own classical init secret's one use
+		// (`initiate` deferred clearing it exactly for this join) — clear it
+		// now so it can never be archived once spent.
+		identity = identity.clearingInitSecrets(classical: true, pq: false)
 	}
 }

@@ -253,8 +253,8 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 
 	/// `Invitation.receive` rejected a welcome its processed-welcome ledger
 	/// or consumed-remote set already recorded: a re-delivery of the exact
-	/// same welcome (`SHA-256(welcome)` already keys the forward/processed
-	/// tables), or a second, different welcome from an already-consumed
+	/// same welcome (`SHA-256(welcome)` already keys the processed-welcome
+	/// table), or a second, different welcome from an already-consumed
 	/// remote. Raised before any table insert or consume, so a rejected
 	/// welcome claims nothing (book session-lifecycle.md, "Invitations &
 	/// replayed initial frames").

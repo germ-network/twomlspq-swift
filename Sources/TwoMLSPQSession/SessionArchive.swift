@@ -87,18 +87,24 @@ extension ArchiveIntegerKeyedMap: Equatable where Value: Equatable {}
 
 // MARK: - Field archive types
 
-/// `TwoMLSIdentity`'s archived form: the classical/PQ leaf+init HPKE secrets
-/// and the Ed25519 signing key ride `.data` into `@SecretField`s (the keys
-/// themselves aren't `SecretRestorable`); the two `KeyPackage`s ride their
-/// own MLS wire encoding.
+/// `TwoMLSIdentity`'s archived form: the leaf HPKE secrets and the Ed25519
+/// signing key ride `.data` into `@SecretField`s (the keys themselves
+/// aren't `SecretRestorable`); the two `KeyPackage`s ride their own MLS wire
+/// encoding. The two INIT secrets are deliberately NOT archived: they are
+/// join-only (spent the moment this identity's own `KeyPackage` is joined
+/// with) and, for an invitation's identity, the SAME
+/// published key package's private material rides every spawned session —
+/// archiving an already-spent init secret would needlessly widen one leaked
+/// session archive's blast radius to the still-published key package.
+/// `restore()` always reconstructs both as `nil`; a live identity that still
+/// needs one (it has not yet joined with it) simply hasn't been archived
+/// from — `TwoMLSSession.restore` only ever runs on an ESTABLISHED session.
 struct IdentityArchive: Codable, Sendable {
 	var clientID: Data
 	@SecretField var signingKey: SecretBytes
 	var signatureKey: Data
 	@SecretField var classicalLeafSecretKey: SecretBytes
-	@SecretField var classicalInitSecretKey: SecretBytes
 	@SecretField var pqLeafSecretKey: SecretBytes
-	@SecretField var pqInitSecretKey: SecretBytes
 	var classicalKeyPackage: Data
 	var pqKeyPackage: Data
 
@@ -107,9 +113,7 @@ struct IdentityArchive: Codable, Sendable {
 		case signingKey = 1
 		case signatureKey = 2
 		case classicalLeafSecretKey = 3
-		case classicalInitSecretKey = 4
 		case pqLeafSecretKey = 5
-		case pqInitSecretKey = 6
 		case classicalKeyPackage = 7
 		case pqKeyPackage = 8
 	}
@@ -128,9 +132,7 @@ extension IdentityArchive {
 			signingKey: identity.signingKey.data,
 			signatureKey: identity.signatureKey.data,
 			classicalLeafSecretKey: identity.classicalLeafSecretKey.data,
-			classicalInitSecretKey: identity.classicalInitSecretKey.data,
 			pqLeafSecretKey: identity.pqLeafSecretKey.data,
-			pqInitSecretKey: identity.pqInitSecretKey.data,
 			classicalKeyPackage: try identity.keyPackage.classical.mlsEncoded(),
 			pqKeyPackage: try identity.keyPackage.pq.mlsEncoded())
 	}
@@ -145,9 +147,9 @@ extension IdentityArchive {
 			signingKey: try MLS.SignatureSecretKey(signingKey),
 			signatureKey: derivedSignatureKey,
 			classicalLeafSecretKey: try MLS.HpkeSecretKey(classicalLeafSecretKey),
-			classicalInitSecretKey: try MLS.HpkeSecretKey(classicalInitSecretKey),
+			classicalInitSecretKey: nil,
 			pqLeafSecretKey: try MLS.HpkeSecretKey(pqLeafSecretKey),
-			pqInitSecretKey: try MLS.HpkeSecretKey(pqInitSecretKey),
+			pqInitSecretKey: nil,
 			keyPackage: CombinerKeyPackage(
 				classical: try MLS.RFC9420.KeyPackage(
 					mlsEncoded: classicalKeyPackage),
