@@ -64,7 +64,28 @@ final class FoldTests: XCTestCase {
 
 		let frame = try alice.encrypt(Data("alice-fold".utf8))
 		let (staple, _, _) = try Frames.decodeMessageFrame(frame)
+		// The fold-only staple IS the bare MLSMessage: `0x00` is the message's
+		// own `ProtocolVersion` high byte (`mls10` = `00 01`), never a wrapper
+		// tag — pin the 4-byte `mls10 + public_message` prefix and that the
+		// whole slot decodes as a `.publicMessage` commit (the staple carries a
+		// `ComponentID`-bearing `0xFF02` PSK proposal, so decode under the
+		// deployed wire width).
 		XCTAssertEqual(staple.first, Frames.mlsMessageStapleTag)
+		XCTAssertEqual(staple.prefix(4), Data([0x00, 0x01, 0x00, 0x01]))
+		try withDeployedWireConventions {
+			guard
+				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(
+					mlsEncoded: staple)
+			else {
+				return XCTFail("expected a publicMessage commit staple")
+			}
+			XCTAssertEqual(
+				commitPub.content.epoch, groupAEpochBefore,
+				"the staple commit is framed at the sender's PRE-apply epoch")
+			guard case .commit = commitPub.content.content else {
+				return XCTFail("expected the staple to decode as a commit")
+			}
+		}
 
 		let decrypted = try bob.processIncoming(frame)
 		XCTAssertTrue(decrypted.didApplyRemoteCommit)

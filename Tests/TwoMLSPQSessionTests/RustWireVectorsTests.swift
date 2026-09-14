@@ -134,4 +134,33 @@ final class RustWireVectorsTests: XCTestCase {
 		XCTAssertEqual(type, .init(.appDataUpdate))
 		XCTAssertEqual(body, hexData(RustWireVectors.appDataUpdateBody))
 	}
+
+	// MARK: - (d) a real fold-only commit staple
+
+	/// A real fold-only commit staple captured off the deployed Rust reference (see the
+	/// regeneration recipe in `RustWireVectors.swift`) is accepted whole by
+	/// `decodeMlsMessageStaple`, dispatches through `stapleKind` as `.mlsMessage`, and
+	/// decodes as an MLS `.publicMessage` commit — pinning that the port's "the staple
+	/// IS the message, `0x00` is not a wrapper tag" model matches what Rust actually
+	/// staples.
+	func testFoldOnlyStapleAcceptsRealRustCommit() throws {
+		let staple = hexData(RustWireVectors.foldOnlyStaple)
+
+		XCTAssertEqual(Frames.stapleKind(staple.first!), .mlsMessage)
+
+		let decoded = try Frames.decodeMlsMessageStaple(staple)
+		XCTAssertEqual(decoded, staple)
+
+		try withDeployedWireConventions {
+			guard
+				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(
+					mlsEncoded: decoded)
+			else {
+				return XCTFail("expected a publicMessage commit staple")
+			}
+			guard case .commit = commitPub.content.content else {
+				return XCTFail("expected the staple to decode as a commit")
+			}
+		}
+	}
 }

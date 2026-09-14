@@ -36,10 +36,6 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// deferred (pq-less) pair — a wrong mode/suite, a bound `pqEpoch`, or an
 	/// identity field that does not match the group it rides in.
 	case deferredApqInfoMismatch
-	/// A bare `mlsMessage` (`0x00`) staple arrived — this module only ever
-	/// staples commits under `0x05` (`apqPrivateMessage`), so receiving the
-	/// bare tag is a protocol state it cannot process.
-	case commitStapleUnsupported
 	/// A staple welcome not already joined carried a non-empty pq slot — a
 	/// full (Group_A-shaped) welcome. Slice 1 only ever joins one of those via
 	/// the explicit `receive()` entry point, never through `processIncoming`.

@@ -130,13 +130,20 @@ enum Frames {
 
 	// MARK: - `0x00` bare mlsMessage staple (classical fold-only commit)
 
-	/// `[0x00][Commit MLSMessage bytes]` — bare remainder, no inner length
-	/// prefix, like `encodePQBootstrapKP`. Slice 5's fold-only staple: a
+	/// The fold-only staple IS the MLSMessage itself — no wrapper tag, no inner
+	/// length prefix. Its first byte `0x00` is the message's OWN
+	/// `ProtocolVersion` high byte (`mls10` = `00 01`), never a tag this module
+	/// adds: `wire-format.md`'s "Why the tags are odd" reserves the entire even
+	/// tag space precisely so a folded commit needs no external discriminator.
+	/// `stapleKind` dispatches on the message's own first byte and the message
+	/// is consumed whole, exactly as the deployed Rust reference sets
+	/// `current_staple` to the bare MLSMessage and decodes the whole slot as
+	/// one (`two-mls-pq` `session/messaging.rs`). Slice 5's fold-only staple: a
 	/// classical commit that folds a peer Update but carries no bind (a bind
 	/// riding the same commit staples `0x05` instead, `encodeAPQPrivateMessage`).
 	static func encodeMlsMessageStaple(_ message: Data) -> Data {
-		precondition(!message.isEmpty)
-		return Data([mlsMessageStapleTag]) + message
+		precondition(message.first == mlsMessageStapleTag)
+		return message
 	}
 
 	static func decodeMlsMessageStaple(_ staple: Data) throws -> Data {
@@ -144,9 +151,10 @@ enum Frames {
 		guard tag == mlsMessageStapleTag else {
 			throw TwoMLSError.unsupportedStapleTag(tag)
 		}
-		let message = Data(staple[staple.index(after: staple.startIndex)...])
-		guard !message.isEmpty else { throw TwoMLSError.emptySection }
-		return message
+		// The shortest well-formed `MLSMessage` prefix is
+		// `protocol_version(2) ‖ wire_format(2)` — reject anything shorter.
+		guard staple.count >= 4 else { throw TwoMLSError.truncatedSection }
+		return staple
 	}
 
 	// MARK: - `0x01` APQ welcome

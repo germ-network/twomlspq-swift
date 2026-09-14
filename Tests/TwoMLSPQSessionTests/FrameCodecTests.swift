@@ -12,6 +12,38 @@ final class FrameCodecTests: XCTestCase {
 		XCTAssertEqual(Frames.stapleKind(0xAB), .unsupported(0xAB))
 	}
 
+	// MARK: - `0x00` bare mlsMessage staple
+
+	/// The fold-only staple IS the MLSMessage: the `0x00` first byte is the
+	/// message's own `ProtocolVersion` high byte (`mls10` = `00 01`), not a
+	/// wrapper tag — `encodeMlsMessageStaple` passes the message through
+	/// unchanged and `decodeMlsMessageStaple` returns the whole slot.
+	func testMlsMessageStapleIsTheBareMessage() throws {
+		let message = Data([0x00, 0x01, 0x00, 0x01, 0xAA])
+		let staple = Frames.encodeMlsMessageStaple(message)
+		XCTAssertEqual(staple, message)
+		XCTAssertEqual(try Frames.decodeMlsMessageStaple(staple), message)
+	}
+
+	func testMlsMessageStapleRejectsWrongFirstByte() {
+		XCTAssertThrowsError(
+			try Frames.decodeMlsMessageStaple(Data([0x02, 0x01, 0x00, 0x01]))
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unsupportedStapleTag(0x02))
+		}
+	}
+
+	func testMlsMessageStapleRejectsTruncation() {
+		XCTAssertThrowsError(try Frames.decodeMlsMessageStaple(Data([0x00]))) {
+			error in
+			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
+		}
+		XCTAssertThrowsError(try Frames.decodeMlsMessageStaple(Data([0x00, 0x01]))) {
+			error in
+			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
+		}
+	}
+
 	// MARK: - `0x03` message frame
 
 	func testMessageFrameRoundTrips() throws {
