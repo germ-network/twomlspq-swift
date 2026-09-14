@@ -19,9 +19,9 @@ import SecretBytes
 
 /// Which of the two archive kinds a `SessionArchive` body encodes. Checkpoint
 /// carries both PQ trees (faithful, more expensive); Core omits them
-/// (cheap) and leans on a paired Checkpoint to restore the PQ halves. Public
-/// (PR2): it rides on every `StateUpdate` the app receives, to file the
-/// archive under the right slot.
+/// (cheap) and leans on a paired Checkpoint to restore the PQ halves. Public:
+/// it rides on every `StateUpdate` the app receives, to file the archive
+/// under the right slot.
 public enum BlobKind: UInt8, Sendable, Equatable, Codable {
 	case core = 0
 	case checkpoint = 1
@@ -614,8 +614,8 @@ extension TwoMLSSession {
 	/// Builds this session's archive: `kind` selects whether the PQ trees
 	/// ride along (Checkpoint) or are omitted (Core; the manifest fields
 	/// still carry the current PQ epochs either way). `stateSeq` is this
-	/// session's own live persistence sequence number (PR2's return
-	/// cadence — `StateUpdate`/`advanceStateSeq()` — is what bumps it).
+	/// session's own live persistence sequence number (the return cadence's
+	/// `StateUpdate`/`advanceStateSeq()` is what bumps it).
 	/// State is total: this never refuses to encode. Returns an UNSEALED,
 	/// zeroizing `SecretArchive` — the app seals it with its own key before
 	/// writing it out; this library never holds a sealing key.

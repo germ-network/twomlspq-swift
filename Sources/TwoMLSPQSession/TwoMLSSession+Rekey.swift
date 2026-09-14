@@ -59,7 +59,7 @@ extension TwoMLSSession {
 		pqInflight = .rekeyInitiated(updMessage: updBytes)
 		pendingSideBand = frame
 
-		// PR2 return cadence: stages an Upd′ into `recvGroup.pq` — no epoch
+		// Return cadence (slice 8a): stages an Upd′ into `recvGroup.pq` — no epoch
 		// change, but the PQ tree's pending state changed → `.checkpoint`.
 		advanceStateSeq()
 		return SideBandResult(frame: frame, update: try stateUpdate(kind: .checkpoint))
@@ -174,7 +174,7 @@ extension TwoMLSSession {
 			pqInflight = .rekeyResponded
 			pendingSideBand = responseFrame
 
-			// PR2 return cadence: committed `sendGroup.pq` → `.checkpoint`.
+			// Return cadence (slice 8a): committed `sendGroup.pq` → `.checkpoint`.
 			advanceStateSeq()
 			return SideBandResult(
 				frame: responseFrame, update: try stateUpdate(kind: .checkpoint))
@@ -191,7 +191,6 @@ extension TwoMLSSession {
 	/// mechanical rekey effects, applies the Commit′ to `recvGroup.pq`,
 	/// exports `S` off the freshly-rekeyed group, and owes the classical
 	/// bind (`owePQBind(s:)`, slice 3 reuse).
-	@discardableResult
 	public mutating func pqRekeyApply(_ frame: Data) throws -> StateUpdate {
 		guard pendingProposal == nil, owedBind == nil else {
 			throw TwoMLSError.sessionNotReady
@@ -285,7 +284,7 @@ extension TwoMLSSession {
 			pqInflight = nil
 			pendingSideBand = nil
 
-			// PR2 return cadence: `owePQBind` just committed `sendGroup.pq`
+			// Return cadence (slice 8a): `owePQBind` just committed `sendGroup.pq`
 			// (and this call committed `recvGroup.pq`) → `.checkpoint`.
 			advanceStateSeq()
 			return try stateUpdate(kind: .checkpoint)

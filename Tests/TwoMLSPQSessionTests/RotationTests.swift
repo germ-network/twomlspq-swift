@@ -193,7 +193,7 @@ final class RotationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
-		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncoming(foldFrame)
@@ -221,7 +221,7 @@ final class RotationTests: XCTestCase {
 		// throughout slice 6, unaffected by the classical rotation above.
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		_ = try alice.prepareToEncrypt()
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		_ = try bob.processIncoming(boundFrame)
@@ -266,7 +266,7 @@ final class RotationTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let bobOfferFrame = try bob.encrypt(Data("bob-offer".utf8)).frame
 		let decryptedOffer2 = try alice.processIncoming(bobOfferFrame)
-		try alice.queueProposal(digest: decryptedOffer2.queuedProposal.digest)
+		_ = try alice.queueProposal(digest: decryptedOffer2.queuedProposal.digest)
 
 		let parkedEpoch = try XCTUnwrap(alice.sendGroup?.classical.context.epoch)
 		let foldPrepared = try alice.prepareToEncrypt()
@@ -306,7 +306,7 @@ final class RotationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
-		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncoming(foldFrame)
@@ -419,7 +419,7 @@ final class RotationTests: XCTestCase {
 		_ = try bob.prepareToEncrypt(rotating: bobV2ID)
 		let frame1 = try bob.encrypt(Data("bob-rotate".utf8)).frame
 		let decrypted1 = try alice.processIncoming(frame1)
-		try alice.queueProposal(digest: decrypted1.queuedProposal.digest)
+		_ = try alice.queueProposal(digest: decrypted1.queuedProposal.digest)
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertEqual(prepared.committedRemoteClientID, bobV2ID)
 		XCTAssertEqual(alice.theirPrincipalState, .sync(bobV2ID))
@@ -578,7 +578,7 @@ final class RotationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
-		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncoming(foldFrame)
@@ -622,7 +622,7 @@ final class RotationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
-		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 
@@ -663,7 +663,7 @@ final class RotationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
-		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		let rotatingMessage = try XCTUnwrap(bob.queuedProposal?.message)
 
 		guard let sendGroupB = bob.sendGroup else {
@@ -791,7 +791,7 @@ final class RotationTests: XCTestCase {
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let owed = try XCTUnwrap(alice.owedBind)
 		var send = try XCTUnwrap(alice.sendGroup)
@@ -913,7 +913,7 @@ final class RotationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
-		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncoming(foldFrame)
@@ -934,7 +934,7 @@ final class RotationTests: XCTestCase {
 		let sendEpochBefore = try XCTUnwrap(alice.sendGroup?.classical.context.epoch)
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		XCTAssertNotNil(alice.owedBind)
 		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, sendEpochBefore)
 
@@ -984,7 +984,7 @@ final class RotationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
-		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncoming(foldFrame)

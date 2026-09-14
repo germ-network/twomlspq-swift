@@ -29,7 +29,7 @@ final class RekeyTests: XCTestCase {
 	) throws -> Bool {
 		let updFrame = try initiator.pqRekeyBegin().frame
 		let commitFrame = try committer.pqRekeyRespond(updFrame).frame
-		try initiator.pqRekeyApply(commitFrame)
+		_ = try initiator.pqRekeyApply(commitFrame)
 		let prepared = try initiator.prepareToEncrypt()
 		let boundFrame = try initiator.encrypt(Data("rekey-bound".utf8)).frame
 		_ = try committer.processIncoming(boundFrame)
@@ -75,7 +75,7 @@ final class RekeyTests: XCTestCase {
 
 		// 3: Bob applies the Commit′, exports `S` off the rekeyed mirror,
 		// and owes the classical bind.
-		try bob.pqRekeyApply(commitFrame)
+		_ = try bob.pqRekeyApply(commitFrame)
 		XCTAssertNotNil(bob.owedBind)
 		XCTAssertNil(bob.pqInflight)
 		XCTAssertNil(bob.pqPendingOutbound())
@@ -224,7 +224,7 @@ final class RekeyTests: XCTestCase {
 			return
 		}
 
-		try bob.pqRekeyApply(commitFrame)
+		_ = try bob.pqRekeyApply(commitFrame)
 		XCTAssertNotNil(bob.owedBind)
 	}
 
@@ -356,7 +356,7 @@ final class RekeyTests: XCTestCase {
 		// A subsequent honest mechanical §A.5 round still completes.
 		let updFrame = try bob.pqRekeyBegin().frame
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
-		try bob.pqRekeyApply(commitFrame)
+		_ = try bob.pqRekeyApply(commitFrame)
 		XCTAssertNotNil(bob.owedBind)
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
@@ -373,7 +373,7 @@ final class RekeyTests: XCTestCase {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let updFrame = try bob.pqRekeyBegin().frame
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
-		try bob.pqRekeyApply(commitFrame)
+		_ = try bob.pqRekeyApply(commitFrame)
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
@@ -415,7 +415,7 @@ final class RekeyTests: XCTestCase {
 		_ = try bob.encrypt(Data("m".utf8))
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		let preparedA4 = try bob.prepareToEncrypt()
 		XCTAssertTrue(preparedA4.didCommit)
 		let boundFrameA4 = try bob.encrypt(Data("bound-a4".utf8)).frame
@@ -460,7 +460,7 @@ final class RekeyTests: XCTestCase {
 		let groupAEpoch = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
 		XCTAssertEqual(bob.lastCrossInjectedPQ, groupAEpoch)
 
-		try alice.pqRekeyApply(commitFrame)
+		_ = try alice.pqRekeyApply(commitFrame)
 		XCTAssertEqual(alice.lastSendPQExported, groupAEpoch)
 		XCTAssertEqual(bob.lastCrossInjectedPQ, alice.lastSendPQExported)
 
@@ -514,7 +514,7 @@ final class RekeyTests: XCTestCase {
 			return
 		}
 
-		try alice.pqRekeyApply(commitFrame)
+		_ = try alice.pqRekeyApply(commitFrame)
 		XCTAssertEqual(alice.lastSendPQExported, sendGroupAEpochBefore)
 		XCTAssertNotNil(alice.owedBind)
 	}

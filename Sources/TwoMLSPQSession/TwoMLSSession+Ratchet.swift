@@ -99,7 +99,7 @@ extension TwoMLSSession {
 		pqInflight = .responding(secret: s, wireCT: wireCT)
 		pendingSideBand = outFrame
 
-		// PR2 return cadence: classical carrier only (the PQ half is read-only
+		// Return cadence (slice 8a): classical carrier only (the PQ half is read-only
 		// here — `ctSealPSK`/derivation, never committed) → `.core`.
 		advanceStateSeq()
 		return SideBandResult(frame: outFrame, update: try stateUpdate(kind: .core))
@@ -113,7 +113,6 @@ extension TwoMLSSession {
 	/// (`owePQBind(s:)`, §4c). `CTSeal.open`'s AEAD failure is the explicit
 	/// reject for a tampered/misdirected CT — it propagates as thrown, not a
 	/// silent no-op.
-	@discardableResult
 	public mutating func pqRatchetBind(_ frame: Data) throws -> StateUpdate {
 		let (tag, messageBytes) = try Frames.decodePQLeg(frame)
 		guard tag == Frames.pqCTTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
@@ -147,7 +146,7 @@ extension TwoMLSSession {
 		pqInflight = nil
 		pendingSideBand = nil
 
-		// PR2 return cadence: `owePQBind` just committed `sendGroup.pq` → `.checkpoint`.
+		// Return cadence (slice 8a): `owePQBind` just committed `sendGroup.pq` → `.checkpoint`.
 		advanceStateSeq()
 		return try stateUpdate(kind: .checkpoint)
 	}

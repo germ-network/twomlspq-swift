@@ -30,7 +30,7 @@ final class RatchetTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		_ = try alice.prepareToEncrypt()
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
@@ -77,7 +77,7 @@ final class RatchetTests: XCTestCase {
 
 		// 3: Bob binds — owes the PQ commit into Group_B.pq, immediately
 		// applied to his own local copy.
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		XCTAssertNotNil(bob.owedBind)
 		XCTAssertNil(bob.pqPendingOutbound())
 		XCTAssertEqual(bob.sendGroup?.pq?.context.epoch, 2)
@@ -120,7 +120,7 @@ final class RatchetTests: XCTestCase {
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 		XCTAssertNotNil(alice.pqPendingOutbound())
 
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		XCTAssertNil(bob.pqPendingOutbound())
 
 		let prepared = try bob.prepareToEncrypt()
@@ -180,7 +180,7 @@ final class RatchetTests: XCTestCase {
 		}
 
 		// The genuine CT still binds cleanly afterward.
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		XCTAssertNotNil(bob.owedBind)
 		XCTAssertEqual(bob.sendGroup?.pq?.context.epoch, 2)
 	}
@@ -197,7 +197,7 @@ final class RatchetTests: XCTestCase {
 		let staleEKFrame = try XCTUnwrap(bob.pqPendingOutbound())
 
 		let ctFrame = try alice.pqRatchetRespond(staleEKFrame).frame
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame

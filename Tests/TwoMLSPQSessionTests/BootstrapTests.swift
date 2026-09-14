@@ -25,7 +25,7 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertTrue(bob.isFullyEstablished)
 		XCTAssertFalse(alice.isFullyEstablished)
 
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		XCTAssertTrue(alice.isFullyEstablished)
 	}
 
@@ -35,7 +35,7 @@ final class BootstrapTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let alicePQ = try XCTUnwrap(alice.recvGroup?.pq)
 		let bobPQ = try XCTUnwrap(bob.sendGroup?.pq)
@@ -123,7 +123,7 @@ final class BootstrapTests: XCTestCase {
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		XCTAssertTrue(bob.isFullyEstablished)
 
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		XCTAssertTrue(alice.isFullyEstablished)
 		XCTAssertNotNil(alice.owedBind)
 
@@ -162,7 +162,7 @@ final class BootstrapTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		_ = try alice.prepareToEncrypt()
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
@@ -190,7 +190,7 @@ final class BootstrapTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		XCTAssertNotNil(alice.owedBind)
 
 		// Simulate Bob's licensing Upd never having arrived.
@@ -214,7 +214,7 @@ final class BootstrapTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		alice.owedBind?.pqEpoch += 1
 
@@ -233,7 +233,7 @@ final class BootstrapTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		_ = try alice.prepareToEncrypt()
 		let frame = try alice.encrypt(Data("bound".utf8)).frame
 
@@ -351,7 +351,7 @@ final class BootstrapTests: XCTestCase {
 		let pqCommit = try bindPQCommitWithoutInjectedS(
 			sendPQ: try XCTUnwrap(alice.sendGroup?.pq), aliceIdentity: aliceIdentity,
 			tEpoch: 2, pqEpoch: 2)
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		let owed = try XCTUnwrap(alice.owedBind)
 		XCTAssertEqual(owed.tEpoch, 2)
 		XCTAssertEqual(owed.pqEpoch, 2)
@@ -411,7 +411,7 @@ final class BootstrapTests: XCTestCase {
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		let owed = try XCTUnwrap(alice.owedBind)
 
 		let pqCommit = owed.pqCommitMessage
@@ -467,7 +467,7 @@ final class BootstrapTests: XCTestCase {
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		return (
 			alice: alice, bob: bob, aliceIdentity: aliceIdentity,
 			owed: try XCTUnwrap(alice.owedBind)
@@ -602,7 +602,7 @@ final class BootstrapTests: XCTestCase {
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let owed = try XCTUnwrap(alice.owedBind)
 		var send = try XCTUnwrap(alice.sendGroup)
@@ -707,7 +707,7 @@ final class BootstrapTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try alice.pqBootstrapJoin(welcomeFrame)
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)

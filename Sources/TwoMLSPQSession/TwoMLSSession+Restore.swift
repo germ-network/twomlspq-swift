@@ -253,13 +253,21 @@ extension TwoMLSSession {
 			try $0.restore()
 		}
 		session.rotationCandidate = try body.rotationCandidate?.restore()
-		// PR2: the reconciled `stateSeq` becomes both the live counter to
-		// advance from and `currentStapleSeq`'s seed — a safe, never-under
-		// value for the durability gate (this blob is already durable, or the
-		// app could not have restored from it), even if it overstates
-		// exactly when `currentStaple` was first installed.
+		// Return cadence (slice 8a): the reconciled `stateSeq` becomes both
+		// the live counter to advance from and `currentStapleSeq`'s seed — a
+		// safe, never-under value for the durability gate (this blob is
+		// already durable, or the app could not have restored from it), even
+		// if it overstates exactly when `currentStaple` was first installed.
 		session.stateSeq = body.stateSeq
 		session.currentStapleSeq = body.stateSeq
+		// The winning body's own PQ-epoch manifest IS a manifest this session
+		// can prove was actually persisted (it is exactly the `checkpoint:`
+		// archive passed in, or splices from it) — seeding the sticky
+		// checkpoint invariant from it, rather than leaving it at `nil`,
+		// means a `.core` minted right after restore (before anything has
+		// moved) is never spuriously upgraded.
+		session.lastCheckpointedManifest = PQEpochManifest(
+			sendPQEpoch: body.sendPQEpoch, recvPQEpoch: body.recvPQEpoch)
 		return session
 	}
 

@@ -55,7 +55,7 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, groupAEpochBefore)
 
 		let offer = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer.digest)
+		_ = try alice.queueProposal(digest: offer.digest)
 
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
@@ -117,11 +117,11 @@ final class FoldTests: XCTestCase {
 		_ = try bob.encrypt(Data("m".utf8))
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		XCTAssertNotNil(bob.owedBind)
 
 		let offer = try surfaceOffer(from: &alice, to: &bob)
-		try bob.queueProposal(digest: offer.digest)
+		_ = try bob.queueProposal(digest: offer.digest)
 
 		let groupBEpochBefore = try XCTUnwrap(bob.sendGroup?.classical.context.epoch)
 		let prepared = try bob.prepareToEncrypt()
@@ -156,14 +156,14 @@ final class FoldTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		let offer1 = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer1.digest)
+		_ = try alice.queueProposal(digest: offer1.digest)
 		_ = try alice.prepareToEncrypt()
 		let frame1 = try alice.encrypt(Data("fold-1".utf8)).frame
 		let decrypted1 = try bob.processIncoming(frame1)
 		XCTAssertTrue(decrypted1.didApplyRemoteCommit)
 
 		let offer2 = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer2.digest)
+		_ = try alice.queueProposal(digest: offer2.digest)
 		_ = try alice.prepareToEncrypt()
 		let frame2 = try alice.encrypt(Data("fold-2".utf8)).frame
 		let decrypted2 = try bob.processIncoming(frame2)
@@ -194,14 +194,14 @@ final class FoldTests: XCTestCase {
 		// that injects the cross-party PSK off her view of Group_B, still at
 		// epoch 1.
 		let offer1 = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer1.digest)
+		_ = try alice.queueProposal(digest: offer1.digest)
 		_ = try alice.prepareToEncrypt()
 		let aliceFoldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 
 		// Bob independently commits his OWN send group (Group_B) — crossed
 		// with alice's in-flight commit above — advancing it past the epoch
 		// (1) that commit's injected `0xFF02` referenced.
-		try bob.queueProposal(digest: offer2.digest)
+		_ = try bob.queueProposal(digest: offer2.digest)
 		_ = try bob.prepareToEncrypt()
 		let bobFoldFrame = try bob.encrypt(Data("bob-fold".utf8)).frame
 		XCTAssertEqual(bob.sendGroup?.classical.context.epoch, 2)
@@ -225,7 +225,7 @@ final class FoldTests: XCTestCase {
 	func testTamperedFoldCommitThrowsAndBurnsNoState() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer.digest)
+		_ = try alice.queueProposal(digest: offer.digest)
 		_ = try alice.prepareToEncrypt()
 		let frame = try alice.encrypt(Data("fold".utf8)).frame
 
@@ -350,7 +350,7 @@ final class FoldTests: XCTestCase {
 	func testFoldEffectsWithAnAddThrowsUnexpectedProposal() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer.digest)
+		_ = try alice.queueProposal(digest: offer.digest)
 
 		guard let sendGroupA = alice.sendGroup else {
 			XCTFail("expected alice to be established")
@@ -672,7 +672,7 @@ final class FoldTests: XCTestCase {
 	func testBehindFoldCommitIsSkippedIdempotently() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
-		try alice.queueProposal(digest: offer.digest)
+		_ = try alice.queueProposal(digest: offer.digest)
 		_ = try alice.prepareToEncrypt()
 		let frame = try alice.encrypt(Data("fold".utf8)).frame
 

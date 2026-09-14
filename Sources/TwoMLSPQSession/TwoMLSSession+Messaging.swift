@@ -148,7 +148,7 @@ extension TwoMLSSession {
 		// reference can still resolve it.
 		stagedUpdates.append((digest: proposalHash, message: proposalBytes))
 
-		// PR2 return cadence: classical-only mutation → `.core`. `didCommit`
+		// Return cadence (slice 8a): classical-only mutation → `.core`. `didCommit`
 		// installed a fresh `currentStaple` (`committingRound`'s success
 		// point) iff it folded/discharged/caught-up — stamp the durability
 		// watermark at THIS call's own (just-bumped) `stateSeq` exactly then.
@@ -192,7 +192,7 @@ extension TwoMLSSession {
 		rewrapSideBand()
 		maybeStageNextRound()
 
-		// PR2 return cadence: classical-only mutation → `.core`.
+		// Return cadence (slice 8a): classical-only mutation → `.core`.
 		advanceStateSeq()
 		let update = try stateUpdate(kind: .core)
 		return EncryptResult(frame: frame, update: update)
@@ -210,11 +210,14 @@ extension TwoMLSSession {
 			throw TwoMLSError.appSectionNotPrivateMessage
 		}
 
-		// PR2 return cadence: `applyBind` rides this method and moves
-		// `recvGroup.pq` (§11), so the kind can't be a static per-site tag
-		// here — snapshot both PQ trees' presence+epoch before/after the
+		// Return cadence (slice 8a): `applyBind` rides this method's staple
+		// dispatch and moves `recvGroup.pq`, so the kind can't be a static
+		// per-site tag here — snapshot both PQ trees' epoch before/after the
 		// staple applies and tag `.checkpoint` iff either actually moved.
-		let pqTreesBefore = pqTreeSignature
+		// (`stateUpdate(kind:)`'s sticky invariant is the actual guarantee
+		// against an un-checkpointed move surviving a later throw in this
+		// same method; this snapshot only picks the precise kind up front.)
+		let pqManifestBefore = pqEpochManifest
 		let stapleResult = try handleStaple(staple)
 
 		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
@@ -235,7 +238,7 @@ extension TwoMLSSession {
 		// approved tally it feeds.
 		offeredProposal = (digest: digest, proposing: proposing, message: proposalMessage)
 
-		let kind: BlobKind = pqTreeSignature == pqTreesBefore ? .core : .checkpoint
+		let kind: BlobKind = pqEpochManifest == pqManifestBefore ? .core : .checkpoint
 		advanceStateSeq()
 		let update = try stateUpdate(kind: kind)
 		return DecryptResult(
@@ -247,21 +250,6 @@ extension TwoMLSSession {
 			ownCredentialCanonicalized: stapleResult.ownCredentialCanonicalized,
 			queuedProposal: QueuedProposal(digest: digest, proposing: proposing),
 			update: update)
-	}
-
-	/// Both PQ trees' presence+epoch, as a comparable snapshot —
-	/// `processIncoming`'s before/after delta for its dynamic kind selection.
-	/// A `nil` half compares unequal to any `Some`, so founding OR losing a
-	/// half counts as a move exactly like an epoch bump does.
-	private struct PQTreeSignature: Equatable {
-		let sendPQEpoch: UInt64?
-		let recvPQEpoch: UInt64?
-	}
-
-	private var pqTreeSignature: PQTreeSignature {
-		PQTreeSignature(
-			sendPQEpoch: sendGroup?.pq?.context.epoch,
-			recvPQEpoch: recvGroup?.pq?.context.epoch)
 	}
 
 	/// `0x01` welcome → join Group_B if this staple hasn't been joined yet

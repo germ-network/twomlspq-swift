@@ -1,15 +1,16 @@
 import Foundation
 import SecretBytes
 
-// MARK: - Return-cadence plumbing (slice 8a, PR2)
+// MARK: - Return-cadence plumbing (slice 8a)
 //
-// No push/sink (Mark decision B): every state-advancing method bumps
-// `stateSeq` and returns its own `StateUpdate` (`archive` from PR1's
-// `makeSessionArchive`, now reading the live `stateSeq` field rather than
-// taking it as a parameter) alongside its normal output. Return-on-success
-// only: a throwing mutation returns nothing, so the live struct can run
-// ahead of the last blob the app actually saved — a later `restore` just
-// rewinds to that last consistent state (documented, accepted behavior).
+// Return-based, sealing external: every state-advancing method bumps
+// `stateSeq` and returns its own `StateUpdate` (`archive` from the session
+// archive's own `makeSessionArchive`, which reads the live `stateSeq` field
+// rather than taking it as a parameter) alongside its normal output.
+// Return-on-success only: a throwing mutation returns nothing, so the live
+// struct can run ahead of the last blob the app actually saved — a later
+// `restore` just rewinds to that last consistent state (documented, accepted
+// behavior).
 
 /// One state-advancing call's persistable output: `kind` says which slot
 /// (Core/Checkpoint) the app should file `archive` under, keyed by
@@ -20,8 +21,25 @@ public struct StateUpdate: Sendable {
 	public let archive: SecretArchive
 }
 
+/// Both PQ trees' epoch, exactly the manifest fields `SessionArchive` itself
+/// carries (`sendPQEpoch`/`recvPQEpoch`) — the cheap, tree-hash-free signal
+/// both `processIncoming`'s per-call kind derivation and the sticky
+/// checkpoint invariant below compare against. A `nil` half compares unequal
+/// to any `Some`, so founding OR losing a half counts as a move exactly like
+/// an epoch bump does.
+struct PQEpochManifest: Equatable {
+	let sendPQEpoch: UInt64?
+	let recvPQEpoch: UInt64?
+}
+
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
+	var pqEpochManifest: PQEpochManifest {
+		PQEpochManifest(
+			sendPQEpoch: sendGroup?.pq?.context.epoch,
+			recvPQEpoch: recvGroup?.pq?.context.epoch)
+	}
+
 	/// Bumps `stateSeq` for a fresh state-advancing call. Checked add: past
 	/// `UInt64.max` this stops advancing rather than wrapping — an
 	/// unreachable session lifetime in practice, kept fail-safe rather than
@@ -39,11 +57,38 @@ extension TwoMLSSession {
 		currentStapleSeq = stateSeq
 	}
 
-	/// This call's own `StateUpdate`, at the CURRENT `stateSeq` — every
-	/// caller bumps first (`advanceStateSeq()`) except the establishment
-	/// baseline, which mints one at the starting `stateSeq` (0) instead.
-	func stateUpdate(kind: BlobKind) throws -> StateUpdate {
-		StateUpdate(
+	/// This call's own `StateUpdate`, at the CURRENT `stateSeq`. Every caller
+	/// bumps first (`advanceStateSeq()`) except the establishment baseline,
+	/// which mints one at the starting `stateSeq` (0) instead.
+	///
+	/// The sticky checkpoint invariant: several PQ-tree-moving methods
+	/// (`applyBind` riding `processIncoming`; the bootstrap-join and re-key-
+	/// apply PQ commits) move a PQ tree on `self` and only THEN run a further
+	/// throwing step (`unprotect`/`decodeProposalSection`/`hash` in
+	/// `processIncoming`; `owePQBind` in the other two) before this function
+	/// is ever reached. Return-on-success-only means a throw there discards
+	/// the `StateUpdate` entirely — no Checkpoint ever captures that move,
+	/// yet the move already landed on `self`. Left alone, the next `.core`
+	/// this session mints would carry a PQ-epoch manifest already ahead of
+	/// the last real Checkpoint, which `restore` can never reconcile
+	/// (`archiveInvalid` on every future restore until the next PQ op).
+	/// Guarding against that here — comparing the CURRENT live manifest
+	/// against the manifest as of the last `.checkpoint` this session
+	/// actually minted, and upgrading a `.core` request when they disagree —
+	/// closes every such site at the one choke point every `StateUpdate`
+	/// passes through, rather than each call site individually. Comparing
+	/// manifests (not a deeper tree hash) also means the bind-discharge
+	/// round's PQ exporter-component consumption — which never moves an
+	/// epoch — does not spuriously upgrade it.
+	mutating func stateUpdate(kind: BlobKind) throws -> StateUpdate {
+		var kind = kind
+		if kind == .core, pqEpochManifest != lastCheckpointedManifest {
+			kind = .checkpoint
+		}
+		if kind == .checkpoint {
+			lastCheckpointedManifest = pqEpochManifest
+		}
+		return StateUpdate(
 			kind: kind, stateSeq: stateSeq, archive: try makeSessionArchive(kind: kind))
 	}
 }

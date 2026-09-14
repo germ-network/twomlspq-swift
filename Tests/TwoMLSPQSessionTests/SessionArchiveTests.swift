@@ -72,13 +72,14 @@ final class SessionArchiveTests: XCTestCase {
 		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(offerFrame)
 		let (_, offerMessage) = try Frames.decodeProposalSection(offerProposalSection)
 		let offerDigest = try SessionTestSupport.classicalProvider.hash(offerMessage)
-		try alice.queueProposal(digest: offerDigest)
+		_ = try alice.queueProposal(digest: offerDigest)
 
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let foldFrame = try alice.encrypt(Data("folded".utf8)).frame
 		_ = try bob.processIncoming(foldFrame)
 
+		let coreStateSeq = alice.stateSeq
 		let coreArchive = try alice.makeSessionArchive(kind: .core)
 
 		let openedCheckpoint = try sealAndOpen(checkpointArchive)
@@ -92,6 +93,9 @@ final class SessionArchiveTests: XCTestCase {
 		XCTAssertEqual(
 			restored.sendGroup?.classical.context.epoch,
 			alice.sendGroup?.classical.context.epoch)
+		// The winning (Core) body's own `stateSeq` — not the Checkpoint's —
+		// is what the restored session's live counter picks up.
+		XCTAssertEqual(restored.stateSeq, coreStateSeq)
 
 		_ = try restored.prepareToEncrypt()
 		let frame = try restored.encrypt(Data("post-restore".utf8)).frame
@@ -107,7 +111,7 @@ final class SessionArchiveTests: XCTestCase {
 		}
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
 		let ctFrame = try restored.pqRatchetRespond(ekFrame).frame
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		let ratchetPrepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(ratchetPrepared.didCommit)
 		let ratchetBoundFrame = try bob.encrypt(Data("pq-round-bound".utf8)).frame
@@ -134,7 +138,7 @@ final class SessionArchiveTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		try restored.pqBootstrapJoin(welcomeFrame)
+		_ = try restored.pqBootstrapJoin(welcomeFrame)
 		XCTAssertTrue(restored.isFullyEstablished)
 
 		let prepared = try restored.prepareToEncrypt()
@@ -164,7 +168,7 @@ final class SessionArchiveTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
@@ -186,7 +190,7 @@ final class SessionArchiveTests: XCTestCase {
 		_ = try bob.encrypt(Data("m".utf8))
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
-		try bob.pqRatchetBind(ctFrame)
+		_ = try bob.pqRatchetBind(ctFrame)
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
@@ -341,7 +345,7 @@ final class SessionArchiveTests: XCTestCase {
 		// A.3 then completes off the restored session.
 		let kpFrame = try restored.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		try restored.pqBootstrapJoin(welcomeFrame)
+		_ = try restored.pqBootstrapJoin(welcomeFrame)
 		XCTAssertTrue(restored.isFullyEstablished)
 
 		let prepared = try restored.prepareToEncrypt()
@@ -426,7 +430,7 @@ final class SessionArchiveTests: XCTestCase {
 
 	func testTieStateSeqTakesCheckpointNotCore() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
-		// PR2's live `stateSeq` only ever moves forward on its own, so the tie
+		// The live `stateSeq` only ever moves forward on its own, so the tie
 		// this test exercises (unreachable via the live cadence alone) is
 		// forced explicitly here — `@testable`-only, never something the
 		// public API lets an app do.
@@ -439,7 +443,7 @@ final class SessionArchiveTests: XCTestCase {
 		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(offerFrame)
 		let (_, offerMessage) = try Frames.decodeProposalSection(offerProposalSection)
 		let offerDigest = try SessionTestSupport.classicalProvider.hash(offerMessage)
-		try alice.queueProposal(digest: offerDigest)
+		_ = try alice.queueProposal(digest: offerDigest)
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		_ = try alice.encrypt(Data("folded".utf8))
@@ -479,7 +483,7 @@ final class SessionArchiveTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
-		try restoredBob.pqRatchetBind(ctFrame)
+		_ = try restoredBob.pqRatchetBind(ctFrame)
 		let prepared = try restoredBob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try restoredBob.encrypt(Data("bound".utf8)).frame
@@ -505,7 +509,7 @@ final class SessionArchiveTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
-		try restoredBob.pqRekeyApply(commitFrame)
+		_ = try restoredBob.pqRekeyApply(commitFrame)
 		let prepared = try restoredBob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try restoredBob.encrypt(Data("rekey-bound".utf8)).frame

@@ -341,7 +341,7 @@ public struct TwoMLSSession: Sendable {
 	/// which needs the PQ catch-up of a later slice).
 	var rotationCandidate: RotationCandidate? = nil
 
-	// MARK: Return cadence (slice 8a, PR2)
+	// MARK: Return cadence (slice 8a)
 
 	/// This session's own persistence sequence number — every state-advancing
 	/// method bumps it (checked add; stops rather than wraps past
@@ -360,6 +360,16 @@ public struct TwoMLSSession: Sendable {
 	/// app could not have restored from it), even though it may overstate
 	/// exactly when `currentStaple` was first installed.
 	var currentStapleSeq: UInt64 = 0
+	/// The PQ-epoch manifest as of the last `.checkpoint` `StateUpdate` this
+	/// session actually minted — `stateUpdate(kind:)`'s sticky invariant
+	/// upgrades a `.core` request to `.checkpoint` whenever the LIVE manifest
+	/// has since moved past this, so a PQ-tree move that lands on `self` but
+	/// is cut short of ever returning its own `StateUpdate` (a throw further
+	/// down the same call) cannot silently persist as an un-checkpointed
+	/// Core. Seeded at the establishment baseline (every baseline mints a
+	/// `.checkpoint`) and by `restore` from the reconciled blob's own
+	/// manifest.
+	var lastCheckpointedManifest = PQEpochManifest(sendPQEpoch: nil, recvPQEpoch: nil)
 
 	public var isEstablished: Bool { sendGroup != nil && recvGroup != nil }
 	/// Both directional pairs have their PQ half present — the §A.3

@@ -33,7 +33,7 @@ extension TwoMLSSession {
 		pqInflight = .bootstrapInitiated
 		pendingSideBand = frame
 
-		// PR2 return cadence: parks the 0x13 frame — classical state only → `.core`.
+		// Return cadence (slice 8a): parks the 0x13 frame — classical state only → `.core`.
 		advanceStateSeq()
 		return SideBandResult(frame: frame, update: try stateUpdate(kind: .core))
 	}
@@ -94,7 +94,7 @@ extension TwoMLSSession {
 		pqInflight = .bootstrapResponded
 		pendingSideBand = responseFrame
 
-		// PR2 return cadence: founded `sendGroup.pq` → `.checkpoint`.
+		// Return cadence (slice 8a): founded `sendGroup.pq` → `.checkpoint`.
 		advanceStateSeq()
 		return SideBandResult(
 			frame: responseFrame, update: try stateUpdate(kind: .checkpoint))
@@ -108,7 +108,6 @@ extension TwoMLSSession {
 	/// (§11 #4): a routine `Upd(self)` must already be discharged (`encrypt`)
 	/// before the bootstrap can add its own commit to the pile. Clears
 	/// `bootstrapKPSecret` once spent (§11 #11).
-	@discardableResult
 	public mutating func pqBootstrapJoin(_ frame: Data) throws -> StateUpdate {
 		guard pendingProposal == nil else { throw TwoMLSError.sessionNotReady }
 		let welcomeBytes = try Frames.decodePQBootstrapWelcome(frame)
@@ -145,7 +144,7 @@ extension TwoMLSSession {
 		pqInflight = nil
 		pendingSideBand = nil
 
-		// PR2 return cadence: joined `recvGroup.pq` → `.checkpoint`.
+		// Return cadence (slice 8a): joined `recvGroup.pq` → `.checkpoint`.
 		advanceStateSeq()
 		return try stateUpdate(kind: .checkpoint)
 	}

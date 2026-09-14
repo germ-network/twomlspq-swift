@@ -94,7 +94,7 @@ final class E2EWalkthroughTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let bobProposalFrame = try bob.encrypt(Data("bob update".utf8)).frame
 		let proposalDecrypted = try alice.processIncoming(bobProposalFrame)
-		try alice.queueProposal(digest: proposalDecrypted.queuedProposal.digest)
+		_ = try alice.queueProposal(digest: proposalDecrypted.queuedProposal.digest)
 
 		let foldPrepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(
@@ -132,7 +132,7 @@ final class E2EWalkthroughTests: XCTestCase {
 		let rotatingFrame = try alice.encrypt(Data("rotating".utf8)).frame
 		let rotatingDecrypted = try bob.processIncoming(rotatingFrame)
 		XCTAssertEqual(rotatingDecrypted.queuedProposal.proposing, newAliceID)
-		try bob.queueProposal(digest: rotatingDecrypted.queuedProposal.digest)
+		_ = try bob.queueProposal(digest: rotatingDecrypted.queuedProposal.digest)
 
 		let rotationPrepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(rotationPrepared.didCommit)
