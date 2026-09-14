@@ -7,11 +7,11 @@ import SecretBytes
 
 // MARK: - Invitation archive (slice 8b)
 //
-// Swift-native v1 (PLAN §1/§5), monolithic — an invitation carries no
-// ML-KEM trees, so it only ever pushes one kind of blob (book concepts.md).
-// Same return-based, sealing-external shape as the session archive: the
-// library hands the app an unsealed, zeroizing `SecretArchive`; the app
-// seals with its own key.
+// Swift-native v1, monolithic — an invitation carries no ML-KEM trees, so
+// it only ever pushes one kind of blob (book concepts.md). Same
+// return-based, sealing-external shape as the session archive: the library
+// hands the app an unsealed, zeroizing `SecretArchive`; the app seals with
+// its own key.
 
 /// One `Invitation` table entry: an opaque key (a spawn token, a welcome
 /// digest, or a bootstrap commitment) mapped to the spawned session's
@@ -67,8 +67,8 @@ struct InvitationArchive: Codable, Sendable {
 }
 
 /// The current, and so far only, invitation archive format version —
-/// distinct from `sessionArchiveVersion` (each object versions independently,
-/// PLAN §1/§5).
+/// distinct from `sessionArchiveVersion` (each object versions
+/// independently, book concepts.md's per-object persistence).
 let invitationArchiveVersion: UInt64 = 1
 
 // MARK: - Encode

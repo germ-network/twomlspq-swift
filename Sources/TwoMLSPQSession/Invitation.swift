@@ -11,10 +11,10 @@ import SecretBytes
 // `TwoMlsPqInvitation`): one published combiner key package's private
 // material, the captured signing identity, and the four tables that let one
 // invitation service many welcomes with no live client. Return-based, no
-// sink (PLAN §1/§5): `receive` mutates `self` and returns the resulting
-// session alongside the updated archive for the app to seal and save — the
-// same return-cadence shape `TwoMLSSession`'s own state-advancing methods
-// use.
+// sink (book concepts.md's push-based persistence, adapted here the same
+// way `TwoMLSSession`'s own state-advancing methods are): `receive` mutates
+// `self` and returns the resulting session alongside the updated archive
+// for the app to seal and save.
 
 /// One published combiner key package's receiving capability. Holds the
 /// captured KP private material plus signing identity as one
