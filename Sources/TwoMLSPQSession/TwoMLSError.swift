@@ -236,4 +236,16 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// key (which both classical leaves may already present). Naming the
 	/// SAME candidate again is idempotent, not this error.
 	case rotationInFlight
+
+	// MARK: Session archive (slice 8a)
+
+	/// `TwoMLSSession.restore`'s decoded input failed validation: a leading
+	/// field (`version`/`classicalSuite`/`pqSuite`/`kind`) didn't match what
+	/// was expected of it; a Core and Checkpoint pair disagreed on session
+	/// identity (client id, signature key, or either classical group id) or,
+	/// when the Core is newer, on the PQ-epoch manifest; or a decode-time
+	/// invariant (the pinned bootstrap commitment's 32-byte length) failed.
+	/// Fail-closed: `restore` never partially reconstructs a session off a
+	/// blob it cannot fully trust.
+	case archiveInvalid
 }

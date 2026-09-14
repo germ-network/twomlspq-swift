@@ -1,0 +1,609 @@
+import Foundation
+import MLSCodec
+import MLSCombiner
+import MLSCrypto
+import MLSExtensions
+import MLSProfileRFC9420
+import SecretBytes
+
+// MARK: - Session archive (slice 8a, PR1: type + encode only)
+//
+// The wire format is a single Codable body (no separate cleartext header —
+// version/suite/kind ride as the body's own leading fields, validated by
+// `restore` after the app's own `.open`), turned into a `SecretArchive` via
+// `SecretArchive(encoding:)`. The library never seals: it hands the app an
+// unsealed, zeroizing archive, and the app seals with its own key
+// (swift-mls's return-to-app-to-save idiom). Restore/reconcile lives in
+// `TwoMLSSession+Restore.swift`.
+
+/// Which of the two archive kinds a `SessionArchive` body encodes. Checkpoint
+/// carries both PQ trees (faithful, more expensive); Core omits them
+/// (cheap) and leans on a paired Checkpoint to restore the PQ halves.
+enum BlobKind: UInt8, Sendable, Equatable, Codable {
+	case core = 0
+	case checkpoint = 1
+}
+
+/// A CBOR **integer**-keyed map for `[UInt64: Value]` session fields — a
+/// plain `Dictionary<UInt64, Value>` encodes through `Codable` as an unkeyed
+/// array of alternating key/value elements (its key type isn't the stdlib's
+/// `String`/`Int` fast path), which is not what a stable archive wants.
+/// Mirrors swift-mls's own (module-internal) `IntegerKeyedMap`.
+struct ArchiveIntegerKeyedMap<Value> {
+	var entries: [UInt64: Value]
+
+	init(_ entries: [UInt64: Value]) { self.entries = entries }
+
+	struct Key: ArchiveIntegerCodingKey {
+		let value: UInt64
+		init(_ value: UInt64) { self.value = value }
+		var intValue: Int? { Int(exactly: value) }
+		var stringValue: String { String(value) }
+		init?(intValue: Int) {
+			guard let value = UInt64(exactly: intValue) else { return nil }
+			self.value = value
+		}
+		init?(stringValue: String) { nil }
+	}
+}
+
+extension ArchiveIntegerKeyedMap: Encodable where Value: Encodable {
+	func encode(to encoder: Encoder) throws {
+		var container = encoder.container(keyedBy: Key.self)
+		for (key, value) in entries {
+			try container.encode(value, forKey: Key(key))
+		}
+	}
+}
+
+extension ArchiveIntegerKeyedMap: Decodable where Value: Decodable {
+	init(from decoder: Decoder) throws {
+		let container = try decoder.container(keyedBy: Key.self)
+		var entries: [UInt64: Value] = [:]
+		for key in container.allKeys {
+			entries[key.value] = try container.decode(Value.self, forKey: key)
+		}
+		self.entries = entries
+	}
+}
+
+extension ArchiveIntegerKeyedMap: Sendable where Value: Sendable {}
+extension ArchiveIntegerKeyedMap: Equatable where Value: Equatable {}
+
+// MARK: - Field archive types
+
+/// `TwoMLSIdentity`'s archived form: the classical/PQ leaf+init HPKE secrets
+/// and the Ed25519 signing key ride `.data` into `@SecretField`s (the keys
+/// themselves aren't `SecretRestorable`); the two `KeyPackage`s ride their
+/// own MLS wire encoding.
+struct IdentityArchive: Codable, Sendable {
+	var clientID: Data
+	@SecretField var signingKey: SecretBytes
+	var signatureKey: Data
+	@SecretField var classicalLeafSecretKey: SecretBytes
+	@SecretField var classicalInitSecretKey: SecretBytes
+	@SecretField var pqLeafSecretKey: SecretBytes
+	@SecretField var pqInitSecretKey: SecretBytes
+	var classicalKeyPackage: Data
+	var pqKeyPackage: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case clientID = 0
+		case signingKey = 1
+		case signatureKey = 2
+		case classicalLeafSecretKey = 3
+		case classicalInitSecretKey = 4
+		case pqLeafSecretKey = 5
+		case pqInitSecretKey = 6
+		case classicalKeyPackage = 7
+		case pqKeyPackage = 8
+	}
+}
+
+@available(iOS 26, macOS 26, *)
+extension IdentityArchive {
+	init(_ identity: TwoMLSIdentity) throws {
+		self.init(
+			clientID: identity.clientID,
+			signingKey: identity.signingKey.data,
+			signatureKey: identity.signatureKey.data,
+			classicalLeafSecretKey: identity.classicalLeafSecretKey.data,
+			classicalInitSecretKey: identity.classicalInitSecretKey.data,
+			pqLeafSecretKey: identity.pqLeafSecretKey.data,
+			pqInitSecretKey: identity.pqInitSecretKey.data,
+			classicalKeyPackage: try identity.keyPackage.classical.mlsEncoded(),
+			pqKeyPackage: try identity.keyPackage.pq.mlsEncoded())
+	}
+
+	func restore() throws -> TwoMLSIdentity {
+		TwoMLSIdentity(
+			clientID: clientID,
+			signingKey: try MLS.SignatureSecretKey(signingKey),
+			signatureKey: MLS.SignaturePublicKey(signatureKey),
+			classicalLeafSecretKey: try MLS.HpkeSecretKey(classicalLeafSecretKey),
+			classicalInitSecretKey: try MLS.HpkeSecretKey(classicalInitSecretKey),
+			pqLeafSecretKey: try MLS.HpkeSecretKey(pqLeafSecretKey),
+			pqInitSecretKey: try MLS.HpkeSecretKey(pqInitSecretKey),
+			keyPackage: CombinerKeyPackage(
+				classical: try MLS.RFC9420.KeyPackage(
+					mlsEncoded: classicalKeyPackage),
+				pq: try MLS.RFC9420.KeyPackage(mlsEncoded: pqKeyPackage)))
+	}
+}
+
+/// One directional `APQGroup`'s archived halves. `pq` is `nil` for a
+/// deferred (Group_B pre-A.3) half, and always `nil` in a Core-kind body
+/// (which omits PQ trees regardless of whether a half has one) — the two
+/// `nil` cases are disambiguated at reconcile time by kind, not by this
+/// type. The combiner PSK store rides neither: it is ephemeral (a live
+/// `apq_psk` is already folded into the epoch secrets that referenced it),
+/// matching swift-mls's own `CombinerGroup.restore`.
+struct GroupEntry: Codable, Sendable, Equatable {
+	var classical: MLS.RFC9420.Group.Snapshot
+	var pq: MLS.RFC9420.Group.Snapshot?
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case classical = 0
+		case pq = 1
+	}
+}
+
+@available(iOS 26, macOS 26, *)
+extension APQGroup {
+	/// `Core` omits every PQ tree (there is no combiner `export_classical()`
+	/// for a per-half snapshot — this is the port's own wrinkle);
+	/// `Checkpoint` includes `pq` whenever this half has one.
+	func makeGroupEntry(kind: BlobKind) throws -> GroupEntry {
+		GroupEntry(
+			classical: try classical.makeSnapshot(),
+			pq: kind == .checkpoint ? try pq?.makeSnapshot() : nil)
+	}
+}
+
+/// `bootstrapKPSecret`'s archived form — KP′'s leaf/init HPKE secrets plus
+/// the `KeyPackage` itself (wire-encoded). The public KP′ is never archived
+/// separately; it derives from `keyPackage` on restore
+/// (`TwoMLSSession.bootstrapKPBytes()`), same as live.
+struct BootstrapKPSecretArchive: Codable, Sendable {
+	@SecretField var leafSecretKey: SecretBytes
+	@SecretField var initSecretKey: SecretBytes
+	var keyPackage: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case leafSecretKey = 0
+		case initSecretKey = 1
+		case keyPackage = 2
+	}
+}
+
+extension BootstrapKPSecretArchive {
+	init(
+		_ secret: (
+			leafSecretKey: MLS.HpkeSecretKey, initSecretKey: MLS.HpkeSecretKey,
+			keyPackage: MLS.RFC9420.KeyPackage
+		)
+	) throws {
+		try self.init(
+			leafSecretKey: secret.leafSecretKey.data,
+			initSecretKey: secret.initSecretKey.data,
+			keyPackage: secret.keyPackage.mlsEncoded())
+	}
+
+	func restore() throws -> (
+		leafSecretKey: MLS.HpkeSecretKey, initSecretKey: MLS.HpkeSecretKey,
+		keyPackage: MLS.RFC9420.KeyPackage
+	) {
+		(
+			leafSecretKey: try MLS.HpkeSecretKey(leafSecretKey),
+			initSecretKey: try MLS.HpkeSecretKey(initSecretKey),
+			keyPackage: try MLS.RFC9420.KeyPackage(mlsEncoded: keyPackage)
+		)
+	}
+}
+
+/// The initiator's held §A.4 ephemeral (`PQEphemeral`), archived.
+struct PQEphemeralArchive: Codable, Sendable, Equatable {
+	@SecretField var secretKey: SecretBytes
+	var ek: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case secretKey = 0
+		case ek = 1
+	}
+}
+
+/// The responder's held §A.4 `S`/parked CT (`PQInflight.responding`), archived.
+struct PQRespondingArchive: Codable, Sendable, Equatable {
+	@SecretField var secret: SecretBytes
+	var wireCT: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case secret = 0
+		case wireCT = 1
+	}
+}
+
+/// `PQInflight`, archived whole — every case, including the held KEM
+/// secret/`S`/parked wire CT, so a Responding or initiating round survives a
+/// restore intact. Hand-written `Codable`: enums with associated values
+/// carrying `@SecretField`s can't derive it (a property wrapper needs a
+/// stored property to sit on, which an enum's associated value isn't).
+enum PQInflightArchive: Sendable, Equatable {
+	case bootstrapInitiated
+	case bootstrapResponded
+	case initiating(PQEphemeralArchive)
+	case responding(PQRespondingArchive)
+	case rekeyInitiated(updMessage: Data)
+	case rekeyResponded
+}
+
+extension PQInflightArchive: Codable {
+	private enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case tag = 0
+		case initiating = 1
+		case responding = 2
+		case rekeyInitiatedMessage = 3
+	}
+
+	private enum Tag: UInt64, Codable {
+		case bootstrapInitiated = 0
+		case bootstrapResponded = 1
+		case initiating = 2
+		case responding = 3
+		case rekeyInitiated = 4
+		case rekeyResponded = 5
+	}
+
+	func encode(to encoder: Encoder) throws {
+		var container = encoder.container(keyedBy: CodingKeys.self)
+		switch self {
+		case .bootstrapInitiated:
+			try container.encode(Tag.bootstrapInitiated.rawValue, forKey: .tag)
+		case .bootstrapResponded:
+			try container.encode(Tag.bootstrapResponded.rawValue, forKey: .tag)
+		case .initiating(let payload):
+			try container.encode(Tag.initiating.rawValue, forKey: .tag)
+			try container.encode(payload, forKey: .initiating)
+		case .responding(let payload):
+			try container.encode(Tag.responding.rawValue, forKey: .tag)
+			try container.encode(payload, forKey: .responding)
+		case .rekeyInitiated(let updMessage):
+			try container.encode(Tag.rekeyInitiated.rawValue, forKey: .tag)
+			try container.encode(updMessage, forKey: .rekeyInitiatedMessage)
+		case .rekeyResponded:
+			try container.encode(Tag.rekeyResponded.rawValue, forKey: .tag)
+		}
+	}
+
+	init(from decoder: Decoder) throws {
+		let container = try decoder.container(keyedBy: CodingKeys.self)
+		let rawTag = try container.decode(UInt64.self, forKey: .tag)
+		guard let tag = Tag(rawValue: rawTag) else {
+			throw DecodingError.dataCorruptedError(
+				forKey: .tag, in: container,
+				debugDescription: "unknown PQInflight tag \(rawTag)")
+		}
+		switch tag {
+		case .bootstrapInitiated: self = .bootstrapInitiated
+		case .bootstrapResponded: self = .bootstrapResponded
+		case .initiating:
+			self = .initiating(
+				try container.decode(PQEphemeralArchive.self, forKey: .initiating))
+		case .responding:
+			self = .responding(
+				try container.decode(PQRespondingArchive.self, forKey: .responding))
+		case .rekeyInitiated:
+			self = .rekeyInitiated(
+				updMessage: try container.decode(
+					Data.self, forKey: .rekeyInitiatedMessage))
+		case .rekeyResponded: self = .rekeyResponded
+		}
+	}
+}
+
+extension PQInflightArchive {
+	init(_ live: PQInflight) {
+		switch live {
+		case .bootstrapInitiated: self = .bootstrapInitiated
+		case .bootstrapResponded: self = .bootstrapResponded
+		case .initiating(let eph):
+			self = .initiating(
+				PQEphemeralArchive(secretKey: eph.secretKey.data, ek: eph.ek))
+		case .responding(let secret, let wireCT):
+			self = .responding(PQRespondingArchive(secret: secret, wireCT: wireCT))
+		case .rekeyInitiated(let updMessage):
+			self = .rekeyInitiated(updMessage: updMessage)
+		case .rekeyResponded: self = .rekeyResponded
+		}
+	}
+
+	func restore() throws -> PQInflight {
+		switch self {
+		case .bootstrapInitiated: return .bootstrapInitiated
+		case .bootstrapResponded: return .bootstrapResponded
+		case .initiating(let archive):
+			return .initiating(
+				PQEphemeral(
+					secretKey: try MLS.HpkeSecretKey(archive.secretKey),
+					ek: archive.ek))
+		case .responding(let archive):
+			return .responding(secret: archive.secret, wireCT: archive.wireCT)
+		case .rekeyInitiated(let updMessage):
+			return .rekeyInitiated(updMessage: updMessage)
+		case .rekeyResponded: return .rekeyResponded
+		}
+	}
+}
+
+/// `pendingProposal`'s archived form (Swift tuples aren't `Codable`).
+struct PendingProposalArchive: Codable, Sendable, Equatable {
+	var proposing: Data
+	var message: Data
+	var hash: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case proposing = 0
+		case message = 1
+		case hash = 2
+	}
+
+	init(proposing: Data, message: Data, hash: Data) {
+		self.proposing = proposing
+		self.message = message
+		self.hash = hash
+	}
+
+	init(_ tuple: (proposing: Data, message: Data, hash: Data)) {
+		self.init(proposing: tuple.proposing, message: tuple.message, hash: tuple.hash)
+	}
+
+	var asTuple: (proposing: Data, message: Data, hash: Data) {
+		(proposing: proposing, message: message, hash: hash)
+	}
+}
+
+/// `offeredProposal`/`queuedProposal`'s shared archived shape.
+struct DigestedProposalArchive: Codable, Sendable, Equatable {
+	var digest: Data
+	var proposing: Data
+	var message: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case digest = 0
+		case proposing = 1
+		case message = 2
+	}
+
+	init(digest: Data, proposing: Data, message: Data) {
+		self.digest = digest
+		self.proposing = proposing
+		self.message = message
+	}
+
+	init(_ tuple: (digest: Data, proposing: Data, message: Data)) {
+		self.init(digest: tuple.digest, proposing: tuple.proposing, message: tuple.message)
+	}
+
+	var asTuple: (digest: Data, proposing: Data, message: Data) {
+		(digest: digest, proposing: proposing, message: message)
+	}
+}
+
+/// One `stagedUpdates` entry, archived.
+struct StagedUpdateArchive: Codable, Sendable, Equatable {
+	var digest: Data
+	var message: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case digest = 0
+		case message = 1
+	}
+
+	init(digest: Data, message: Data) {
+		self.digest = digest
+		self.message = message
+	}
+
+	init(_ tuple: (digest: Data, message: Data)) {
+		self.init(digest: tuple.digest, message: tuple.message)
+	}
+
+	var asTuple: (digest: Data, message: Data) {
+		(digest: digest, message: message)
+	}
+}
+
+/// One `sendCrossPSKLedger` entry — `MLS.Combiner.ExportedPsk`'s
+/// `storageID` is not archived (it is recomputed from `componentID`/`pskID`
+/// by `fromParts`, exactly as swift-mls's own ledger-restore path does).
+struct ExportedPskArchive: Codable, Sendable {
+	var componentID: UInt16
+	var pskID: Data
+	@SecretField var psk: SecretBytes
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case componentID = 0
+		case pskID = 1
+		case psk = 2
+	}
+}
+
+extension ExportedPskArchive {
+	init(_ exported: MLS.Combiner.ExportedPsk) {
+		self.init(
+			componentID: exported.componentID.rawValue, pskID: exported.pskID,
+			psk: exported.psk)
+	}
+
+	func restore() throws -> MLS.Combiner.ExportedPsk {
+		try MLS.Combiner.ExportedPsk.fromParts(
+			componentID: MLS.Extensions.ComponentID(rawValue: componentID),
+			pskID: pskID, psk: psk)
+	}
+}
+
+/// `RotationCandidate`, archived.
+struct RotationCandidateArchive: Codable, Sendable {
+	var clientID: Data
+	@SecretField var signingKey: SecretBytes
+	var signatureKey: Data
+	var proposedAtRecvEpoch: UInt64
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case clientID = 0
+		case signingKey = 1
+		case signatureKey = 2
+		case proposedAtRecvEpoch = 3
+	}
+}
+
+extension RotationCandidateArchive {
+	init(_ candidate: RotationCandidate) {
+		self.init(
+			clientID: candidate.clientID, signingKey: candidate.signingKey.data,
+			signatureKey: candidate.signatureKey.data,
+			proposedAtRecvEpoch: candidate.proposedAtRecvEpoch)
+	}
+
+	func restore() throws -> RotationCandidate {
+		RotationCandidate(
+			clientID: clientID, signingKey: try MLS.SignatureSecretKey(signingKey),
+			signatureKey: MLS.SignaturePublicKey(signatureKey),
+			proposedAtRecvEpoch: proposedAtRecvEpoch)
+	}
+}
+
+// MARK: - The session archive body
+
+/// The `SessionArchive` wire body — one `Codable` struct for both Core and
+/// Checkpoint kinds (disambiguated by `kind`), covering every
+/// `TwoMLSSession` field. `version`/`classicalSuite`/`pqSuite`/`kind` are
+/// the leading fields so `restore` can validate them immediately after
+/// decode; `stateSeq` plus the PQ-epoch (and classical-group-id) manifest
+/// fields are what reconcile compares WITHOUT first restoring any group —
+/// `sendClassicalGroupID`/`recvClassicalGroupID` exist only for that cheap
+/// pre-restore comparison, since `MLS.RFC9420.Group.Snapshot`'s own fields
+/// are not accessible outside its defining module.
+struct SessionArchive: Codable, Sendable {
+	var version: UInt64
+	var classicalSuite: UInt16
+	var pqSuite: UInt16
+	var kind: BlobKind
+	var stateSeq: UInt64
+	var sendPQEpoch: UInt64?
+	var recvPQEpoch: UInt64?
+	var sendClassicalGroupID: Data?
+	var recvClassicalGroupID: Data?
+	var identity: IdentityArchive
+	var auth: AuthCore
+	var sendGroup: GroupEntry?
+	var recvGroup: GroupEntry?
+	var currentStaple: Data
+	var pendingProposal: PendingProposalArchive?
+	var joinedWelcomeDigest: Data?
+	var initiated: Bool
+	var bootstrapKPSecret: BootstrapKPSecretArchive?
+	var expectedBootstrapKPCommitment: Data?
+	var pqTurnMine: Bool
+	var owedBind: OwedBind?
+	var pqInflight: PQInflightArchive?
+	var pendingSideBand: Data?
+	var peerAppliedSendEpoch: UInt64?
+	var lastCrossInjected: UInt64?
+	var lastCrossInjectedPQ: UInt64?
+	var lastSendPQExported: UInt64?
+	var offeredProposal: DigestedProposalArchive?
+	var queuedProposal: DigestedProposalArchive?
+	var stagedUpdates: [StagedUpdateArchive]
+	var sendCrossPSKLedger: ArchiveIntegerKeyedMap<ExportedPskArchive>
+	var rotationCandidate: RotationCandidateArchive?
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case version = 0
+		case classicalSuite = 1
+		case pqSuite = 2
+		case kind = 3
+		case stateSeq = 4
+		case sendPQEpoch = 5
+		case recvPQEpoch = 6
+		case sendClassicalGroupID = 7
+		case recvClassicalGroupID = 8
+		case identity = 9
+		case auth = 10
+		case sendGroup = 11
+		case recvGroup = 12
+		case currentStaple = 13
+		case pendingProposal = 14
+		case joinedWelcomeDigest = 15
+		case initiated = 16
+		case bootstrapKPSecret = 17
+		case expectedBootstrapKPCommitment = 18
+		case pqTurnMine = 19
+		case owedBind = 20
+		case pqInflight = 21
+		case pendingSideBand = 22
+		case peerAppliedSendEpoch = 23
+		case lastCrossInjected = 24
+		case lastCrossInjectedPQ = 25
+		case lastSendPQExported = 26
+		case offeredProposal = 27
+		case queuedProposal = 28
+		case stagedUpdates = 29
+		case sendCrossPSKLedger = 30
+		case rotationCandidate = 31
+	}
+}
+
+/// The current, and so far only, archive format version.
+private let sessionArchiveVersion: UInt64 = 1
+
+// MARK: - Encode
+
+@available(iOS 26, macOS 26, *)
+extension TwoMLSSession {
+	/// Builds this session's archive: `kind` selects whether the PQ trees
+	/// ride along (Checkpoint) or are omitted (Core; the manifest fields
+	/// still carry the current PQ epochs either way). `stateSeq` is the
+	/// caller's own persistence sequence number — this module tracks no
+	/// such counter itself (that lands with the return-cadence in PR2).
+	/// State is total: this never refuses to encode. Returns an UNSEALED,
+	/// zeroizing `SecretArchive` — the app seals it with its own key before
+	/// writing it out; this library never holds a sealing key.
+	func makeSessionArchive(kind: BlobKind, stateSeq: UInt64) throws -> SecretArchive {
+		let body = SessionArchive(
+			version: sessionArchiveVersion,
+			classicalSuite: TwoMLSSuite.classical.id,
+			pqSuite: TwoMLSSuite.pq.id,
+			kind: kind,
+			stateSeq: stateSeq,
+			sendPQEpoch: sendGroup?.pq?.context.epoch,
+			recvPQEpoch: recvGroup?.pq?.context.epoch,
+			sendClassicalGroupID: sendGroup?.classical.context.groupID,
+			recvClassicalGroupID: recvGroup?.classical.context.groupID,
+			identity: try IdentityArchive(identity),
+			auth: auth,
+			sendGroup: try sendGroup?.makeGroupEntry(kind: kind),
+			recvGroup: try recvGroup?.makeGroupEntry(kind: kind),
+			currentStaple: currentStaple,
+			pendingProposal: pendingProposal.map(PendingProposalArchive.init),
+			joinedWelcomeDigest: joinedWelcomeDigest,
+			initiated: initiated,
+			bootstrapKPSecret: try bootstrapKPSecret.map(BootstrapKPSecretArchive.init),
+			expectedBootstrapKPCommitment: expectedBootstrapKPCommitment,
+			pqTurnMine: pqTurnMine,
+			owedBind: owedBind,
+			pqInflight: pqInflight.map(PQInflightArchive.init),
+			pendingSideBand: pendingSideBand,
+			peerAppliedSendEpoch: peerAppliedSendEpoch,
+			lastCrossInjected: lastCrossInjected,
+			lastCrossInjectedPQ: lastCrossInjectedPQ,
+			lastSendPQExported: lastSendPQExported,
+			offeredProposal: offeredProposal.map(DigestedProposalArchive.init),
+			queuedProposal: queuedProposal.map(DigestedProposalArchive.init),
+			stagedUpdates: stagedUpdates.map(StagedUpdateArchive.init),
+			sendCrossPSKLedger: ArchiveIntegerKeyedMap(
+				sendCrossPSKLedger.mapValues(ExportedPskArchive.init)),
+			rotationCandidate: rotationCandidate.map(RotationCandidateArchive.init))
+		return try SecretArchive(encoding: body)
+	}
+}

@@ -73,10 +73,16 @@ struct PQEphemeral: Sendable {
 /// Alice's parked PQ-half bind commit (`owePQBind`), owed to
 /// `sendGroup.classical` until a licensed `prepareToEncrypt` can discharge it
 /// (§4).
-struct OwedBind: Sendable {
+struct OwedBind: Sendable, Codable {
 	var pqCommitMessage: Data
 	var tEpoch: UInt64
 	var pqEpoch: UInt64
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case pqCommitMessage = 0
+		case tEpoch = 1
+		case pqEpoch = 2
+	}
 }
 
 /// The peer's staged proposal, carried uninterpreted alongside a

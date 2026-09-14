@@ -1,6 +1,7 @@
 import Foundation
 import MLSCodec
 import MLSProfileRFC9420
+import SecretBytes
 
 // MARK: - Credential Authentication Service (AS)
 //
@@ -40,7 +41,7 @@ func basicIdentifier(_ credential: MLS.RFC9420.Credential) throws -> Data {
 /// canonical and the rest expire — and `pinned` ids held admissible past
 /// window eviction (e.g. a leaf that still carries an otherwise-evicted
 /// credential).
-struct PartySequence: Sendable, Equatable {
+struct PartySequence: Sendable, Equatable, Codable {
 	/// How many canonical credentials are retained for the catch-up rule —
 	/// a lagging leaf may fast-forward to any already-canonical element
 	/// within this many steps. Sessions rotate rarely; 8 is ample (matches
@@ -50,6 +51,12 @@ struct PartySequence: Sendable, Equatable {
 	var history: [Data] = []
 	var authorizedNext: [Data] = []
 	var pinned: [Data] = []
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case history = 0
+		case authorizedNext = 1
+		case pinned = 2
+	}
 
 	static func seeded(_ id: Data) -> PartySequence {
 		var sequence = PartySequence()
@@ -163,9 +170,14 @@ struct PartySequence: Sendable, Equatable {
 /// window during which membership must be admitted without a known
 /// identity, and a stored `adopting` on a value struct would be fail-open
 /// across any interleaved `throw`.
-struct AuthCore: Sendable, Equatable {
+struct AuthCore: Sendable, Equatable, Codable {
 	var mine: PartySequence = PartySequence()
 	var theirs: PartySequence = PartySequence()
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case mine = 0
+		case theirs = 1
+	}
 
 	func knows(_ id: Data) -> Bool {
 		mine.knownIDs.contains(id) || theirs.knownIDs.contains(id)
