@@ -30,10 +30,12 @@ let package = Package(
 			url: "https://github.com/germ-network/swift-secret-bytes.git",
 			.upToNextMinor(from: "0.4.0")
 		),
-		// The shared `tryUnwrap` (safe unwrap) and other Germ conveniences.
+		// The shared `tryUnwrap` (safe unwrap) and other Germ conveniences. 0.8.0
+		// splits the HTTP helpers into GermConvenienceHTTP, so the base product
+		// this package imports no longer links swift-http-types.
 		.package(
 			url: "https://github.com/germ-network/GermConvenience.git",
-			.upToNextMinor(from: "0.7.0")
+			.upToNextMinor(from: "0.8.0")
 		),
 	],
 	targets: [
