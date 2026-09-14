@@ -62,7 +62,7 @@ extension TwoMLSSession {
 	/// (my mirror of the initiator's PQ half, at its current epoch), and emit
 	/// the `0x19` CT on my OWN `sendGroup.classical` — not the mirror the EK
 	/// arrived in, which may hold an uncommitted proposal of my own.
-	public mutating func pqRatchetRespond(_ frame: Data) throws -> Data {
+	public mutating func pqRatchetRespond(_ frame: Data) throws -> SideBandResult {
 		let (tag, messageBytes) = try Frames.decodePQLeg(frame)
 		guard tag == Frames.pqEKTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
 		let msg = try MLS.RFC9420.Message(mlsEncoded: messageBytes)
@@ -98,7 +98,11 @@ extension TwoMLSSession {
 			tag: Frames.pqCTTag, messageBytes: outMessageBytes)
 		pqInflight = .responding(secret: s, wireCT: wireCT)
 		pendingSideBand = outFrame
-		return outFrame
+
+		// PR2 return cadence: classical carrier only (the PQ half is read-only
+		// here — `ctSealPSK`/derivation, never committed) → `.core`.
+		advanceStateSeq()
+		return SideBandResult(frame: outFrame, update: try stateUpdate(kind: .core))
 	}
 
 	/// The initiator: receive the responder's `0x19` CT (decrypted off my
@@ -109,7 +113,8 @@ extension TwoMLSSession {
 	/// (`owePQBind(s:)`, §4c). `CTSeal.open`'s AEAD failure is the explicit
 	/// reject for a tampered/misdirected CT — it propagates as thrown, not a
 	/// silent no-op.
-	public mutating func pqRatchetBind(_ frame: Data) throws {
+	@discardableResult
+	public mutating func pqRatchetBind(_ frame: Data) throws -> StateUpdate {
 		let (tag, messageBytes) = try Frames.decodePQLeg(frame)
 		guard tag == Frames.pqCTTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
 		let msg = try MLS.RFC9420.Message(mlsEncoded: messageBytes)
@@ -141,6 +146,10 @@ extension TwoMLSSession {
 		// wedges for life.
 		pqInflight = nil
 		pendingSideBand = nil
+
+		// PR2 return cadence: `owePQBind` just committed `sendGroup.pq` → `.checkpoint`.
+		advanceStateSeq()
+		return try stateUpdate(kind: .checkpoint)
 	}
 
 	/// Peek the parked `0x17`/`0x19`/`0x1B`/`0x1D` side-band frame, if any —

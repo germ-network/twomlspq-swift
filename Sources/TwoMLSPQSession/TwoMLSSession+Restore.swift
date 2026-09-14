@@ -253,6 +253,13 @@ extension TwoMLSSession {
 			try $0.restore()
 		}
 		session.rotationCandidate = try body.rotationCandidate?.restore()
+		// PR2: the reconciled `stateSeq` becomes both the live counter to
+		// advance from and `currentStapleSeq`'s seed — a safe, never-under
+		// value for the durability gate (this blob is already durable, or the
+		// app could not have restored from it), even if it overstates
+		// exactly when `currentStaple` was first installed.
+		session.stateSeq = body.stateSeq
+		session.currentStapleSeq = body.stateSeq
 		return session
 	}
 

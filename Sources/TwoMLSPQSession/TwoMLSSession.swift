@@ -16,6 +16,9 @@ import TwoMLSPQCrypto
 public struct EstablishResult: Sendable {
 	public let session: TwoMLSSession
 	public let welcome: Data
+	/// The baseline `StateUpdate` (always `.checkpoint`) — there is no
+	/// sink/`installSink`; this return IS the first thing the app saves.
+	public let baseline: StateUpdate
 }
 
 /// The result of `prepareToEncrypt`: first runs a committing round — folding
@@ -31,6 +34,16 @@ public struct PrepareResult: Sendable {
 	/// discharge canonicalizes nothing of the peer's, so it stays `nil` even
 	/// when `didCommit` is true).
 	public let committedRemoteClientID: Data?
+	/// This call's own `StateUpdate` (`.core`).
+	public let update: StateUpdate
+	/// The durability gate: `currentStapleSeq` as of this call. When
+	/// `didCommit` installed a fresh staple, this equals `update.stateSeq` —
+	/// the app must durably save `update` before transmitting the frame this
+	/// staple rides on. Otherwise it names an EARLIER `StateUpdate` the app
+	/// should already have saved (a routine re-staple of an already-persisted
+	/// commit needs no additional wait; MLS's per-message `reuse_guard`
+	/// covers it).
+	public let dependsOnSeq: UInt64
 }
 
 /// Which side-band round is outstanding on this session, if any — the §A.3
@@ -119,6 +132,25 @@ public struct DecryptResult: Sendable {
 	/// Rust's always-present `new_recipient` id. Slice 6.
 	public let ownCredentialCanonicalized: Bool
 	public let queuedProposal: QueuedProposal
+	/// This call's own `StateUpdate` — `.checkpoint` when the applied staple
+	/// (if any) moved a PQ tree (`applyBind` rides this method), else `.core`.
+	public let update: StateUpdate
+}
+
+/// `encrypt`'s result: the sealed frame plus this call's own `StateUpdate`
+/// (`.core` — `encrypt` never touches a PQ tree).
+public struct EncryptResult: Sendable {
+	public let frame: Data
+	public let update: StateUpdate
+}
+
+/// The shared result shape for every side-band round-starter/responder that
+/// returns a bare frame today (`pqBootstrapBegin`/`pqBootstrapRespond`/
+/// `pqRatchetRespond`/`pqRekeyBegin`/`pqRekeyRespond`) — the frame to hand the
+/// peer, plus this call's own `StateUpdate`.
+public struct SideBandResult: Sendable {
+	public let frame: Data
+	public let update: StateUpdate
 }
 
 /// One party's classical-credential state, as this session currently tracks
@@ -308,6 +340,26 @@ public struct TwoMLSSession: Sendable {
 	/// harmless — a real custodian would retire it once no leaf presents it,
 	/// which needs the PQ catch-up of a later slice).
 	var rotationCandidate: RotationCandidate? = nil
+
+	// MARK: Return cadence (slice 8a, PR2)
+
+	/// This session's own persistence sequence number — every state-advancing
+	/// method bumps it (checked add; stops rather than wraps past
+	/// `UInt64.max`, `advanceStateSeq()`) and stamps its returned
+	/// `StateUpdate` with the result. `restore` seeds it from the reconciled
+	/// blob's own `stateSeq`. Public with an `internal` setter: any file in
+	/// this module may advance it, but only a `StateUpdate` ever surfaces the
+	/// value to the app — a same-named public accessor func is impossible
+	/// alongside a stored property of that name (Swift, not a design choice).
+	public internal(set) var stateSeq: UInt64 = 0
+	/// The `stateSeq` at which `currentStaple` was last (re)installed by a
+	/// real fold/bind commit (`committingRound`, the only writer of
+	/// `currentStaple` past construction) — `PrepareResult.dependsOnSeq`'s
+	/// durability watermark. `restore` seeds it to the reconciled `stateSeq`
+	/// too: a safe, never-under value (that blob is already durable, or the
+	/// app could not have restored from it), even though it may overstate
+	/// exactly when `currentStaple` was first installed.
+	var currentStapleSeq: UInt64 = 0
 
 	public var isEstablished: Bool { sendGroup != nil && recvGroup != nil }
 	/// Both directional pairs have their PQ half present — the §A.3

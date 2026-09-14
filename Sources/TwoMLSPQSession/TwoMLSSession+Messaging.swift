@@ -147,9 +147,18 @@ extension TwoMLSSession {
 		// latest — so a `0x00`/`0x05` staple that folds an earlier one by
 		// reference can still resolve it.
 		stagedUpdates.append((digest: proposalHash, message: proposalBytes))
+
+		// PR2 return cadence: classical-only mutation → `.core`. `didCommit`
+		// installed a fresh `currentStaple` (`committingRound`'s success
+		// point) iff it folded/discharged/caught-up — stamp the durability
+		// watermark at THIS call's own (just-bumped) `stateSeq` exactly then.
+		advanceStateSeq()
+		if didCommit { markStapleInstalled() }
+		let update = try stateUpdate(kind: .core)
 		return PrepareResult(
 			proposalMessage: proposalBytes, proposalHash: proposalHash,
-			didCommit: didCommit, committedRemoteClientID: committedRemoteClientID
+			didCommit: didCommit, committedRemoteClientID: committedRemoteClientID,
+			update: update, dependsOnSeq: currentStapleSeq
 		)
 	}
 
@@ -159,7 +168,7 @@ extension TwoMLSSession {
 	/// to the frame's separate proposal section — proposal integrity is its own
 	/// MLS leaf signature, checked when folded (`queueProposal`/
 	/// `committingRound`/`applyFoldCommit`, slice 5) (M1).
-	public mutating func encrypt(_ app: Data) throws -> Data {
+	public mutating func encrypt(_ app: Data) throws -> EncryptResult {
 		guard let pending = pendingProposal else { throw TwoMLSError.noPendingProposal }
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
 		let appPM = try send.classical.protect(
@@ -182,7 +191,11 @@ extension TwoMLSSession {
 		// my turn and nothing else is outstanding.
 		rewrapSideBand()
 		maybeStageNextRound()
-		return frame
+
+		// PR2 return cadence: classical-only mutation → `.core`.
+		advanceStateSeq()
+		let update = try stateUpdate(kind: .core)
+		return EncryptResult(frame: frame, update: update)
 	}
 
 	/// Decode a frame, apply its staple (join Group_B, a `0x00` fold, or a
@@ -197,6 +210,11 @@ extension TwoMLSSession {
 			throw TwoMLSError.appSectionNotPrivateMessage
 		}
 
+		// PR2 return cadence: `applyBind` rides this method and moves
+		// `recvGroup.pq` (§11), so the kind can't be a static per-site tag
+		// here — snapshot both PQ trees' presence+epoch before/after the
+		// staple applies and tag `.checkpoint` iff either actually moved.
+		let pqTreesBefore = pqTreeSignature
 		let stapleResult = try handleStaple(staple)
 
 		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
@@ -217,6 +235,9 @@ extension TwoMLSSession {
 		// approved tally it feeds.
 		offeredProposal = (digest: digest, proposing: proposing, message: proposalMessage)
 
+		let kind: BlobKind = pqTreeSignature == pqTreesBefore ? .core : .checkpoint
+		advanceStateSeq()
+		let update = try stateUpdate(kind: kind)
 		return DecryptResult(
 			applicationMessage: data, sender: unprotected.sender,
 			epoch: unprotected.epoch,
@@ -224,7 +245,23 @@ extension TwoMLSSession {
 			didApplyRemoteCommit: stapleResult.applied,
 			newSender: stapleResult.newSender,
 			ownCredentialCanonicalized: stapleResult.ownCredentialCanonicalized,
-			queuedProposal: QueuedProposal(digest: digest, proposing: proposing))
+			queuedProposal: QueuedProposal(digest: digest, proposing: proposing),
+			update: update)
+	}
+
+	/// Both PQ trees' presence+epoch, as a comparable snapshot —
+	/// `processIncoming`'s before/after delta for its dynamic kind selection.
+	/// A `nil` half compares unequal to any `Some`, so founding OR losing a
+	/// half counts as a move exactly like an epoch bump does.
+	private struct PQTreeSignature: Equatable {
+		let sendPQEpoch: UInt64?
+		let recvPQEpoch: UInt64?
+	}
+
+	private var pqTreeSignature: PQTreeSignature {
+		PQTreeSignature(
+			sendPQEpoch: sendGroup?.pq?.context.epoch,
+			recvPQEpoch: recvGroup?.pq?.context.epoch)
 	}
 
 	/// `0x01` welcome → join Group_B if this staple hasn't been joined yet

@@ -114,7 +114,7 @@ final class RotationTests: XCTestCase {
 
 		// 2: Bob receives the offer and approves it — the AS accepts a
 		// genuinely NEW id as a valid successor of Bob's tracked `theirs`.
-		let frame1 = try alice.encrypt(Data("rotate-offer".utf8))
+		let frame1 = try alice.encrypt(Data("rotate-offer".utf8)).frame
 		let decrypted1 = try bob.processIncoming(frame1)
 		XCTAssertEqual(decrypted1.queuedProposal.proposing, aliceNewID)
 		XCTAssertNoThrow(try bob.queueProposal(digest: decrypted1.queuedProposal.digest))
@@ -131,7 +131,7 @@ final class RotationTests: XCTestCase {
 
 		// 4: Alice applies Bob's staple — her RECV-leaf (Group_B mirror)
 		// canonicalizes FIRST; her SEND-leaf (Group_A) still lags.
-		let frame2 = try bob.encrypt(Data("bob-fold".utf8))
+		let frame2 = try bob.encrypt(Data("bob-fold".utf8)).frame
 		let decrypted2 = try alice.processIncoming(frame2)
 		XCTAssertTrue(decrypted2.didApplyRemoteCommit)
 		XCTAssertTrue(decrypted2.ownCredentialCanonicalized)
@@ -152,7 +152,7 @@ final class RotationTests: XCTestCase {
 		// send-classical leaf. Bob applies it and sees `newSender`.
 		let prepared3 = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared3.didCommit)
-		let frame3 = try alice.encrypt(Data("alice-catchup".utf8))
+		let frame3 = try alice.encrypt(Data("alice-catchup".utf8)).frame
 		let decrypted3 = try bob.processIncoming(frame3)
 		XCTAssertTrue(decrypted3.didApplyRemoteCommit)
 		XCTAssertEqual(decrypted3.newSender, aliceNewID)
@@ -165,12 +165,12 @@ final class RotationTests: XCTestCase {
 
 		// 6: app traffic round-trips both directions under the new key.
 		_ = try alice.prepareToEncrypt()
-		let aliceMsg = try alice.encrypt(Data("post-rotation-alice".utf8))
+		let aliceMsg = try alice.encrypt(Data("post-rotation-alice".utf8)).frame
 		let fromAlice = try bob.processIncoming(aliceMsg)
 		XCTAssertEqual(fromAlice.applicationMessage, Data("post-rotation-alice".utf8))
 
 		_ = try bob.prepareToEncrypt()
-		let bobMsg = try bob.encrypt(Data("post-rotation-bob".utf8))
+		let bobMsg = try bob.encrypt(Data("post-rotation-bob".utf8)).frame
 		let fromBob = try alice.processIncoming(bobMsg)
 		XCTAssertEqual(fromBob.applicationMessage, Data("post-rotation-bob".utf8))
 	}
@@ -191,14 +191,14 @@ final class RotationTests: XCTestCase {
 		let aliceNewID = Data("alice-pq-rotated".utf8)
 
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
-		let offerFrame = try alice.encrypt(Data("offer".utf8))
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
 		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
-		let foldFrame = try bob.encrypt(Data("fold".utf8))
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncoming(foldFrame)
 		_ = try alice.prepareToEncrypt()
-		let catchUpFrame = try alice.encrypt(Data("catchup".utf8))
+		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		_ = try bob.processIncoming(catchUpFrame)
 
 		XCTAssertEqual(
@@ -214,16 +214,16 @@ final class RotationTests: XCTestCase {
 		// frame evidenced, and the upcoming PQ bind needs current evidence
 		// to discharge on Alice's very next `prepareToEncrypt`.
 		_ = try bob.prepareToEncrypt()
-		let refreshFrame = try bob.encrypt(Data("refresh".utf8))
+		let refreshFrame = try bob.encrypt(Data("refresh".utf8)).frame
 		_ = try alice.processIncoming(refreshFrame)
 
 		// §A.3 bootstrap — PQ founding stays on the founding identity
 		// throughout slice 6, unaffected by the classical rotation above.
-		let kpFrame = try alice.pqBootstrapBegin()
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame)
+		let kpFrame = try alice.pqBootstrapBegin().frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		try alice.pqBootstrapJoin(welcomeFrame)
 		_ = try alice.prepareToEncrypt()
-		let boundFrame = try alice.encrypt(Data("bound".utf8))
+		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		_ = try bob.processIncoming(boundFrame)
 		XCTAssertTrue(bob.myPQTurn)
 
@@ -232,7 +232,7 @@ final class RotationTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
-		let ctFrame = try alice.pqRatchetRespond(ekFrame)
+		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 		XCTAssertNoThrow(try bob.pqRatchetBind(ctFrame))
 
 		// Discharge Bob's owed bind — flips the PQ turn to Alice (the
@@ -241,7 +241,7 @@ final class RotationTests: XCTestCase {
 		XCTAssertNotNil(bob.owedBind)
 		let dischargePrepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(dischargePrepared.didCommit)
-		let boundFrame2 = try bob.encrypt(Data("bound-2".utf8))
+		let boundFrame2 = try bob.encrypt(Data("bound-2".utf8)).frame
 		_ = try alice.processIncoming(boundFrame2)
 		XCTAssertTrue(alice.myPQTurn)
 
@@ -264,7 +264,7 @@ final class RotationTests: XCTestCase {
 		// (`+Ratchet.swift:182`) must re-mint that stale leg, again under
 		// her NEW key.
 		_ = try bob.prepareToEncrypt()
-		let bobOfferFrame = try bob.encrypt(Data("bob-offer".utf8))
+		let bobOfferFrame = try bob.encrypt(Data("bob-offer".utf8)).frame
 		let decryptedOffer2 = try alice.processIncoming(bobOfferFrame)
 		try alice.queueProposal(digest: decryptedOffer2.queuedProposal.digest)
 
@@ -272,7 +272,7 @@ final class RotationTests: XCTestCase {
 		let foldPrepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(foldPrepared.didCommit)
 		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, parkedEpoch + 1)
-		let aliceFoldFrame = try alice.encrypt(Data("alice-fold".utf8))
+		let aliceFoldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 
 		let rewrappedEKFrame = try XCTUnwrap(alice.pqPendingOutbound())
 		XCTAssertNotEqual(
@@ -304,17 +304,17 @@ final class RotationTests: XCTestCase {
 		let aliceNewID = Data("alice-converged-v2".utf8)
 
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
-		let offerFrame = try alice.encrypt(Data("offer".utf8))
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
 		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
-		let foldFrame = try bob.encrypt(Data("fold".utf8))
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncoming(foldFrame)
 
 		// Alice's own-leaf catch-up: BOTH her classical leaves now present
 		// `aliceNewID` — the rotation has fully converged.
 		_ = try alice.prepareToEncrypt()
-		let catchUpFrame = try alice.encrypt(Data("catchup".utf8))
+		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		_ = try bob.processIncoming(catchUpFrame)
 		XCTAssertEqual(alice.myPrincipalState, .sync(aliceNewID))
 		XCTAssertEqual(
@@ -331,7 +331,7 @@ final class RotationTests: XCTestCase {
 		// The session must NOT be bricked: a plain `prepareToEncrypt`/
 		// `encrypt` still works, still signing under `aliceNewID`'s key.
 		_ = try alice.prepareToEncrypt()
-		let aliceMsg = try alice.encrypt(Data("post-rejected-rotation".utf8))
+		let aliceMsg = try alice.encrypt(Data("post-rejected-rotation".utf8)).frame
 		let fromAlice = try bob.processIncoming(aliceMsg)
 		XCTAssertEqual(fromAlice.applicationMessage, Data("post-rejected-rotation".utf8))
 	}
@@ -366,7 +366,7 @@ final class RotationTests: XCTestCase {
 			proposer: &bob, newID: bob.identity.clientID)
 
 		_ = try bob.prepareToEncrypt()
-		let bobFrame = try bob.encrypt(Data("bob-app".utf8))
+		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
 		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: bob.identity.clientID, message: rotatingMessage)
@@ -417,21 +417,21 @@ final class RotationTests: XCTestCase {
 		let bobV2ID = Data("bob-v2".utf8)
 
 		_ = try bob.prepareToEncrypt(rotating: bobV2ID)
-		let frame1 = try bob.encrypt(Data("bob-rotate".utf8))
+		let frame1 = try bob.encrypt(Data("bob-rotate".utf8)).frame
 		let decrypted1 = try alice.processIncoming(frame1)
 		try alice.queueProposal(digest: decrypted1.queuedProposal.digest)
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertEqual(prepared.committedRemoteClientID, bobV2ID)
 		XCTAssertEqual(alice.theirPrincipalState, .sync(bobV2ID))
 
-		let foldFrame = try alice.encrypt(Data("alice-fold".utf8))
+		let foldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 		_ = try bob.processIncoming(foldFrame)
 
 		// Bob's own-leaf catch-up: a PLAIN `prepareToEncrypt()` converges his
 		// SEND-leaf to `bobV2` too, before the rollback is ever authored.
 		let catchUpPrepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(catchUpPrepared.didCommit)
-		let catchUpFrame = try bob.encrypt(Data("bob-catchup".utf8))
+		let catchUpFrame = try bob.encrypt(Data("bob-catchup".utf8)).frame
 		_ = try alice.processIncoming(catchUpFrame)
 		XCTAssertEqual(
 			try basicIdentifier(
@@ -457,7 +457,7 @@ final class RotationTests: XCTestCase {
 		let rollbackBytes = try rollbackMessage.mlsEncoded()
 
 		_ = try bob.prepareToEncrypt()
-		let carrierFrame = try bob.encrypt(Data("carrier".utf8))
+		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
 		let (staple, _, app) = try Frames.decodeMessageFrame(carrierFrame)
 		let rollbackProposal = Frames.encodeProposalSection(
 			proposing: bobOriginalID, message: rollbackBytes)
@@ -486,7 +486,7 @@ final class RotationTests: XCTestCase {
 			proposer: &bob, newID: alice.identity.clientID)
 
 		_ = try bob.prepareToEncrypt()
-		let bobFrame = try bob.encrypt(Data("bob-app".utf8))
+		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
 		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: alice.identity.clientID, message: rotatingMessage)
@@ -515,7 +515,7 @@ final class RotationTests: XCTestCase {
 		let rotatingMessage = try authorRotatingUpd(
 			proposer: &bob, newID: aliceCandidateID)
 		_ = try bob.prepareToEncrypt()
-		let bobFrame = try bob.encrypt(Data("bob-app".utf8))
+		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
 		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: aliceCandidateID, message: rotatingMessage)
@@ -546,7 +546,7 @@ final class RotationTests: XCTestCase {
 			proposer: &bob, newID: alice.identity.clientID)
 
 		_ = try bob.prepareToEncrypt()
-		let bobFrame = try bob.encrypt(Data("bob-app".utf8))
+		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
 		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: alice.identity.clientID, message: rotatingMessage)
@@ -576,14 +576,14 @@ final class RotationTests: XCTestCase {
 		let aliceNewID = Data("alice-old-key-test".utf8)
 
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
-		let offerFrame = try alice.encrypt(Data("offer".utf8))
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
 		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
-		let foldFrame = try bob.encrypt(Data("fold".utf8))
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncoming(foldFrame)
 		_ = try alice.prepareToEncrypt()
-		let catchUpFrame = try alice.encrypt(Data("catchup".utf8))
+		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		_ = try bob.processIncoming(catchUpFrame)
 
 		// Both sides now agree Alice's send-classical leaf presents the NEW
@@ -620,11 +620,11 @@ final class RotationTests: XCTestCase {
 		let aliceNewID = Data("alice-tamper-v2".utf8)
 
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
-		let offerFrame = try alice.encrypt(Data("offer".utf8))
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
 		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
-		let foldFrame = try bob.encrypt(Data("fold".utf8))
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 
 		let (staple, proposal, app) = try Frames.decodeMessageFrame(foldFrame)
 		var tamperedStaple = staple
@@ -661,7 +661,7 @@ final class RotationTests: XCTestCase {
 		let aliceNewID = Data("alice-roster-v2".utf8)
 
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
-		let offerFrame = try alice.encrypt(Data("offer".utf8))
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
 		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		let rotatingMessage = try XCTUnwrap(bob.queuedProposal?.message)
@@ -699,7 +699,7 @@ final class RotationTests: XCTestCase {
 
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try alice.prepareToEncrypt()
-		let carrierFrame = try alice.encrypt(Data("carrier".utf8))
+		let carrierFrame = try alice.encrypt(Data("carrier".utf8)).frame
 		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposal, app: app)
@@ -755,7 +755,7 @@ final class RotationTests: XCTestCase {
 
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try bob.prepareToEncrypt()
-		let carrierFrame = try bob.encrypt(Data("carrier".utf8))
+		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
 		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposal, app: app)
@@ -786,11 +786,11 @@ final class RotationTests: XCTestCase {
 		let aliceIdentity = established.aliceIdentity
 
 		_ = try bob.prepareToEncrypt()
-		let helloFrame = try bob.encrypt(Data("bob-hello".utf8))
+		let helloFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncoming(helloFrame)
 
-		let kpFrame = try alice.pqBootstrapBegin()
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame)
+		let kpFrame = try alice.pqBootstrapBegin().frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		try alice.pqBootstrapJoin(welcomeFrame)
 
 		let owed = try XCTUnwrap(alice.owedBind)
@@ -911,11 +911,11 @@ final class RotationTests: XCTestCase {
 
 		// Rotation round: Alice's recv-leaf canonicalizes, her send-leaf lags.
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
-		let offerFrame = try alice.encrypt(Data("offer".utf8))
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
 		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
-		let foldFrame = try bob.encrypt(Data("fold".utf8))
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncoming(foldFrame)
 		XCTAssertEqual(alice.myPrincipalState, .sync(aliceNewID))
 		XCTAssertEqual(
@@ -932,8 +932,8 @@ final class RotationTests: XCTestCase {
 		// join is not blocked by its own guard.
 		XCTAssertNil(alice.pendingProposal)
 		let sendEpochBefore = try XCTUnwrap(alice.sendGroup?.classical.context.epoch)
-		let kpFrame = try alice.pqBootstrapBegin()
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame)
+		let kpFrame = try alice.pqBootstrapBegin().frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		try alice.pqBootstrapJoin(welcomeFrame)
 		XCTAssertNotNil(alice.owedBind)
 		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, sendEpochBefore)
@@ -951,7 +951,7 @@ final class RotationTests: XCTestCase {
 
 		// Re-license: Bob's next inbound frame stamps our send epoch.
 		_ = try bob.prepareToEncrypt()
-		let licenseFrame = try bob.encrypt(Data("license".utf8))
+		let licenseFrame = try bob.encrypt(Data("license".utf8)).frame
 		_ = try alice.processIncoming(licenseFrame)
 		XCTAssertNotNil(alice.peerAppliedSendEpoch)
 
@@ -959,7 +959,7 @@ final class RotationTests: XCTestCase {
 		let prepared2 = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared2.didCommit)
 		XCTAssertNil(alice.owedBind)
-		let boundFrame = try alice.encrypt(Data("bound".utf8))
+		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		let (staple, _, _) = try Frames.decodeMessageFrame(boundFrame)
 		XCTAssertEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
 
@@ -982,11 +982,11 @@ final class RotationTests: XCTestCase {
 		let aliceNewID = Data("alice-evidence-b3".utf8)
 
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
-		let offerFrame = try alice.encrypt(Data("offer".utf8))
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncoming(offerFrame)
 		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
-		let foldFrame = try bob.encrypt(Data("fold".utf8))
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncoming(foldFrame)
 		XCTAssertEqual(alice.myPrincipalState, .sync(aliceNewID))
 
@@ -1002,13 +1002,13 @@ final class RotationTests: XCTestCase {
 
 		// Re-license and the deferred catch-up commits.
 		_ = try bob.prepareToEncrypt()
-		let licenseFrame = try bob.encrypt(Data("license".utf8))
+		let licenseFrame = try bob.encrypt(Data("license".utf8)).frame
 		_ = try alice.processIncoming(licenseFrame)
 		XCTAssertNotNil(alice.peerAppliedSendEpoch)
 
 		let prepared2 = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared2.didCommit)
-		let catchUpFrame = try alice.encrypt(Data("catchup".utf8))
+		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		let (staple, _, _) = try Frames.decodeMessageFrame(catchUpFrame)
 		XCTAssertEqual(Frames.stapleKind(staple.first!), .mlsMessage)
 		let decrypted = try bob.processIncoming(catchUpFrame)

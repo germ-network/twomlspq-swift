@@ -61,7 +61,7 @@ enum SessionTestSupport {
 	) throws -> (alice: TwoMLSSession, bob: TwoMLSSession) {
 		var (alice, bob, _, _, _, _) = try established(alice: aliceName, bob: bobName)
 		_ = try bob.prepareToEncrypt()
-		let frame = try bob.encrypt(Data("bob-hello".utf8))
+		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncoming(frame)
 		return (alice: alice, bob: bob)
 	}

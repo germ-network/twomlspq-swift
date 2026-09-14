@@ -59,7 +59,7 @@ extension TwoMLSSession {
 		// `H(KP′)` hashes the MLSMessage-wrapped bytes (§11 #7).
 		let bootstrap = try identity.freshPQKeyPackage(pqProvider: pqProvider)
 
-		let session = TwoMLSSession(
+		var session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: codepoints, identity: identity, auth: auth, sendGroup: groupA,
 			recvGroup: nil,
@@ -70,7 +70,11 @@ extension TwoMLSSession {
 				initSecretKey: bootstrap.initSecretKey,
 				keyPackage: bootstrap.keyPackage
 			), pqTurnMine: true)
-		return EstablishResult(session: session, welcome: apqWelcomeA)
+		// `apqWelcomeA` IS this session's first staple — the baseline
+		// `StateUpdate` (there is no separate sink/`installSink` call).
+		session.markStapleInstalled()
+		let baseline = try session.stateUpdate(kind: .checkpoint)
+		return EstablishResult(session: session, welcome: apqWelcomeA, baseline: baseline)
 	}
 
 	/// KP′'s MLSMessage-wrapped wire bytes (§11 #7), derived on demand from
@@ -170,7 +174,7 @@ extension TwoMLSSession {
 		let apqWelcomeB = Frames.encodeAPQWelcome(
 			t: try classicalWelcomeB.mlsEncoded(), pq: Data())
 
-		let session = TwoMLSSession(
+		var session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: codepoints, identity: identity, auth: auth, sendGroup: groupB,
 			recvGroup: groupA,
@@ -182,7 +186,11 @@ extension TwoMLSSession {
 			// Bob's freshly-joined copy is already at epoch 1, so the watermark
 			// seeds there too.
 			lastCrossInjected: 1)
-		return EstablishResult(session: session, welcome: apqWelcomeB)
+		// `apqWelcomeB` IS this session's first staple — the baseline
+		// `StateUpdate` (there is no separate sink/`installSink` call).
+		session.markStapleInstalled()
+		let baseline = try session.stateUpdate(kind: .checkpoint)
+		return EstablishResult(session: session, welcome: apqWelcomeB, baseline: baseline)
 	}
 
 	/// The peer's occupied leaf in a freshly-joined 2-party group, read

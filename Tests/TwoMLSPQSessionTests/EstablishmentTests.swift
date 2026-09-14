@@ -127,7 +127,7 @@ final class EstablishmentTests: XCTestCase {
 			alice: "alice-intruder", bob: "bob-intruder")
 		var otherBob = otherBobSession
 		_ = try otherBob.prepareToEncrypt()
-		let intruderFrame = try otherBob.encrypt(Data("intruder".utf8))
+		let intruderFrame = try otherBob.encrypt(Data("intruder".utf8)).frame
 
 		XCTAssertThrowsError(try alice.processIncoming(intruderFrame)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .unexpectedWelcome)
@@ -143,7 +143,7 @@ final class EstablishmentTests: XCTestCase {
 	func testProcessIncomingRejectsFullWelcomeStaple() throws {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
-		let realFrame = try bob.encrypt(Data("payload".utf8))
+		let realFrame = try bob.encrypt(Data("payload".utf8)).frame
 		let (_, _, appSection) = try Frames.decodeMessageFrame(realFrame)
 
 		let fullWelcomeStaple = Frames.encodeAPQWelcome(
@@ -234,7 +234,7 @@ final class EstablishmentTests: XCTestCase {
 	func testGroupBJoinRejectsAWelcomeWithoutTheCrossPartyPSK() throws {
 		var (alice, bob, aliceIdentity, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
-		let genuineFrame = try bob.encrypt(Data("genuine".utf8))
+		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
 		let (_, _, appSection) = try Frames.decodeMessageFrame(genuineFrame)
 
 		let forgedStaple = try forgedGroupBWelcome(
@@ -259,7 +259,7 @@ final class EstablishmentTests: XCTestCase {
 	func testGroupBJoinRejectsAWelcomeFromAnUnexpectedCreator() throws {
 		var (alice, bob, aliceIdentity, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
-		let genuineFrame = try bob.encrypt(Data("genuine".utf8))
+		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
 		let (_, _, appSection) = try Frames.decodeMessageFrame(genuineFrame)
 
 		var groupACopy = try XCTUnwrap(alice.sendGroup)
@@ -287,7 +287,7 @@ final class EstablishmentTests: XCTestCase {
 	func testMalformedWelcomeStapleLeavesTheGenuineOneJoinable() throws {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
-		let genuineFrame = try bob.encrypt(Data("genuine".utf8))
+		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
 		let (_, _, appSection) = try Frames.decodeMessageFrame(genuineFrame)
 
 		// (a) A `0x01` welcome staple whose classical `t` slot is garbage — the
@@ -307,7 +307,7 @@ final class EstablishmentTests: XCTestCase {
 		var (_, otherBob, _, _, _, otherWelcomeB) = try SessionTestSupport.established(
 			alice: "alice-other", bob: "bob-other")
 		_ = try otherBob.prepareToEncrypt()
-		let otherGenuineFrame = try otherBob.encrypt(Data("other".utf8))
+		let otherGenuineFrame = try otherBob.encrypt(Data("other".utf8)).frame
 		let (_, _, otherAppSection) = try Frames.decodeMessageFrame(otherGenuineFrame)
 		XCTAssertThrowsError(
 			try alice.processIncoming(
@@ -320,7 +320,7 @@ final class EstablishmentTests: XCTestCase {
 
 		// Bob's genuine first frame now joins cleanly — no wedge.
 		_ = try bob.prepareToEncrypt()
-		let realFrame = try bob.encrypt(Data("bob-hello".utf8))
+		let realFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		let decrypted = try alice.processIncoming(realFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
 		XCTAssertTrue(alice.isEstablished)
