@@ -1,4 +1,5 @@
 import Foundation
+import GermConvenience
 import MLSCodec
 import MLSCombiner
 import MLSExtensions
@@ -504,6 +505,17 @@ extension TwoMLSSession {
 			try rememberSendCrossPSK(classical: &send.classical, ledger: &ledger)
 			for exported in ledger.values { store.register(exported) }
 
+			// Exact-id allow-list: only the currently-ledgered cross-party
+			// `0xFF02` epochs, no external PSK, and never the attestation (a
+			// fold-only commit is a PARTIAL, never a bind discharge) — before
+			// `validating`.
+			try TwoPartyRules.validateInlineProposals(
+				commitValue.proposals,
+				expectedApplicationStorageIDs: Set(
+					ledger.values.map { $0.storageID }),
+				expectedExternalPSKIDs: [],
+				allowAttestation: false)
+
 			let pending = try recv.classical.validating(
 				classicalProvider, commit: commitPub, proposals: proposalStore,
 				psk: store.resolver())
@@ -571,64 +583,6 @@ extension TwoMLSSession {
 			}
 		}
 		return (updated, newSender, ownCredentialCanonicalized)
-	}
-
-	/// The single wrapped `0x0008` attestation a commit's effects carry, if any —
-	/// `applyBind`'s self-parsed stand-in for `MLS.Combiner.ApqInfoUpdate.extract`,
-	/// which scans only the TYPED `.appDataUpdate` effect and so never finds the
-	/// deployed wrapped form (`CommitEffect.customProposal`, from the ambient
-	/// `withDeployedWireConventions` sets up). Mirrors `extract`'s own contract
-	/// exactly: `nil` for none, `MLS.Combiner.Error.attestationMismatch` for more
-	/// than one or for a malformed/wrong-component one — never silently ignored.
-	private static func extractWrappedAttestation(
-		from effects: MLS.RFC9420.CommitEffects, componentID: MLS.Extensions.ComponentID
-	) throws -> MLS.Combiner.ApqInfoUpdate? {
-		var found: MLS.Combiner.ApqInfoUpdate?
-		for event in effects.events {
-			guard case .customProposal(let type, let body) = event,
-				type == .init(.appDataUpdate)
-			else {
-				continue
-			}
-			guard found == nil else { throw MLS.Combiner.Error.attestationMismatch }
-			let appDataUpdate = try MLS.Extensions.AppDataUpdate(mlsEncoded: body)
-			found = try MLS.Combiner.ApqInfoUpdate.decode(
-				from: appDataUpdate, componentID: componentID)
-		}
-		return found
-	}
-
-	/// Self-parsed stand-in for `MLS.Combiner.verifyFullCommitAttestation`
-	/// (draft §6.1's FULL-commit epoch attestation check), sourced from the
-	/// deployed wrapped `0x0008` proposal instead of swift-mls's typed
-	/// `.appDataUpdate` arm — see `extractWrappedAttestation`. Replicates the
-	/// combiner helper's checks exactly: each half carries exactly one
-	/// attestation, the two copies agree, and each attests the ACTUAL
-	/// post-apply epoch of both halves — so a tampered, absent, or
-	/// cross-half-mismatched attestation is rejected identically to the
-	/// typed-arm path this replaces.
-	private static func verifyWrappedFullCommitAttestation(
-		classicalEffects: MLS.RFC9420.CommitEffects,
-		pqEffects: MLS.RFC9420.CommitEffects,
-		classicalEpoch: UInt64,
-		pqEpoch: UInt64,
-		codepoints: MLS.Combiner.Codepoints
-	) throws -> MLS.Combiner.ApqInfoUpdate {
-		guard
-			let classical = try extractWrappedAttestation(
-				from: classicalEffects, componentID: codepoints.apqComponentID),
-			let pq = try extractWrappedAttestation(
-				from: pqEffects, componentID: codepoints.apqComponentID)
-		else {
-			throw MLS.Combiner.Error.attestationMismatch
-		}
-		guard classical == pq,
-			classical.tEpoch == classicalEpoch,
-			classical.pqEpoch == pqEpoch
-		else {
-			throw MLS.Combiner.Error.attestationMismatch
-		}
-		return classical
 	}
 
 	/// §4c/§11 #2/#5, Bob: apply Alice's `0x05` bind staple (a fold may ride
@@ -703,7 +657,7 @@ extension TwoMLSSession {
 			// (a fold+bind `0x05`), or is it a bare bind? Purely structural —
 			// `committingRound` only ever emits a `.reference` entry when a
 			// fold rode — so this determines the exact `.updated`-count the
-			// whitelist below expects, never trusted claims from elsewhere.
+			// allow-list below expects, never trusted claims from elsewhere.
 			guard case .commit(let commitValue) = tPub.content.content else {
 				throw TwoMLSError.malformedSideBandMessage
 			}
@@ -717,13 +671,27 @@ extension TwoMLSSession {
 			// the same `(group, epoch)` Alice's `sendPQ` named there — so the
 			// resolver matches the exact injected id, not any `.external` PSK
 			// (§11 #5).
+			let recvPQ = try recv.pq.tryUnwrap(TwoMLSError.notEstablished)
 			let expectedInjectedID =
-				withUnsafeBytes(of: recv.pq!.context.epoch.littleEndian) {
+				withUnsafeBytes(of: recvPQ.context.epoch.littleEndian) {
 					Data($0)
 				}
-				+ recv.pq!.context.groupID + Data([0x52])
+				+ recvPQ.context.groupID + Data([0x52])
 
-			var sendPQ = send.pq!
+			// Exact-id allow-list, PQ half: exactly the injected external
+			// `S` plus the attestation — before `validating`, so a
+			// spliced-in extra/wrong proposal never reaches signature
+			// verification.
+			guard case .commit(let pqCommitValue) = pqPub.content.content else {
+				throw TwoMLSError.malformedSideBandMessage
+			}
+			try TwoPartyRules.validateInlineProposals(
+				pqCommitValue.proposals,
+				expectedApplicationStorageIDs: [],
+				expectedExternalPSKIDs: [expectedInjectedID],
+				allowAttestation: true)
+
+			var sendPQ = try send.pq.tryUnwrap(TwoMLSError.notEstablished)
 			let sendPQEpochBeforeExport = sendPQ.context.epoch
 			// The `lastSendPQExported` stamp is deferred to this function's
 			// success point (it is a `self` write, and several throwing steps —
@@ -735,30 +703,33 @@ extension TwoMLSSession {
 			// naming the injected external `S` silently skips the fresh PQ
 			// entropy while its attestation claims a FULL commit.
 			var sawInjectedS = false
-			let pqPending = try recv.pq!.validating(
-				pqProvider, commit: pqPub, proposals: MLS.RFC9420.ProposalStore(),
-				psk: { identifier in
-					guard case .external(let pskID, _) = identifier,
-						pskID == expectedInjectedID
-					else {
-						return nil
-					}
-					sawInjectedS = true
-					// §A.4: `S` was already sealed/held at `pqRatchetRespond` —
-					// reuse it rather than exporting a fresh one off `sendPQ`
-					// (which A.4 never spends here at all).
-					if case .responding(let secret, _) = pqInflight {
-						return secret
-					}
-					let exported = try MLS.Combiner.ExportedPsk.export(
-						from: &sendPQ, pqProvider,
-						componentID: Self.crossPartyComponentID)
-					return exported.psk
-				})
+			let pqPending = try recv.pq.tryUnwrap(TwoMLSError.notEstablished)
+				.validating(
+					pqProvider, commit: pqPub,
+					proposals: MLS.RFC9420.ProposalStore(),
+					psk: { identifier in
+						guard case .external(let pskID, _) = identifier,
+							pskID == expectedInjectedID
+						else {
+							return nil
+						}
+						sawInjectedS = true
+						// §A.4: `S` was already sealed/held at `pqRatchetRespond` —
+						// reuse it rather than exporting a fresh one off `sendPQ`
+						// (which A.4 never spends here at all).
+						if case .responding(let secret, _) = pqInflight {
+							return secret
+						}
+						let exported = try MLS.Combiner.ExportedPsk.export(
+							from: &sendPQ, pqProvider,
+							componentID: Self.crossPartyComponentID)
+						return exported.psk
+					})
 			let pqEffects = pqPending.effects
 			try TwoPartyRules.validateBindPQEffects(pqEffects)
 			guard sawInjectedS else { throw TwoMLSError.missingBindPSK }
-			let pqTransition = try pqPending.apply(onto: recv.pq!)
+			let pqTransition = try pqPending.apply(
+				onto: recv.pq.tryUnwrap(TwoMLSError.notEstablished))
 			recv.pq = pqTransition.group
 			send.pq = sendPQ
 			switch pqInflight {
@@ -768,7 +739,7 @@ extension TwoMLSSession {
 				break
 			}
 
-			var apqSource = recv.pq!
+			var apqSource = try recv.pq.tryUnwrap(TwoMLSError.notEstablished)
 			let apqPSK = try MLS.Combiner.ExportedPsk.export(
 				from: &apqSource, pqProvider, componentID: codepoints.apqComponentID
 			)
@@ -781,29 +752,31 @@ extension TwoMLSSession {
 			try rememberSendCrossPSK(classical: &send.classical, ledger: &ledger)
 			for exported in ledger.values { store.register(exported) }
 
-			// Same recording-resolver discipline as the PQ half: the classical
-			// bind must name its half's `apq_psk` (`0xFF01`). The cross-party
-			// `0xFF02` is legitimately absent here (event-driven off
-			// `lastCrossInjected`), so only the `apq_psk` is required.
-			var sawAPQPSK = false
-			let resolve = store.resolver()
+			// Exact-id allow-list, classical half: the current PQ epoch's
+			// `apq_psk`, plus whatever cross-party `0xFF02` epochs are
+			// currently ledgered (legitimately zero or more — event-driven
+			// off `lastCrossInjected`) — before `validating`.
+			try TwoPartyRules.validateInlineProposals(
+				commitValue.proposals,
+				expectedApplicationStorageIDs: Set(
+					ledger.values.map { $0.storageID }
+				)
+				.union([apqPSK.storageID]),
+				expectedExternalPSKIDs: [],
+				allowAttestation: true)
+
+			// The library's recording resolver replaces the port's own
+			// `sawAPQPSK` flag: `MLS.Combiner.verifyFullCommit`'s
+			// `verifyApqPskBound` half inspects the `ResolutionRecord` after
+			// the fact instead of a closure-captured bool.
+			let (classicalResolver, pskRecord) = store.recordingResolver()
 			let tPending = try recv.classical.validating(
 				classicalProvider, commit: tPub,
 				proposals: proposalStore,
-				psk: { identifier in
-					if case .application(let componentID, let pskID, _) =
-						identifier,
-						componentID == codepoints.apqComponentID,
-						pskID == apqPSK.pskID
-					{
-						sawAPQPSK = true
-					}
-					return try resolve(identifier)
-				})
+				psk: classicalResolver)
 			let classicalEffects = tPending.effects
 			try TwoPartyRules.validateBindClassicalEffects(
 				classicalEffects, foldedPeerUpdate: foldedPeerUpdate)
-			guard sawAPQPSK else { throw TwoMLSError.missingBindPSK }
 			// AS consult point 3 (slice 6): the PQ half never carries a
 			// `.credentialReplaced` (`validateBindPQEffects` stays strict),
 			// so only the classical half's effects need adjudicating.
@@ -812,12 +785,19 @@ extension TwoMLSSession {
 			let tTransition = try tPending.apply(onto: recv.classical)
 			recv.classical = tTransition.group
 
-			_ = try Self.verifyWrappedFullCommitAttestation(
+			// Bundles the §6.1 attestation check (both halves attest the
+			// same, actual post-commit epoch pair) AND §6.2 (the classical
+			// half's `validating` actually resolved the current PQ epoch's
+			// `apq_psk`) — the library's de-conflated FULL-commit check.
+			_ = try MLS.Combiner.verifyFullCommit(
 				classicalEffects: classicalEffects, pqEffects: pqEffects,
 				classicalEpoch: recv.classical.context.epoch,
-				pqEpoch: recv.pq!.context.epoch, codepoints: codepoints)
+				pqEpoch: recv.pq.tryUnwrap(TwoMLSError.notEstablished).context
+					.epoch,
+				record: pskRecord, expected: apqPSK, codepoints: codepoints)
 
-			try TwoPartyRules.ensureTwoParty(recv.pq!)
+			try TwoPartyRules.ensureTwoParty(
+				recv.pq.tryUnwrap(TwoMLSError.notEstablished))
 			try TwoPartyRules.ensureTwoParty(recv.classical)
 
 			// Value semantics extend to `auth` — computed into a local copy,

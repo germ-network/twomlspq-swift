@@ -231,7 +231,7 @@ struct AuthCore: Sendable, Equatable {
 
 	/// The consult point `applyFoldCommit`/`applyBind` call at the
 	/// `.credentialReplaced` seam, once a rotation's commit has already
-	/// passed the shape whitelist
+	/// passed the shape allow-list
 	/// (`TwoPartyRules.validateTwoPartyUpdateCommit`). Slice 6 wires the
 	/// three sibling consult points this method does NOT itself perform:
 	/// `theirs.authorize` at peer-proposal approval (`validateOfferedUpdate`,

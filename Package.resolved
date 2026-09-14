@@ -1,6 +1,15 @@
 {
-  "originHash" : "9a68cebfdef71620880ad9b41f3b49f238df9198089ebdc7c40c95707aa1c33d",
+  "originHash" : "da7401b5eebb2b80c3b9dfc51d2b6e7355eca256ee523d1d1508a6f37ad66576",
   "pins" : [
+    {
+      "identity" : "germconvenience",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/germ-network/GermConvenience.git",
+      "state" : {
+        "revision" : "93034f8f6cbadbff40ee6af0ba9aaaba99c45707",
+        "version" : "0.7.0"
+      }
+    },
     {
       "identity" : "swift-asn1",
       "kind" : "remoteSourceControl",
@@ -20,11 +29,20 @@
       }
     },
     {
+      "identity" : "swift-http-types",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-http-types.git",
+      "state" : {
+        "revision" : "bff4b6903cdc99dda49649dd52f46c11cfd3ed50",
+        "version" : "1.8.0"
+      }
+    },
+    {
       "identity" : "swift-mls",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/germ-network/swift-mls.git",
       "state" : {
-        "revision" : "22cfb6adede1ffda262c3085d670bd707dc5f469"
+        "revision" : "5ed90f60eb12d5aec34f8834175482d31129d48d"
       }
     },
     {

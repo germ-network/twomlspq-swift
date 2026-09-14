@@ -46,9 +46,16 @@ public struct MLKEM768CipherSuiteProvider: MLS.CipherSuiteProvider {
 	private let symmetric: any MLS.CipherSuiteProvider
 
 	public init() {
-		// Force-unwrap is safe: `.curve25519Aes128` is always in
-		// `SwiftCryptoProvider.supportedCipherSuites`.
-		self.symmetric = SwiftCryptoProvider().cipherSuiteProvider(for: .curve25519Aes128)!
+		// `.curve25519Aes128` is always in `SwiftCryptoProvider.supportedCipherSuites`;
+		// `init` cannot throw, so an impossible absence is an explicit precondition,
+		// not a bare force-unwrap.
+		guard
+			let symmetric = SwiftCryptoProvider().cipherSuiteProvider(
+				for: .curve25519Aes128)
+		else {
+			preconditionFailure("SwiftCryptoProvider must support curve25519Aes128")
+		}
+		self.symmetric = symmetric
 	}
 
 	public var cipherSuite: MLS.CipherSuite { MLS.CipherSuite(id: Self.cipherSuiteID) }

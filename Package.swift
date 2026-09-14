@@ -16,19 +16,24 @@ let package = Package(
 	],
 	dependencies: [
 		// swift-mls has no tags; pin by commit. `MLSCrypto` is the CipherSuiteProvider seam.
-		// 22cfb6a = main HEAD, adding the general RFC 9420 §12 custom / raw proposal seam
-		// (`Proposal.custom(type:body:)` + the `customProposalTypes` receive-scope ambient):
-		// the capability this layer needs to emit and accept the deployed-Rust `opaque<V>`
-		// wrapper on the AppDataUpdate (0x0008) attestation. Additive over the prior pin
-		// (241ed48: the signer-closure seam and credential / signature-key rotation authoring).
+		// 5ed90f6 = main HEAD (post-#93), adding `.customProposal`-aware
+		// `ApqInfoUpdate.extract`/`verifyFullCommitAttestation`, `verifyApqPskBound`/
+		// `verifyFullCommit`, and the non-default-proposal capabilities check — the
+		// combiner-side §6.1/§6.2 checks this layer de-conflates onto. Additive over
+		// the prior pin (22cfb6a: the RFC 9420 §12 custom / raw proposal seam).
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			revision: "22cfb6adede1ffda262c3085d670bd707dc5f469"
+			revision: "5ed90f60eb12d5aec34f8834175482d31129d48d"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		.package(
 			url: "https://github.com/germ-network/swift-secret-bytes.git",
 			.upToNextMinor(from: "0.4.0")
+		),
+		// The shared `tryUnwrap` (safe unwrap) and other Germ conveniences.
+		.package(
+			url: "https://github.com/germ-network/GermConvenience.git",
+			.upToNextMinor(from: "0.7.0")
 		),
 	],
 	targets: [
@@ -54,6 +59,7 @@ let package = Package(
 			name: "TwoMLSPQSession",
 			dependencies: [
 				"TwoMLSPQCrypto",
+				.product(name: "GermConvenience", package: "GermConvenience"),
 				.product(name: "MLSCombiner", package: "swift-mls"),
 				.product(name: "MLSProfileRFC9420", package: "swift-mls"),
 				.product(name: "MLSExtensions", package: "swift-mls"),

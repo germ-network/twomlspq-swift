@@ -1,6 +1,7 @@
 import Foundation
 import MLSCodec
 import MLSCrypto
+import MLSExtensions
 import MLSProfileRFC9420
 import MLSTreeMath
 import SecretBytes
@@ -91,5 +92,132 @@ final class TwoPartyRulesTests: XCTestCase {
 			error in
 			XCTAssertEqual(error as? TwoMLSError, .invalidCreationProposals)
 		}
+	}
+
+	// MARK: - validateInlineProposals
+
+	/// Non-vacuous sanity check: a proposal list carrying exactly the
+	/// permitted application/external ids passes — so the rejections below
+	/// are demonstrably about the specific id/type under test, not the
+	/// function rejecting everything.
+	func testValidateInlineProposalsAcceptsExactlyTheExpectedSet() throws {
+		let componentID = MLS.Extensions.ComponentID(rawValue: 0xFF01)
+		let applicationIdentifier = MLS.RFC9420.PreSharedKeyIdentifier.application(
+			componentID: componentID, pskID: Data("app-id".utf8), nonce: Data("n1".utf8)
+		)
+		let applicationStorageID = try XCTUnwrap(
+			try applicationIdentifier.applicationStorageID())
+		let externalID = Data("ext-id".utf8)
+		let proposals: [MLS.RFC9420.ProposalOrRef] = [
+			.proposal(.preSharedKey(applicationIdentifier)),
+			.proposal(
+				.preSharedKey(.external(pskID: externalID, nonce: Data("n2".utf8)))),
+		]
+		XCTAssertNoThrow(
+			try TwoPartyRules.validateInlineProposals(
+				proposals,
+				expectedApplicationStorageIDs: [applicationStorageID],
+				expectedExternalPSKIDs: [externalID],
+				allowAttestation: false))
+	}
+
+	/// The exact-id tightening: an `application` PSK of a permitted
+	/// COMPONENT (`0xFF01`, the `apq_psk` component) but a pskID not in the
+	/// expected set — i.e. not the storage id the caller actually derived —
+	/// is rejected, not merely type-checked.
+	func testValidateInlineProposalsRejectsApplicationPSKNotInExpectedSet() throws {
+		let componentID = MLS.Extensions.ComponentID(rawValue: 0xFF01)
+		let expectedIdentifier = MLS.RFC9420.PreSharedKeyIdentifier.application(
+			componentID: componentID, pskID: Data("expected-id".utf8),
+			nonce: Data("n1".utf8))
+		let expectedStorageID = try XCTUnwrap(
+			try expectedIdentifier.applicationStorageID())
+		let wrongIdentifier = MLS.RFC9420.PreSharedKeyIdentifier.application(
+			componentID: componentID, pskID: Data("wrong-id".utf8),
+			nonce: Data("n2".utf8))
+		let proposals: [MLS.RFC9420.ProposalOrRef] = [
+			.proposal(.preSharedKey(wrongIdentifier))
+		]
+		XCTAssertThrowsError(
+			try TwoPartyRules.validateInlineProposals(
+				proposals,
+				expectedApplicationStorageIDs: [expectedStorageID],
+				expectedExternalPSKIDs: [],
+				allowAttestation: false)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
+		}
+	}
+
+	func testValidateInlineProposalsRejectsExternalPSKNotInExpectedSet() {
+		let proposals: [MLS.RFC9420.ProposalOrRef] = [
+			.proposal(
+				.preSharedKey(
+					.external(pskID: Data("wrong".utf8), nonce: Data("n".utf8)))
+			)
+		]
+		XCTAssertThrowsError(
+			try TwoPartyRules.validateInlineProposals(
+				proposals, expectedApplicationStorageIDs: [],
+				expectedExternalPSKIDs: [Data("expected".utf8)],
+				allowAttestation: false)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
+		}
+	}
+
+	func testValidateInlineProposalsRejectsResumptionPSK() {
+		let resumption = MLS.RFC9420.ResumptionPSK(
+			usage: .application, groupID: Data("g".utf8), epoch: 1)
+		let proposals: [MLS.RFC9420.ProposalOrRef] = [
+			.proposal(.preSharedKey(.resumption(resumption, nonce: Data("n".utf8))))
+		]
+		XCTAssertThrowsError(
+			try TwoPartyRules.validateInlineProposals(
+				proposals, expectedApplicationStorageIDs: [],
+				expectedExternalPSKIDs: [],
+				allowAttestation: false)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
+		}
+	}
+
+	func testValidateInlineProposalsRejectsGroupContextExtensions() {
+		let proposals: [MLS.RFC9420.ProposalOrRef] = [
+			.proposal(.groupContextExtensions([]))
+		]
+		XCTAssertThrowsError(
+			try TwoPartyRules.validateInlineProposals(
+				proposals, expectedApplicationStorageIDs: [],
+				expectedExternalPSKIDs: [],
+				allowAttestation: false)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
+		}
+	}
+
+	func testValidateInlineProposalsRejectsAttestationWhenNotAllowed() {
+		let proposals: [MLS.RFC9420.ProposalOrRef] = [
+			.proposal(.custom(type: .init(.appDataUpdate), body: Data()))
+		]
+		XCTAssertThrowsError(
+			try TwoPartyRules.validateInlineProposals(
+				proposals, expectedApplicationStorageIDs: [],
+				expectedExternalPSKIDs: [],
+				allowAttestation: false)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
+		}
+	}
+
+	func testValidateInlineProposalsAcceptsAttestationWhenAllowed() {
+		let proposals: [MLS.RFC9420.ProposalOrRef] = [
+			.proposal(.custom(type: .init(.appDataUpdate), body: Data()))
+		]
+		XCTAssertNoThrow(
+			try TwoPartyRules.validateInlineProposals(
+				proposals, expectedApplicationStorageIDs: [],
+				expectedExternalPSKIDs: [],
+				allowAttestation: true))
 	}
 }

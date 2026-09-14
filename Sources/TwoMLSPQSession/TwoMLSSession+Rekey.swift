@@ -1,4 +1,5 @@
 import Foundation
+import GermConvenience
 import MLSCodec
 import MLSCombiner
 import MLSProfileRFC9420
@@ -122,10 +123,12 @@ extension TwoMLSSession {
 
 			var pskStore = MLS.Combiner.PSKStore()
 			var proposals: [MLS.RFC9420.ProposalOrRef] = [.reference(ref)]
-			let recvPQEpoch = recv.pq!.context.epoch
+			let recvPQEpoch = try recv.pq.tryUnwrap(TwoMLSError.notEstablished).context
+				.epoch
 			var crossInjectedEpoch: UInt64?
 			if lastCrossInjectedPQ != recvPQEpoch {
-				var recvPQForExport = recv.pq!
+				var recvPQForExport = try recv.pq.tryUnwrap(
+					TwoMLSError.notEstablished)
 				let crossPSK = try MLS.Combiner.ExportedPsk.export(
 					from: &recvPQForExport, pqProvider,
 					componentID: Self.crossPartyComponentID)
@@ -217,13 +220,29 @@ extension TwoMLSSession {
 			let sendPQEpoch = sendPQ.context.epoch
 			var pskStore = MLS.Combiner.PSKStore()
 			let needsPreRegister = lastSendPQExported != sendPQEpoch
+			var expectedApplicationStorageIDs: Set<Data> = []
 			if needsPreRegister {
 				var pqForExport = sendPQ
 				let crossPSK = try MLS.Combiner.ExportedPsk.export(
 					from: &pqForExport, pqProvider,
 					componentID: Self.crossPartyComponentID)
 				pskStore.register(crossPSK)
+				expectedApplicationStorageIDs = [crossPSK.storageID]
 			}
+
+			// Exact-id allow-list: only the cross-party `0xFF02` this round
+			// pre-registers (legitimately none, when this epoch's export was
+			// already remembered), never an external PSK or the attestation
+			// (the mechanical rekey carries no `AppDataUpdate`) — before
+			// `validating`.
+			guard case .commit(let commitValue) = commitPub.content.content else {
+				throw TwoMLSError.malformedSideBandMessage
+			}
+			try TwoPartyRules.validateInlineProposals(
+				commitValue.proposals,
+				expectedApplicationStorageIDs: expectedApplicationStorageIDs,
+				expectedExternalPSKIDs: [],
+				allowAttestation: false)
 
 			let pending: MLS.RFC9420.PendingCommit
 			do {

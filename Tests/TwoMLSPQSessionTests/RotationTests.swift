@@ -653,10 +653,10 @@ final class RotationTests: XCTestCase {
 	/// alongside an extra `Add` is still `.invalidFoldEffects` — slice 6
 	/// widens the union/count validator to accept `.credentialReplaced` as an
 	/// equivalent leaf-move to `.updated`, but never touches the
-	/// Add/Remove/`membershipRemoved` whitelist. Mirrors
-	/// `FoldTests.testFoldEffectsWithAnAddThrowsInvalidFoldEffects`, swapping
+	/// Add/Remove/`membershipRemoved` allow-list. Mirrors
+	/// `FoldTests.testFoldEffectsWithAnAddThrowsUnexpectedProposal`, swapping
 	/// a routine fold for a rotating one.
-	func testRotatingFoldWithRosterAddStillThrowsInvalidFoldEffects() throws {
+	func testRotatingFoldWithRosterAddStillThrowsUnexpectedProposal() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceNewID = Data("alice-roster-v2".utf8)
 
@@ -704,9 +704,14 @@ final class RotationTests: XCTestCase {
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposal, app: app)
 
+		// The exact-id inline allow-list (`TwoPartyRules.validateInlineProposals`)
+		// now catches the smuggled `Add` before `validating` ever runs, so
+		// this now throws `.unexpectedProposal` rather than reaching the
+		// post-apply `.invalidFoldEffects` shape check. Same rejection,
+		// earlier gate.
 		let recvEpochBefore = alice.recvGroup?.classical.context.epoch
 		XCTAssertThrowsError(try alice.processIncoming(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidFoldEffects)
+			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
 		}
 		XCTAssertEqual(alice.recvGroup?.classical.context.epoch, recvEpochBefore)
 	}
@@ -721,7 +726,7 @@ final class RotationTests: XCTestCase {
 	/// committer's own path-refresh) but fails the Authentication
 	/// Service's successor check. `applyFoldCommit`'s
 	/// `auth.adjudicate(effects)` (`+ClassicalCommit.swift:476`) is the
-	/// ONLY thing that catches this; the shape whitelist alone would wave
+	/// ONLY thing that catches this; the shape allow-list alone would wave
 	/// it through since a `.credentialReplaced` on the committer counts as
 	/// an ordinary leaf move.
 	func testApplyFoldCommitRejectsNeverOfferedNewIdentityViaAdjudicate() throws {
@@ -768,7 +773,7 @@ final class RotationTests: XCTestCase {
 	/// real, untouched `owed.pqCommitMessage`) stapled alongside a
 	/// hand-built classical bind commit whose `newIdentity` names a
 	/// NEVER-OFFERED id — correct PSKs, correct attestation, so it clears
-	/// `verifyFullCommitAttestation` and the shape whitelist
+	/// `verifyFullCommitAttestation` and the shape allow-list
 	/// (`validateBindClassicalEffects`) cleanly. Only `applyBind`'s
 	/// `auth.adjudicate(classicalEffects)` (`+ClassicalCommit.swift:681`)
 	/// catches the never-offered identity. Mirrors

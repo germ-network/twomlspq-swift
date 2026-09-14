@@ -253,10 +253,14 @@ final class RekeyTests: XCTestCase {
 		XCTAssertNil(alice.pqInflight)
 	}
 
-	/// A Commit′ that folds the peer's Update AND an extra Add is rejected
-	/// as `.invalidRekeyEffects` — `CommitEffects` has no public initializer
-	/// (it is `internal` to swift-mls), so this drives a real over-broad
-	/// commit through swift-mls rather than hand-building the effects value.
+	/// A Commit′ that folds the peer's Update AND an extra Add is rejected —
+	/// `CommitEffects` has no public initializer (it is `internal` to
+	/// swift-mls), so this drives a real over-broad commit through swift-mls
+	/// rather than hand-building the effects value. The exact-id inline
+	/// allow-list (`TwoPartyRules.validateInlineProposals`) now catches the
+	/// smuggled `Add` before `validating` ever runs — A.5's expected set
+	/// never includes `.add` — so this throws `.unexpectedProposal` rather
+	/// than reaching the post-apply `.invalidRekeyEffects` shape check.
 	func testRekeyApplyRejectsCommitWithExtraAddEffect() throws {
 		let (alice, fixtureBob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		var bob = fixtureBob
@@ -287,7 +291,7 @@ final class RekeyTests: XCTestCase {
 
 		let recvPQEpochBefore = bob.recvGroup?.pq?.context.epoch
 		XCTAssertThrowsError(try bob.pqRekeyApply(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidRekeyEffects)
+			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
 		}
 		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, recvPQEpochBefore)
 		XCTAssertNil(bob.owedBind)

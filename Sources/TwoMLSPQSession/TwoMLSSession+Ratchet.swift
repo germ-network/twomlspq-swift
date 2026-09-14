@@ -1,4 +1,5 @@
 import Foundation
+import GermConvenience
 import MLSCodec
 import MLSProfileRFC9420
 import TwoMLSPQCrypto
@@ -81,7 +82,9 @@ extension TwoMLSSession {
 			on: &recv.classical, innerTag: Frames.pqEKTag, message: msg)
 		recvGroup = recv
 
-		let psk = try CTSeal.ctSealPSK(group: recv.pq!, pqProvider: pqProvider)
+		let psk = try CTSeal.ctSealPSK(
+			group: recv.pq.tryUnwrap(TwoMLSError.notEstablished), pqProvider: pqProvider
+		)
 		let (s, wireCT) = try CTSeal.seal(ek: ek, ctSealPSK: psk, aead: classicalProvider)
 
 		let inner = Frames.encodePQLegContent(tag: Frames.pqCTTag, payload: wireCT)

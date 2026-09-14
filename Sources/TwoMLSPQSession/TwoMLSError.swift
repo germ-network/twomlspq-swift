@@ -90,7 +90,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// (`prepareToEncrypt`).
 	case epochDesync
 	/// `applyBind`'s applied `CommitEffects` were not the bind's exact
-	/// whitelisted shape — PQ-half `[epochAdvanced, appDataUpdate]` or
+	/// allow-listed shape — PQ-half `[epochAdvanced, appDataUpdate]` or
 	/// classical-half `[epochAdvanced, updated(committer), appDataUpdate]` —
 	/// an unexpected Add/Remove/credential replacement rode the bind.
 	case invalidBindEffects
@@ -110,6 +110,14 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// A creation commit's proposal list was not exactly `[Add, PreSharedKey]`
 	/// (classical-only) or `[Add, PreSharedKey, AppDataUpdate]` (full).
 	case invalidCreationProposals
+	/// A receive apply path's applied commit carried an inline proposal
+	/// outside that path's exact permitted set
+	/// (`TwoPartyRules.validateInlineProposals`) — an application or
+	/// external PSK naming an id other than the ones that path expects, a
+	/// resumption PSK (never permitted), or any proposal type/shape that
+	/// path does not allow at all. Checked against the commit's raw
+	/// proposal list before its effects are trusted.
+	case unexpectedProposal
 
 	// MARK: Session state
 
@@ -138,7 +146,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// behind the tag, or one framed by this session's own leaf.
 	case rekeyProposalRejected
 	/// `pqRekeyApply`'s applied `CommitEffects` were not the mechanical rekey
-	/// Commit's exact whitelisted shape — `[epochAdvanced, updated(proposer),
+	/// Commit's exact allow-listed shape — `[epochAdvanced, updated(proposer),
 	/// updated(committer)]` with the two leaves distinct — an unexpected
 	/// Add/Remove/credential replacement/membership removal/`AppDataUpdate`
 	/// rode the Commit′. A `.credentialReplaced` is part of this rejection
@@ -160,7 +168,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// A digest mismatch is this error too, never a silent no-op.
 	case proposalRejected
 	/// A fold-carrying commit's applied `CommitEffects` were not its exact
-	/// whitelisted shape — bare fold `[epochAdvanced, updated(proposer),
+	/// allow-listed shape — bare fold `[epochAdvanced, updated(proposer),
 	/// updated(committer)]`, or the same plus `appDataUpdate` when a bind rode
 	/// the same commit — an unexpected Add/Remove/`.credentialReplaced`/
 	/// `membershipRemoved` rode it.
