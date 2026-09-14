@@ -133,7 +133,11 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// Commit's exact whitelisted shape — `[epochAdvanced, updated(proposer),
 	/// updated(committer)]` with the two leaves distinct — an unexpected
 	/// Add/Remove/credential replacement/membership removal/`AppDataUpdate`
-	/// rode the Commit′.
+	/// rode the Commit′. A `.credentialReplaced` is part of this rejection
+	/// (enforced by `validateRekeyCommitEffects`): the PQ arms run no AS
+	/// adjudication, so an unadjudicated presentation change is refused
+	/// outright. When the PQ catch-up (Chunk 2) lands, replace the throw with
+	/// `auth.adjudicate` on both PQ arms and admit a `.credentialReplaced`.
 	case invalidRekeyEffects
 
 	// MARK: §5 classical FOLD (slice 5, no credential rotation)

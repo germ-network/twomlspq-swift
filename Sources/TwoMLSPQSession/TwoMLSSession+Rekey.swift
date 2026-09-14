@@ -21,8 +21,11 @@ import MLSProfileRFC9420
 /// initiator applies that Commit′, exports `S` off the freshly-rekeyed
 /// group, and owes the classical bind (`pqRekeyApply`, reusing `owePQBind`).
 /// This mechanical form carries no credential/signature-key rotation — every
-/// leaf keeps its identity (`.updated`, never `.credentialReplaced`); that
-/// handoff is Chunk 2 (§15).
+/// leaf keeps its identity (`.updated`, never `.credentialReplaced`), NOW
+/// ENFORCED rather than merely asserted (`pqRekeyRespond`'s presentation
+/// check + `validateRekeyCommitEffects`, which refuse a `.credentialReplaced`
+/// because the PQ arms run no AS adjudication); that handoff is Chunk 2
+/// (§15).
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
 	/// The initiator (whoever holds `pqTurnMine`) begins an §A.5 round:
@@ -90,9 +93,26 @@ extension TwoMLSSession {
 			} catch {
 				throw TwoMLSError.decryptionFailed
 			}
-			guard case .update = verified.proposal,
+			guard case .update(let leafNode) = verified.proposal,
 				case .member(let senderLeaf) = verified.sender,
 				senderLeaf != sendPQ.myLeafIndex
+			else {
+				throw TwoMLSError.rekeyProposalRejected
+			}
+			// Belt: the mechanical re-key carries no credential/signature-key
+			// rotation — read the sender's CURRENT occupant off the live tree
+			// and require the proposed leaf's credential AND signature key to
+			// equal it (mirrors `validateOfferedUpdate`'s `presentationChanged`
+			// computation on the classical side), so an unadjudicated
+			// presentation change is rejected before a commit is spent. The
+			// PQ arms run no AS adjudication; `validateRekeyCommitEffects`
+			// backstops the same invariant at apply.
+			guard
+				let currentRecord = sendPQ.tree.leaf(at: senderLeaf),
+				let currentLeaf = try? MLS.RFC9420.LeafNode(
+					mlsEncoded: currentRecord.encoded),
+				leafNode.credential == currentLeaf.credential,
+				leafNode.signatureKey == currentLeaf.signatureKey
 			else {
 				throw TwoMLSError.rekeyProposalRejected
 			}

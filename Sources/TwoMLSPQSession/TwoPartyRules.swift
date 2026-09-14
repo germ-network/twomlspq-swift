@@ -162,13 +162,28 @@ enum TwoPartyRules {
 	/// must be exactly `[epochAdvanced, updated(proposer), updated(committer)]`
 	/// — two DISTINCT `.updated` leaves, one of them the committer's own
 	/// path-refresh (`epochAdvanced`'s `committer`). No membership or
-	/// credential change: a rotating Upd′ (`.credentialReplaced`) is Chunk 2
-	/// (§15), out of scope here. Mirrors `validateBindPQEffects`/
+	/// credential change — NOW ENFORCED rather than merely documented: a
+	/// `.credentialReplaced` event is refused outright, not counted as an
+	/// ordinary moved leaf. A mechanical re-key passes no `newIdentity` (the
+	/// committer's own leaf is always `.updated`), so an honest round can
+	/// never trip this — and swift-mls emits `.credentialReplaced` only when
+	/// the presentation actually changed (old != new), so this rejects exactly
+	/// the unadjudicated credential replacement, not a key-only refresh. The
+	/// PQ arms run no Authentication Service adjudication (the AS lives on the
+	/// classical half), so a presentation change must be refused rather than
+	/// silently applied; when the PQ catch-up (Chunk 2) lands, replace this
+	/// with `auth.adjudicate(effects)` on both PQ arms (`session-lifecycle.md`,
+	/// `group-rules.md`). Mirrors `validateBindPQEffects`/
 	/// `validateBindClassicalEffects` — and, per §11 MF2, is the exact same
 	/// shape the classical fold-only commit validates, just over the PQ
 	/// group. A thin `validateTwoPartyUpdateCommit` wrapper preserving this
 	/// call site's own error identity.
 	static func validateRekeyCommitEffects(_ effects: MLS.RFC9420.CommitEffects) throws {
+		for event in effects.events {
+			if case .credentialReplaced = event {
+				throw TwoMLSError.invalidRekeyEffects
+			}
+		}
 		try validateTwoPartyUpdateCommit(
 			effects, foldedPeerUpdate: true, allowAppDataUpdate: false,
 			orThrow: .invalidRekeyEffects)
