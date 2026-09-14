@@ -104,18 +104,21 @@ public struct TwoMLSIdentity: Sendable {
 		return (signingKey, signatureKey)
 	}
 
-	/// Generate a fresh principal: one signing keypair, a leaf/init HPKE
-	/// keypair per half, and both halves' signed `KeyPackage`s.
+	/// Mint a fresh combiner key-package bundle — fresh leaf/init HPKE
+	/// secrets, fresh classical+PQ `KeyPackage`s — signed under an ALREADY
+	/// existing signing identity. This is the shape `Principal` needs (book
+	/// concepts.md: "credential-scoped signer"): every KP or session leaf it
+	/// mints shares its one signing key, rather than each getting its own.
 	public static func generate(
 		clientID: Data,
+		signingKey: MLS.SignatureSecretKey,
+		signatureKey: MLS.SignaturePublicKey,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider
 	) throws -> TwoMLSIdentity {
 		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
 			pqProvider.cipherSuite == TwoMLSSuite.pq
 		else { throw TwoMLSError.cipherSuiteMismatch }
-
-		let (signingKey, signatureKey) = try mintSignatureKeypair()
 
 		let (classicalLeafSecretKey, classicalLeafPublicKey) =
 			try classicalProvider.hpkeGenerateKeyPair()
@@ -142,6 +145,22 @@ public struct TwoMLSIdentity: Sendable {
 			pqLeafSecretKey: pqLeafSecretKey, pqInitSecretKey: pqInitSecretKey,
 			keyPackage: CombinerKeyPackage(
 				classical: classicalKeyPackage, pq: pqKeyPackage))
+	}
+
+	/// Generate a fresh, standalone principal identity: a fresh signing
+	/// keypair plus the signing-key-scoped `generate` above's fresh KP
+	/// bundle. Used directly by tests/internals that need no enclosing
+	/// `Principal`; `Principal` itself always goes through the overload
+	/// above, so every KP/leaf it mints shares its one signing key.
+	public static func generate(
+		clientID: Data,
+		classicalProvider: any MLS.CipherSuiteProvider,
+		pqProvider: any MLS.CipherSuiteProvider
+	) throws -> TwoMLSIdentity {
+		let (signingKey, signatureKey) = try mintSignatureKeypair()
+		return try generate(
+			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
+			classicalProvider: classicalProvider, pqProvider: pqProvider)
 	}
 
 	/// Mint a fresh PQ `KeyPackage` KP′ — a brand-new leaf+init HPKE keypair

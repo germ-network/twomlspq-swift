@@ -545,6 +545,7 @@ struct SessionArchive: Codable, Sendable {
 	var stagedUpdates: [StagedUpdateArchive]
 	var sendCrossPSKLedger: ArchiveIntegerKeyedMap<ExportedPskArchive>
 	var rotationCandidate: RotationCandidateArchive?
+	var spawnToken: Data?
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case version = 0
@@ -579,6 +580,7 @@ struct SessionArchive: Codable, Sendable {
 		case stagedUpdates = 29
 		case sendCrossPSKLedger = 30
 		case rotationCandidate = 31
+		case spawnToken = 32
 	}
 }
 
@@ -659,7 +661,8 @@ extension TwoMLSSession {
 			stagedUpdates: stagedUpdates.map(StagedUpdateArchive.init),
 			sendCrossPSKLedger: ArchiveIntegerKeyedMap(
 				sendCrossPSKLedger.mapValues(ExportedPskArchive.init)),
-			rotationCandidate: rotationCandidate.map(RotationCandidateArchive.init))
+			rotationCandidate: rotationCandidate.map(RotationCandidateArchive.init),
+			spawnToken: spawnToken)
 		return try SecretArchive(encoding: body)
 	}
 }

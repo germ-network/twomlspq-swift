@@ -9,10 +9,42 @@ import SecretBytes
 
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
+	/// Alice's side of establishment, layered over the identity-based
+	/// primitive below: mint a fresh Group_A leaf bundle under `principal`'s
+	/// signing key (book concepts.md's credential-scoped signer — every leaf
+	/// a principal mints shares its one signing key) and delegate.
+	public static func initiate(
+		principal: Principal,
+		their: CombinerKeyPackage
+	) throws -> EstablishResult {
+		let identity = try TwoMLSIdentity.generate(
+			clientID: principal.clientID, signingKey: principal.signingKey,
+			signatureKey: principal.signatureKey,
+			classicalProvider: principal.classicalProvider,
+			pqProvider: principal.pqProvider)
+		return try initiate(
+			identity: identity, their: their,
+			classicalProvider: principal.classicalProvider,
+			pqProvider: principal.pqProvider, codepoints: principal.codepoints)
+	}
+
+	/// The session acknowledges a replayed initial frame the invitation's
+	/// forward table routed here: validation only, no state change (book
+	/// session-lifecycle.md, "Invitations & replayed initial frames" —
+	/// `Ok(None)`). A token that does not match the one this session was
+	/// actually spawned under is a mis-route.
+	public func forwarded(spawnToken token: Data) throws {
+		guard token == spawnToken else { throw TwoMLSError.misroutedSpawnToken }
+	}
+
 	/// Found Group_A (a full pair) and return the un-header-sealed `APQWelcome_A` to
 	/// hand the acceptor out of band. `isEstablished` is false until the
 	/// acceptor's first frame is processed (no receive group yet).
-	public static func initiate(
+	///
+	/// Internal: the app-facing entry point is `initiate(principal:their:)`
+	/// above; this lower-level primitive stays available in-module for tests
+	/// that need direct identity access.
+	static func initiate(
 		identity: TwoMLSIdentity,
 		their: CombinerKeyPackage,
 		classicalProvider: any MLS.CipherSuiteProvider,
@@ -105,11 +137,19 @@ extension TwoMLSSession {
 	/// `bootstrapKPCommitment` is the initiator's `H(KP′)` (its
 	/// `bootstrapKPCommitment()`), pinned here before any state is claimed —
 	/// it must be exactly 32 bytes, else `.bootstrapKPMismatch`.
-	public static func receive(
+	///
+	/// Internal: the app-facing entry point is `Invitation.receive`, which
+	/// delegates here with its captured identity and the caller's
+	/// `spawnToken`; this lower-level primitive stays available in-module
+	/// for tests that need direct identity access. `spawnToken` is `nil` for
+	/// those direct callers — a session accepted that way has no forward-
+	/// table routing to acknowledge.
+	static func receive(
 		identity: TwoMLSIdentity,
 		welcome: Data,
 		theirClassicalKeyPackage: MLS.RFC9420.KeyPackage,
 		bootstrapKPCommitment: Data,
+		spawnToken: Data? = nil,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed
@@ -185,7 +225,7 @@ extension TwoMLSSession {
 			// (Group_A, joined above) at the last cross-party PSK injection —
 			// Bob's freshly-joined copy is already at epoch 1, so the watermark
 			// seeds there too.
-			lastCrossInjected: 1)
+			lastCrossInjected: 1, spawnToken: spawnToken)
 		// `apqWelcomeB` IS this session's first staple — the baseline
 		// `StateUpdate` (there is no separate sink/`installSink` call).
 		session.markStapleInstalled()

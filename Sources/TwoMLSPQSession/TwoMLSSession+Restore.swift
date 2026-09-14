@@ -244,7 +244,8 @@ extension TwoMLSSession {
 			peerAppliedSendEpoch: body.peerAppliedSendEpoch,
 			lastCrossInjected: body.lastCrossInjected,
 			lastCrossInjectedPQ: body.lastCrossInjectedPQ,
-			lastSendPQExported: body.lastSendPQExported)
+			lastSendPQExported: body.lastSendPQExported,
+			spawnToken: body.spawnToken)
 
 		session.offeredProposal = body.offeredProposal?.asTuple
 		session.queuedProposal = body.queuedProposal?.asTuple

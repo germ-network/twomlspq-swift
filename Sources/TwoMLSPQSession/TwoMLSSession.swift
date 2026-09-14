@@ -288,6 +288,13 @@ public struct TwoMLSSession: Sendable {
 	/// (the initiator resolving the committer's cross-PSK). Same guard as
 	/// `lastCrossInjectedPQ`, over `sendGroup.pq` instead.
 	var lastSendPQExported: UInt64?
+	/// The opaque, replay-stable token this session was spawned under via
+	/// `Invitation.receive` — `nil` on the initiator (who has no spawn
+	/// token) or a session accepted through the lower-level
+	/// `receive(identity:...)` entry point directly. `forwarded(spawnToken:)`
+	/// validates a replayed initial frame's routing against this (book
+	/// session-lifecycle.md, "Invitations & replayed initial frames").
+	let spawnToken: Data?
 
 	// MARK: §5 classical FOLD (slice 5, no credential rotation)
 
@@ -469,7 +476,8 @@ public struct TwoMLSSession: Sendable {
 		peerAppliedSendEpoch: UInt64? = nil,
 		lastCrossInjected: UInt64? = nil,
 		lastCrossInjectedPQ: UInt64? = nil,
-		lastSendPQExported: UInt64? = nil
+		lastSendPQExported: UInt64? = nil,
+		spawnToken: Data? = nil
 	) {
 		self.classicalProvider = classicalProvider
 		self.pqProvider = pqProvider
@@ -492,5 +500,6 @@ public struct TwoMLSSession: Sendable {
 		self.lastCrossInjected = lastCrossInjected
 		self.lastCrossInjectedPQ = lastCrossInjectedPQ
 		self.lastSendPQExported = lastSendPQExported
+		self.spawnToken = spawnToken
 	}
 }
