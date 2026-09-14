@@ -297,6 +297,71 @@ final class RekeyTests: XCTestCase {
 		}
 	}
 
+	// MARK: - PQ credential replacement is refused (no AS on the PQ arms)
+
+	/// A `0x1B` Upd′ that replaces the proposer's PQ-leaf credential is refused
+	/// by the committer's `pqRekeyRespond` — `.rekeyProposalRejected` — before
+	/// any commit is spent: the mechanical re-key carries no credential/
+	/// signature-key rotation (`+Rekey.swift` doc), and the PQ arms run no
+	/// Authentication Service adjudication, so an unadjudicated presentation
+	/// change must not silently desync the PQ roster from the tracked
+	/// identity. The committer's group is untouched, and a subsequent honest
+	/// mechanical round still completes.
+	func testRekeyRejectsAnUnapprovedCredentialReplacementAtRespond() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+
+		// Author a rotating Upd′ on Bob's recv-PQ mirror by hand: fresh
+		// signature keypair + `mallory-never-approved`, ring-signed exactly
+		// like `prepareToEncrypt(rotating:)`, so only the presentation check —
+		// never a signature failure — is what has to catch it.
+		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		var mirror = try XCTUnwrap(bob.recvGroup)
+		let (rotatingUpd, _) = try mirror.pq!.proposeUpdate(
+			SessionTestSupport.pqProvider,
+			sign: MLS.RFC9420.signingClosure(
+				SessionTestSupport.pqProvider,
+				current: bob.identity.signingKey, new: freshSigningKey),
+			framing: .publicMessage,
+			newIdentity: MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: Data("mallory-never-approved".utf8)),
+				signatureKey: freshSignatureKey))
+		bob.recvGroup = mirror
+		let forgedUpdFrame = Frames.encodePQRekeyUpd(try rotatingUpd.mlsEncoded())
+
+		let sendPQEpochBefore = try XCTUnwrap(alice.sendGroup?.pq?.context.epoch)
+		XCTAssertEqual(alice.auth.theirs.current, bob.identity.clientID)
+
+		XCTAssertThrowsError(try alice.pqRekeyRespond(forgedUpdFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .rekeyProposalRejected)
+		}
+		XCTAssertNil(alice.pqInflight)
+		XCTAssertNil(alice.pendingSideBand)
+		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
+
+		// The peer's PQ leaf credential is untouched (still bob's founding id)
+		// and `auth.theirs` was never consulted — an honest round below proves
+		// it stays that way.
+		let sendPQ = try XCTUnwrap(alice.sendGroup?.pq)
+		let peerEntry = try XCTUnwrap(
+			sendPQ.tree.nonBlankLeaves().first { $0.index != sendPQ.myLeafIndex })
+		let peerCredential = try MLS.RFC9420.LeafNode(
+			mlsEncoded: peerEntry.record.encoded
+		).credential
+		XCTAssertEqual(try basicIdentifier(peerCredential), bob.identity.clientID)
+
+		// A subsequent honest mechanical §A.5 round still completes.
+		let updFrame = try bob.pqRekeyBegin()
+		let commitFrame = try alice.pqRekeyRespond(updFrame)
+		try bob.pqRekeyApply(commitFrame)
+		XCTAssertNotNil(bob.owedBind)
+		let prepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(prepared.didCommit)
+		let boundFrame = try bob.encrypt(Data("bound".utf8))
+		let decrypted = try alice.processIncoming(boundFrame)
+		XCTAssertTrue(decrypted.didApplyRemoteCommit)
+		XCTAssertEqual(alice.auth.theirs.current, bob.identity.clientID)
+	}
+
 	/// A `0x1B`/`0x1D` re-delivered after the round has fully closed (turn
 	/// flipped, both sides' inflight/parked state spent) is refused as
 	/// `.sessionNotReady` rather than reprocessed.

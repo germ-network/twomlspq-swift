@@ -180,7 +180,8 @@ extension TwoMLSSession {
 	/// straight off the tree — the AS's admission check must be cryptographic
 	/// fact, not a caller-supplied claim. Reached only after
 	/// `TwoPartyRules.ensureTwoParty`, so exactly one non-self leaf exists.
-	private static func joinedCreatorLeaf(of group: MLS.RFC9420.Group) throws
+	// internal: used by APQGroup.joinClassicalOnly
+	static func joinedCreatorLeaf(of group: MLS.RFC9420.Group) throws
 		-> MLS.RFC9420.LeafNode
 	{
 		guard

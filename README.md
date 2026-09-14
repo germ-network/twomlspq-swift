@@ -31,6 +31,17 @@ format. The private key is CryptoKit's 96-byte `integrityCheckedRepresentation`
 (seed-bearing), which is **not** interchangeable with other providers' secret
 formats.
 
+## Not yet ported
+
+The following pieces of the Rust reference have not landed in this port yet:
+
+- **Header encryption / §A.1 envelope** — frames are not yet header-encrypted,
+  so Rust↔Swift interop is not yet possible.
+- **Persistence / archive** — no durable session storage yet.
+- **Invitation dedup ledger** — replayed invitations are not yet deduplicated.
+- **The GCE ban / rule 8 on receive** — not yet enforced on the receive path.
+- **§A.5 self-drive** — the initiator does not yet auto-drive a re-key round.
+
 ## License
 
 Dual-licensed under [Apache 2.0](LICENSE-APACHE) and [MIT](LICENSE-MIT).

@@ -886,4 +886,128 @@ final class RotationTests: XCTestCase {
 		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobRecvPQEpochBefore)
 		XCTAssertEqual(bob.auth.theirs, bobTheirsBefore)
 	}
+
+	// MARK: - Evidence-gating: an unlicensed own-leaf catch-up must not commit
+
+	/// B1 — the §A.3-bootstrap wedge: with a lagging send-leaf
+	/// (`rotationCandidate` live), an owed bind parked, and Bob's licensing Upd
+	/// NOT yet applied (`peerAppliedSendEpoch == nil`), an unlicensed
+	/// `prepareToEncrypt` must NOT commit. Pre-fix the catch-up fired
+	/// unlicensed: the `0x00` staple advanced Alice's send group past the owed
+	/// bind's reserved epoch, and every later licensed discharge threw
+	/// `.epochDesync` forever. Post-fix the catch-up is deferred until the
+	/// license re-arrives, then lands TOGETHER with the bind on one `0x05`
+	/// round. `pqBootstrapJoin` requires `pendingProposal == nil`, so the
+	/// rotation offer's `encrypt` runs before the bootstrap join. Cites
+	/// `protocol-flows.md` §Evidence-gating.
+	func testUnlicensedBootstrapOwnLeafCatchUpDoesNotCommit() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let aliceNewID = Data("alice-evidence-b1".utf8)
+
+		// Rotation round: Alice's recv-leaf canonicalizes, her send-leaf lags.
+		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
+		let offerFrame = try alice.encrypt(Data("offer".utf8))
+		let decryptedOffer = try bob.processIncoming(offerFrame)
+		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold".utf8))
+		_ = try alice.processIncoming(foldFrame)
+		XCTAssertEqual(alice.myPrincipalState, .sync(aliceNewID))
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: alice.recvGroup!.classical).credential),
+			aliceNewID)
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
+			alice.identity.clientID, "the send-classical leaf documentedly lags")
+
+		// §A.3 bootstrap: Bob founds Group_B.pq, Alice joins and owes the bind.
+		// `pendingProposal` is nil (the offer's `encrypt` cleared it), so the
+		// join is not blocked by its own guard.
+		XCTAssertNil(alice.pendingProposal)
+		let sendEpochBefore = try XCTUnwrap(alice.sendGroup?.classical.context.epoch)
+		let kpFrame = try alice.pqBootstrapBegin()
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame)
+		try alice.pqBootstrapJoin(welcomeFrame)
+		XCTAssertNotNil(alice.owedBind)
+		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, sendEpochBefore)
+
+		// Simulate Bob's licensing Upd never having arrived.
+		alice.peerAppliedSendEpoch = nil
+
+		let prepared = try alice.prepareToEncrypt()
+		XCTAssertFalse(prepared.didCommit, "an unlicensed catch-up must not commit")
+		XCTAssertNotNil(alice.owedBind)
+		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, sendEpochBefore)
+		let stalledStapleKind = Frames.stapleKind(alice.currentStaple.first!)
+		XCTAssertNotEqual(stalledStapleKind, .mlsMessage)
+		XCTAssertNotEqual(stalledStapleKind, .apqPrivateMessage)
+
+		// Re-license: Bob's next inbound frame stamps our send epoch.
+		_ = try bob.prepareToEncrypt()
+		let licenseFrame = try bob.encrypt(Data("license".utf8))
+		_ = try alice.processIncoming(licenseFrame)
+		XCTAssertNotNil(alice.peerAppliedSendEpoch)
+
+		// The deferred catch-up and the bind land on ONE licensed round.
+		let prepared2 = try alice.prepareToEncrypt()
+		XCTAssertTrue(prepared2.didCommit)
+		XCTAssertNil(alice.owedBind)
+		let boundFrame = try alice.encrypt(Data("bound".utf8))
+		let (staple, _, _) = try Frames.decodeMessageFrame(boundFrame)
+		XCTAssertEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
+
+		let decrypted = try bob.processIncoming(boundFrame)
+		XCTAssertTrue(decrypted.didApplyRemoteCommit)
+		XCTAssertEqual(decrypted.newSender, aliceNewID)
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
+			aliceNewID, "the send-classical leaf has now caught up")
+	}
+
+	/// B3 — no PQ at all: an unlicensed own-leaf catch-up must not produce a
+	/// staple nothing bridges. Same lagging send-leaf, no bootstrap, Bob's
+	/// license withheld: `didCommit == false` and the send epoch is unchanged.
+	/// Re-license and the deferred catch-up commits; Bob applies it
+	/// (`newSender == aliceNewID`). Cites `protocol-flows.md` §Evidence-gating.
+	func testUnlicensedOwnLeafCatchUpDoesNotCommit() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let aliceNewID = Data("alice-evidence-b3".utf8)
+
+		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
+		let offerFrame = try alice.encrypt(Data("offer".utf8))
+		let decryptedOffer = try bob.processIncoming(offerFrame)
+		try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold".utf8))
+		_ = try alice.processIncoming(foldFrame)
+		XCTAssertEqual(alice.myPrincipalState, .sync(aliceNewID))
+
+		let sendEpochBefore = try XCTUnwrap(alice.sendGroup?.classical.context.epoch)
+		alice.peerAppliedSendEpoch = nil
+
+		let prepared = try alice.prepareToEncrypt()
+		XCTAssertFalse(prepared.didCommit, "an unlicensed catch-up must not commit")
+		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, sendEpochBefore)
+		let stalledStapleKind = Frames.stapleKind(alice.currentStaple.first!)
+		XCTAssertNotEqual(stalledStapleKind, .mlsMessage)
+		XCTAssertNotEqual(stalledStapleKind, .apqPrivateMessage)
+
+		// Re-license and the deferred catch-up commits.
+		_ = try bob.prepareToEncrypt()
+		let licenseFrame = try bob.encrypt(Data("license".utf8))
+		_ = try alice.processIncoming(licenseFrame)
+		XCTAssertNotNil(alice.peerAppliedSendEpoch)
+
+		let prepared2 = try alice.prepareToEncrypt()
+		XCTAssertTrue(prepared2.didCommit)
+		let catchUpFrame = try alice.encrypt(Data("catchup".utf8))
+		let (staple, _, _) = try Frames.decodeMessageFrame(catchUpFrame)
+		XCTAssertEqual(Frames.stapleKind(staple.first!), .mlsMessage)
+		let decrypted = try bob.processIncoming(catchUpFrame)
+		XCTAssertTrue(decrypted.didApplyRemoteCommit)
+		XCTAssertEqual(decrypted.newSender, aliceNewID)
+	}
 }

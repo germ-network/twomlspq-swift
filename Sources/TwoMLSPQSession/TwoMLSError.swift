@@ -36,14 +36,15 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// deferred (pq-less) pair — a wrong mode/suite, a bound `pqEpoch`, or an
 	/// identity field that does not match the group it rides in.
 	case deferredApqInfoMismatch
-	/// A bare `mlsMessage` (`0x00`) staple arrived — this module only ever
-	/// staples commits under `0x05` (`apqPrivateMessage`), so receiving the
-	/// bare tag is a protocol state it cannot process.
-	case commitStapleUnsupported
 	/// A staple welcome not already joined carried a non-empty pq slot — a
 	/// full (Group_A-shaped) welcome. Slice 1 only ever joins one of those via
 	/// the explicit `receive()` entry point, never through `processIncoming`.
 	case fullEstablishmentStapleUnsupported
+	/// The Group_B welcome did not name the `0xFF02` cross-party PSK derived
+	/// off this session's Group_A: the establishment PSK is the join's
+	/// authenticity gate (`psk-binding.md`), so a welcome that does not bind it
+	/// is refused rather than joined.
+	case missingCrossPartyPSK
 	/// A welcome staple's digest did not match the one already joined for
 	/// this receive group — a different Group_B than the one this session is
 	/// established against. The matching-digest case is an idempotent no-op,
@@ -93,6 +94,14 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// classical-half `[epochAdvanced, updated(committer), appDataUpdate]` —
 	/// an unexpected Add/Remove/credential replacement rode the bind.
 	case invalidBindEffects
+	/// A FULL bind commit applied without naming the PSK its half is bound to:
+	/// the classical half must carry the `apq_psk` (`0xFF01`) exported off the
+	/// post-commit PQ epoch, and the PQ half the injected external `S`
+	/// (`LE64(epoch)‖group_id‖0x52`). draft-ietf-mls-combiner-02 makes the
+	/// sender's inclusion a MUST; a commit that applies without it silently
+	/// skips the fresh PQ entropy while its attestation claims a FULL commit
+	/// (`psk-binding.md`, `protocol-flows.md`).
+	case missingBindPSK
 
 	// MARK: Two-party rules
 
@@ -132,7 +141,11 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// Commit's exact whitelisted shape — `[epochAdvanced, updated(proposer),
 	/// updated(committer)]` with the two leaves distinct — an unexpected
 	/// Add/Remove/credential replacement/membership removal/`AppDataUpdate`
-	/// rode the Commit′.
+	/// rode the Commit′. A `.credentialReplaced` is part of this rejection
+	/// (enforced by `validateRekeyCommitEffects`): the PQ arms run no AS
+	/// adjudication, so an unadjudicated presentation change is refused
+	/// outright. When the PQ catch-up (Chunk 2) lands, replace the throw with
+	/// `auth.adjudicate` on both PQ arms and admit a `.credentialReplaced`.
 	case invalidRekeyEffects
 
 	// MARK: §5 classical FOLD (slice 5, no credential rotation)

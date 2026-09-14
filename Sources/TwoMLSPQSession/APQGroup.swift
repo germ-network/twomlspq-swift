@@ -126,25 +126,56 @@ extension APQGroup {
 		}
 	}
 
-	/// Group_B join: a bare classical `Group.joining` resolving only the
-	/// cross-party PSK, then the hand-written deferred-`APQInfo` check (there is
-	/// no combiner `verifyPair` for a pq-less pair — it reads the absent
+	/// Group_B join: a bare classical `Group.joining` that now REQUIRES the
+	/// cross-party `0xFF02` PSK the Welcome references — a recording resolver
+	/// flags that swift-mls asked for the exact `(componentID, pskID)` this
+	/// session derived off its own Group_A, and the join is refused
+	/// (`.missingCrossPartyPSK`) if it never did, because the establishment PSK
+	/// is the join's authenticity gate (`psk-binding.md`) — then pins the
+	/// joined creator leaf's `.basic` identity to the caller-supplied
+	/// `expectedCreatorID` (the invitation identity, `group-rules.md`;
+	/// mirroring the Rust reference's bare-welcome creator ≡ invitation-identity
+	/// contract-26 rule), then the hand-written deferred-`APQInfo` check (there
+	/// is no combiner `verifyPair` for a pq-less pair — it reads the absent
 	/// `pq.context`).
 	static func joinClassicalOnly(
 		welcome: MLS.RFC9420.Welcome,
 		credentials: MLS.RFC9420.Group.JoinerCredentials,
 		crossPSK: MLS.Combiner.ExportedPsk,
+		expectedCreatorID: Data,
 		provider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> APQGroup {
 		try withDeployedWireConventions {
 			var pskStore = MLS.Combiner.PSKStore()
 			pskStore.register(crossPSK)
+			var sawCrossPSK = false
+			let resolve = pskStore.resolver()
 			let pending = try MLS.RFC9420.Group.joining(
 				provider, welcome: welcome, credentials: credentials,
-				psk: pskStore.resolver())
+				psk: { identifier in
+					if case .application(let componentID, let pskID, _) =
+						identifier,
+						componentID == crossPSK.componentID,
+						pskID == crossPSK.pskID
+					{
+						sawCrossPSK = true
+					}
+					return try resolve(identifier)
+				})
+			// The resolver is invoked exactly once per PSK id the Welcome's
+			// `GroupSecrets` lists (swift-mls, after framing/membership
+			// verification), so the flag is exact: a Welcome naming no PSK — or
+			// some other id — never resolves and is refused rather than joined.
+			guard sawCrossPSK else { throw TwoMLSError.missingCrossPartyPSK }
 			let transition = pending.apply()
 			let group = transition.group
+			try TwoPartyRules.ensureTwoParty(group)
+			let creatorID = try basicIdentifier(
+				TwoMLSSession.joinedCreatorLeaf(of: group).credential)
+			guard creatorID == expectedCreatorID else {
+				throw TwoMLSError.remoteIdentityMismatch
+			}
 			try verifyAPQInfoDeferred(on: group, codepoints: codepoints)
 			return APQGroup(
 				classical: group, pq: nil, pskStore: pskStore,

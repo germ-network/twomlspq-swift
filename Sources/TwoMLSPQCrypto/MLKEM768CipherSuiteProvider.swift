@@ -112,12 +112,15 @@ public struct MLKEM768CipherSuiteProvider: MLS.CipherSuiteProvider {
 		// Mirrors mls-rs `Hpke::derive`: dkp_prk = LabeledExtract(KEM suite_id,
 		// "dkp_prk", ikm), then ML-KEM KeyGen from a 64-byte seed. CryptoKit needs
 		// `d‖z` (64 B), but dkp_prk is HKDF-SHA256's 32-byte extract, so expand it
-		// to 64 with a plain HKDF-Expand (empty info) — exactly what the deployed
-		// provider's `generate_deterministic` does for a non-64-byte input.
-		// RFC 9180 §4 LabeledExtract concatenates `ikm` into the byte string it
-		// hashes, so the seed must be materialized as `Data` for the hash input
-		// regardless of custody — the same inherent copy swift-mls's own provider
-		// makes, not a stray plaintext copy of a long-lived secret.
+		// to 64 with a plain HKDF-Expand (empty info). This is NON-Standard
+		// relative to draft-ietf-hpke-pq's `LabeledExpand(…, "sk", …)` (RFC 9180 §4
+		// is cited only for LabeledExtract's byte-string copy); it deliberately
+		// diverges to match the deployed oracle's `generate_deterministic` and is
+		// pinned by `testDeriveKATMatchesRustOracle`. RFC 9180 §4 LabeledExtract
+		// concatenates `ikm` into the byte string it hashes, so the seed must be
+		// materialized as `Data` for the hash input regardless of custody — the
+		// same inherent copy swift-mls's own provider makes, not a stray plaintext
+		// copy of a long-lived secret.
 		let ikmData = ikm.withUnsafeBytes { Data($0) }
 		let dkpPRK = try hpkeLabeledExtract(
 			suiteID: Self.kemSuiteID, salt: Data(), label: "dkp_prk", ikm: ikmData)

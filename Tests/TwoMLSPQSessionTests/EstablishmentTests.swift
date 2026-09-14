@@ -4,6 +4,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSExtensions
 import MLSProfileRFC9420
+import SecretBytes
+import TwoMLSPQCrypto
 import XCTest
 
 @testable import TwoMLSPQSession
@@ -154,6 +156,174 @@ final class EstablishmentTests: XCTestCase {
 		XCTAssertThrowsError(try alice.processIncoming(forgedFrame)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .fullEstablishmentStapleUnsupported)
 		}
+	}
+
+	// MARK: - Group_B join gates: cross-party PSK + creator pin, parse-then-export
+
+	/// A forged Group_B welcome: a classical-only creation commit under
+	/// `creatorName`'s fresh identity (a solid `TwoMLSIdentity`, so the commit
+	/// and Welcome are genuinely signed — Basic credentials carry no proof,
+	/// which is the point), deferred-shape `APQInfo`, `Add(joinerKP)` — and,
+	/// unless `crossPSK` is supplied, NO cross-party PSK. Hand-rolled rather
+	/// than `APQGroup.establishClassicalOnly`, which always binds the PSK.
+	private func forgedGroupBWelcome(
+		creatorName: String,
+		adding joinerKP: MLS.RFC9420.KeyPackage,
+		crossPSK: MLS.Combiner.ExportedPsk? = nil
+	) throws -> Data {
+		let creator = try SessionTestSupport.identity(creatorName)
+		let provider = SessionTestSupport.classicalProvider
+		return try withDeployedWireConventions {
+			let info = MLS.Combiner.APQInfo(
+				tSessionGroupID: provider.randomBytes(provider.hashSize),
+				pqSessionGroupID: provider.randomBytes(provider.hashSize),
+				mode: 0,
+				tCipherSuite: provider.cipherSuite,
+				pqCipherSuite: SessionTestSupport.pqProvider.cipherSuite,
+				tEpoch: 1,
+				pqEpoch: epochUnbound)
+			let infoExtension = try info.asExtension(
+				type: MLS.Combiner.Codepoints.deployed.apqInfoExtensionType)
+
+			var pskStore = MLS.Combiner.PSKStore()
+			if let crossPSK { pskStore.register(crossPSK) }
+
+			let epoch0 = try MLS.RFC9420.Group.create(
+				provider, groupID: provider.randomBytes(provider.hashSize),
+				leafNode: creator.keyPackage.classical.leafNode,
+				leafSecretKey: creator.classicalLeafSecretKey,
+				extensions: [infoExtension],
+				epochSecret: SecretBytes(randomByteCount: provider.hashSize))
+			var proposals: [MLS.RFC9420.ProposalOrRef] = [.proposal(.add(joinerKP))]
+			if let crossPSK {
+				proposals.append(
+					.proposal(
+						crossPSK.proposal(
+							nonce: provider.randomBytes(
+								provider.hashSize))))
+			}
+			try TwoPartyRules.validateCreationProposals(proposals)
+			let transition = try epoch0.committing(
+				provider, proposals: proposals, signingKey: creator.signingKey,
+				randomness: try .generate(provider), psk: pskStore.resolver())
+			let sent = transition.takeOutput()
+			guard let welcome = sent.welcome else {
+				throw MLS.Combiner.Error.missingWelcome
+			}
+			return Frames.encodeAPQWelcome(
+				t: try welcome.mlsEncoded(), pq: Data())
+		}
+	}
+
+	/// Frame `staple` as a `0x03` message frame with a real sealed (borrowed)
+	/// app section — the app must decode as a `.privateMessage` before
+	/// `handleStaple` runs, so a rejected welcome staple still reaches the
+	/// code under test.
+	private func forgedWelcomeFrame(staple: Data, app: Data) -> Data {
+		let proposalSection = Frames.encodeProposalSection(
+			proposing: Data("bob".utf8), message: Data("dummy-upd".utf8))
+		return Frames.encodeMessageFrame(
+			staple: staple, proposal: proposalSection, app: app)
+	}
+
+	/// An unwelcome welcome must be refused, not joined: a forged Group_B
+	/// welcome naming NO cross-party PSK — even under the creator id Alice
+	/// expects (an impersonation that pre-fix joined and returned the
+	/// attacker's plaintext) — is rejected with `.missingCrossPartyPSK`, and
+	/// Alice stays unestablished.
+	func testGroupBJoinRejectsAWelcomeWithoutTheCrossPartyPSK() throws {
+		var (alice, bob, aliceIdentity, _, _, _) = try SessionTestSupport.established()
+		_ = try bob.prepareToEncrypt()
+		let genuineFrame = try bob.encrypt(Data("genuine".utf8))
+		let (_, _, appSection) = try Frames.decodeMessageFrame(genuineFrame)
+
+		let forgedStaple = try forgedGroupBWelcome(
+			creatorName: "bob", adding: aliceIdentity.keyPackage.classical)
+		let forgedFrame = forgedWelcomeFrame(staple: forgedStaple, app: appSection)
+
+		XCTAssertThrowsError(try alice.processIncoming(forgedFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .missingCrossPartyPSK)
+		}
+		XCTAssertFalse(alice.isEstablished)
+		XCTAssertNil(alice.recvGroup)
+		XCTAssertNil(alice.joinedWelcomeDigest)
+	}
+
+	/// The creator-identity half: a forged Group_B welcome carrying a VALID
+	/// cross-party PSK (Alice's own, exported off a copy of her Group_A) but
+	/// created under a different identity ("mallory", not the "bob" Alice is
+	/// established against) passes the PSK gate and is caught by the creator
+	/// pin — `.remoteIdentityMismatch`, the same error `receive` throws for a
+	/// wrong KeyPackage. This is the only route to the creator gate: a foreign
+	/// welcome without the PSK never gets here.
+	func testGroupBJoinRejectsAWelcomeFromAnUnexpectedCreator() throws {
+		var (alice, bob, aliceIdentity, _, _, _) = try SessionTestSupport.established()
+		_ = try bob.prepareToEncrypt()
+		let genuineFrame = try bob.encrypt(Data("genuine".utf8))
+		let (_, _, appSection) = try Frames.decodeMessageFrame(genuineFrame)
+
+		var groupACopy = try XCTUnwrap(alice.sendGroup)
+		let crossPSK = try MLS.Combiner.ExportedPsk.export(
+			from: &groupACopy.classical, SessionTestSupport.classicalProvider,
+			componentID: TwoMLSSession.crossPartyComponentID)
+		let forgedStaple = try forgedGroupBWelcome(
+			creatorName: "mallory", adding: aliceIdentity.keyPackage.classical,
+			crossPSK: crossPSK)
+		let forgedFrame = forgedWelcomeFrame(staple: forgedStaple, app: appSection)
+
+		XCTAssertThrowsError(try alice.processIncoming(forgedFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .remoteIdentityMismatch)
+		}
+		XCTAssertFalse(alice.isEstablished)
+		XCTAssertNil(alice.recvGroup)
+		XCTAssertNil(alice.joinedWelcomeDigest)
+	}
+
+	/// One malformed — or well-formed-but-foreign — welcome staple must not
+	/// permanently wedge the initiator: the one-shot `0xFF02` exporter leaf is
+	/// consumed only after the Welcome parses, all writes land on locals, and
+	/// a failed join writes nothing back — so Bob's genuine first frame still
+	/// joins afterward.
+	func testMalformedWelcomeStapleLeavesTheGenuineOneJoinable() throws {
+		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
+		_ = try bob.prepareToEncrypt()
+		let genuineFrame = try bob.encrypt(Data("genuine".utf8))
+		let (_, _, appSection) = try Frames.decodeMessageFrame(genuineFrame)
+
+		// (a) A `0x01` welcome staple whose classical `t` slot is garbage — the
+		// Welcome fails to parse, before any exporter leaf is consumed.
+		let garbageStaple = Frames.encodeAPQWelcome(
+			t: Data("not-a-welcome".utf8), pq: Data())
+		XCTAssertThrowsError(
+			try alice.processIncoming(
+				forgedWelcomeFrame(staple: garbageStaple, app: appSection)))
+		XCTAssertTrue(alice.sendCrossPSKLedger.isEmpty)
+		XCTAssertFalse(alice.isEstablished)
+
+		// (b) A well-formed but FOREIGN welcome — another pair's real Group_B
+		// welcome. It dies inside `Welcome.decryptGroupSecrets` (a
+		// `GroupError`, not a `TwoMLSError` — asserted accordingly), again
+		// without touching Alice's exporter leaf.
+		var (_, otherBob, _, _, _, otherWelcomeB) = try SessionTestSupport.established(
+			alice: "alice-other", bob: "bob-other")
+		_ = try otherBob.prepareToEncrypt()
+		let otherGenuineFrame = try otherBob.encrypt(Data("other".utf8))
+		let (_, _, otherAppSection) = try Frames.decodeMessageFrame(otherGenuineFrame)
+		XCTAssertThrowsError(
+			try alice.processIncoming(
+				forgedWelcomeFrame(staple: otherWelcomeB, app: otherAppSection))
+		) { error in
+			XCTAssertEqual(error as? MLS.RFC9420.GroupError, .noMatchingWelcomeSecret)
+		}
+		XCTAssertTrue(alice.sendCrossPSKLedger.isEmpty)
+		XCTAssertFalse(alice.isEstablished)
+
+		// Bob's genuine first frame now joins cleanly — no wedge.
+		_ = try bob.prepareToEncrypt()
+		let realFrame = try bob.encrypt(Data("bob-hello".utf8))
+		let decrypted = try alice.processIncoming(realFrame)
+		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
+		XCTAssertTrue(alice.isEstablished)
 	}
 
 	// MARK: - AS establishment identity binding
