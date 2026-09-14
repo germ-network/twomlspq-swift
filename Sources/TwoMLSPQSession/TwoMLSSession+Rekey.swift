@@ -1,4 +1,5 @@
 import Foundation
+import GermConvenience
 import MLSCodec
 import MLSCombiner
 import MLSProfileRFC9420
@@ -122,10 +123,12 @@ extension TwoMLSSession {
 
 			var pskStore = MLS.Combiner.PSKStore()
 			var proposals: [MLS.RFC9420.ProposalOrRef] = [.reference(ref)]
-			let recvPQEpoch = recv.pq!.context.epoch
+			let recvPQEpoch = try recv.pq.tryUnwrap(TwoMLSError.notEstablished).context
+				.epoch
 			var crossInjectedEpoch: UInt64?
 			if lastCrossInjectedPQ != recvPQEpoch {
-				var recvPQForExport = recv.pq!
+				var recvPQForExport = try recv.pq.tryUnwrap(
+					TwoMLSError.notEstablished)
 				let crossPSK = try MLS.Combiner.ExportedPsk.export(
 					from: &recvPQForExport, pqProvider,
 					componentID: Self.crossPartyComponentID)

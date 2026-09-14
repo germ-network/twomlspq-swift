@@ -1,4 +1,5 @@
 import Foundation
+import GermConvenience
 import MLSCodec
 import MLSCombiner
 import MLSExtensions
@@ -670,11 +671,12 @@ extension TwoMLSSession {
 			// the same `(group, epoch)` Alice's `sendPQ` named there — so the
 			// resolver matches the exact injected id, not any `.external` PSK
 			// (§11 #5).
+			let recvPQ = try recv.pq.tryUnwrap(TwoMLSError.notEstablished)
 			let expectedInjectedID =
-				withUnsafeBytes(of: recv.pq!.context.epoch.littleEndian) {
+				withUnsafeBytes(of: recvPQ.context.epoch.littleEndian) {
 					Data($0)
 				}
-				+ recv.pq!.context.groupID + Data([0x52])
+				+ recvPQ.context.groupID + Data([0x52])
 
 			// Exact-id allow-list, PQ half: exactly the injected external
 			// `S` plus the attestation — before `validating`, so a
@@ -689,7 +691,7 @@ extension TwoMLSSession {
 				expectedExternalPSKIDs: [expectedInjectedID],
 				allowAttestation: true)
 
-			var sendPQ = send.pq!
+			var sendPQ = try send.pq.tryUnwrap(TwoMLSError.notEstablished)
 			let sendPQEpochBeforeExport = sendPQ.context.epoch
 			// The `lastSendPQExported` stamp is deferred to this function's
 			// success point (it is a `self` write, and several throwing steps —
@@ -701,30 +703,33 @@ extension TwoMLSSession {
 			// naming the injected external `S` silently skips the fresh PQ
 			// entropy while its attestation claims a FULL commit.
 			var sawInjectedS = false
-			let pqPending = try recv.pq!.validating(
-				pqProvider, commit: pqPub, proposals: MLS.RFC9420.ProposalStore(),
-				psk: { identifier in
-					guard case .external(let pskID, _) = identifier,
-						pskID == expectedInjectedID
-					else {
-						return nil
-					}
-					sawInjectedS = true
-					// §A.4: `S` was already sealed/held at `pqRatchetRespond` —
-					// reuse it rather than exporting a fresh one off `sendPQ`
-					// (which A.4 never spends here at all).
-					if case .responding(let secret, _) = pqInflight {
-						return secret
-					}
-					let exported = try MLS.Combiner.ExportedPsk.export(
-						from: &sendPQ, pqProvider,
-						componentID: Self.crossPartyComponentID)
-					return exported.psk
-				})
+			let pqPending = try recv.pq.tryUnwrap(TwoMLSError.notEstablished)
+				.validating(
+					pqProvider, commit: pqPub,
+					proposals: MLS.RFC9420.ProposalStore(),
+					psk: { identifier in
+						guard case .external(let pskID, _) = identifier,
+							pskID == expectedInjectedID
+						else {
+							return nil
+						}
+						sawInjectedS = true
+						// §A.4: `S` was already sealed/held at `pqRatchetRespond` —
+						// reuse it rather than exporting a fresh one off `sendPQ`
+						// (which A.4 never spends here at all).
+						if case .responding(let secret, _) = pqInflight {
+							return secret
+						}
+						let exported = try MLS.Combiner.ExportedPsk.export(
+							from: &sendPQ, pqProvider,
+							componentID: Self.crossPartyComponentID)
+						return exported.psk
+					})
 			let pqEffects = pqPending.effects
 			try TwoPartyRules.validateBindPQEffects(pqEffects)
 			guard sawInjectedS else { throw TwoMLSError.missingBindPSK }
-			let pqTransition = try pqPending.apply(onto: recv.pq!)
+			let pqTransition = try pqPending.apply(
+				onto: recv.pq.tryUnwrap(TwoMLSError.notEstablished))
 			recv.pq = pqTransition.group
 			send.pq = sendPQ
 			switch pqInflight {
@@ -734,7 +739,7 @@ extension TwoMLSSession {
 				break
 			}
 
-			var apqSource = recv.pq!
+			var apqSource = try recv.pq.tryUnwrap(TwoMLSError.notEstablished)
 			let apqPSK = try MLS.Combiner.ExportedPsk.export(
 				from: &apqSource, pqProvider, componentID: codepoints.apqComponentID
 			)
@@ -787,10 +792,12 @@ extension TwoMLSSession {
 			_ = try MLS.Combiner.verifyFullCommit(
 				classicalEffects: classicalEffects, pqEffects: pqEffects,
 				classicalEpoch: recv.classical.context.epoch,
-				pqEpoch: recv.pq!.context.epoch,
+				pqEpoch: recv.pq.tryUnwrap(TwoMLSError.notEstablished).context
+					.epoch,
 				record: pskRecord, expected: apqPSK, codepoints: codepoints)
 
-			try TwoPartyRules.ensureTwoParty(recv.pq!)
+			try TwoPartyRules.ensureTwoParty(
+				recv.pq.tryUnwrap(TwoMLSError.notEstablished))
 			try TwoPartyRules.ensureTwoParty(recv.classical)
 
 			// Value semantics extend to `auth` — computed into a local copy,

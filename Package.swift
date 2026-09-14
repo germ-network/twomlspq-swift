@@ -30,6 +30,11 @@ let package = Package(
 			url: "https://github.com/germ-network/swift-secret-bytes.git",
 			.upToNextMinor(from: "0.4.0")
 		),
+		// The shared `tryUnwrap` (safe unwrap) and other Germ conveniences.
+		.package(
+			url: "https://github.com/germ-network/GermConvenience.git",
+			.upToNextMinor(from: "0.7.0")
+		),
 	],
 	targets: [
 		.target(
@@ -54,6 +59,7 @@ let package = Package(
 			name: "TwoMLSPQSession",
 			dependencies: [
 				"TwoMLSPQCrypto",
+				.product(name: "GermConvenience", package: "GermConvenience"),
 				.product(name: "MLSCombiner", package: "swift-mls"),
 				.product(name: "MLSProfileRFC9420", package: "swift-mls"),
 				.product(name: "MLSExtensions", package: "swift-mls"),
