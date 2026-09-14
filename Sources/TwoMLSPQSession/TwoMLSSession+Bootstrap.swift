@@ -24,7 +24,7 @@ extension TwoMLSSession {
 		}
 		guard
 			pqTurnMine, sendGroup != nil, let recv = recvGroup, recv.pq == nil,
-			let bootstrapKP
+			let bootstrapKP = try bootstrapKPBytes()
 		else {
 			throw TwoMLSError.sessionNotReady
 		}

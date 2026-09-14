@@ -58,15 +58,13 @@ extension TwoMLSSession {
 		// Group_A) — what Bob Adds into the new Group_B.pq. Its commitment
 		// `H(KP′)` hashes the MLSMessage-wrapped bytes (§11 #7).
 		let bootstrap = try identity.freshPQKeyPackage(pqProvider: pqProvider)
-		let bootstrapKPBytes = try MLS.RFC9420.Message.keyPackage(bootstrap.keyPackage)
-			.mlsEncoded()
 
 		let session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: codepoints, identity: identity, auth: auth, sendGroup: groupA,
 			recvGroup: nil,
 			currentStaple: apqWelcomeA, pendingProposal: nil, joinedWelcomeDigest: nil,
-			initiated: true, bootstrapKP: bootstrapKPBytes,
+			initiated: true,
 			bootstrapKPSecret: (
 				leafSecretKey: bootstrap.leafSecretKey,
 				initSecretKey: bootstrap.initSecretKey,
@@ -75,12 +73,23 @@ extension TwoMLSSession {
 		return EstablishResult(session: session, welcome: apqWelcomeA)
 	}
 
+	/// KP′'s MLSMessage-wrapped wire bytes (§11 #7), derived on demand from
+	/// the still-live `bootstrapKPSecret` rather than a separately stored
+	/// field — the public form can then never outlive the private one.
+	/// `nil` on the responder, or once `pqBootstrapJoin` has spent the secret.
+	func bootstrapKPBytes() throws -> Data? {
+		guard let secret = bootstrapKPSecret else { return nil }
+		return try MLS.RFC9420.Message.keyPackage(secret.keyPackage).mlsEncoded()
+	}
+
 	/// `sha256(bootstrapKP)` — the commitment the initiator hands the
 	/// responder out of band (typically stapled alongside `welcome`, or
 	/// threaded into the peer's `receive` call), and the responder later
 	/// checks the §A.3 `pqBootstrapBegin` frame's KP′ against.
 	public func bootstrapKPCommitment() throws -> Data {
-		guard let bootstrapKP else { throw TwoMLSError.sessionNotReady }
+		guard let bootstrapKP = try bootstrapKPBytes() else {
+			throw TwoMLSError.sessionNotReady
+		}
 		return try classicalProvider.hash(bootstrapKP)
 	}
 

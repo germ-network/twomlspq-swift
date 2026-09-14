@@ -202,13 +202,11 @@ public struct TwoMLSSession: Sendable {
 	var pendingProposal: (proposing: Data, message: Data, hash: Data)?
 	var joinedWelcomeDigest: Data?
 	let initiated: Bool
-	/// The initiator's (Alice's) pre-committed bootstrap `KeyPackage` KP′,
-	/// MLSMessage-wrapped (§11 #7) — `nil` on the responder (Bob). Minted at
-	/// `initiate`, spent by `pqBootstrapRespond`.
-	var bootstrapKP: Data?
 	/// KP′'s own leaf+init secrets plus the `KeyPackage` itself — the
 	/// initiator's joiner credentials for `pqBootstrapJoin`. `nil` on the
-	/// responder.
+	/// responder. The public KP′ (MLSMessage-wrapped, §11 #7) is never stored
+	/// separately — it is derived on demand from `keyPackage` here
+	/// (`bootstrapKPBytes()`), so it structurally cannot outlive this secret.
 	var bootstrapKPSecret:
 		(
 			leafSecretKey: MLS.HpkeSecretKey, initSecretKey: MLS.HpkeSecretKey,
@@ -390,7 +388,6 @@ public struct TwoMLSSession: Sendable {
 		pendingProposal: (proposing: Data, message: Data, hash: Data)?,
 		joinedWelcomeDigest: Data?,
 		initiated: Bool,
-		bootstrapKP: Data? = nil,
 		bootstrapKPSecret:
 			(
 				leafSecretKey: MLS.HpkeSecretKey, initSecretKey: MLS.HpkeSecretKey,
@@ -417,7 +414,6 @@ public struct TwoMLSSession: Sendable {
 		self.pendingProposal = pendingProposal
 		self.joinedWelcomeDigest = joinedWelcomeDigest
 		self.initiated = initiated
-		self.bootstrapKP = bootstrapKP
 		self.bootstrapKPSecret = bootstrapKPSecret
 		self.expectedBootstrapKPCommitment = expectedBootstrapKPCommitment
 		self.pqTurnMine = pqTurnMine
