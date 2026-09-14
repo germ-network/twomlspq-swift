@@ -299,28 +299,42 @@ extension TwoMLSSession {
 		let (tBytes, pqBytes) = try Frames.decodeAPQWelcome(staple)
 		guard pqBytes.isEmpty else { throw TwoMLSError.fullEstablishmentStapleUnsupported }
 
+		// Parse BEFORE the one-shot `0xFF02` exporter leaf is consumed — a
+		// malformed or foreign welcome must leave the leaf unspent so the
+		// peer's genuine frame still joins (Rust is ledger-first for the same
+		// reason: `remember_send_psk` no-ops once an epoch is ledgered, so a
+		// retry never re-exports an already-consumed `(group, epoch, component)`).
+		let welcome = try MLS.RFC9420.Welcome(mlsEncoded: tBytes)
+		guard let expectedCreator = auth.theirs.current else {
+			throw TwoMLSError.unknownIdentity
+		}
+
 		// Derive my own copy of the cross-party PSK off MY Group_A (the session's
 		// send group here — I am the initiator joining Group_B) rather than
-		// trusting any wire-carried value (m6).
+		// trusting any wire-carried value (m6), via the ledger-aware idempotent
+		// exporter. §11 MF4: this consumes `sendGroup.classical`'s (Group_A's)
+		// epoch-1 `0xFF02` leaf — the exact `(group, epoch, component)` the
+		// send-side ledger otherwise "remembers" lazily on first commit. Seed
+		// it with this already-derived value so `committingRound`'s first
+		// `0x00`/`0x05` round doesn't attempt a second, failing export of the
+		// same leaf.
 		guard var groupA = sendGroup else { throw TwoMLSError.notEstablished }
-		let crossPSK = try MLS.Combiner.ExportedPsk.export(
-			from: &groupA.classical, classicalProvider,
-			componentID: Self.crossPartyComponentID)
-		sendGroup = groupA
-		// §11 MF4: this consumes `sendGroup.classical`'s (Group_A's) epoch-1
-		// `0xFF02` leaf — the exact `(group, epoch, component)` the send-side
-		// ledger otherwise "remembers" lazily on first commit. Seed it with
-		// this already-derived value so `committingRound`'s first `0x00`/
-		// `0x05` round doesn't attempt a second, failing export of the same
-		// leaf.
-		sendCrossPSKLedger[groupA.classical.context.epoch] = crossPSK
+		var ledger = sendCrossPSKLedger
+		try rememberSendCrossPSK(classical: &groupA.classical, ledger: &ledger)
+		guard let crossPSK = ledger[groupA.classical.context.epoch] else {
+			throw TwoMLSError.notEstablished  // unreachable: just remembered
+		}
 
-		let welcome = try MLS.RFC9420.Welcome(mlsEncoded: tBytes)
 		let groupB = try APQGroup.joinClassicalOnly(
 			welcome: welcome, credentials: identity.classicalJoinCredentials,
-			crossPSK: crossPSK, provider: classicalProvider, codepoints: codepoints)
+			crossPSK: crossPSK, expectedCreatorID: expectedCreator,
+			provider: classicalProvider, codepoints: codepoints)
 		try TwoPartyRules.ensureTwoParty(groupB.classical)
 
+		// Value semantics: every throwing call above ran on locals, so a failed
+		// join leaves `self`'s Group_A exporter leaf unspent (the whole C-3 fix).
+		sendGroup = groupA
+		sendCrossPSKLedger = ledger
 		recvGroup = groupB
 		joinedWelcomeDigest = digest
 	}

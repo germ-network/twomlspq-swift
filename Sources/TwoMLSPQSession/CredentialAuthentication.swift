@@ -243,12 +243,15 @@ struct AuthCore: Sendable, Equatable {
 	/// succeeds). Since `commit` throws on a rollback, each of those sites
 	/// runs its own succession check (this `adjudicate`, or `commit` itself)
 	/// BEFORE the commit applies to the group — a throw after the group has
-	/// advanced would desync the group from the AS. The join-roster seam
-	/// stays unwired: a later join (`joinClassicalOnly` in +Messaging,
-	/// `joinPQHalf` in APQGroup) discards `PendingJoin.roster` without
-	/// checking the creator against `theirs` — fail-closed today via the
-	/// 0xFF02 cross-party PSK, so this remains defense-in-depth, not a gap
-	/// slice 6 closes.
+	/// advanced would desync the group from the AS. The classical join-roster
+	/// seam, by contrast, is WIRED: `joinClassicalOnly` (+Messaging) requires
+	/// the Welcome to name the cross-party `0xFF02` PSK and pins the joined
+	/// creator leaf against `auth.theirs` (`.missingCrossPartyPSK` /
+	/// `.remoteIdentityMismatch`), so the AS needs no separate roster
+	/// admission there. `joinPQHalf` remains credential-unadjudicated — it
+	/// discards `PendingJoin.roster` without checking the creator against
+	/// `theirs` — but is pinned instead by the KP′ hash commitment (`H(KP′)`)
+	/// checked at `receive` / `pqBootstrapRespond`.
 	///
 	/// External senders need no seam here: the profile already rejects
 	/// every external sender with `unsupportedSender` before any credential

@@ -44,6 +44,11 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// full (Group_A-shaped) welcome. Slice 1 only ever joins one of those via
 	/// the explicit `receive()` entry point, never through `processIncoming`.
 	case fullEstablishmentStapleUnsupported
+	/// The Group_B welcome did not name the `0xFF02` cross-party PSK derived
+	/// off this session's Group_A: the establishment PSK is the join's
+	/// authenticity gate (`psk-binding.md`), so a welcome that does not bind it
+	/// is refused rather than joined.
+	case missingCrossPartyPSK
 	/// A welcome staple's digest did not match the one already joined for
 	/// this receive group — a different Group_B than the one this session is
 	/// established against. The matching-digest case is an idempotent no-op,

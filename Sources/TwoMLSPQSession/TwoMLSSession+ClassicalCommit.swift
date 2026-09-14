@@ -31,17 +31,21 @@ extension TwoMLSSession {
 		queuedProposal = offered
 	}
 
-	/// The validation `queueProposal` (and, defensively, `committingRound`)
-	/// runs on an offered Upd, without mutating any group except (slice 6) the
-	/// AS's own bookkeeping: `send.classical.verifying(proposal:)`
-	/// (non-consuming for a `PublicMessage`) authenticates the framing; the
-	/// verified proposal must be a peer `.update` (`.member` sender, not this
-	/// session's own leaf); its verified `.basic` identity must match the
-	/// frame's unauthenticated `proposing` claim (§11 MF5 — `proposing` rides
-	/// outside the AAD, so the wire claim alone proves nothing); and — slice 6
-	/// — when its leaf's credential/signature key differs from the current
-	/// occupant's (a `.credentialReplaced` shape), the peer's OWN rotation
-	/// must be a valid successor of the peer's canonical head. Reject a peer
+	/// The validation `queueProposal` runs on an offered Upd; `committingRound`
+	/// re-verifies at commit time only the framing and the `.update`/non-own-
+	/// leaf shape, not this function's `proposing` match or the AS successor
+	/// check — a path unreachable via the public API (`queuedProposal` is set
+	/// only by `queueProposal`), kept there defensively. Neither mutates any
+	/// group except (slice 6) the AS's own bookkeeping: `send.classical.
+	/// verifying(proposal:)` (non-consuming for a `PublicMessage`)
+	/// authenticates the framing; the verified proposal must be a peer
+	/// `.update` (`.member` sender, not this session's own leaf); its verified
+	/// `.basic` identity must match the frame's unauthenticated `proposing`
+	/// claim (§11 MF5 — `proposing` rides outside the AAD, so the wire claim
+	/// alone proves nothing); and — slice 6 — when its leaf's credential/
+	/// signature key differs from the current occupant's (a
+	/// `.credentialReplaced` shape), the peer's OWN rotation must be a valid
+	/// successor of the peer's canonical head. Reject a peer
 	/// naming one of MY OWN known ids outright (never a legitimate successor
 	/// of THEIRS) before ever authorizing it — `theirs.validSuccessor` alone
 	/// cannot see `mine`'s sequence, so this closes that gap explicitly. AS
@@ -168,7 +172,8 @@ extension TwoMLSSession {
 	/// cleanly — the -02 exporter tree consumes a `(group, epoch, component)`
 	/// leaf on first export, so re-exporting an already-ledgered epoch would
 	/// throw `componentSecretConsumed`.
-	private func rememberSendCrossPSK(
+	// internal: used by Messaging.joinGroupBIfNeeded
+	internal func rememberSendCrossPSK(
 		classical: inout MLS.RFC9420.Group,
 		ledger: inout [UInt64: MLS.Combiner.ExportedPsk]
 	) throws {
