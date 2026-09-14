@@ -7,12 +7,14 @@ import XCTest
 @testable import TwoMLSPQSession
 
 /// The flagship continuous swift↔swift walkthrough: the full lifecycle —
-/// cold identities through establishment, routine messaging, a folding
+/// cold principals through establishment, routine messaging, a folding
 /// commit, and credential rotation — as ONE narrative test, from scratch.
 /// Unlike every other suite in this module, it does NOT start from
 /// `SessionTestSupport.established()`/`establishedAndExchanged()`, but
-/// inlines their exact sequence so this test is itself the self-contained,
-/// living-spec walkthrough those fixtures encode.
+/// inlines their exact sequence (Principal mints an invitation, a peer
+/// initiates to its published combiner KP, the invitation receives) so this
+/// test is itself the self-contained, living-spec walkthrough those
+/// fixtures encode.
 ///
 /// This lifecycle is classical-only — there are no standalone §A.4/§A.5
 /// side-band steps (those are `RatchetTests`/`RekeyTests`' own territory,
@@ -21,17 +23,24 @@ import XCTest
 @available(iOS 26, macOS 26, *)
 final class E2EWalkthroughTests: XCTestCase {
 	func testFullSessionWalkthroughFromColdIdentitiesThroughCredentialRotation() throws {
-		// [1] Cold identities.
-		let aliceIdentity = try SessionTestSupport.identity("alice")
-		let bobIdentity = try SessionTestSupport.identity("bob")
+		// [1] Cold principals.
+		let alicePrincipal = try Principal.generate(
+			clientID: Data("alice".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let bobPrincipal = try Principal.generate(
+			clientID: Data("bob".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
 
-		// [2] Key packages: Bob's combiner KP (classical + PQ halves — the
-		// published shape Alice initiates to) and Alice's CLASSICAL return KP
-		// (§A.1: Bob's send group starts classical-only, so the
-		// establishment reply carries only the classical half; Alice's PQ KP
-		// travels later, in §A.3, hash-bound to the bootstrap commitment).
-		let bobCombinerKP = bobIdentity.keyPackage
-		let aliceClassicalKP = aliceIdentity.keyPackage.classical
+		// [2] Bob mints an invitation around a fresh combiner KP (classical +
+		// PQ halves — the published shape Alice initiates to); Alice's
+		// CLASSICAL return KP (§A.1: Bob's send group starts classical-only,
+		// so the establishment reply carries only the classical half;
+		// Alice's PQ KP travels later, in §A.3, hash-bound to the bootstrap
+		// commitment) is minted fresh by `initiate(principal:)` itself.
+		var (bobInvitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+		let bobCombinerKP = try XCTUnwrap(bobInvitation.combinerKeyPackage)
 
 		// [3] Rust's `parse_mls_key_package` step has no session-layer
 		// equivalent — swift key packages are already typed
@@ -43,31 +52,36 @@ final class E2EWalkthroughTests: XCTestCase {
 			try basicIdentifier(bobCombinerKP.pq.leafNode.credential))
 
 		// [4] Establishment (`0x01` APQWelcome both directions). Alice
-		// initiates; Bob receives and is established immediately; Alice
-		// becomes established only once she processes Bob's first inbound
-		// frame. The welcome Alice joins Group_B from is
-		// `received.welcome` (`EstablishResult.welcome`) — not
-		// `pqPendingOutbound()`, the unrelated §A.4 PQ side-band leg — and
-		// it rides as the `0x01` staple on Bob's first `0x03` frame, as
-		// `SessionTestSupport.established()`/`establishedAndExchanged()`
-		// thread it.
+		// initiates; Bob's invitation receives and is established
+		// immediately; Alice becomes established only once she processes
+		// Bob's first inbound frame. The welcome Alice joins Group_B from is
+		// `bob.currentStaple` (the invitation-spawned session's own welcome
+		// staple) — not `pqPendingOutbound()`, the unrelated §A.4 PQ
+		// side-band leg — and it rides as the `0x01` staple on Bob's first
+		// `0x03` frame, as `SessionTestSupport.established()`/
+		// `establishedAndExchanged()` thread it.
 		let initiated = try TwoMLSSession.initiate(
-			identity: aliceIdentity, their: bobCombinerKP,
-			classicalProvider: SessionTestSupport.classicalProvider,
-			pqProvider: SessionTestSupport.pqProvider)
+			principal: alicePrincipal, their: bobCombinerKP)
 		var alice = initiated.session
 		let welcomeA = initiated.welcome
+		let aliceClassicalKP = alice.identity.keyPackage.classical
 
-		let received = try TwoMLSSession.receive(
-			identity: bobIdentity, welcome: welcomeA,
-			theirClassicalKeyPackage: aliceClassicalKP,
+		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
+		let received = try bobInvitation.receive(
+			welcome: welcomeA, theirClassicalKeyPackage: aliceClassicalKP,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			classicalProvider: SessionTestSupport.classicalProvider,
-			pqProvider: SessionTestSupport.pqProvider)
+			spawnToken: spawnToken)
 		var bob = received.session
-		let welcomeB = received.welcome
+		let welcomeB = bob.currentStaple
 		XCTAssertTrue(bob.isEstablished)
 		XCTAssertFalse(alice.isEstablished)
+
+		// The forward table now resolves this spawn token to Bob's recv-side
+		// classical group id, and the session acknowledges it.
+		XCTAssertEqual(
+			bobInvitation.forwardGroupID(spawnToken: spawnToken),
+			bob.recvGroup?.classical.context.groupID)
+		XCTAssertNoThrow(try bob.forwarded(spawnToken: spawnToken))
 
 		_ = try bob.prepareToEncrypt()
 		let bobFirstFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
@@ -127,7 +141,7 @@ final class E2EWalkthroughTests: XCTestCase {
 		_ = try alice.prepareToEncrypt(rotating: newAliceID)
 		XCTAssertEqual(
 			alice.myPrincipalState,
-			.pending(old: aliceIdentity.clientID, new: newAliceID))
+			.pending(old: alice.identity.clientID, new: newAliceID))
 
 		let rotatingFrame = try alice.encrypt(Data("rotating".utf8)).frame
 		let rotatingDecrypted = try bob.processIncoming(rotatingFrame)

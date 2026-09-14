@@ -22,33 +22,44 @@ enum SessionTestSupport {
 			pqProvider: pqProvider)
 	}
 
-	/// Alice initiates, Bob receives. Bob is established immediately; Alice
-	/// becomes established only once she processes Bob's first inbound frame
-	/// (see `establishedAndExchanged`). Both identities are returned too —
-	/// needed by tests that reach for a peer's own join credentials (e.g. the
-	/// cross-party PSK binding proof).
+	/// Alice initiates to Bob's freshly-minted invitation, Bob receives. Bob
+	/// is established immediately; Alice becomes established only once she
+	/// processes Bob's first inbound frame (see `establishedAndExchanged`).
+	/// Both identities are returned too — needed by tests that reach for a
+	/// peer's own join credentials (e.g. the cross-party PSK binding proof);
+	/// each is the fresh leaf bundle `Principal`/`Invitation` minted for
+	/// this session (`session.identity`), not the principal itself.
 	static func established(alice aliceName: String = "alice", bob bobName: String = "bob")
 		throws -> (
 			alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
 			bobIdentity: TwoMLSIdentity, welcomeA: Data, welcomeB: Data
 		)
 	{
-		let alice = try identity(aliceName)
-		let bob = try identity(bobName)
+		let alicePrincipal = try Principal.generate(
+			clientID: Data(aliceName.utf8), classicalProvider: classicalProvider,
+			pqProvider: pqProvider)
+		let bobPrincipal = try Principal.generate(
+			clientID: Data(bobName.utf8), classicalProvider: classicalProvider,
+			pqProvider: pqProvider)
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		guard let theirCombinerKP = invitation.combinerKeyPackage else {
+			throw TwoMLSError.invitationSpent
+		}
 
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
-			classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
-		let received = try TwoMLSSession.receive(
-			identity: bob, welcome: initiated.welcome,
-			theirClassicalKeyPackage: alice.keyPackage.classical,
+			principal: alicePrincipal, their: theirCombinerKP)
+		let spawnToken = classicalProvider.randomBytes(16)
+		let received = try invitation.receive(
+			welcome: initiated.welcome,
+			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			classicalProvider: classicalProvider, pqProvider: pqProvider)
+			spawnToken: spawnToken)
 
 		return (
-			alice: initiated.session, bob: received.session, aliceIdentity: alice,
-			bobIdentity: bob, welcomeA: initiated.welcome, welcomeB: received.welcome
+			alice: initiated.session, bob: received.session,
+			aliceIdentity: initiated.session.identity,
+			bobIdentity: received.session.identity, welcomeA: initiated.welcome,
+			welcomeB: received.session.currentStaple
 		)
 	}
 
