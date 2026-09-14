@@ -40,9 +40,10 @@ extension TwoMLSSession {
 	/// side-band frame. Bob is `isFullyEstablished` once this returns.
 	/// Idempotent once `sendGroup.pq` is founded: re-returns the retained
 	/// `0x15` rather than founding a second Group_B.pq off a re-delivered
-	/// `0x13` (a re-delivery with no retained frame to re-serve, e.g. after
-	/// a restart, is `.duplicateSideBand` — this module does not persist
-	/// `pendingSideBand` across process restarts).
+	/// `0x13` (a re-delivery with no retained frame to re-serve —
+	/// `pendingSideBand` rides the session archive (slice 8a), so it
+	/// survives a restore; a raw in-memory restart with no restore is the
+	/// case with nothing to re-serve — is `.duplicateSideBand`).
 	///
 	/// Seam: this does not check KP′'s leaf credential names the already-
 	/// established peer (Rust's AS `validate_member`; no AS exists until a

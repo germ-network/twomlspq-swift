@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 import MLSCodec
 import MLSCombiner
@@ -51,6 +52,18 @@ extension ArchiveIntegerKeyedMap: Encodable where Value: Encodable {
 	func encode(to encoder: Encoder) throws {
 		var container = encoder.container(keyedBy: Key.self)
 		for (key, value) in entries {
+			// A key past `Int.max` would encode as a *text* key (its
+			// `intValue` is nil) and silently vanish as an integer entry on
+			// decode — mirrors swift-mls's own `IntegerKeyedMap` guard.
+			guard Int(exactly: key) != nil else {
+				throw EncodingError.invalidValue(
+					key,
+					EncodingError.Context(
+						codingPath: encoder.codingPath,
+						debugDescription:
+							"ArchiveIntegerKeyedMap key \(key) exceeds Int.max"
+					))
+			}
 			try container.encode(value, forKey: Key(key))
 		}
 	}
@@ -116,10 +129,14 @@ extension IdentityArchive {
 	}
 
 	func restore() throws -> TwoMLSIdentity {
-		TwoMLSIdentity(
+		let derivedSignatureKey = try derivedSignaturePublicKey(from: signingKey)
+		guard derivedSignatureKey.data == signatureKey else {
+			throw TwoMLSError.archiveInvalid
+		}
+		return TwoMLSIdentity(
 			clientID: clientID,
 			signingKey: try MLS.SignatureSecretKey(signingKey),
-			signatureKey: MLS.SignaturePublicKey(signatureKey),
+			signatureKey: derivedSignatureKey,
 			classicalLeafSecretKey: try MLS.HpkeSecretKey(classicalLeafSecretKey),
 			classicalInitSecretKey: try MLS.HpkeSecretKey(classicalInitSecretKey),
 			pqLeafSecretKey: try MLS.HpkeSecretKey(pqLeafSecretKey),
@@ -466,10 +483,13 @@ extension RotationCandidateArchive {
 	}
 
 	func restore() throws -> RotationCandidate {
-		RotationCandidate(
+		let derivedSignatureKey = try derivedSignaturePublicKey(from: signingKey)
+		guard derivedSignatureKey.data == signatureKey else {
+			throw TwoMLSError.archiveInvalid
+		}
+		return RotationCandidate(
 			clientID: clientID, signingKey: try MLS.SignatureSecretKey(signingKey),
-			signatureKey: MLS.SignaturePublicKey(signatureKey),
-			proposedAtRecvEpoch: proposedAtRecvEpoch)
+			signatureKey: derivedSignatureKey, proposedAtRecvEpoch: proposedAtRecvEpoch)
 	}
 }
 
@@ -554,8 +574,29 @@ struct SessionArchive: Codable, Sendable {
 	}
 }
 
-/// The current, and so far only, archive format version.
-private let sessionArchiveVersion: UInt64 = 1
+/// Derives Ed25519's public key from a raw private-key secret — the same
+/// primitive `TwoMLSIdentity.mintSignatureKeypair()` uses in the other
+/// direction. Not a suite-generic operation (the `CipherSuiteProvider` seam
+/// has no "derive the public half" method), but the port's classical suite
+/// pins Ed25519 signing, and a restore-time cross-check against a
+/// corrupt-but-authenticated archive is worth the one hardcoded primitive.
+/// Any failure (including a wrong-length secret) is `archiveInvalid`, not a
+/// raw `CryptoKitError`.
+private func derivedSignaturePublicKey(from signingKey: SecretBytes) throws
+	-> MLS
+	.SignaturePublicKey
+{
+	guard let privateKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: signingKey)
+	else {
+		throw TwoMLSError.archiveInvalid
+	}
+	return MLS.SignaturePublicKey(privateKey.publicKey.rawRepresentation)
+}
+
+/// The current, and so far only, archive format version. Internal (not
+/// `private`) so `restore`'s header check references it directly instead of
+/// repeating the literal.
+let sessionArchiveVersion: UInt64 = 1
 
 // MARK: - Encode
 
@@ -570,6 +611,12 @@ extension TwoMLSSession {
 	/// zeroizing `SecretArchive` — the app seals it with its own key before
 	/// writing it out; this library never holds a sealing key.
 	func makeSessionArchive(kind: BlobKind, stateSeq: UInt64) throws -> SecretArchive {
+		// The port is `.deployed`-only (no caller ever constructs a session
+		// under different codepoints); `restore` hard-codes `.deployed`
+		// rather than archiving this field, on that same assumption.
+		assert(
+			codepoints == .deployed,
+			"session archive encoding assumes the deployed codepoints")
 		let body = SessionArchive(
 			version: sessionArchiveVersion,
 			classicalSuite: TwoMLSSuite.classical.id,

@@ -48,12 +48,12 @@ extension TwoMLSSession {
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider
 	) throws -> TwoMLSSession {
-		let ck = try checkpoint.decode(SessionArchive.self)
+		let ck = try decodeArchive(checkpoint)
 		try validateHeader(ck, expectedKind: .checkpoint)
 
 		let winner: SessionArchive
 		if let core {
-			let co = try core.decode(SessionArchive.self)
+			let co = try decodeArchive(core)
 			try validateHeader(co, expectedKind: .core)
 			try validateIdentityAgreement(core: co, checkpoint: ck)
 
@@ -72,10 +72,25 @@ extension TwoMLSSession {
 			from: winner, classicalProvider: classicalProvider, pqProvider: pqProvider)
 	}
 
-	// MARK: - Step 1: header
+	// MARK: - Step 1: decode + header
+
+	/// `SecretArchive.decode` throws `DecodingError` (a shape/type mismatch)
+	/// or `SecretArchiveError` (malformed CBOR, bounds, internal decode
+	/// failure) for anything this format doesn't recognize — both fold into
+	/// the one uniform `archiveInvalid` `restore` promises, rather than
+	/// leaking a codec-internal error type to callers.
+	private static func decodeArchive(_ archive: SecretArchive) throws -> SessionArchive {
+		do {
+			return try archive.decode(SessionArchive.self)
+		} catch is DecodingError {
+			throw TwoMLSError.archiveInvalid
+		} catch is SecretArchiveError {
+			throw TwoMLSError.archiveInvalid
+		}
+	}
 
 	private static func validateHeader(_ body: SessionArchive, expectedKind: BlobKind) throws {
-		guard body.version == 1,
+		guard body.version == sessionArchiveVersion,
 			body.classicalSuite == TwoMLSSuite.classical.id,
 			body.pqSuite == TwoMLSSuite.pq.id,
 			body.kind == expectedKind
@@ -86,15 +101,40 @@ extension TwoMLSSession {
 
 	// MARK: - Step 3: session-identity fail-closed
 
-	private static func validateIdentityAgreement(
+	/// Internal rather than `private`, so this one check is directly
+	/// unit-testable in isolation from step 7's pair-identity check
+	/// (`SessionArchiveTests.swift`); every other restore helper stays
+	/// `private`.
+	///
+	/// `recvClassicalGroupID` cannot be a plain equality clause like the
+	/// other three: Alice's baseline Checkpoint is minted at `initiate`
+	/// with no recv group yet (`nil`), and her very next Core — taken once
+	/// Bob's first frame has joined her into Group_B — has it set. That is
+	/// the ordinary mid-A.3 transition, not a mispair, so a lone `nil` is
+	/// tolerated exactly when it names the OLDER of the two blobs (by
+	/// `stateSeq`); once both sides have a recv group, they must agree.
+	static func validateIdentityAgreement(
 		core: SessionArchive, checkpoint: SessionArchive
 	) throws {
 		guard core.identity.clientID == checkpoint.identity.clientID,
 			core.identity.signatureKey == checkpoint.identity.signatureKey,
-			core.sendClassicalGroupID == checkpoint.sendClassicalGroupID,
-			core.recvClassicalGroupID == checkpoint.recvClassicalGroupID
+			core.sendClassicalGroupID == checkpoint.sendClassicalGroupID
 		else {
 			throw TwoMLSError.archiveInvalid
+		}
+		switch (core.recvClassicalGroupID, checkpoint.recvClassicalGroupID) {
+		case (nil, nil):
+			break
+		case (let coreID?, let checkpointID?):
+			guard coreID == checkpointID else { throw TwoMLSError.archiveInvalid }
+		case (nil, .some):
+			guard core.stateSeq < checkpoint.stateSeq else {
+				throw TwoMLSError.archiveInvalid
+			}
+		case (.some, nil):
+			guard checkpoint.stateSeq < core.stateSeq else {
+				throw TwoMLSError.archiveInvalid
+			}
 		}
 	}
 
@@ -181,7 +221,12 @@ extension TwoMLSSession {
 				)
 			}
 		}
+		try verifyManifestMatchesRebuiltGroups(
+			body, sendGroup: sendGroup, recvGroup: recvGroup)
 
+		// `.deployed` is hard-coded, never archived: the port only ever
+		// constructs a session under the deployed codepoints
+		// (`makeSessionArchive` asserts as much at encode).
 		var session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: .deployed, identity: try body.identity.restore(),
@@ -208,6 +253,23 @@ extension TwoMLSSession {
 		}
 		session.rotationCandidate = try body.rotationCandidate?.restore()
 		return session
+	}
+
+	/// The winning body's self-reported PQ-epoch manifest is what step 5
+	/// fail-closes reconcile on — this cross-checks it against the epoch the
+	/// REBUILT groups actually landed at, so a manifest that lied (whether
+	/// through a bug upstream of `restore` or a tampered-but-otherwise-valid
+	/// archive) can't silently steer the reconcile decision without ever
+	/// being caught. `Optional<UInt64>` equality covers "claims a half that
+	/// isn't there" and "omits a half that is" alike.
+	private static func verifyManifestMatchesRebuiltGroups(
+		_ body: SessionArchive, sendGroup: APQGroup?, recvGroup: APQGroup?
+	) throws {
+		guard body.sendPQEpoch == sendGroup?.pq?.context.epoch,
+			body.recvPQEpoch == recvGroup?.pq?.context.epoch
+		else {
+			throw TwoMLSError.archiveInvalid
+		}
 	}
 
 	/// Group_A's shape: a `CombinerGroup`-established full pair. A Core-kind
@@ -255,9 +317,9 @@ extension TwoMLSSession {
 	/// `CombinerGroup.verifyPair()`/`APQGroup.verify*Deferred*` (the live
 	/// join-time checks) also compare `APQInfo`'s `tEpoch`/`pqEpoch`
 	/// attestation against the group's OBSERVED epoch — valid only at the
-	/// exact join moment they run at, never again: a `GroupContextExtensions`
-	/// value carries over unchanged across an ordinary commit (RFC 9420),
-	/// so that attestation is stale the moment any further commit lands
+	/// exact join moment they run at, never again: `APQInfo` is written once
+	/// at creation and never rewritten (book `group-rules.md` rule 7), so
+	/// that attestation is stale the moment any further commit lands
 	/// without re-attesting (e.g. a routine fold). Restore can observe a
 	/// session at any point in its life, so it checks only the fields that
 	/// hold for a group's entire life — each half's `APQInfo` correctly
