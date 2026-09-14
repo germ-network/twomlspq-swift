@@ -150,7 +150,8 @@ public struct Invitation: Sendable {
 	/// untagged (the same preimage `bootstrapKPCommitment()` hashes).
 	public func bootstrapKPGroupID(kpFrame: Data) -> Data? {
 		let untagged =
-			kpFrame.first == Frames.pqBootstrapKPTag ? Data(kpFrame.dropFirst()) : kpFrame
+			kpFrame.first == Frames.pqBootstrapKPTag
+			? Data(kpFrame.dropFirst()) : kpFrame
 		guard let digest = try? classicalProvider.hash(untagged) else { return nil }
 		return bootstrapRouting[digest]
 	}

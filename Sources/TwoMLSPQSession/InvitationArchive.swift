@@ -123,7 +123,9 @@ extension Invitation {
 			lastResort: body.lastResort)
 		invitation.stateSeq = body.stateSeq
 		invitation.forwardTable = Dictionary(
-			uniqueKeysWithValues: body.forwardTable.map { ($0.key, $0.classicalGroupID) })
+			uniqueKeysWithValues: body.forwardTable.map {
+				($0.key, $0.classicalGroupID)
+			})
 		invitation.processedWelcomes = Dictionary(
 			uniqueKeysWithValues: body.processedWelcomes.map {
 				($0.key, $0.classicalGroupID)
