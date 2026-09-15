@@ -532,4 +532,168 @@ final class HeaderEncryptionTests: XCTestCase {
 		let boundFrame = try initiator.encrypt(Data("rekey-bound-\(round)".utf8)).frame
 		_ = try committer.processIncoming(boundFrame)
 	}
+
+	// MARK: - 14. Side-band padding (`setPadTarget`)
+
+	/// The header seal's fixed per-frame overhead (book
+	/// header-encryption.md, "Sealed frame": 12-byte nonce + 4-byte length
+	/// prefix + AEAD tag) — measured off the real provider rather than
+	/// hardcoded, so a suite change cannot silently desync this from
+	/// production.
+	private func measuredSealOverhead() throws -> Int {
+		let provider = SessionTestSupport.classicalProvider
+		let key = Data(repeating: 0, count: provider.aeadKeySize)
+		let nonce = Data(repeating: 0, count: provider.aeadNonceSize)
+		let plaintext = Data(repeating: 0, count: 16)
+		let sealed = try provider.aeadSeal(
+			key: key, nonce: nonce, aad: nil, plaintext: plaintext)
+		return provider.aeadNonceSize + 4 + (sealed.count - plaintext.count)
+	}
+
+	/// With an effectively unbounded `setPadTarget`, a self-staged EK grows
+	/// to EXACTLY its co-stapled message's own sealed length (book
+	/// header-encryption.md, "Frame length prefix & padding"), and the
+	/// equalized (padded) EK is still decoder-invisible: the peer opens it
+	/// and the A.4 round completes exactly as an unpadded one would.
+	func testSideBandPaddingEqualizesEKAndMessageFrameLengths() throws {
+		let bigApp = Data(repeating: 0x41, count: 8192)
+
+		// Precondition, on an un-targeted sibling: the natural EK is
+		// smaller than the message it will be equalized to below —
+		// otherwise the growth this test pins would never actually engage,
+		// and framing drift (e.g. the KEM's encapsulation-key size, or the
+		// message-frame shape) would fail silently rather than loudly.
+		var (_, siblingBob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		_ = try siblingBob.prepareToEncrypt()
+		let siblingMsgFrame = try siblingBob.encrypt(bigApp).frame.count
+		let naturalEK = try XCTUnwrap(siblingBob.pqPendingOutbound()).count
+		XCTAssertLessThan(naturalEK, siblingMsgFrame)
+
+		// The padded run: an effectively unbounded cap, so the EK grows all
+		// the way to match its own co-stapled message.
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		bob.setPadTarget(Int.max)
+		_ = try bob.prepareToEncrypt()
+		let encrypted = try bob.encrypt(bigApp)
+		let paddedEK = try XCTUnwrap(bob.pqPendingOutbound())
+		XCTAssertEqual(paddedEK.count, encrypted.frame.count)
+
+		let ctFrame = try alice.pqRatchetRespond(paddedEK).frame
+		_ = try bob.pqRatchetBind(ctFrame)
+		let discharge = try bob.prepareToEncrypt()
+		XCTAssertTrue(discharge.didCommit)
+		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
+		let decrypted = try alice.processIncoming(boundFrame)
+		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
+	}
+
+	/// Absent any `setPadTarget` call, `padTarget` defaults to `nil` and a
+	/// self-staged EK goes out at its natural size — smaller than the
+	/// message it rides alongside (book header-encryption.md, "Frame length
+	/// prefix & padding" — "Absent the intent ... frames go out at their
+	/// natural size").
+	func testNoPadTargetLeavesSideBandFrameAtNaturalSize() throws {
+		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		_ = try bob.prepareToEncrypt()
+		let encrypted = try bob.encrypt(Data(repeating: 0x42, count: 8192))
+		let ek = try XCTUnwrap(bob.pqPendingOutbound())
+		XCTAssertLessThan(ek.count, encrypted.frame.count)
+	}
+
+	/// A target set below the natural EK size never shrinks it —
+	/// `sideBandPadTo` only ever grows a frame (book header-encryption.md,
+	/// "Frame length prefix & padding" — "only ever *grows*"). Measured
+	/// twice on the SAME parked leg (`pqPendingOutbound` re-seals live on
+	/// every call, never caching), so the comparison needs no cross-session
+	/// assumption about matching natural sizes.
+	func testPadTargetBelowNaturalEKSizeNeverShrinksIt() throws {
+		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		_ = try bob.prepareToEncrypt()
+		_ = try bob.encrypt(Data(repeating: 0x43, count: 4096))
+		let naturalEK = try XCTUnwrap(bob.pqPendingOutbound())
+
+		bob.setPadTarget(1)
+		let clampedEK = try XCTUnwrap(bob.pqPendingOutbound())
+		XCTAssertEqual(clampedEK.count, naturalEK.count)
+	}
+
+	/// `sideBandPadTo` at the function level (book header-encryption.md,
+	/// "Frame length prefix & padding"): `nil` ⇒ the frame's own length (no
+	/// growth); a set intent grows up to `min(target, lastMessageFrameLen)`
+	/// but NEVER below the frame's own length. The grow-only floor is pinned
+	/// here directly — `sealWith`'s own `max(0, padTo - frame.count)` clamp
+	/// masks it end-to-end, so only a unit assertion on the returned target
+	/// fails loudly if the floor is dropped.
+	func testSideBandPadToGrowsOnlyWithinCap() throws {
+		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		bob.lastMessageFrameLen = 1000
+
+		bob.setPadTarget(nil)
+		XCTAssertEqual(bob.sideBandPadTo(frameLen: 300), 300)
+
+		// Generous cap: grow to the co-stapled message's length.
+		bob.setPadTarget(5000)
+		XCTAssertEqual(bob.sideBandPadTo(frameLen: 300), 1000)
+
+		// Tight cap: grow only to the target.
+		bob.setPadTarget(600)
+		XCTAssertEqual(bob.sideBandPadTo(frameLen: 300), 600)
+
+		// Never shrink a frame already larger than min(target,
+		// lastMessageFrameLen) — the grow-only floor.
+		bob.setPadTarget(5000)
+		XCTAssertEqual(bob.sideBandPadTo(frameLen: 2000), 2000)
+		bob.setPadTarget(600)
+		XCTAssertEqual(bob.sideBandPadTo(frameLen: 800), 800)
+	}
+
+	/// A cap strictly between the natural EK and the message frame grows
+	/// the EK only up to that cap (plus the fixed seal overhead) — not all
+	/// the way to the message (book header-encryption.md, "Frame length
+	/// prefix & padding" — `min(n, last_message_frame_len)`). Both anchors
+	/// and the cap itself are derived by measurement, on the SAME parked
+	/// leg, no magic constants.
+	func testPadTargetHonorsCapBetweenNaturalEKAndMessageFrame() throws {
+		let sealOverhead = try measuredSealOverhead()
+		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		_ = try bob.prepareToEncrypt()
+		let msgFrame = try bob.encrypt(Data(repeating: 0x44, count: 8192)).frame.count
+		let naturalEK = try XCTUnwrap(bob.pqPendingOutbound()).count
+		XCTAssertLessThan(naturalEK, msgFrame)
+
+		let naturalEKUnsealed = naturalEK - sealOverhead
+		let msgFrameUnsealed = msgFrame - sealOverhead
+		let cap = (naturalEKUnsealed + msgFrameUnsealed) / 2
+		XCTAssertGreaterThan(cap, naturalEKUnsealed)
+		XCTAssertLessThan(cap, msgFrameUnsealed)
+
+		bob.setPadTarget(cap)
+		let cappedEK = try XCTUnwrap(bob.pqPendingOutbound())
+		XCTAssertEqual(cappedEK.count, cap + sealOverhead)
+		XCTAssertLessThan(cappedEK.count, msgFrame)
+	}
+
+	/// `padTarget`/`lastMessageFrameLen` are live host plumbing, deliberately
+	/// NOT part of the session archive (unlike the header-key windows, which
+	/// ARE persisted): a restored session starts back at natural (unpadded)
+	/// sizing, and a host that wants padding must call `setPadTarget` again
+	/// after restoring.
+	func testPadTargetAndLastMessageFrameLenAreLiveOnlyNotArchivedAcrossRestore() throws {
+		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		bob.setPadTarget(4096)
+		_ = try bob.prepareToEncrypt()
+		_ = try bob.encrypt(Data(repeating: 0x45, count: 2048))
+		XCTAssertNotNil(bob.padTarget)
+		XCTAssertGreaterThan(bob.lastMessageFrameLen, 0)
+
+		let archive = try bob.makeSessionArchive(kind: .checkpoint)
+		let checkpoint = try sealAndOpen(archive)
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: checkpoint,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		XCTAssertNil(restored.padTarget)
+		XCTAssertEqual(restored.lastMessageFrameLen, 0)
+	}
 }

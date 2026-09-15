@@ -184,6 +184,8 @@ extension TwoMLSSession {
 			proposing: pending.proposing, message: pending.message)
 		let frame = Frames.encodeMessageFrame(
 			staple: currentStaple, proposal: proposalSection, app: appBytes)
+		// A co-stapled side-band frame pads up to this (unsealed) length.
+		lastMessageFrameLen = frame.count
 
 		// §A.4 self-drive: both best-effort (never throw out of `encrypt`) —
 		// `rewrapSideBand` re-mints a stale parked leg at the epoch this send

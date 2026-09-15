@@ -388,6 +388,22 @@ public struct TwoMLSSession: Sendable {
 	/// so a few keys cover any lag regardless of classical traffic.
 	static let pqHeaderWindow = 4
 
+	/// The host's frame-sizing intent (book header-encryption.md, "Frame
+	/// length prefix & padding" — `set_pad_target(Some(n))`): `nil` (the
+	/// default) means natural size, unpadded. Live host plumbing — NOT
+	/// archived (the header-key windows above ARE persisted; this and
+	/// `lastMessageFrameLen` are not), so a restored session starts back at
+	/// `nil` and the host must re-supply it via `setPadTarget`.
+	var padTarget: Int? = nil
+	/// The most recent `encrypt`'s UNSEALED message-frame length — what
+	/// `Frames.encodeMessageFrame` builds, before `seal` wraps it — the
+	/// ceiling `sideBandPadTo` grows a co-stapled side-band frame up to.
+	/// Equal SEALED lengths follow from the constant per-frame seal overhead
+	/// (book header-encryption.md, "Sealed frame"), so this is deliberately
+	/// NOT a "sealed length." Live-only like `padTarget`: not archived,
+	/// resets to 0 on restore.
+	var lastMessageFrameLen: Int = 0
+
 	// MARK: §15 classical principal rotation (slice 6)
 
 	/// The classical successor minted by our own `prepareToEncrypt(rotating:)`

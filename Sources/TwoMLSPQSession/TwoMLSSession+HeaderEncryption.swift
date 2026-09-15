@@ -8,13 +8,13 @@ import SecretBytes
 //
 // Every blob that leaves the library past establishment is one opaque
 // `SealedFrame = [12B nonce][classicalProvider.aeadSeal ct+tag]` — the AEAD
-// covering `[u32-LE frame_len][frame]` under empty AAD (book
-// header-encryption.md, "Sealed frame"/"Frame length prefix & padding"; no
-// padding this slice). The header AEAD is always the classical provider,
-// for BOTH key families: only which group half DERIVES the key differs
-// (book, "Key schedule"). Direction: seal under MY recv group's key at its
-// current epoch; receive = trial-open over MY send group's windows (book,
-// "Send rule"/"Receive rule").
+// covering `[u32-LE frame_len][frame][zero padding]` under empty AAD (book
+// header-encryption.md, "Sealed frame"/"Frame length prefix & padding").
+// The header AEAD is always the classical provider, for BOTH key families:
+// only which group half DERIVES the key differs (book, "Key schedule").
+// Direction: seal under MY recv group's key at its current epoch; receive =
+// trial-open over MY send group's windows (book, "Send rule"/"Receive
+// rule").
 
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
@@ -57,14 +57,17 @@ extension TwoMLSSession {
 
 	// MARK: - Seal
 
-	/// The shared seal primitive (book, "Sealed frame"): a fresh
-	/// `aeadNonceSize` (12) random nonce, AEAD-sealed over
-	/// `[u32-LE frame.count][frame]` with empty AAD. `aeadSeal` returns
-	/// `ct‖tag`, so the wire blob is `nonce ‖ ct ‖ tag`. No padding this
-	/// slice (Fork A, deferred to a follow-up).
-	func sealWith(_ key: Data, frame: Data) throws -> Data {
+	/// The shared seal primitive (book, "Sealed frame"): `[u32-LE
+	/// frame.count][frame][zero padding]`, zero-padded out to `padTo` bytes
+	/// (`max(0, padTo - frame.count)` zero bytes — a no-op when `padTo <=
+	/// frame.count`), AEAD-sealed under a fresh `aeadNonceSize` (12) random
+	/// nonce with empty AAD (book header-encryption.md, "Frame length
+	/// prefix & padding"). `aeadSeal` returns `ct‖tag`, so the wire blob is
+	/// `nonce ‖ ct ‖ tag`.
+	func sealWith(_ key: Data, frame: Data, padTo: Int) throws -> Data {
 		var plaintext = Data()
 		Frames.pushSection(frame, into: &plaintext)
+		plaintext.append(Data(repeating: 0, count: max(0, padTo - frame.count)))
 		let nonce = classicalProvider.randomBytes(classicalProvider.aeadNonceSize)
 		let sealed = try classicalProvider.aeadSeal(
 			key: key, nonce: nonce, aad: nil, plaintext: plaintext)
@@ -74,13 +77,36 @@ extension TwoMLSSession {
 	/// Message-path frames (`0x01` standalone welcomes and `0x03` message
 	/// frames — `encrypt`'s output, welcome-or-commit staple included): seal
 	/// under `HeaderKey(recvGroup.classical, current epoch)` (book, "Send
-	/// rule"). Throws `.notEstablished` with no recv group — the
+	/// rule"), never padded (book, "Frame length prefix & padding" —
+	/// message frames and return welcomes carry the prefix but are never
+	/// padded). Throws `.notEstablished` with no recv group — the
 	/// initiator's pre-establishment welcome travels unsealed on the
 	/// invitation channel instead (never routed through here; PR3 will
 	/// HPKE-envelope it).
 	func seal(_ frame: Data) throws -> Data {
 		guard let recv = recvGroup else { throw TwoMLSError.notEstablished }
-		return try sealWith(try headerKey(recv.classical), frame: frame)
+		return try sealWith(try headerKey(recv.classical), frame: frame, padTo: frame.count)
+	}
+
+	/// The host's frame-sizing intent (book header-encryption.md, "Frame
+	/// length prefix & padding"): `nil` (the default) leaves side-band
+	/// frames at their natural size; `Some(n)` grows each one up to `min(n,
+	/// last_message_frame_len)` so it seals to the same length as its
+	/// co-stapled message, for size-unlinkability. Live only — see
+	/// `padTarget`'s own comment — a host must call this again after
+	/// restoring a session.
+	public mutating func setPadTarget(_ target: Int?) {
+		padTarget = target
+	}
+
+	/// `sideBandPadTo` (book header-encryption.md, "Frame length prefix &
+	/// padding"): absent an intent, the frame's own natural length (no
+	/// growth); with `padTarget` set, grow — never shrink — up to `min(target,
+	/// lastMessageFrameLen)`, the co-stapled message's own unsealed frame
+	/// length capped at the host's budget.
+	func sideBandPadTo(frameLen: Int) -> Int {
+		guard let target = padTarget else { return frameLen }
+		return max(frameLen, min(target, lastMessageFrameLen))
 	}
 
 	/// Side-band frames: the A.4 legs (`0x17`/`0x19`) seal under the
@@ -92,22 +118,32 @@ extension TwoMLSSession {
 	/// pre-A.3 frame whose recv-PQ group doesn't exist yet — the
 	/// initiator's `BOOTSTRAP_KP` (`0x13`, before `recvGroup.pq` is
 	/// founded) — which falls back to the classical family (book, "Send
-	/// rule").
+	/// rule"). The classical branches (the A.4 legs, book "Send rule" —
+	/// "with side-band padding still applied") and the PQ branch both pad to
+	/// `sideBandPadTo`; the pre-A.3 fallback goes out through the message
+	/// path's own unpadded `seal(frame)` instead — not because the padding
+	/// section carves out an explicit BOOTSTRAP_KP exemption (it doesn't),
+	/// but because the Send rule routes this one frame through the
+	/// classical `seal` path, and that path's frames are never padded (book,
+	/// "Send rule" — pre-A.3 fallback; "Frame length prefix & padding" —
+	/// "message frames and return welcomes ... are never padded").
 	func sealSideBand(_ frame: Data) throws -> Data {
 		guard let recv = recvGroup else { throw TwoMLSError.notEstablished }
 		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
-		let key: Data
 		switch tag {
 		case Frames.pqEKTag, Frames.pqCTTag:
-			key = try headerKey(recv.classical)
+			let padTo = sideBandPadTo(frameLen: frame.count)
+			return try sealWith(
+				try headerKey(recv.classical), frame: frame, padTo: padTo)
 		default:
 			if let recvPQ = recv.pq {
-				key = try headerKeyPQ(recvPQ)
+				let padTo = sideBandPadTo(frameLen: frame.count)
+				return try sealWith(
+					try headerKeyPQ(recvPQ), frame: frame, padTo: padTo)
 			} else {
-				key = try headerKey(recv.classical)
+				return try seal(frame)
 			}
 		}
-		return try sealWith(key, frame: frame)
 	}
 
 	// MARK: - Receive
@@ -140,14 +176,16 @@ extension TwoMLSSession {
 	}
 
 	/// One candidate key's AEAD open + length-prefix strip, reusing the
-	/// frame codec's own section reader — the plaintext is exactly
-	/// `[u32-LE frame_len][frame]` (no padding this slice), so a single
-	/// `readSections(count: 1)` both bounds-checks the prefix and rejects
-	/// any trailing bytes.
+	/// frame codec's own prefix-then-remainder reader: the plaintext is
+	/// `[u32-LE frame_len][frame][zero padding]`, and reading the prefix
+	/// returns exactly `frame_len` bytes, dropping any trailing zero
+	/// padding into the discarded remainder before the trailing-byte-strict
+	/// decoder ever sees it (book header-encryption.md, "Frame length
+	/// prefix & padding").
 	private func openFrame(key: Data, nonce: Data, ciphertext: Data) throws -> Data {
 		let plaintext = try classicalProvider.aeadOpen(
 			key: key, nonce: nonce, aad: nil, ciphertext: ciphertext)
-		return try Frames.readSections(plaintext, count: 1)[0]
+		return try Frames.readPrefixedThenRemainder(plaintext).section
 	}
 
 	/// `tryOpen(blob) ?? blob` — lets a receive entry point accept a sealed
