@@ -155,14 +155,34 @@ final class EstablishmentTests: XCTestCase {
 	func testProcessIncomingRejectsADifferentWelcomeOnceEstablished() throws {
 		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
 
-		let (_, otherBobSession, _, _, _, _) = try SessionTestSupport.established(
-			alice: "alice-intruder", bob: "bob-intruder")
+		let (otherAlice, otherBobSession, _, _, _, _) =
+			try SessionTestSupport
+			.established(alice: "alice-intruder", bob: "bob-intruder")
 		var otherBob = otherBobSession
 		_ = try otherBob.prepareToEncrypt()
 		let intruderFrame = try otherBob.encrypt(Data("intruder".utf8)).frame
 
-		XCTAssertThrowsError(try alice.processIncoming(intruderFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedWelcome)
+		// PR2: `intruderFrame` is header-sealed under a key from a totally
+		// unrelated pair — alice's `openOrRaw` cannot open it (none of her
+		// window keys match) and falls back to passing the still-sealed
+		// bytes straight through, so the sealed path fails at the frame
+		// decode (a near-uniform random leading byte) rather than the
+		// welcome-digest check this test originally pinned.
+		XCTAssertThrowsError(try alice.processIncoming(intruderFrame))
+
+		// Restore the deterministic check via the documented `openOrRaw`
+		// pass-through: `otherAlice` (the intruder pair's own recipient) can
+		// open `intruderFrame` with her window key, recovering the plaintext
+		// message frame with the intruder's `APQWelcome_B` staple. Feeding
+		// that ALREADY-OPENED frame to `alice.processIncoming` exercises the
+		// same `openOrRaw` fallback (it fails AEAD under every one of
+		// alice's window keys and passes through raw), but this time the raw
+		// bytes decode as a genuine frame, so processing reaches
+		// `joinGroupBIfNeeded` and rejects the foreign welcome digest
+		// deterministically.
+		let raw = try XCTUnwrap(otherAlice.tryOpen(intruderFrame))
+		XCTAssertThrowsError(try alice.processIncoming(raw)) {
+			XCTAssertEqual($0 as? TwoMLSError, .unexpectedWelcome)
 		}
 	}
 
@@ -176,7 +196,8 @@ final class EstablishmentTests: XCTestCase {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let realFrame = try bob.encrypt(Data("payload".utf8)).frame
-		let (_, _, appSection) = try Frames.decodeMessageFrame(realFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (_, _, appSection) = try Frames.decodeMessageFrame(alice.openOrRaw(realFrame))
 
 		let fullWelcomeStaple = Frames.encodeAPQWelcome(
 			t: Data("fake-t".utf8), pq: Data("fake-pq".utf8))
@@ -267,7 +288,9 @@ final class EstablishmentTests: XCTestCase {
 		var (alice, bob, aliceIdentity, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
-		let (_, _, appSection) = try Frames.decodeMessageFrame(genuineFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (_, _, appSection) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(genuineFrame))
 
 		let forgedStaple = try forgedGroupBWelcome(
 			creatorName: "bob", adding: aliceIdentity.keyPackage.classical)
@@ -292,7 +315,9 @@ final class EstablishmentTests: XCTestCase {
 		var (alice, bob, aliceIdentity, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
-		let (_, _, appSection) = try Frames.decodeMessageFrame(genuineFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (_, _, appSection) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(genuineFrame))
 
 		var groupACopy = try XCTUnwrap(alice.sendGroup)
 		let crossPSK = try MLS.Combiner.ExportedPsk.export(
@@ -320,7 +345,9 @@ final class EstablishmentTests: XCTestCase {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
-		let (_, _, appSection) = try Frames.decodeMessageFrame(genuineFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (_, _, appSection) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(genuineFrame))
 
 		// (a) A `0x01` welcome staple whose classical `t` slot is garbage — the
 		// Welcome fails to parse, before any exporter leaf is consumed.
@@ -336,11 +363,14 @@ final class EstablishmentTests: XCTestCase {
 		// welcome. It dies inside `Welcome.decryptGroupSecrets` (a
 		// `GroupError`, not a `TwoMLSError` — asserted accordingly), again
 		// without touching Alice's exporter leaf.
-		var (_, otherBob, _, _, _, otherWelcomeB) = try SessionTestSupport.established(
-			alice: "alice-other", bob: "bob-other")
+		var (otherAlice, otherBob, _, _, _, otherWelcomeB) =
+			try SessionTestSupport.established(
+				alice: "alice-other", bob: "bob-other")
 		_ = try otherBob.prepareToEncrypt()
 		let otherGenuineFrame = try otherBob.encrypt(Data("other".utf8)).frame
-		let (_, _, otherAppSection) = try Frames.decodeMessageFrame(otherGenuineFrame)
+		// PR2: opened via `otherAlice` (the recipient in that OTHER pair).
+		let (_, _, otherAppSection) = try Frames.decodeMessageFrame(
+			otherAlice.openOrRaw(otherGenuineFrame))
 		XCTAssertThrowsError(
 			try alice.processIncoming(
 				forgedWelcomeFrame(staple: otherWelcomeB, app: otherAppSection))

@@ -74,7 +74,9 @@ final class RotationTests: XCTestCase {
 	/// only succeeds if the leg was genuinely signed under whatever key
 	/// `bob`'s tree currently shows for the sender's leaf.
 	private func verifyEKLegOpensCleanly(_ frame: Data, against bob: TwoMLSSession) throws {
-		let (tag, messageBytes) = try Frames.decodePQLeg(frame)
+		// PR2: `frame` is header-sealed on exit; `bob` (the recipient) is the
+		// one whose receive window opens it.
+		let (tag, messageBytes) = try Frames.decodePQLeg(bob.openOrRaw(frame))
 		XCTAssertEqual(tag, Frames.pqEKTag)
 		guard
 			case .privateMessage(let pm) = try MLS.RFC9420.Message(
@@ -275,8 +277,17 @@ final class RotationTests: XCTestCase {
 		let aliceFoldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 
 		let rewrappedEKFrame = try XCTUnwrap(alice.pqPendingOutbound())
+		// PR2: `pqPendingOutbound()` re-seals under a fresh nonce on every
+		// call, so the SEALED bytes always differ even for an unchanged
+		// plaintext — compare the OPENED plaintexts instead (the outer
+		// header epoch — alice's recv group, Group_B — hasn't moved here,
+		// so `bob`'s window already opens both). `tryOpen` + `XCTUnwrap`
+		// rather than `openOrRaw`: a frame that fails to open must fail the
+		// test, not silently compare equal (or not) as still-sealed bytes.
+		let openedRewrapped = try XCTUnwrap(bob.tryOpen(rewrappedEKFrame))
+		let openedOriginal = try XCTUnwrap(bob.tryOpen(originalEKFrame))
 		XCTAssertNotEqual(
-			rewrappedEKFrame, originalEKFrame,
+			openedRewrapped, openedOriginal,
 			"rewrapSideBand must have re-minted the stale leg at the new epoch")
 
 		// Bob must actually apply Alice's fold before his recv mirror can
@@ -367,7 +378,8 @@ final class RotationTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: bob.identity.clientID, message: rotatingMessage)
 		let craftedFrame = Frames.encodeMessageFrame(
@@ -458,7 +470,8 @@ final class RotationTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		let (staple, _, app) = try Frames.decodeMessageFrame(carrierFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(carrierFrame))
 		let rollbackProposal = Frames.encodeProposalSection(
 			proposing: bobOriginalID, message: rollbackBytes)
 		let rollbackFrame = Frames.encodeMessageFrame(
@@ -487,7 +500,8 @@ final class RotationTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: alice.identity.clientID, message: rotatingMessage)
 		let craftedFrame = Frames.encodeMessageFrame(
@@ -516,7 +530,8 @@ final class RotationTests: XCTestCase {
 			proposer: &bob, newID: aliceCandidateID)
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: aliceCandidateID, message: rotatingMessage)
 		let craftedFrame = Frames.encodeMessageFrame(
@@ -547,7 +562,8 @@ final class RotationTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: alice.identity.clientID, message: rotatingMessage)
 		let craftedFrame = Frames.encodeMessageFrame(
@@ -626,7 +642,11 @@ final class RotationTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 
-		let (staple, proposal, app) = try Frames.decodeMessageFrame(foldFrame)
+		// PR2: opened via `alice` (the recipient); the reconstructed
+		// `tamperedFrame` below passes straight through `processIncoming`'s
+		// `openOrRaw` (an unsealable blob is returned as-is).
+		let (staple, proposal, app) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(foldFrame))
 		var tamperedStaple = staple
 		tamperedStaple[tamperedStaple.index(before: tamperedStaple.endIndex)] ^= 0xFF
 		let tamperedFrame = Frames.encodeMessageFrame(
@@ -700,7 +720,10 @@ final class RotationTests: XCTestCase {
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try alice.prepareToEncrypt()
 		let carrierFrame = try alice.encrypt(Data("carrier".utf8)).frame
-		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
+		// PR2: opened via `bob` (the recipient) — the app section is a
+		// throwaway filler `alice.processIncoming` never reaches (the fold
+		// staple is rejected first).
+		let (_, proposal, app) = try Frames.decodeMessageFrame(bob.openOrRaw(carrierFrame))
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposal, app: app)
 
@@ -756,7 +779,11 @@ final class RotationTests: XCTestCase {
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
+		// PR2: opened via `alice` (the recipient) — the app section is a
+		// throwaway filler `alice.processIncoming` never reaches (the fold
+		// staple is rejected first).
+		let (_, proposal, app) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(carrierFrame))
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposal, app: app)
 
@@ -960,7 +987,8 @@ final class RotationTests: XCTestCase {
 		XCTAssertTrue(prepared2.didCommit)
 		XCTAssertNil(alice.owedBind)
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
-		let (staple, _, _) = try Frames.decodeMessageFrame(boundFrame)
+		// PR2: opened via `bob` (the recipient).
+		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(boundFrame))
 		XCTAssertEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
 
 		let decrypted = try bob.processIncoming(boundFrame)
@@ -1009,7 +1037,8 @@ final class RotationTests: XCTestCase {
 		let prepared2 = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared2.didCommit)
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
-		let (staple, _, _) = try Frames.decodeMessageFrame(catchUpFrame)
+		// PR2: opened via `bob` (the recipient).
+		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(catchUpFrame))
 		XCTAssertEqual(Frames.stapleKind(staple.first!), .mlsMessage)
 		let decrypted = try bob.processIncoming(catchUpFrame)
 		XCTAssertTrue(decrypted.didApplyRemoteCommit)

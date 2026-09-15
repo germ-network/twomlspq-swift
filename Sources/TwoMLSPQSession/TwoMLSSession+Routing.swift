@@ -90,15 +90,25 @@ extension TwoMLSSession {
 	/// window. Idempotent per epoch. Call from every site where
 	/// `sendGroup.classical`'s epoch advances or the group is first created —
 	/// never from `shouldListenOn` (see `listenRendezvous`'s doc).
+	///
+	/// PR2 (header encryption): also captures the classical `HeaderKey` into
+	/// `recvHeaderKeys`, in lockstep — same sites, same idempotency, same
+	/// retention floor — so "routable ⟺ openable": the classical header
+	/// window is exactly the rendezvous listen window (book
+	/// header-encryption.md, "Receive rule").
 	mutating func recordListenRendezvous() throws {
 		guard let send = sendGroup else { return }
 		let epoch = send.classical.context.epoch
 		if listenRendezvous[epoch] == nil {
 			listenRendezvous[epoch] = try rendezvousSecret(send.classical)
 		}
+		if recvHeaderKeys[epoch] == nil {
+			recvHeaderKeys[epoch] = try headerKey(send.classical)
+		}
 		let depth = UInt64(send.classical.retention.resumptionPskDepth)
 		let floor = epoch > depth ? epoch - depth : 0
 		listenRendezvous = listenRendezvous.filter { $0.key >= floor }
+		recvHeaderKeys = recvHeaderKeys.filter { $0.key >= floor }
 	}
 
 	/// A **pure read** — the send group's ids plus one rendezvous address

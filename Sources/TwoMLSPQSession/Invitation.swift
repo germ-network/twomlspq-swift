@@ -160,8 +160,11 @@ public struct Invitation: Sendable {
 	/// Resolves a §A.3 bootstrap-KP frame (`[0x13][KP′]`, or the bare
 	/// untagged KP′ bytes) to the session that owes A.3 for it — strips a
 	/// leading `0x13` tag if present before hashing, so this routes whether
-	/// the frame arrives tagged (the side-band wire shape) or already
-	/// untagged (the same preimage `bootstrapKPCommitment()` hashes).
+	/// the frame arrives tagged or already untagged (the same preimage
+	/// `bootstrapKPCommitment()` hashes). Post-PR2 the wire `0x13` travels
+	/// header-sealed, so `kpFrame` here is the OPENED frame — a host calls
+	/// this on the plaintext `openIncoming`/`tryOpen` already produced, never
+	/// on the sealed wire bytes.
 	public func bootstrapKPGroupID(kpFrame: Data) -> Data? {
 		let untagged =
 			kpFrame.first == Frames.pqBootstrapKPTag

@@ -359,6 +359,28 @@ public struct TwoMLSSession: Sendable {
 	/// contract (nothing calling it returns a `StateUpdate`).
 	var listenRendezvous: [UInt64: Data] = [:]
 
+	// MARK: Header encryption (slice 9, PR2)
+
+	/// Every retained classical epoch's `HeaderKey` for THIS session's own
+	/// send group — captured by `recordListenRendezvous()` in lockstep with
+	/// `listenRendezvous` (same sites, same idempotency, same retention):
+	/// "routable ⟺ openable", the classical header window is exactly the
+	/// rendezvous listen window (book header-encryption.md, "Receive rule").
+	/// Trial-opened FIRST (before `recvHeaderKeysPQ`), newest epoch first.
+	var recvHeaderKeys: [UInt64: Data] = [:]
+	/// Every retained `pq_epoch`'s `HeaderKeyPQ` for THIS session's own
+	/// send-PQ group — captured by `recordPQHeaderKey()` wherever
+	/// `sendGroup.pq`'s epoch advances or the half is founded. No rendezvous
+	/// coupling (the PQ side-band keeps no routing addresses of its own);
+	/// retained to a flat keep-newest `pqHeaderWindow` regardless of
+	/// classical traffic.
+	var recvHeaderKeysPQ: [UInt64: Data] = [:]
+	/// `PQ_HEADER_WINDOW` (header-encryption.md, "Receive rule" — the
+	/// two-windows bullet) — a plain keep-newest count, not an
+	/// epoch-arithmetic floor: A.3/A.5 are turn-based with one op in flight,
+	/// so a few keys cover any lag regardless of classical traffic.
+	static let pqHeaderWindow = 4
+
 	// MARK: §15 classical principal rotation (slice 6)
 
 	/// The classical successor minted by our own `prepareToEncrypt(rotating:)`

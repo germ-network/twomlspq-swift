@@ -69,7 +69,9 @@ final class SessionArchiveTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
 		_ = try alice.processIncoming(offerFrame)
-		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(offerFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(offerFrame))
 		let (_, offerMessage) = try Frames.decodeProposalSection(offerProposalSection)
 		let offerDigest = try SessionTestSupport.classicalProvider.hash(offerMessage)
 		_ = try alice.queueProposal(digest: offerDigest)
@@ -440,7 +442,9 @@ final class SessionArchiveTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
 		_ = try alice.processIncoming(offerFrame)
-		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(offerFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(offerFrame))
 		let (_, offerMessage) = try Frames.decodeProposalSection(offerProposalSection)
 		let offerDigest = try SessionTestSupport.classicalProvider.hash(offerMessage)
 		_ = try alice.queueProposal(digest: offerDigest)

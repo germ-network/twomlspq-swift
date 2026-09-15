@@ -553,6 +553,12 @@ struct SessionArchive: Codable, Sendable {
 	/// decodes to an empty map, and `restore` re-captures the current
 	/// epoch's address at once (restore is itself a capture site).
 	var listenRendezvous: ArchiveIntegerKeyedMap<Data>?
+	/// `recvHeaderKeys`/`recvHeaderKeysPQ`, added slice 9 PR2 — same
+	/// optional-with-empty-default shape as `listenRendezvous`: absent on a
+	/// pre-existing archive, in which case `restore` re-captures the
+	/// current epoch's key(s) at once.
+	var recvHeaderKeys: ArchiveIntegerKeyedMap<Data>?
+	var recvHeaderKeysPQ: ArchiveIntegerKeyedMap<Data>?
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case version = 0
@@ -589,6 +595,8 @@ struct SessionArchive: Codable, Sendable {
 		case rotationCandidate = 31
 		case spawnToken = 32
 		case listenRendezvous = 33
+		case recvHeaderKeys = 34
+		case recvHeaderKeysPQ = 35
 	}
 }
 
@@ -671,7 +679,9 @@ extension TwoMLSSession {
 				sendCrossPSKLedger.mapValues(ExportedPskArchive.init)),
 			rotationCandidate: rotationCandidate.map(RotationCandidateArchive.init),
 			spawnToken: spawnToken,
-			listenRendezvous: ArchiveIntegerKeyedMap(listenRendezvous))
+			listenRendezvous: ArchiveIntegerKeyedMap(listenRendezvous),
+			recvHeaderKeys: ArchiveIntegerKeyedMap(recvHeaderKeys),
+			recvHeaderKeysPQ: ArchiveIntegerKeyedMap(recvHeaderKeysPQ))
 		return try SecretArchive(encoding: body)
 	}
 }
