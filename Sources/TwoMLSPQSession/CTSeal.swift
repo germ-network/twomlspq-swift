@@ -16,10 +16,11 @@ enum CTSeal {
 	static let keyInfo = Data("germ.network.twomlspq.a3.ctSeal.key.v1".utf8)
 
 	/// RFC 9420 §8.5 MLS-Exporter off the PQ group, reconstructed from public
-	/// primitives (`exporterSecret` and the two labeled-KDF helpers are public;
-	/// swift-mls keeps the exporter itself `package`-scoped, non-forward-secret
-	/// and deliberately not exposed). A fixed function of the epoch's
-	/// `exporterSecret` and the group id, so both peers — and a re-wrap at the
+	/// primitives (`exporterSecret` and the two labeled-KDF helpers are public).
+	/// Kept as an explicit composition — rather than the public `Group.exportSecret`
+	/// (swift-mls #94) — so the exact `pskLabel`/`"exported"`/`Hash(groupID)`/length
+	/// is KAT-pinnable (below); non-forward-secret by design. A fixed function of the
+	/// epoch's `exporterSecret` and the group id, so both peers — and a re-wrap at the
 	/// same epoch — all derive the same value.
 	static func ctSealPSK(group: MLS.RFC9420.Group, pqProvider: any MLS.CipherSuiteProvider)
 		throws -> SecretBytes
