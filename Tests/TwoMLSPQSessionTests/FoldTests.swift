@@ -461,7 +461,7 @@ final class FoldTests: XCTestCase {
 
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try bob.prepareToEncrypt()
-		let carrierFrame = try bob.encrypt(Data("carrier".utf8))
+		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
 		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposal, app: app)
