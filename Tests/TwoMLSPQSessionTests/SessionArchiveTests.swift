@@ -42,12 +42,12 @@ final class SessionArchiveTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		// PR3a: a SESSION archive never carries KP′ init secrets — unlike an
-		// invitation archive (`InvitationTests`). For an established session
-		// both are already spent, so this round-trip only re-confirms `nil`;
-		// the load-bearing no-leak check — an in-flight initiator's LIVE
-		// secret must still not be archived — is
-		// `testInFlightInitiatorArchiveOmitsLiveInitSecret`.
+		// PR3c: a SESSION archive carries KP′ init secrets only
+		// pre-establishment (an in-flight initiator) — an ESTABLISHED session
+		// still omits both, since they're already spent by then. This
+		// round-trip only re-confirms that `nil`; the load-bearing carry
+		// check — an in-flight initiator's LIVE classical secret IS archived
+		// — is `testInFlightInitiatorArchiveCarriesLiveClassicalInitSecret`.
 		XCTAssertNil(restored.identity.classicalInitSecretKey)
 		XCTAssertNil(restored.identity.pqInitSecretKey)
 
@@ -62,13 +62,17 @@ final class SessionArchiveTests: XCTestCase {
 		XCTAssertEqual(replyDecrypted.applicationMessage, Data("hi".utf8))
 	}
 
-	/// The load-bearing no-leak check for `includeInitSecrets: false`: an
-	/// in-flight initiator (post-`initiate`, before joining its receive
-	/// group) still holds a LIVE classical init secret, yet the session
-	/// archive must omit it. The established round-trip above only
-	/// re-confirms `nil` (the secret is spent by then); this one fails if
-	/// the session path ever archives a live init secret.
-	func testInFlightInitiatorArchiveOmitsLiveInitSecret() throws {
+	/// The load-bearing carry check for `includeInitSecrets: recvGroup ==
+	/// nil` (PR3c): an in-flight initiator (post-`initiate`, before joining
+	/// its receive group) still holds a LIVE classical init secret, and the
+	/// session archive must now CARRY it — omitting it (the pre-PR3c
+	/// behavior) left a restored in-flight initiator permanently unable to
+	/// join Group_B (`.sessionNotReady`). The established round-trip above
+	/// confirms the mirror case still holds: an ESTABLISHED session still
+	/// omits both (already spent). The full restore-then-complete proof is
+	/// `testRestoredInFlightInitiatorCompletesEstablishmentAndExchangesAfterRestore`
+	/// below.
+	func testInFlightInitiatorArchiveCarriesLiveClassicalInitSecret() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -84,8 +88,31 @@ final class SessionArchiveTests: XCTestCase {
 
 		// Precondition: the runtime secret is genuinely live, else vacuous.
 		XCTAssertNotNil(initiated.session.identity.classicalInitSecretKey)
+		XCTAssertNil(initiated.session.recvGroup)
 
 		let archive = try initiated.session.makeSessionArchive(kind: .checkpoint)
+		let body = try sealAndOpen(archive).decode(SessionArchive.self)
+		XCTAssertNotNil(body.identity.classicalInitSecretKey)
+		// The initiator's PQ init secret is never read (founding Group_A's
+		// PQ half takes only the leaf secret); it is cleared as dead at
+		// `initiate`, so it stays absent regardless of the carry flag.
+		XCTAssertNil(body.identity.pqInitSecretKey)
+	}
+
+	/// The gate's OTHER half: an ESTABLISHED session (`recvGroup != nil`)
+	/// archive omits init secrets even when the runtime identity still holds
+	/// LIVE ones — the `recvGroup == nil` condition is load-bearing, not an
+	/// accident of the secrets being spent by then. Fails if the gate is
+	/// ever simplified to unconditional-carry.
+	func testEstablishedSessionArchiveOmitsInitSecretsEvenWhenIdentityHoldsThem() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		// Inject a fresh identity carrying LIVE init secrets into the
+		// established session; the `recvGroup == nil` gate must still omit
+		// them, since this session is established.
+		alice.identity = try SessionTestSupport.identity("intruder")
+		XCTAssertNotNil(alice.identity.classicalInitSecretKey)
+
+		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		let body = try sealAndOpen(archive).decode(SessionArchive.self)
 		XCTAssertNil(body.identity.classicalInitSecretKey)
 		XCTAssertNil(body.identity.pqInitSecretKey)
@@ -95,13 +122,12 @@ final class SessionArchiveTests: XCTestCase {
 	/// round-trip — unlike the init secrets above, it carries no secret
 	/// material (the PEER's own published KP), and it's exactly what a
 	/// restored in-flight initiator needs to keep re-sealing
-	/// `pendingOutbound()`. Deliberately stops short of joining Group_B off
-	/// the restored session — that hits the KNOWN, separately-filed
-	/// limitation that a restored in-flight initiator's classical init
-	/// secret isn't archived (`SessionArchive.swift`'s `IdentityArchive`
-	/// doc); `pendingOutbound()` needs no init secret, only `currentStaple`
-	/// + `identity.keyPackage.classical` + `initialTheirKP`, all of which
-	/// this restore does carry.
+	/// `pendingOutbound()`. Stops at `pendingOutbound()` deliberately, to
+	/// isolate this one field's round-trip from the rest of the
+	/// establishment flow; the full restore-then-join-Group_B completion
+	/// (needing PR3c's carried classical init secret too) is
+	/// `testRestoredInFlightInitiatorCompletesEstablishmentAndExchangesAfterRestore`
+	/// below.
 	func testInFlightInitiatorArchiveCarriesInitialTheirKPForPendingOutbound() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8),
@@ -130,6 +156,74 @@ final class SessionArchiveTests: XCTestCase {
 		XCTAssertEqual(
 			frame.returnKeyPackage,
 			try initiated.session.identity.keyPackage.classical.mlsEncoded())
+	}
+
+	/// The headline PR3c proof: a session archived mid-establishment — an
+	/// in-flight INITIATOR, post-`initiate`, before joining Group_B —
+	/// restores and goes on to COMPLETE establishment exactly like the live
+	/// session would have. Combines PR3b's `initialTheirKP` (re-seal the
+	/// envelope) with this PR's carried classical init secret (join Group_B
+	/// off the peer's first frame): `initiate` -> archive -> restore ->
+	/// restored `pendingOutbound()` -> `Invitation.openInitial` recovers
+	/// `welcome`/`returnKeyPackage` -> `receive` (spawns Bob's session) ->
+	/// Bob's first frame -> the RESTORED initiator `processIncoming`s it and
+	/// joins Group_B (`isEstablished` true) -> app messages flow both ways.
+	/// Without PR3c's archive change this throws
+	/// `TwoMLSError.sessionNotReady` at the `processIncoming` step (joining
+	/// Group_B needs `identity.classicalJoinCredentials`, which needs the
+	/// now-nil classical init secret) — verified by temporarily reverting
+	/// the source change.
+	func testRestoredInFlightInitiatorCompletesEstablishmentAndExchangesAfterRestore()
+		throws
+	{
+		let alicePrincipal = try Principal.generate(
+			clientID: Data("alice".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let bobPrincipal = try Principal.generate(
+			clientID: Data("bob".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirKP)
+
+		let archive = try initiated.session.makeSessionArchive(kind: .checkpoint)
+		var restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: try sealAndOpen(archive),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertFalse(restored.isEstablished)
+
+		let envelope = try restored.pendingOutbound()
+		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
+			return XCTFail("expected .establishment")
+		}
+		let returnKP = try MLS.RFC9420.KeyPackage(
+			mlsEncoded: try XCTUnwrap(frame.returnKeyPackage))
+		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
+		let received = try invitation.receive(
+			welcome: try XCTUnwrap(frame.welcome), theirClassicalKeyPackage: returnKP,
+			bootstrapKPCommitment: try restored.bootstrapKPCommitment(),
+			spawnToken: spawnToken)
+		var bob = received.session
+		XCTAssertTrue(bob.isEstablished)
+
+		_ = try bob.prepareToEncrypt()
+		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
+
+		// The restored initiator joins Group_B off Bob's first frame here —
+		// exactly the step that throws `.sessionNotReady` without PR3c's
+		// carried classical init secret.
+		let decrypted = try restored.processIncoming(bobFrame)
+		XCTAssertTrue(restored.isEstablished)
+		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
+
+		_ = try restored.prepareToEncrypt()
+		let aliceFrame = try restored.encrypt(Data("alice-hello".utf8)).frame
+		let bobDecrypted = try bob.processIncoming(aliceFrame)
+		XCTAssertEqual(bobDecrypted.applicationMessage, Data("alice-hello".utf8))
 	}
 
 	// MARK: - 2. classical fold, then Core@higher-seq over Checkpoint@lower-seq

@@ -95,17 +95,20 @@ extension ArchiveIntegerKeyedMap: Equatable where Value: Equatable {}
 /// The two INIT secrets are archived **conditionally**, gated by
 /// `includeInitSecrets` at encode time (not inferred from whether they
 /// happen to be `nil`):
-///  - A **session** identity uses `includeInitSecrets: false`, so a session
-///    archive never carries them. For an ESTABLISHED session that is moot —
-///    both are already spent (`TwoMLSIdentity.clearingInitSecrets`). For an
-///    in-flight INITIATOR (post-`initiate`, before it joins its receive
-///    group) the classical init secret is still live, kept until
-///    `joinGroupBIfNeeded`; the `false` flag deliberately keeps it out of
-///    the archive, so a session archived mid-establishment cannot re-join
-///    its receive group after a restore. That gap is orthogonal to this
-///    invitation change and left unaddressed here (the initiator's identity
-///    is per-session and never published, so no blast-radius concern
-///    applies to fixing it later).
+///  - A **session** identity uses `includeInitSecrets: recvGroup == nil` —
+///    an explicit SEMANTIC condition (pre-establishment), not "infer from
+///    runtime nil-ness" of the secrets themselves. For an in-flight
+///    INITIATOR (post-`initiate`, before it joins its receive group —
+///    `recvGroup == nil`) the classical init secret is still live, kept
+///    until `joinGroupBIfNeeded`; the archive now carries it, so a session
+///    archived mid-establishment can restore and still complete — the
+///    restored initiator's `pendingOutbound()`/`Invitation.openInitial`/
+///    `receive`/`processIncoming` round joins Group_B exactly as the live
+///    path would have. For an ESTABLISHED session (`recvGroup` set) the flag
+///    omits them, which is moot anyway — both are already spent
+///    (`TwoMLSIdentity.clearingInitSecrets`). Low blast radius either way:
+///    the initiator's identity is per-session, minted fresh, and never
+///    published.
 ///  - An **invitation** identity DOES carry them, when still un-consumed:
 ///    a published `Invitation` is a durable receiving capability, and its
 ///    published key package's init secrets are exactly what a later
@@ -152,10 +155,10 @@ struct IdentityArchive: Codable, Sendable {
 extension IdentityArchive {
 	/// `includeInitSecrets` is an explicit control, never inferred from
 	/// whether `identity`'s init secrets happen to be `nil` at the call
-	/// site — see the type doc for why. Defaults to `false` (the session
-	/// path's existing, unchanged shape); the invitation path opts in
-	/// explicitly.
-	init(_ identity: TwoMLSIdentity, includeInitSecrets: Bool = false) throws {
+	/// site — see the type doc for why. Every caller states its condition:
+	/// the session path passes `recvGroup == nil` (carry only for a
+	/// pre-establishment initiator), the invitation path passes `true`.
+	init(_ identity: TwoMLSIdentity, includeInitSecrets: Bool) throws {
 		self.init(
 			clientID: identity.clientID,
 			signingKey: identity.signingKey.data,
@@ -730,7 +733,8 @@ extension TwoMLSSession {
 			recvPQEpoch: recvGroup?.pq?.context.epoch,
 			sendClassicalGroupID: sendGroup?.classical.context.groupID,
 			recvClassicalGroupID: recvGroup?.classical.context.groupID,
-			identity: try IdentityArchive(identity, includeInitSecrets: false),
+			identity: try IdentityArchive(
+				identity, includeInitSecrets: recvGroup == nil),
 			auth: auth,
 			sendGroup: try sendGroup?.makeGroupEntry(kind: kind),
 			recvGroup: try recvGroup?.makeGroupEntry(kind: kind),

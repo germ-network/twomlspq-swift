@@ -27,8 +27,9 @@ final class EstablishmentTests: XCTestCase {
 	/// initiator's PQ one is spent founding Group_A's PQ half — all three
 	/// are gone immediately. The initiator's classical one survives until
 	/// she joins Group_B herself (the acceptor's first frame), at which
-	/// point it too is cleared. None of the four is ever re-derivable from
-	/// a restored session (`IdentityArchive` never carries them).
+	/// point it too is cleared. An ESTABLISHED session archive never carries
+	/// them; only a pre-establishment initiator archive carries its still-
+	/// live classical one (this test restores only established bob).
 	func testInitSecretsAreClearedOnceSpentAndNeverSurviveRestore() throws {
 		let (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		XCTAssertNil(bob.identity.classicalInitSecretKey)

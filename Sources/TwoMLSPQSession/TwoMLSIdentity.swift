@@ -25,10 +25,12 @@ public struct CombinerKeyPackage: Sendable {
 ///
 /// The two init secrets are join-only: each is read exactly once, to join
 /// the group its own `KeyPackage` was added to (never to found one — that
-/// takes only the leaf secret). Once a SESSION's join has happened they are
-/// `nil`ed (`clearingInitSecrets`) and a session archive never carries them
-/// (`IdentityArchive`'s `includeInitSecrets: false` session path) — an
-/// invitation's identity is the SAME published key package's private
+/// takes only the leaf secret). A SESSION archive carries the classical one
+/// only pre-establishment (`IdentityArchive`'s `includeInitSecrets: recvGroup
+/// == nil` session path) — an in-flight initiator still needs it to join its
+/// receive group after a restore. Once a SESSION's join has happened both are
+/// `nil`ed (`clearingInitSecrets`) and the archive omits them, which is moot:
+/// an invitation's identity is the SAME published key package's private
 /// material across every welcome it accepts, so retaining an already-spent
 /// init secret in a SESSION archive would needlessly widen one leaked
 /// session archive's blast radius to the still-published key package. An
