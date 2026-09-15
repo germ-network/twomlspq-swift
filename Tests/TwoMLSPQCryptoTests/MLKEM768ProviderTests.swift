@@ -1,4 +1,4 @@
-import CryptoKit
+import Crypto
 import Foundation
 import MLSCodec
 import MLSCrypto
@@ -186,7 +186,7 @@ final class MLKEM768ProviderTests: XCTestCase {
 		let archive = rawBytes(secret.data)
 		XCTAssertEqual(archive.count, 96)
 
-		let reconstructed = try CryptoKit.MLKEM768.PrivateKey(
+		let reconstructed = try MLKEM768.PrivateKey(
 			integrityCheckedRepresentation: archive)
 		// Reconstructs to the same public key.
 		XCTAssertEqual(reconstructed.publicKey.rawRepresentation, publicKey.data)
@@ -195,7 +195,7 @@ final class MLKEM768ProviderTests: XCTestCase {
 
 		// And it decapsulates: encapsulate to the public key, decapsulate with the
 		// reconstructed private key, secrets match.
-		let encapsulation = try CryptoKit.MLKEM768.PublicKey(
+		let encapsulation = try MLKEM768.PublicKey(
 			rawRepresentation: publicKey.data
 		)
 		.encapsulate()
