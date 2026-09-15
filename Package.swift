@@ -16,16 +16,14 @@ let package = Package(
 	],
 	dependencies: [
 		// swift-mls has no tags; pin by commit. `MLSCrypto` is the CipherSuiteProvider seam.
-		// df08e1a = germ-network/swift-mls PR #95 (DRAFT, branch
-		// `llm/combiner-establish-extra-extensions`), adding
+		// 590f161 = germ-network/swift-mls main (PR #95 merged), adding
 		// `CombinerGroup.establish(classicalExtraExtensions:)` — the seam this package's
 		// `AppBinding` (0xF0A2) GroupContext extension rides into Group_A's classical
-		// half. TEMPORARY: re-pin to PR #95's merge commit once it lands on main. Additive
-		// over 3c1dc21 (the public non-consuming RFC 9420 §8.5
+		// half. Additive over 3c1dc21 (the public non-consuming RFC 9420 §8.5
 		// `Group.exportSecret(_:label:context:length:)`, swift-mls #94).
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			revision: "df08e1a28ffde9dc954699129ff53cd1f87eaec1"
+			revision: "590f16192cfbd32eabeb2d41b4d3d68916c967be"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		.package(
