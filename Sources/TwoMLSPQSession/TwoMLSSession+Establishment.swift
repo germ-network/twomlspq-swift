@@ -15,7 +15,8 @@ extension TwoMLSSession {
 	/// a principal mints shares its one signing key) and delegate.
 	public static func initiate(
 		principal: Principal,
-		their: CombinerKeyPackage
+		their: CombinerKeyPackage,
+		appBinding: Data? = nil
 	) throws -> EstablishResult {
 		let identity = try TwoMLSIdentity.generate(
 			clientID: principal.clientID, signingKey: principal.signingKey,
@@ -25,7 +26,8 @@ extension TwoMLSSession {
 		return try initiate(
 			identity: identity, their: their,
 			classicalProvider: principal.classicalProvider,
-			pqProvider: principal.pqProvider, codepoints: principal.codepoints)
+			pqProvider: principal.pqProvider, appBinding: appBinding,
+			codepoints: principal.codepoints)
 	}
 
 	/// The session acknowledges a replayed initial frame the invitation's
@@ -44,16 +46,25 @@ extension TwoMLSSession {
 	/// Internal: the app-facing entry point is `initiate(principal:their:)`
 	/// above; this lower-level primitive stays available in-module for tests
 	/// that need direct identity access.
+	///
+	/// `appBinding` is the optional app-state binding welded into Group_A's
+	/// classical GroupContext at this moment and immutable for the session's
+	/// lifetime (book group-rules.md rule 8) — pass a digest, never empty
+	/// (empty is reserved-invalid, rejected here before any group is built).
 	static func initiate(
 		identity: TwoMLSIdentity,
 		their: CombinerKeyPackage,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
+		appBinding: Data? = nil,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> EstablishResult {
 		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
 			pqProvider.cipherSuite == TwoMLSSuite.pq
 		else { throw TwoMLSError.cipherSuiteMismatch }
+		guard appBinding.map(\.isEmpty) != true else {
+			throw TwoMLSError.appBindingMismatch
+		}
 
 		// AS binding: `their.classical` and `their.pq` are two separate
 		// caller-supplied `KeyPackage`s — nothing else ties them to the same
@@ -79,7 +90,7 @@ extension TwoMLSSession {
 		let (groupA, welcome) = try APQGroup.establishFull(
 			classical: classicalHalf, pq: pqHalf, mode: 0,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: codepoints)
+			appBinding: appBinding, codepoints: codepoints)
 
 		let apqWelcomeA = Frames.encodeAPQWelcome(
 			t: try welcome.tWelcome.mlsEncoded(), pq: try welcome.pqWelcome.mlsEncoded()
@@ -161,6 +172,17 @@ extension TwoMLSSession {
 	/// for tests that need direct identity access. `spawnToken` is `nil` for
 	/// those direct callers — a session accepted that way has no forward-
 	/// table routing to acknowledge.
+	///
+	/// `expectedAppBinding` is a TRAILING optional (leaving room after
+	/// `codepoints` for a future dedicated-principal `newClientID` param) —
+	/// the app-state binding the joined welcome must carry: an exact,
+	/// symmetric match (`Some` byte-equal, `None` unbound), verified against
+	/// Group_A right after the join and BEFORE the AS seed or any caller-side
+	/// state claim (book group-rules.md rule 8) — a rejected welcome consumes
+	/// nothing (`Invitation.receive` stages its four tables on a copy only
+	/// after this call returns). An empty expectation is rejected up front,
+	/// before any group is even decoded — empty is reserved-invalid, so it
+	/// could never match.
 	static func receive(
 		identity: TwoMLSIdentity,
 		welcome: Data,
@@ -169,11 +191,15 @@ extension TwoMLSSession {
 		spawnToken: Data? = nil,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
-		codepoints: MLS.Combiner.Codepoints = .deployed
+		codepoints: MLS.Combiner.Codepoints = .deployed,
+		expectedAppBinding: Data? = nil
 	) throws -> EstablishResult {
 		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
 			pqProvider.cipherSuite == TwoMLSSuite.pq
 		else { throw TwoMLSError.cipherSuiteMismatch }
+		guard expectedAppBinding.map(\.isEmpty) != true else {
+			throw TwoMLSError.appBindingMismatch
+		}
 
 		guard bootstrapKPCommitment.count == 32 else {
 			throw TwoMLSError.bootstrapKPMismatch
@@ -206,6 +232,24 @@ extension TwoMLSSession {
 		let peerID = try basicIdentifier(peerLeaf.credential)
 		guard try basicIdentifier(theirClassicalKeyPackage.leafNode.credential) == peerID
 		else { throw TwoMLSError.remoteIdentityMismatch }
+
+		// App-state binding: the joined welcome must carry exactly the binding
+		// the caller expects (book group-rules.md rule 8) — verified before the
+		// AS seed just below, so a rejected welcome (`Invitation.receive` stages
+		// its tables only after this call returns) leaves everything reusable.
+		// The PQ half inherits coverage through the `APQInfo` half-binding; a
+		// smuggled PQ-half copy is rejected at every PQ-half join.
+		try verifyAppBinding(groupA.classical, expected: expectedAppBinding)
+		try verifyPQHalfUnbound(groupA.pq)
+		if expectedAppBinding != nil {
+			try ensureAppBindingCreatorLeafAdvert(peerLeaf)
+		}
+		// Mirrored onto Group_B below — re-read off the just-verified group
+		// rather than trusting the caller's claim a second time (matches
+		// `verifyAppBinding`'s own ground truth).
+		let verifiedAppBinding = try AppBinding.read(
+			fromExtensionsOf: groupA.classical.context)
+
 		let auth = AuthCore(
 			mine: .seeded(identity.clientID), theirs: .seeded(peerID))
 
@@ -225,7 +269,8 @@ extension TwoMLSSession {
 		let (groupB, classicalWelcomeB) = try APQGroup.establishClassicalOnly(
 			founder: founderHalf, pqGroupID: pqGroupID, crossPSK: crossPSK,
 			nonce: nonce,
-			provider: classicalProvider, codepoints: codepoints)
+			provider: classicalProvider, appBinding: verifiedAppBinding,
+			codepoints: codepoints)
 		try TwoPartyRules.ensureTwoParty(groupB.classical)
 
 		let apqWelcomeB = Frames.encodeAPQWelcome(

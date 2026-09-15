@@ -290,4 +290,27 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// Group_B (`initialTheirKP` cleared at `joinGroupBIfNeeded`), or this
 	/// session is a responder (which never retains one).
 	case noPendingEstablishmentEnvelope
+
+	// MARK: App binding (0xF0A2, group-rules.md rule 8)
+
+	/// `AppBinding.read` found more than one `0xF0A2` extension, or one
+	/// present but undecodable (truncation or trailing bytes — a corrupt
+	/// binding must never read back as "unbound", mirroring `APQInfo.read`'s
+	/// same rule); `verifyAppBinding` found a group's binding did not match
+	/// the caller's exact expectation (`Some` requires byte-equality, `None`
+	/// requires the group to carry none); `verifyPQHalfUnbound` found a PQ
+	/// half carrying one (the binding lives on the classical halves only);
+	/// or an EMPTY binding was supplied to `initiate`/`establishClassicalOnly`
+	/// or as an expectation to `receive`/`Invitation.receive` (empty is
+	/// reserved-invalid — `None` is the deliberate unbound state).
+	case appBindingMismatch
+	/// Port-side defense-in-depth: swift-mls does not enforce mls-rs's
+	/// per-client GroupContext-extension leaf-capability requirement, so this
+	/// module checks it itself whenever a group is about to carry (or was
+	/// joined carrying) an `AppBinding` — a founder leaf, an added peer leaf,
+	/// or a joined creator leaf that does not advertise the `AppBinding`
+	/// extension type (`0xF0A2`) in its `Capabilities.extensions`. An
+	/// old-capability key package cannot be added to (or trusted as creator
+	/// of) a binding-carrying group.
+	case appBindingLeafUnadvertised
 }

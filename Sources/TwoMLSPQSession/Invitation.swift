@@ -89,14 +89,22 @@ public struct Invitation: Sendable {
 	///    `.invitationSpent`.
 	/// 5. an already-consumed remote → `.duplicateWelcome`.
 	/// 6. delegate to `TwoMLSSession.receive` (enforces the welcome-creator
-	///    ≡ KP identity binding, joins Group_A, founds Group_B).
+	///    ≡ KP identity binding, verifies `expectedAppBinding`, joins
+	///    Group_A, founds Group_B) — a throw here (including
+	///    `.appBindingMismatch`) claims nothing: this method's own table
+	///    writes below all happen on a copy, only after this call returns.
 	/// 7. commit: insert all four tables, single-use consume, bump
 	///    `stateSeq`, return the spawned session plus the updated archive.
+	///
+	/// `expectedAppBinding` is a TRAILING optional (see
+	/// `TwoMLSSession.receive`) — the app-state binding the welcome must
+	/// carry, `nil` for an unbound session.
 	public mutating func receive(
 		welcome: Data,
 		theirClassicalKeyPackage: MLS.RFC9420.KeyPackage,
 		bootstrapKPCommitment: Data,
-		spawnToken: Data
+		spawnToken: Data,
+		expectedAppBinding: Data? = nil
 	) throws -> (session: TwoMLSSession, archive: SecretArchive) {
 		guard bootstrapKPCommitment.count == 32 else {
 			throw TwoMLSError.bootstrapKPMismatch
@@ -119,7 +127,7 @@ public struct Invitation: Sendable {
 			theirClassicalKeyPackage: theirClassicalKeyPackage,
 			bootstrapKPCommitment: bootstrapKPCommitment, spawnToken: spawnToken,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: codepoints)
+			codepoints: codepoints, expectedAppBinding: expectedAppBinding)
 		guard let recvGroupID = result.session.recvGroup?.classical.context.groupID else {
 			throw TwoMLSError.sessionNotReady
 		}

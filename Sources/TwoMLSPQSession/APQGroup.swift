@@ -31,17 +31,37 @@ extension APQGroup {
 	/// Group_A: establish a full pair via the combiner (PQ-first, `apq_psk`
 	/// bound in), then `verifyPair` — `establish` does not call it internally
 	/// (only `join` does), so the founder checks its own construction here.
+	///
+	/// `appBinding`, when non-nil, is welded into the classical half only (the
+	/// PQ half inherits coverage through the `APQInfo` half-binding, book
+	/// group-rules.md rule 8) via the PR-0 `classicalExtraExtensions` seam.
+	/// Empty is reserved-invalid (rejected defensively here too, even though
+	/// every wired caller already rejects it at its own choke point — mirrors
+	/// Rust's shared `with_app_binding`, which both directions call through);
+	/// non-nil additionally requires both the founder's own leaf and the
+	/// peer's leaf to advertise `0xF0A2` (swift-mls does not enforce this the
+	/// way mls-rs's per-client extension registration does).
 	static func establishFull(
 		classical: MLS.Combiner.HalfCreation,
 		pq: MLS.Combiner.HalfCreation,
 		mode: UInt8,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
+		appBinding: Data? = nil,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> (group: APQGroup, welcome: MLS.Combiner.APQWelcome) {
+		if let appBinding {
+			guard !appBinding.isEmpty else { throw TwoMLSError.appBindingMismatch }
+			try ensureAppBindingLeafAdvert(
+				founder: classical.leafNode, peer: classical.peerKeyPackage.leafNode
+			)
+		}
 		let (combinerGroup, welcome) = try MLS.Combiner.CombinerGroup.establish(
 			classical: classical, pq: pq, mode: mode,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
+			classicalExtraExtensions: try appBinding.map {
+				[try AppBinding(data: $0).asExtension()]
+			} ?? [],
 			codepoints: codepoints)
 		try combinerGroup.verifyPair()
 		let group = APQGroup(
@@ -76,15 +96,30 @@ extension APQGroup {
 	/// PreSharedKey(crossPSK)]` — no `AppDataUpdate` attestation (a draft-02
 	/// PARTIAL commit). Must run under the deployed `ComponentID` wire width:
 	/// the cross-party PSK's id encodes at that width.
+	///
+	/// `appBinding`, when non-nil, is appended as a second creation-time
+	/// GroupContext extension (mirrors Group_A's `establishFull`, and the
+	/// acceptor's mirror of the verified incoming binding — book
+	/// group-rules.md rule 8). Empty is reserved-invalid — rejected
+	/// defensively here even though the caller (`receive`) already rejects an
+	/// empty expectation at its own choke point, mirroring Rust's shared
+	/// `with_app_binding`; non-nil additionally requires both the founder's
+	/// own leaf and the peer's leaf to advertise `0xF0A2`.
 	static func establishClassicalOnly(
 		founder: MLS.Combiner.HalfCreation,
 		pqGroupID: Data,
 		crossPSK: MLS.Combiner.ExportedPsk,
 		nonce: Data,
 		provider: any MLS.CipherSuiteProvider,
+		appBinding: Data? = nil,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> (group: APQGroup, welcome: MLS.RFC9420.Welcome) {
-		try withDeployedWireConventions {
+		if let appBinding {
+			guard !appBinding.isEmpty else { throw TwoMLSError.appBindingMismatch }
+			try ensureAppBindingLeafAdvert(
+				founder: founder.leafNode, peer: founder.peerKeyPackage.leafNode)
+		}
+		return try withDeployedWireConventions {
 			let info = MLS.Combiner.APQInfo(
 				tSessionGroupID: founder.groupID,
 				pqSessionGroupID: pqGroupID,
@@ -96,13 +131,19 @@ extension APQGroup {
 				pqEpoch: epochUnbound)
 			let infoExtension = try info.asExtension(
 				type: codepoints.apqInfoExtensionType)
+			var classicalExtensions = [infoExtension]
+			if let appBinding {
+				classicalExtensions.append(
+					try AppBinding(data: appBinding).asExtension())
+			}
 
 			var pskStore = MLS.Combiner.PSKStore()
 			pskStore.register(crossPSK)
 
 			let epoch0 = try MLS.RFC9420.Group.create(
 				provider, groupID: founder.groupID, leafNode: founder.leafNode,
-				leafSecretKey: founder.leafSecretKey, extensions: [infoExtension],
+				leafSecretKey: founder.leafSecretKey,
+				extensions: classicalExtensions,
 				epochSecret: founder.epochSecret)
 			let proposals: [MLS.RFC9420.ProposalOrRef] = [
 				.proposal(.add(founder.peerKeyPackage)),

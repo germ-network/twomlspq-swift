@@ -428,6 +428,17 @@ public struct TwoMLSSession: Sendable {
 	/// manifest.
 	var lastCheckpointedManifest = PQEpochManifest(sendPQEpoch: nil, recvPQEpoch: nil)
 
+	/// The app-state binding this session was created with (`initiate`'s or
+	/// `receive`'s `appBinding`), read from the send group's classical
+	/// GroupContext — it rides the persisted group state, so a restored
+	/// session's owner re-verifies here (book api-reference.md,
+	/// group-rules.md rule 8). Errors only on a present-but-undecodable
+	/// extension, so corruption can never read back as "unbound".
+	public func appBinding() throws -> Data? {
+		guard let send = sendGroup else { throw TwoMLSError.notEstablished }
+		return try AppBinding.read(fromExtensionsOf: send.classical.context)
+	}
+
 	public var isEstablished: Bool { sendGroup != nil && recvGroup != nil }
 	/// Both directional pairs have their PQ half present — the §A.3
 	/// bootstrap's completion condition.

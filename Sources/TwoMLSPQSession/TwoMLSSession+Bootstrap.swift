@@ -135,6 +135,10 @@ extension TwoMLSSession {
 			welcome: welcome, credentials: credentials,
 			classicalHalfForPairCheck: recv.classical, pqProvider: pqProvider,
 			codepoints: codepoints)
+		// Defense in depth (book group-rules.md rule 8): the binding lives on
+		// the classical halves only — every PQ-half join re-checks that no
+		// copy was smuggled in, even one Bob (an honest founder) never writes.
+		try verifyPQHalfUnbound(pqGroup)
 		bootstrapKPSecret = nil
 
 		try withDeployedWireConventions {
