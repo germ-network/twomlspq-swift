@@ -184,6 +184,13 @@ extension TwoMLSSession {
 		if let commitment = body.expectedBootstrapKPCommitment, commitment.count != 32 {
 			throw TwoMLSError.archiveInvalid
 		}
+		// Every restored rendezvous address is a 32-byte exporter output; a
+		// wrong-length entry is a corrupt or adversarial archive — fail closed.
+		if let listen = body.listenRendezvous,
+			!listen.entries.values.allSatisfy({ $0.count == 32 })
+		{
+			throw TwoMLSError.archiveInvalid
+		}
 	}
 
 	// MARK: - Steps 6-7: rebuild groups + pair verification
@@ -254,6 +261,14 @@ extension TwoMLSSession {
 			try $0.restore()
 		}
 		session.rotationCandidate = try body.rotationCandidate?.restore()
+		// Optional-with-empty-default (SessionArchive.swift): absent on a
+		// pre-existing v1 archive, in which case this starts empty. Restore
+		// is itself a capture site — re-derive the current classical epoch's
+		// address at once (idempotent when the map already carries it), so
+		// even an archive that omits the current epoch lists where the peer
+		// posts NOW rather than only after the next commit.
+		session.listenRendezvous = body.listenRendezvous?.entries ?? [:]
+		try session.recordListenRendezvous()
 		// Return cadence (slice 8a): the reconciled `stateSeq` becomes both
 		// the live counter to advance from and `currentStapleSeq`'s seed — a
 		// safe, never-under value for the durability gate (this blob is

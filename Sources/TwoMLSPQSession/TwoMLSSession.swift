@@ -341,6 +341,24 @@ public struct TwoMLSSession: Sendable {
 	/// in flight, matching the Rust reference's own `SEND_PSK_WINDOW`.
 	static let sendCrossPSKLedgerWindow = 8
 
+	// MARK: Routing (rendezvous, slice 9 PR1)
+
+	/// Every retained classical epoch's rendezvous address for THIS
+	/// session's own send group — `rendezvousSecret(sendGroup.classical)` at
+	/// each epoch it has occupied. Captured live by `recordListenRendezvous()`
+	/// at every site `sendGroup.classical`'s epoch advances or the group is
+	/// first created (an exporter is only derivable at its own epoch, never
+	/// retroactively) — group creation in `initiate`/`receive`, and
+	/// `committingRound`'s success point (which also covers an owed §4b bind
+	/// discharge: it folds into that same commit). Retained to
+	/// `sendGroup.classical.retention.resumptionPskDepth` behind the current
+	/// epoch, pruned on every capture, so the listen window is exactly the
+	/// window a peer's frame can still be routed against (book
+	/// session-lifecycle.md, "Routing"). `shouldListenOn()` only reads this —
+	/// a mutating backstop there would violate the return-based persistence
+	/// contract (nothing calling it returns a `StateUpdate`).
+	var listenRendezvous: [UInt64: Data] = [:]
+
 	// MARK: §15 classical principal rotation (slice 6)
 
 	/// The classical successor minted by our own `prepareToEncrypt(rotating:)`

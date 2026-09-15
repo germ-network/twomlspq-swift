@@ -548,6 +548,11 @@ struct SessionArchive: Codable, Sendable {
 	var sendCrossPSKLedger: ArchiveIntegerKeyedMap<ExportedPskArchive>
 	var rotationCandidate: RotationCandidateArchive?
 	var spawnToken: Data?
+	/// `listenRendezvous`, added slice 9 PR1 — Optional so a pre-existing
+	/// v1 archive (encoded before this field existed) still decodes: it
+	/// decodes to an empty map, and `restore` re-captures the current
+	/// epoch's address at once (restore is itself a capture site).
+	var listenRendezvous: ArchiveIntegerKeyedMap<Data>?
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case version = 0
@@ -583,6 +588,7 @@ struct SessionArchive: Codable, Sendable {
 		case sendCrossPSKLedger = 30
 		case rotationCandidate = 31
 		case spawnToken = 32
+		case listenRendezvous = 33
 	}
 }
 
@@ -664,7 +670,8 @@ extension TwoMLSSession {
 			sendCrossPSKLedger: ArchiveIntegerKeyedMap(
 				sendCrossPSKLedger.mapValues(ExportedPskArchive.init)),
 			rotationCandidate: rotationCandidate.map(RotationCandidateArchive.init),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken,
+			listenRendezvous: ArchiveIntegerKeyedMap(listenRendezvous))
 		return try SecretArchive(encoding: body)
 	}
 }

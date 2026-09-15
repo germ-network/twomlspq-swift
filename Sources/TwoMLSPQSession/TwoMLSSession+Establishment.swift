@@ -111,6 +111,10 @@ extension TwoMLSSession {
 				initSecretKey: bootstrap.initSecretKey,
 				keyPackage: bootstrap.keyPackage
 			), pqTurnMine: true)
+		// The send group (Group_A) exists from construction: capture its
+		// birth epoch's rendezvous address before minting the baseline
+		// archive (routing works from birth, book session-lifecycle.md).
+		try session.recordListenRendezvous()
 		// `apqWelcomeA` IS this session's first staple — the baseline
 		// `StateUpdate` (there is no separate sink/`installSink` call).
 		session.markStapleInstalled()
@@ -245,6 +249,10 @@ extension TwoMLSSession {
 			// Bob's freshly-joined copy is already at epoch 1, so the watermark
 			// seeds there too.
 			lastCrossInjected: 1, spawnToken: spawnToken)
+		// The send group (Group_B) exists from construction: capture its
+		// birth epoch's rendezvous address before minting the baseline
+		// archive (routing works from birth, book session-lifecycle.md).
+		try session.recordListenRendezvous()
 		// `apqWelcomeB` IS this session's first staple — the baseline
 		// `StateUpdate` (there is no separate sink/`installSink` call).
 		session.markStapleInstalled()
