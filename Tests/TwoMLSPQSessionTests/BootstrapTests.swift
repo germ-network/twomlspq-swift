@@ -134,7 +134,8 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertNil(alice.owedBind)
 		let frame = try alice.encrypt(Data("bound".utf8)).frame
 
-		let (staple, _, _) = try Frames.decodeMessageFrame(frame)
+		// PR2: opened via `bob` (the recipient).
+		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
 		XCTAssertEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
 
 		let decrypted = try bob.processIncoming(frame)
@@ -201,7 +202,8 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertNotNil(alice.owedBind)
 
 		let frame = try alice.encrypt(Data("still-owed".utf8)).frame
-		let (staple, _, _) = try Frames.decodeMessageFrame(frame)
+		// PR2: opened via `bob` (the recipient).
+		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
 		XCTAssertNotEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
 	}
 
@@ -237,7 +239,11 @@ final class BootstrapTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let frame = try alice.encrypt(Data("bound".utf8)).frame
 
-		let (staple, proposal, app) = try Frames.decodeMessageFrame(frame)
+		// PR2: opened via `bob` (the recipient); the reconstructed
+		// `corruptedFrame` below is fed to `bob.processIncoming` raw and
+		// passes straight through its `openOrRaw` (an unsealable blob is
+		// returned as-is).
+		let (staple, proposal, app) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
 		let (t, pq) = try Frames.decodeAPQPrivateMessage(staple)
 		var corruptedPQ = pq
 		corruptedPQ[corruptedPQ.count / 2] ^= 0xFF
@@ -367,7 +373,12 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(carrierFrame)
+		// PR2: opened via `alice` (the recipient) — the app section is a
+		// throwaway filler `bob.processIncoming` never reaches (the bind
+		// staple is rejected first), so which peer's window opens it
+		// doesn't otherwise matter.
+		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(carrierFrame))
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
@@ -426,7 +437,12 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(carrierFrame)
+		// PR2: opened via `alice` (the recipient) — the app section is a
+		// throwaway filler `bob.processIncoming` never reaches (the bind
+		// staple is rejected first), so which peer's window opens it
+		// doesn't otherwise matter.
+		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(carrierFrame))
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
@@ -539,7 +555,12 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(carrierFrame)
+		// PR2: opened via `alice` (the recipient) — the app section is a
+		// throwaway filler `bob.processIncoming` never reaches (the bind
+		// staple is rejected first), so which peer's window opens it
+		// doesn't otherwise matter.
+		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(carrierFrame))
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
@@ -569,7 +590,12 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(carrierFrame)
+		// PR2: opened via `alice` (the recipient) — the app section is a
+		// throwaway filler `bob.processIncoming` never reaches (the bind
+		// staple is rejected first), so which peer's window opens it
+		// doesn't otherwise matter.
+		let (_, proposalSection, appSection) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(carrierFrame))
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
@@ -713,7 +739,8 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertTrue(prepared.didCommit)
 		let frame = try alice.encrypt(Data("bound".utf8)).frame
 
-		let (staple, _, _) = try Frames.decodeMessageFrame(frame)
+		// PR2: opened via `bob` (the recipient).
+		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
 		let (tBytes, _) = try Frames.decodeAPQPrivateMessage(staple)
 
 		try withDeployedWireConventions {

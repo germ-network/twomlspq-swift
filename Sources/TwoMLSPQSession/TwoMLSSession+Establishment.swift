@@ -110,7 +110,15 @@ extension TwoMLSSession {
 				leafSecretKey: bootstrap.leafSecretKey,
 				initSecretKey: bootstrap.initSecretKey,
 				keyPackage: bootstrap.keyPackage
-			), pqTurnMine: true)
+			), initialTheirKP: their, pqTurnMine: true)
+		// The send group (Group_A) exists from construction: capture its
+		// birth epoch's rendezvous address before minting the baseline
+		// archive (routing works from birth, book session-lifecycle.md).
+		try session.recordListenRendezvous()
+		// Group_A is a full pair from construction, so its send-PQ half
+		// exists immediately too — capture its birth-epoch header key
+		// alongside (PR2).
+		try session.recordPQHeaderKey()
 		// `apqWelcomeA` IS this session's first staple — the baseline
 		// `StateUpdate` (there is no separate sink/`installSink` call).
 		session.markStapleInstalled()
@@ -245,6 +253,14 @@ extension TwoMLSSession {
 			// Bob's freshly-joined copy is already at epoch 1, so the watermark
 			// seeds there too.
 			lastCrossInjected: 1, spawnToken: spawnToken)
+		// The send group (Group_B) exists from construction: capture its
+		// birth epoch's rendezvous address before minting the baseline
+		// archive (routing works from birth, book session-lifecycle.md).
+		try session.recordListenRendezvous()
+		// Group_B is classical-only pre-A.3 (PR2): a no-op today, kept for
+		// call-site symmetry with `initiate` and against a future establish
+		// shape that founds the PQ half earlier.
+		try session.recordPQHeaderKey()
 		// `apqWelcomeB` IS this session's first staple — the baseline
 		// `StateUpdate` (there is no separate sink/`installSink` call).
 		session.markStapleInstalled()

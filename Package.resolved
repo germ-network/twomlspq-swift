@@ -1,5 +1,5 @@
 {
-  "originHash" : "f0743885ccf1d2e6d49827b5c2a10d0134d666b44502606c20fe806679fa7c38",
+  "originHash" : "51f89e1c1a81f6d75d8f29e503c440ca71fa5dca326247b2f41fa805e663e4a7",
   "pins" : [
     {
       "identity" : "germconvenience",
@@ -42,7 +42,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/germ-network/swift-mls.git",
       "state" : {
-        "revision" : "5ed90f60eb12d5aec34f8834175482d31129d48d"
+        "revision" : "3c1dc212d82dce85ee7d8d896f0188bbba65d0a9"
       }
     },
     {

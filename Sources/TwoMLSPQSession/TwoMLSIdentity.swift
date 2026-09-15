@@ -25,13 +25,19 @@ public struct CombinerKeyPackage: Sendable {
 ///
 /// The two init secrets are join-only: each is read exactly once, to join
 /// the group its own `KeyPackage` was added to (never to found one — that
-/// takes only the leaf secret). Once that join has happened they are
-/// `nil`ed (`clearingInitSecrets`) and never archived (`IdentityArchive`
-/// carries no init-secret field) — an invitation's identity is the SAME
-/// published key package's private material across every welcome it
-/// accepts, so retaining an already-spent init secret would needlessly
-/// widen one leaked session archive's blast radius to the still-published
-/// key package.
+/// takes only the leaf secret). A SESSION archive carries the classical one
+/// only pre-establishment (`IdentityArchive`'s `includeInitSecrets: recvGroup
+/// == nil` session path) — an in-flight initiator still needs it to join its
+/// receive group after a restore. Once a SESSION's join has happened both are
+/// `nil`ed (`clearingInitSecrets`) and the archive omits them, which is moot:
+/// an invitation's identity is the SAME published key package's private
+/// material across every welcome it accepts, so retaining an already-spent
+/// init secret in a SESSION archive would needlessly widen one leaked
+/// session archive's blast radius to the still-published key package. An
+/// un-consumed INVITATION's identity is different: its init secrets are
+/// still live (not yet spent by any join), and it IS archived with them
+/// (`includeInitSecrets: true`) — they are exactly what lets a restored
+/// invitation `receive` a welcome at all.
 @available(iOS 26, macOS 26, *)
 public struct TwoMLSIdentity: Sendable {
 	public let clientID: Data

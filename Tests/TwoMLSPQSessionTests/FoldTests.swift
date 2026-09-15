@@ -36,7 +36,11 @@ final class FoldTests: XCTestCase {
 		_ = try proposer.prepareToEncrypt()
 		let frame = try proposer.encrypt(app).frame
 		_ = try approver.processIncoming(frame)
-		let (_, proposalSection, _) = try Frames.decodeMessageFrame(frame)
+		// PR2: `frame` is header-sealed on exit; `approver` is the one whose
+		// receive window opens it (its sendGroup mirrors `proposer`'s recv
+		// group).
+		let (_, proposalSection, _) = try Frames.decodeMessageFrame(
+			approver.openOrRaw(frame))
 		let (proposing, message) = try Frames.decodeProposalSection(proposalSection)
 		let digest = try SessionTestSupport.classicalProvider.hash(message)
 		return (digest: digest, proposing: proposing, message: message)
@@ -63,7 +67,9 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, groupAEpochBefore + 1)
 
 		let frame = try alice.encrypt(Data("alice-fold".utf8)).frame
-		let (staple, _, _) = try Frames.decodeMessageFrame(frame)
+		// PR2: `frame` is header-sealed on exit; `bob` (the intended
+		// recipient) is the one whose receive window opens it.
+		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
 		// The fold-only staple IS the bare MLSMessage: `0x00` is the message's
 		// own `ProtocolVersion` high byte (`mls10` = `00 01`), never a wrapper
 		// tag — pin the 4-byte `mls10 + public_message` prefix and that the
@@ -131,7 +137,8 @@ final class FoldTests: XCTestCase {
 		XCTAssertNil(bob.owedBind)
 
 		let frame = try bob.encrypt(Data("fold-and-bind".utf8)).frame
-		let (staple, _, _) = try Frames.decodeMessageFrame(frame)
+		// PR2: opened via `alice` (the intended recipient).
+		let (staple, _, _) = try Frames.decodeMessageFrame(alice.openOrRaw(frame))
 		XCTAssertEqual(staple.first, Frames.apqPrivateMessageTag)
 
 		let decrypted = try alice.processIncoming(frame)
@@ -229,7 +236,11 @@ final class FoldTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let frame = try alice.encrypt(Data("fold".utf8)).frame
 
-		let (staple, proposal, app) = try Frames.decodeMessageFrame(frame)
+		// PR2: open via `bob` (the recipient) to reach the plaintext frame to
+		// tamper; the reconstructed (now-raw) `tamperedFrame` passes straight
+		// through `processIncoming`'s `openOrRaw` (an unsealable blob is
+		// returned as-is, the documented receiver convenience).
+		let (staple, proposal, app) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
 		var tamperedStaple = staple
 		tamperedStaple[tamperedStaple.index(before: tamperedStaple.endIndex)] ^= 0xFF
 		let tamperedFrame = Frames.encodeMessageFrame(
@@ -267,7 +278,8 @@ final class FoldTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 
 		let garbage = Data("not-an-mls-message".utf8)
 		let craftedProposal = Frames.encodeProposalSection(
@@ -300,7 +312,8 @@ final class FoldTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: Data("alice".utf8), message: ownUpdateBytes)
 		let craftedFrame = Frames.encodeMessageFrame(
@@ -323,7 +336,9 @@ final class FoldTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		let (staple, proposal, app) = try Frames.decodeMessageFrame(bobFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (staple, proposal, app) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(bobFrame))
 		let (_, bobUpdateMessage) = try Frames.decodeProposalSection(proposal)
 
 		let craftedProposal = Frames.encodeProposalSection(
@@ -386,7 +401,12 @@ final class FoldTests: XCTestCase {
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
+		// PR2: opened via `alice` (the recipient) — only the staple is real
+		// here; the app section is a throwaway filler `handleStaple` rejects
+		// before it is ever decrypted (below), so which peer's window opens
+		// it doesn't otherwise matter.
+		let (_, proposal, app) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(carrierFrame))
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposal, app: app)
 
@@ -462,7 +482,10 @@ final class FoldTests: XCTestCase {
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
+		// PR2: opened via `alice` (the recipient) — see the sibling test
+		// above for why the app section's own opener doesn't matter here.
+		let (_, proposal, app) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(carrierFrame))
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposal, app: app)
 
@@ -523,7 +546,8 @@ final class FoldTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		let (staple, _, app) = try Frames.decodeMessageFrame(bobFrame)
+		// PR2: opened via `alice` (the recipient).
+		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: Data("bob".utf8), message: rotatingMessage)
 		let craftedFrame = Frames.encodeMessageFrame(
@@ -654,7 +678,10 @@ final class FoldTests: XCTestCase {
 		let aheadStaple = Frames.encodeMlsMessageStaple(aheadCommitBytes)
 		_ = try fixtureBob.prepareToEncrypt()
 		let carrierFrame = try fixtureBob.encrypt(Data("carrier".utf8)).frame
-		let (_, proposal, app) = try Frames.decodeMessageFrame(carrierFrame)
+		// PR2: opened via `alice` (the recipient) — the app section is a
+		// throwaway filler, same reasoning as the sibling tests above.
+		let (_, proposal, app) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(carrierFrame))
 		let aheadFrame = Frames.encodeMessageFrame(
 			staple: aheadStaple, proposal: proposal, app: app)
 

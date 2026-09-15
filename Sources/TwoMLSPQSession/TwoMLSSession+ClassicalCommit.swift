@@ -438,6 +438,11 @@ extension TwoMLSSession {
 			sendGroup = send
 			sendCrossPSKLedger = ledger
 			auth = authCopy
+			// Classical epoch just advanced (a bare fold, or a fold+bind
+			// discharge sharing this same commit) — capture its rendezvous
+			// address before this round's caller (`prepareToEncrypt`) mints
+			// its own `StateUpdate`.
+			try recordListenRendezvous()
 
 			if let pqCommitMessageForStaple {
 				currentStaple = Frames.encodeAPQPrivateMessage(

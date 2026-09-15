@@ -85,7 +85,11 @@ final class E2EWalkthroughTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFirstFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		let (bobFirstStaple, _, _) = try Frames.decodeMessageFrame(bobFirstFrame)
+		// PR2: Bob's first frame is header-sealed on exit; Alice's window
+		// (captured at `initiate`) is what opens it — exactly the
+		// establishment round-trip the book's walkthrough describes.
+		let (bobFirstStaple, _, _) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(bobFirstFrame))
 		XCTAssertEqual(
 			bobFirstStaple, welcomeB,
 			"Bob's first frame staples EstablishResult.welcome, not the PQ side-band")

@@ -20,8 +20,9 @@ extension TwoMLSSession {
 		if case .bootstrapInitiated = pqInflight, let pending = pendingSideBand,
 			recvGroup?.pq == nil
 		{
+			let sealed = try sealSideBand(pending)
 			advanceStateSeq()
-			return SideBandResult(frame: pending, update: try stateUpdate(kind: .core))
+			return SideBandResult(frame: sealed, update: try stateUpdate(kind: .core))
 		}
 		guard
 			pqTurnMine, sendGroup != nil, let recv = recvGroup, recv.pq == nil,
@@ -32,10 +33,11 @@ extension TwoMLSSession {
 		let frame = Frames.encodePQBootstrapKP(bootstrapKP)
 		pqInflight = .bootstrapInitiated
 		pendingSideBand = frame
+		let sealed = try sealSideBand(frame)
 
 		// Return cadence (slice 8a): parks the 0x13 frame — classical state only → `.core`.
 		advanceStateSeq()
-		return SideBandResult(frame: frame, update: try stateUpdate(kind: .core))
+		return SideBandResult(frame: sealed, update: try stateUpdate(kind: .core))
 	}
 
 	/// The responder (Bob) receives KP′, checks it against the commitment
@@ -54,14 +56,17 @@ extension TwoMLSSession {
 	/// later slice). It fails closed regardless — a wrong-peer KP′ founds a
 	/// Group_B.pq the real peer never agrees to join, so the bind can never
 	/// complete.
-	public mutating func pqBootstrapRespond(_ frame: Data) throws -> SideBandResult {
+	public mutating func pqBootstrapRespond(_ inbound: Data) throws -> SideBandResult {
+		// Entry (PR2): the peer's `0x13` arrives header-sealed.
+		let frame = openOrRaw(inbound)
 		if sendGroup?.pq != nil {
 			guard let pending = pendingSideBand else {
 				throw TwoMLSError.duplicateSideBand
 			}
+			let sealed = try sealSideBand(pending)
 			advanceStateSeq()
 			return SideBandResult(
-				frame: pending, update: try stateUpdate(kind: .checkpoint))
+				frame: sealed, update: try stateUpdate(kind: .checkpoint))
 		}
 		let kpBytes = try Frames.decodePQBootstrapKP(frame)
 		guard
@@ -88,16 +93,19 @@ extension TwoMLSSession {
 			codepoints: codepoints)
 		send.pq = pqGroup
 		sendGroup = send
+		// Founds `sendGroup.pq` (PR2): capture its birth-epoch header key.
+		try recordPQHeaderKey()
 
 		let welcomeBytes = try MLS.RFC9420.Message.welcome(welcome).mlsEncoded()
 		let responseFrame = Frames.encodePQBootstrapWelcome(welcomeBytes)
 		pqInflight = .bootstrapResponded
 		pendingSideBand = responseFrame
+		let sealed = try sealSideBand(responseFrame)
 
 		// Return cadence (slice 8a): founded `sendGroup.pq` → `.checkpoint`.
 		advanceStateSeq()
 		return SideBandResult(
-			frame: responseFrame, update: try stateUpdate(kind: .checkpoint))
+			frame: sealed, update: try stateUpdate(kind: .checkpoint))
 	}
 
 	/// The initiator (Alice) joins Group_B.pq off Bob's Welcome′, using the
@@ -108,8 +116,10 @@ extension TwoMLSSession {
 	/// (§11 #4): a routine `Upd(self)` must already be discharged (`encrypt`)
 	/// before the bootstrap can add its own commit to the pile. Clears
 	/// `bootstrapKPSecret` once spent (§11 #11).
-	public mutating func pqBootstrapJoin(_ frame: Data) throws -> StateUpdate {
+	public mutating func pqBootstrapJoin(_ inbound: Data) throws -> StateUpdate {
 		guard pendingProposal == nil else { throw TwoMLSError.sessionNotReady }
+		// Entry (PR2): the peer's `0x15` arrives header-sealed.
+		let frame = openOrRaw(inbound)
 		let welcomeBytes = try Frames.decodePQBootstrapWelcome(frame)
 		guard case .welcome(let welcome) = try MLS.RFC9420.Message(mlsEncoded: welcomeBytes)
 		else {
@@ -214,6 +224,12 @@ extension TwoMLSSession {
 			let advanced = try sent.takePending().apply(onto: adopted)
 			send.pq = advanced.group
 			sendGroup = send
+			// The single funnel for every discharge-triggering commit on
+			// `sendGroup.pq` (`pqBootstrapJoin`/`pqRatchetBind`/
+			// `pqRekeyApply` all call this) — capture its just-advanced
+			// epoch's header key here, once, rather than at each call site
+			// (PR2).
+			try recordPQHeaderKey()
 
 			owedBind = OwedBind(
 				pqCommitMessage: commitBytes, tEpoch: attestation.tEpoch,

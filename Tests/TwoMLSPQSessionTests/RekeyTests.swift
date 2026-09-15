@@ -55,17 +55,21 @@ final class RekeyTests: XCTestCase {
 
 		// 1: Bob (initiator) proposes Upd′ into his recv mirror.
 		let updFrame = try bob.pqRekeyBegin().frame
-		XCTAssertEqual(updFrame.first, Frames.pqRekeyUpdTag)
+		// PR2: opened via `alice` (the recipient).
+		XCTAssertEqual(alice.openOrRaw(updFrame).first, Frames.pqRekeyUpdTag)
 		guard case .rekeyInitiated = bob.pqInflight else {
 			XCTFail("expected bob to hold .rekeyInitiated after pqRekeyBegin")
 			return
 		}
-		XCTAssertEqual(bob.pqPendingOutbound(), updFrame)
+		// `pqPendingOutbound()` re-seals under a fresh nonce every call, so
+		// compare the OPENED plaintexts, not the sealed bytes.
+		XCTAssertEqual(alice.openOrRaw(bob.pqPendingOutbound()!), alice.openOrRaw(updFrame))
 
 		// 2: Alice (committer) folds it into a Commit′ on her own send-PQ —
 		// the group actually being re-keyed.
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
-		XCTAssertEqual(commitFrame.first, Frames.pqRekeyCommitTag)
+		// PR2: opened via `bob` (the recipient).
+		XCTAssertEqual(bob.openOrRaw(commitFrame).first, Frames.pqRekeyCommitTag)
 		guard case .rekeyResponded = alice.pqInflight else {
 			XCTFail("expected alice to hold .rekeyResponded after pqRekeyRespond")
 			return
@@ -210,7 +214,12 @@ final class RekeyTests: XCTestCase {
 		let updFrame = try bob.pqRekeyBegin().frame
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
 
-		var tampered = commitFrame
+		// PR2: tamper the OPENED inner Commit′ (its own MLS framing
+		// signature is what this test pins breaking, `decryptionFailed`'s
+		// `validating` catch) — not the outer header seal's bytes. The
+		// reconstructed (now-raw) frame passes straight through
+		// `pqRekeyApply`'s `openOrRaw`.
+		var tampered = bob.openOrRaw(commitFrame)
 		tampered[tampered.index(before: tampered.endIndex)] ^= 0xFF
 
 		let recvPQEpochBefore = bob.recvGroup?.pq?.context.epoch
@@ -267,7 +276,8 @@ final class RekeyTests: XCTestCase {
 		let updFrame = try bob.pqRekeyBegin().frame
 
 		let mallory = try SessionTestSupport.identity("mallory-rekey")
-		let updBytes = try Frames.decodePQRekeyUpd(updFrame)
+		// PR2: opened via `alice` (the recipient).
+		let updBytes = try Frames.decodePQRekeyUpd(alice.openOrRaw(updFrame))
 		guard
 			case .publicMessage(let updPub) = try MLS.RFC9420.Message(
 				mlsEncoded: updBytes)
@@ -430,8 +440,12 @@ final class RekeyTests: XCTestCase {
 
 	/// `commitFrame`'s proposal count, decoded at the deployed wire width (its
 	/// injected PSK, when present, carries a `ComponentID`, §11 #6).
-	private func rekeyCommitProposalCount(_ commitFrame: Data) throws -> Int {
-		let commitBytes = try Frames.decodePQRekeyCommit(commitFrame)
+	/// PR2: `commitFrame` is header-sealed on exit; `opener` (the recipient)
+	/// is the one whose receive window opens it.
+	private func rekeyCommitProposalCount(_ commitFrame: Data, opener: TwoMLSSession) throws
+		-> Int
+	{
+		let commitBytes = try Frames.decodePQRekeyCommit(opener.openOrRaw(commitFrame))
 		return try withDeployedWireConventions {
 			guard
 				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(
@@ -455,7 +469,7 @@ final class RekeyTests: XCTestCase {
 	func testInjectRoundCompletesWithLockstepWatermarks() throws {
 		var (alice, bob, commitFrame) = try reachInjectConfig()
 
-		XCTAssertEqual(try rekeyCommitProposalCount(commitFrame), 2)
+		XCTAssertEqual(try rekeyCommitProposalCount(commitFrame, opener: alice), 2)
 
 		let groupAEpoch = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
 		XCTAssertEqual(bob.lastCrossInjectedPQ, groupAEpoch)
@@ -493,12 +507,16 @@ final class RekeyTests: XCTestCase {
 	/// skip the pre-register the retry still needs.
 	func testInjectConfigTamperedApplyThenGenuineRetrySucceeds() throws {
 		var (alice, _, commitFrame) = try reachInjectConfig()
-		XCTAssertEqual(try rekeyCommitProposalCount(commitFrame), 2)
+		XCTAssertEqual(try rekeyCommitProposalCount(commitFrame, opener: alice), 2)
 
 		XCTAssertNil(alice.lastSendPQExported)
 		let sendGroupAEpochBefore = try XCTUnwrap(alice.sendGroup?.pq?.context.epoch)
 
-		var tampered = commitFrame
+		// PR2: tamper the OPENED inner Commit′ (its own MLS framing
+		// signature, `decryptionFailed`'s `validating` catch), not the outer
+		// header seal's bytes. The reconstructed (now-raw) frame passes
+		// straight through `pqRekeyApply`'s `openOrRaw`.
+		var tampered = alice.openOrRaw(commitFrame)
 		tampered[tampered.index(before: tampered.endIndex)] ^= 0xFF
 
 		XCTAssertThrowsError(try alice.pqRekeyApply(tampered)) { error in

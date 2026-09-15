@@ -160,13 +160,43 @@ public struct Invitation: Sendable {
 	/// Resolves a §A.3 bootstrap-KP frame (`[0x13][KP′]`, or the bare
 	/// untagged KP′ bytes) to the session that owes A.3 for it — strips a
 	/// leading `0x13` tag if present before hashing, so this routes whether
-	/// the frame arrives tagged (the side-band wire shape) or already
-	/// untagged (the same preimage `bootstrapKPCommitment()` hashes).
+	/// the frame arrives tagged or already untagged (the same preimage
+	/// `bootstrapKPCommitment()` hashes). Post-PR2 the wire `0x13` travels
+	/// header-sealed, so `kpFrame` here is the OPENED frame — a host calls
+	/// this on the plaintext `openIncoming`/`tryOpen` already produced, never
+	/// on the sealed wire bytes.
 	public func bootstrapKPGroupID(kpFrame: Data) -> Data? {
 		let untagged =
 			kpFrame.first == Frames.pqBootstrapKPTag
 			? Data(kpFrame.dropFirst()) : kpFrame
 		guard let digest = try? classicalProvider.hash(untagged) else { return nil }
 		return bootstrapRouting[digest]
+	}
+
+	// MARK: - open_initial (slice 9, PR3b)
+
+	/// Opens a §A.1 envelope with this invitation's own (still-live) PQ
+	/// init secret. Decrypt-only: no table writes, no consume — the four
+	/// tables and `identity` are untouched either way, so an un-consumed
+	/// invitation (single-use or last-resort) stays fully `receive`-able
+	/// afterward, and re-opens are harmless. A spent single-use invitation
+	/// (`identity` already `nil`) fails cleanly with `.invitationSpent`
+	/// rather than crash.
+	public func openInitial(_ envelope: Data) throws -> OpenedInitial {
+		guard let identity else { throw TwoMLSError.invitationSpent }
+		guard let pqInitSecretKey = identity.pqInitSecretKey else {
+			throw TwoMLSError.sessionNotReady
+		}
+		let (enc, ciphertext) = try EstablishmentEnvelope.unframeHpkeBlob(envelope)
+		let plaintext: Data
+		do {
+			plaintext = try pqProvider.hpkeOpen(
+				enc: enc, secretKey: pqInitSecretKey, info: clientID,
+				aad: EstablishmentEnvelope.envelopeFramingAAD(),
+				ciphertext: ciphertext)
+		} catch {
+			throw TwoMLSError.decryptionFailed
+		}
+		return try EstablishmentEnvelope.decodePlaintext(plaintext)
 	}
 }

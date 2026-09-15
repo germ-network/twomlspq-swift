@@ -184,6 +184,26 @@ extension TwoMLSSession {
 		if let commitment = body.expectedBootstrapKPCommitment, commitment.count != 32 {
 			throw TwoMLSError.archiveInvalid
 		}
+		// Every restored rendezvous address is a 32-byte exporter output; a
+		// wrong-length entry is a corrupt or adversarial archive — fail closed.
+		if let listen = body.listenRendezvous,
+			!listen.entries.values.allSatisfy({ $0.count == 32 })
+		{
+			throw TwoMLSError.archiveInvalid
+		}
+		// PR2: both header-key windows are 32-byte AEAD keys (the header
+		// AEAD's own key size), validated the same way (book
+		// header-encryption.md:456-458).
+		if let classical = body.recvHeaderKeys,
+			!classical.entries.values.allSatisfy({ $0.count == 32 })
+		{
+			throw TwoMLSError.archiveInvalid
+		}
+		if let pq = body.recvHeaderKeysPQ,
+			!pq.entries.values.allSatisfy({ $0.count == 32 })
+		{
+			throw TwoMLSError.archiveInvalid
+		}
 	}
 
 	// MARK: - Steps 6-7: rebuild groups + pair verification
@@ -238,6 +258,7 @@ extension TwoMLSSession {
 			joinedWelcomeDigest: body.joinedWelcomeDigest, initiated: body.initiated,
 			bootstrapKPSecret: try body.bootstrapKPSecret?.restore(),
 			expectedBootstrapKPCommitment: body.expectedBootstrapKPCommitment,
+			initialTheirKP: try body.initialTheirKP?.restore(),
 			pqTurnMine: body.pqTurnMine, owedBind: body.owedBind,
 			pqInflight: try body.pqInflight?.restore(),
 			pendingSideBand: body.pendingSideBand,
@@ -254,6 +275,20 @@ extension TwoMLSSession {
 			try $0.restore()
 		}
 		session.rotationCandidate = try body.rotationCandidate?.restore()
+		// Optional-with-empty-default (SessionArchive.swift): absent on a
+		// pre-existing v1 archive, in which case this starts empty. Restore
+		// is itself a capture site — re-derive the current classical epoch's
+		// address at once (idempotent when the map already carries it), so
+		// even an archive that omits the current epoch lists where the peer
+		// posts NOW rather than only after the next commit.
+		session.listenRendezvous = body.listenRendezvous?.entries ?? [:]
+		// PR2: restore is a construction site for the header-key windows too
+		// — re-derive the current classical + PQ header keys so a restored
+		// session can open an in-flight frame at once.
+		session.recvHeaderKeys = body.recvHeaderKeys?.entries ?? [:]
+		session.recvHeaderKeysPQ = body.recvHeaderKeysPQ?.entries ?? [:]
+		try session.recordListenRendezvous()
+		try session.recordPQHeaderKey()
 		// Return cadence (slice 8a): the reconciled `stateSeq` becomes both
 		// the live counter to advance from and `currentStapleSeq`'s seed — a
 		// safe, never-under value for the durability gate (this blob is

@@ -58,7 +58,9 @@ final class RatchetTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
-		let (ekTag, _) = try Frames.decodePQLeg(ekFrame)
+		// PR2: opened via `alice` (the recipient — A.4 legs seal under the
+		// classical family, so the same "other peer" rule applies).
+		let (ekTag, _) = try Frames.decodePQLeg(alice.openOrRaw(ekFrame))
 		XCTAssertEqual(ekTag, Frames.pqEKTag)
 		guard case .initiating = bob.pqInflight else {
 			XCTFail("expected bob to hold `.initiating` after self-staging")
@@ -67,9 +69,12 @@ final class RatchetTests: XCTestCase {
 
 		// 2: Alice responds with a CT, holding `S`.
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
-		let (ctTag, _) = try Frames.decodePQLeg(ctFrame)
+		// PR2: opened via `bob` (the recipient).
+		let (ctTag, _) = try Frames.decodePQLeg(bob.openOrRaw(ctFrame))
 		XCTAssertEqual(ctTag, Frames.pqCTTag)
-		XCTAssertEqual(alice.pqPendingOutbound(), ctFrame)
+		// `pqPendingOutbound()` re-seals under a fresh nonce every call, so
+		// compare the OPENED plaintexts, not the sealed bytes.
+		XCTAssertEqual(bob.openOrRaw(alice.pqPendingOutbound()!), bob.openOrRaw(ctFrame))
 		guard case .responding = alice.pqInflight else {
 			XCTFail("expected alice to hold `.responding` after sealing")
 			return
@@ -166,7 +171,15 @@ final class RatchetTests: XCTestCase {
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 
-		var tampered = ctFrame
+		// PR2: tamper the OPENED inner leg (its last byte is part of the
+		// INNER MLS `PrivateMessage`'s own AEAD tag, `unprotect`'s
+		// tamper-detection — the property this test is actually pinning),
+		// not the outer header seal's bytes — flipping a byte there would
+		// just fail the header AEAD instead, a different (and here
+		// indistinguishable-from-garbage) rejection. The reconstructed
+		// (now-raw) frame passes straight through `pqRatchetBind`'s
+		// `openOrRaw` (an unsealable blob is returned as-is).
+		var tampered = bob.openOrRaw(ctFrame)
 		tampered[tampered.index(before: tampered.endIndex)] ^= 0xFF
 
 		XCTAssertThrowsError(try bob.pqRatchetBind(tampered)) { error in
@@ -229,6 +242,10 @@ final class RatchetTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m2".utf8))
-		XCTAssertEqual(bob.pqPendingOutbound(), firstEK)
+		// `pqPendingOutbound()` re-seals under a fresh nonce every call, so
+		// compare the OPENED plaintexts (via `alice`, the recipient), not
+		// the sealed bytes.
+		XCTAssertEqual(
+			alice.openOrRaw(bob.pqPendingOutbound()!), alice.openOrRaw(firstEK))
 	}
 }

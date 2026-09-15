@@ -80,6 +80,14 @@ extension Invitation {
 	/// Builds this invitation's archive. State is total: this never refuses
 	/// to encode. Returns an UNSEALED, zeroizing `SecretArchive` — the app
 	/// seals it with its own key before writing it out.
+	///
+	/// `includeInitSecrets: true` — unlike `TwoMLSSession.makeSessionArchive`
+	/// — because an un-consumed invitation's identity is a durable
+	/// receiving capability: its published key package's init secrets are
+	/// still live (not yet spent by any join) and are exactly what a
+	/// restored invitation needs to `receive` a welcome. `identity` is
+	/// already `nil` for a spent single-use invitation, so there is nothing
+	/// for this flag to apply to in that case.
 	func makeInvitationArchive() throws -> SecretArchive {
 		let body = InvitationArchive(
 			version: invitationArchiveVersion,
@@ -88,7 +96,9 @@ extension Invitation {
 			stateSeq: stateSeq,
 			lastResort: lastResort,
 			clientID: clientID,
-			identity: try identity.map(IdentityArchive.init),
+			identity: try identity.map {
+				try IdentityArchive($0, includeInitSecrets: true)
+			},
 			forwardTable: forwardTable.map(InvitationTableEntry.init),
 			processedWelcomes: processedWelcomes.map(InvitationTableEntry.init),
 			bootstrapRouting: bootstrapRouting.map(InvitationTableEntry.init),

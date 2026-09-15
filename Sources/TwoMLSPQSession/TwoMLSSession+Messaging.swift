@@ -192,10 +192,15 @@ extension TwoMLSSession {
 		rewrapSideBand()
 		maybeStageNextRound()
 
+		// Sealed on exit (PR2, header-encryption.md "Send rule"): every
+		// outbound message-path frame is header-sealed under the recv
+		// group's current classical key.
+		let sealedFrame = try seal(frame)
+
 		// Return cadence (slice 8a): classical-only mutation → `.core`.
 		advanceStateSeq()
 		let update = try stateUpdate(kind: .core)
-		return EncryptResult(frame: frame, update: update)
+		return EncryptResult(frame: sealedFrame, update: update)
 	}
 
 	/// Decode a frame, apply its staple (join Group_B, a `0x00` fold, or a
@@ -203,7 +208,11 @@ extension TwoMLSSession {
 	/// already applied off an earlier frame), decrypt the app section against
 	/// the receive group, and surface the peer's staged proposal uninterpreted
 	/// (`queueProposal` is the approval step that folds it).
-	public mutating func processIncoming(_ frame: Data) throws -> DecryptResult {
+	public mutating func processIncoming(_ inbound: Data) throws -> DecryptResult {
+		// Entry (PR2): transparently removes the header seal if present,
+		// else passes an already-opened frame straight through (book,
+		// "Receive rule" convenience).
+		let frame = openOrRaw(inbound)
 		let (staple, proposalSection, appSection) = try Frames.decodeMessageFrame(frame)
 		let appMessage = try MLS.RFC9420.Message(mlsEncoded: appSection)
 		guard case .privateMessage(let appPM) = appMessage else {
@@ -366,5 +375,8 @@ extension TwoMLSSession {
 		// (`initiate` deferred clearing it exactly for this join) — clear it
 		// now so it can never be archived once spent.
 		identity = identity.clearingInitSecrets(classical: true, pq: false)
+		// The initiator has nothing left to establish past this point —
+		// `pendingOutbound()` (PR3b) has no more envelope to re-seal.
+		initialTheirKP = nil
 	}
 }

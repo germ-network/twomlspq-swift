@@ -36,9 +36,10 @@ extension TwoMLSSession {
 	/// is already outstanding, like `pqBootstrapBegin`.
 	public mutating func pqRekeyBegin() throws -> SideBandResult {
 		if case .rekeyInitiated = pqInflight, let pending = pendingSideBand {
+			let sealed = try sealSideBand(pending)
 			advanceStateSeq()
 			return SideBandResult(
-				frame: pending, update: try stateUpdate(kind: .checkpoint))
+				frame: sealed, update: try stateUpdate(kind: .checkpoint))
 		}
 		guard pqTurnMine, isFullyEstablished, pqInflight == nil, owedBind == nil,
 			pendingProposal == nil, pendingSideBand == nil
@@ -58,11 +59,12 @@ extension TwoMLSSession {
 		let frame = Frames.encodePQRekeyUpd(updBytes)
 		pqInflight = .rekeyInitiated(updMessage: updBytes)
 		pendingSideBand = frame
+		let sealed = try sealSideBand(frame)
 
 		// Return cadence (slice 8a): stages an Upd′ into `recvGroup.pq` — no epoch
 		// change, but the PQ tree's pending state changed → `.checkpoint`.
 		advanceStateSeq()
-		return SideBandResult(frame: frame, update: try stateUpdate(kind: .checkpoint))
+		return SideBandResult(frame: sealed, update: try stateUpdate(kind: .checkpoint))
 	}
 
 	/// The committer — never the turn-holder (§13 M5: `!pqTurnMine`) —
@@ -74,7 +76,7 @@ extension TwoMLSSession {
 	/// result as a `0x1D` side-band frame. Every export/write-back is
 	/// deferred to the success point after the commit lands (§13 M3): a
 	/// throw above that discards the local `recv`/`send` copies untouched.
-	public mutating func pqRekeyRespond(_ frame: Data) throws -> SideBandResult {
+	public mutating func pqRekeyRespond(_ inbound: Data) throws -> SideBandResult {
 		guard !pqTurnMine, pqInflight == nil, owedBind == nil else {
 			throw TwoMLSError.sessionNotReady
 		}
@@ -84,6 +86,8 @@ extension TwoMLSSession {
 		guard var recv = recvGroup, recv.pq != nil else {
 			throw TwoMLSError.notEstablished
 		}
+		// Entry (PR2): the peer's `0x1B` Upd′ arrives header-sealed.
+		let frame = openOrRaw(inbound)
 
 		return try withDeployedWireConventions {
 			let updBytes = try Frames.decodePQRekeyUpd(frame)
@@ -165,6 +169,9 @@ extension TwoMLSSession {
 
 			send.pq = sendPQ
 			sendGroup = send
+			// The committer's own advance of `sendGroup.pq` (PR2) — a second,
+			// independent commit from the initiator's later `owePQBind` one.
+			try recordPQHeaderKey()
 			if let crossInjectedEpoch {
 				recvGroup = recv
 				lastCrossInjectedPQ = crossInjectedEpoch
@@ -173,11 +180,12 @@ extension TwoMLSSession {
 			let responseFrame = Frames.encodePQRekeyCommit(commitBytes)
 			pqInflight = .rekeyResponded
 			pendingSideBand = responseFrame
+			let sealed = try sealSideBand(responseFrame)
 
 			// Return cadence (slice 8a): committed `sendGroup.pq` → `.checkpoint`.
 			advanceStateSeq()
 			return SideBandResult(
-				frame: responseFrame, update: try stateUpdate(kind: .checkpoint))
+				frame: sealed, update: try stateUpdate(kind: .checkpoint))
 		}
 	}
 
@@ -191,7 +199,7 @@ extension TwoMLSSession {
 	/// mechanical rekey effects, applies the Commit′ to `recvGroup.pq`,
 	/// exports `S` off the freshly-rekeyed group, and owes the classical
 	/// bind (`owePQBind(s:)`, slice 3 reuse).
-	public mutating func pqRekeyApply(_ frame: Data) throws -> StateUpdate {
+	public mutating func pqRekeyApply(_ inbound: Data) throws -> StateUpdate {
 		guard pendingProposal == nil, owedBind == nil else {
 			throw TwoMLSError.sessionNotReady
 		}
@@ -202,6 +210,8 @@ extension TwoMLSSession {
 			throw TwoMLSError.notEstablished
 		}
 		guard let sendPQ = sendGroup?.pq else { throw TwoMLSError.notEstablished }
+		// Entry (PR2): the peer's `0x1D` Commit′ arrives header-sealed.
+		let frame = openOrRaw(inbound)
 
 		return try withDeployedWireConventions {
 			let commitBytes = try Frames.decodePQRekeyCommit(frame)

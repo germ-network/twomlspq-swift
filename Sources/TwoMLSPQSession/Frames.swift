@@ -80,6 +80,19 @@ enum Frames {
 		return sections
 	}
 
+	/// One length-prefixed section followed by the unprefixed remainder —
+	/// the §A.1 envelope's outer framing (`[u32-LE kem_len][kem_output]
+	/// [ciphertext]`, the HPKE ciphertext carrying no length prefix of its
+	/// own) is this same shape, like `decodeProposalSection`'s trailing
+	/// message.
+	static func readPrefixedThenRemainder(_ data: Data) throws -> (
+		section: Data, remainder: Data
+	) {
+		var index = data.startIndex
+		let section = try readLengthPrefixedSection(data, at: &index)
+		return (section, Data(data[index...]))
+	}
+
 	// MARK: - `0x03` message frame
 
 	/// `[0x03][u32 staple][u32 proposal][u32 app]` — all three sections

@@ -62,7 +62,9 @@ extension TwoMLSSession {
 	/// (my mirror of the initiator's PQ half, at its current epoch), and emit
 	/// the `0x19` CT on my OWN `sendGroup.classical` — not the mirror the EK
 	/// arrived in, which may hold an uncommitted proposal of my own.
-	public mutating func pqRatchetRespond(_ frame: Data) throws -> SideBandResult {
+	public mutating func pqRatchetRespond(_ inbound: Data) throws -> SideBandResult {
+		// Entry (PR2): the peer's `0x17` EK leg arrives header-sealed.
+		let frame = openOrRaw(inbound)
 		let (tag, messageBytes) = try Frames.decodePQLeg(frame)
 		guard tag == Frames.pqEKTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
 		let msg = try MLS.RFC9420.Message(mlsEncoded: messageBytes)
@@ -98,11 +100,12 @@ extension TwoMLSSession {
 			tag: Frames.pqCTTag, messageBytes: outMessageBytes)
 		pqInflight = .responding(secret: s, wireCT: wireCT)
 		pendingSideBand = outFrame
+		let sealed = try sealSideBand(outFrame)
 
 		// Return cadence (slice 8a): classical carrier only (the PQ half is read-only
 		// here — `ctSealPSK`/derivation, never committed) → `.core`.
 		advanceStateSeq()
-		return SideBandResult(frame: outFrame, update: try stateUpdate(kind: .core))
+		return SideBandResult(frame: sealed, update: try stateUpdate(kind: .core))
 	}
 
 	/// The initiator: receive the responder's `0x19` CT (decrypted off my
@@ -113,7 +116,9 @@ extension TwoMLSSession {
 	/// (`owePQBind(s:)`, §4c). `CTSeal.open`'s AEAD failure is the explicit
 	/// reject for a tampered/misdirected CT — it propagates as thrown, not a
 	/// silent no-op.
-	public mutating func pqRatchetBind(_ frame: Data) throws -> StateUpdate {
+	public mutating func pqRatchetBind(_ inbound: Data) throws -> StateUpdate {
+		// Entry (PR2): the peer's `0x19` CT leg arrives header-sealed.
+		let frame = openOrRaw(inbound)
 		let (tag, messageBytes) = try Frames.decodePQLeg(frame)
 		guard tag == Frames.pqCTTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
 		let msg = try MLS.RFC9420.Message(mlsEncoded: messageBytes)
@@ -153,9 +158,15 @@ extension TwoMLSSession {
 
 	/// Peek the parked `0x17`/`0x19`/`0x1B`/`0x1D` side-band frame, if any —
 	/// non-mutating re the round; the host sends it alongside the message
-	/// frame.
+	/// frame. Sealed on exit (PR2): re-seals the retained plaintext under a
+	/// fresh nonce on every call (never caches the sealed bytes), so
+	/// repeated peeks of the same parked leg are byte-different but open to
+	/// the same plaintext — matching `seal`/`sealSideBand`'s own contract.
+	/// `nil` both when nothing is parked and, defensively, if sealing itself
+	/// fails (never falls back to returning the leg unsealed).
 	public func pqPendingOutbound() -> Data? {
-		pendingSideBand
+		guard let pending = pendingSideBand else { return nil }
+		return try? sealSideBand(pending)
 	}
 
 	/// Best-effort: if the parked side-band leg was minted at an epoch

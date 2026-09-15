@@ -90,21 +90,46 @@ extension ArchiveIntegerKeyedMap: Equatable where Value: Equatable {}
 /// `TwoMLSIdentity`'s archived form: the leaf HPKE secrets and the Ed25519
 /// signing key ride `.data` into `@SecretField`s (the keys themselves
 /// aren't `SecretRestorable`); the two `KeyPackage`s ride their own MLS wire
-/// encoding. The two INIT secrets are deliberately NOT archived: they are
-/// join-only (spent the moment this identity's own `KeyPackage` is joined
-/// with) and, for an invitation's identity, the SAME
-/// published key package's private material rides every spawned session —
-/// archiving an already-spent init secret would needlessly widen one leaked
-/// session archive's blast radius to the still-published key package.
-/// `restore()` always reconstructs both as `nil`; a live identity that still
-/// needs one (it has not yet joined with it) simply hasn't been archived
-/// from — `TwoMLSSession.restore` only ever runs on an ESTABLISHED session.
+/// encoding.
+///
+/// The two INIT secrets are archived **conditionally**, gated by
+/// `includeInitSecrets` at encode time (not inferred from whether they
+/// happen to be `nil`):
+///  - A **session** identity uses `includeInitSecrets: recvGroup == nil` —
+///    an explicit SEMANTIC condition (pre-establishment), not "infer from
+///    runtime nil-ness" of the secrets themselves. For an in-flight
+///    INITIATOR (post-`initiate`, before it joins its receive group —
+///    `recvGroup == nil`) the classical init secret is still live, kept
+///    until `joinGroupBIfNeeded`; the archive now carries it, so a session
+///    archived mid-establishment can restore and still complete — the
+///    restored initiator's `pendingOutbound()`/`Invitation.openInitial`/
+///    `receive`/`processIncoming` round joins Group_B exactly as the live
+///    path would have. For an ESTABLISHED session (`recvGroup` set) the flag
+///    omits them, which is moot anyway — both are already spent
+///    (`TwoMLSIdentity.clearingInitSecrets`). Low blast radius either way:
+///    the initiator's identity is per-session, minted fresh, and never
+///    published.
+///  - An **invitation** identity DOES carry them, when still un-consumed:
+///    a published `Invitation` is a durable receiving capability, and its
+///    published key package's init secrets are exactly what a later
+///    `receive` needs to open a welcome (`TwoMLSIdentity.classicalJoin-
+///    Credentials`/`pqJoinCredentials`) — dropping them on restore made a
+///    restored invitation permanently unable to `receive`. A spent
+///    single-use invitation still never re-archives them: `Invitation`
+///    nils its whole `identity` on consume, so there is nothing left to
+///    pass `includeInitSecrets: true` over.
+/// `SecretField<SecretBytes>?`, not `@SecretField var … : SecretBytes?`:
+/// the wrapper's `Value` must be `SecretRestorable`, which `Optional
+/// <SecretBytes>` is not (mirrors swift-mls's own `Snapshot.headSecret`
+/// idiom).
 struct IdentityArchive: Codable, Sendable {
 	var clientID: Data
 	@SecretField var signingKey: SecretBytes
 	var signatureKey: Data
 	@SecretField var classicalLeafSecretKey: SecretBytes
+	var classicalInitSecretKey: SecretField<SecretBytes>?
 	@SecretField var pqLeafSecretKey: SecretBytes
+	var pqInitSecretKey: SecretField<SecretBytes>?
 	var classicalKeyPackage: Data
 	var pqKeyPackage: Data
 
@@ -113,7 +138,9 @@ struct IdentityArchive: Codable, Sendable {
 		case signingKey = 1
 		case signatureKey = 2
 		case classicalLeafSecretKey = 3
+		case classicalInitSecretKey = 4
 		case pqLeafSecretKey = 5
+		case pqInitSecretKey = 6
 		case classicalKeyPackage = 7
 		case pqKeyPackage = 8
 	}
@@ -126,13 +153,28 @@ struct IdentityArchive: Codable, Sendable {
 /// OS floor to describe or decode.
 @available(iOS 26, macOS 26, *)
 extension IdentityArchive {
-	init(_ identity: TwoMLSIdentity) throws {
+	/// `includeInitSecrets` is an explicit control, never inferred from
+	/// whether `identity`'s init secrets happen to be `nil` at the call
+	/// site — see the type doc for why. Every caller states its condition:
+	/// the session path passes `recvGroup == nil` (carry only for a
+	/// pre-establishment initiator), the invitation path passes `true`.
+	init(_ identity: TwoMLSIdentity, includeInitSecrets: Bool) throws {
 		self.init(
 			clientID: identity.clientID,
 			signingKey: identity.signingKey.data,
 			signatureKey: identity.signatureKey.data,
 			classicalLeafSecretKey: identity.classicalLeafSecretKey.data,
+			classicalInitSecretKey: includeInitSecrets
+				? identity.classicalInitSecretKey.map {
+					SecretField(wrappedValue: $0.data)
+				}
+				: nil,
 			pqLeafSecretKey: identity.pqLeafSecretKey.data,
+			pqInitSecretKey: includeInitSecrets
+				? identity.pqInitSecretKey.map {
+					SecretField(wrappedValue: $0.data)
+				}
+				: nil,
 			classicalKeyPackage: try identity.keyPackage.classical.mlsEncoded(),
 			pqKeyPackage: try identity.keyPackage.pq.mlsEncoded())
 	}
@@ -147,9 +189,13 @@ extension IdentityArchive {
 			signingKey: try MLS.SignatureSecretKey(signingKey),
 			signatureKey: derivedSignatureKey,
 			classicalLeafSecretKey: try MLS.HpkeSecretKey(classicalLeafSecretKey),
-			classicalInitSecretKey: nil,
+			classicalInitSecretKey: try classicalInitSecretKey.map {
+				try MLS.HpkeSecretKey($0.wrappedValue)
+			},
 			pqLeafSecretKey: try MLS.HpkeSecretKey(pqLeafSecretKey),
-			pqInitSecretKey: nil,
+			pqInitSecretKey: try pqInitSecretKey.map {
+				try MLS.HpkeSecretKey($0.wrappedValue)
+			},
 			keyPackage: CombinerKeyPackage(
 				classical: try MLS.RFC9420.KeyPackage(
 					mlsEncoded: classicalKeyPackage),
@@ -225,6 +271,33 @@ extension BootstrapKPSecretArchive {
 			initSecretKey: try MLS.HpkeSecretKey(initSecretKey),
 			keyPackage: try MLS.RFC9420.KeyPackage(mlsEncoded: keyPackage)
 		)
+	}
+}
+
+/// `initialTheirKP`'s archived form (slice 9, PR3b) — the peer's published
+/// combiner key package, wire-encoded per half. No secret material (it's
+/// the PEER's own published KP), so no `@SecretField`.
+struct CombinerKeyPackageArchive: Codable, Sendable, Equatable {
+	var classical: Data
+	var pq: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case classical = 0
+		case pq = 1
+	}
+}
+
+extension CombinerKeyPackageArchive {
+	init(_ keyPackage: CombinerKeyPackage) throws {
+		try self.init(
+			classical: keyPackage.classical.mlsEncoded(), pq: keyPackage.pq.mlsEncoded()
+		)
+	}
+
+	func restore() throws -> CombinerKeyPackage {
+		CombinerKeyPackage(
+			classical: try MLS.RFC9420.KeyPackage(mlsEncoded: classical),
+			pq: try MLS.RFC9420.KeyPackage(mlsEncoded: pq))
 	}
 }
 
@@ -548,6 +621,22 @@ struct SessionArchive: Codable, Sendable {
 	var sendCrossPSKLedger: ArchiveIntegerKeyedMap<ExportedPskArchive>
 	var rotationCandidate: RotationCandidateArchive?
 	var spawnToken: Data?
+	/// `listenRendezvous`, added slice 9 PR1 — Optional so a pre-existing
+	/// v1 archive (encoded before this field existed) still decodes: it
+	/// decodes to an empty map, and `restore` re-captures the current
+	/// epoch's address at once (restore is itself a capture site).
+	var listenRendezvous: ArchiveIntegerKeyedMap<Data>?
+	/// `recvHeaderKeys`/`recvHeaderKeysPQ`, added slice 9 PR2 — same
+	/// optional-with-empty-default shape as `listenRendezvous`: absent on a
+	/// pre-existing archive, in which case `restore` re-captures the
+	/// current epoch's key(s) at once.
+	var recvHeaderKeys: ArchiveIntegerKeyedMap<Data>?
+	var recvHeaderKeysPQ: ArchiveIntegerKeyedMap<Data>?
+	/// `initialTheirKP`, added slice 9 PR3b — Optional so a pre-existing
+	/// archive still decodes; `nil` for every session except a live
+	/// pre-Group_B-join initiator (the only state `pendingOutbound()`
+	/// applies to).
+	var initialTheirKP: CombinerKeyPackageArchive?
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case version = 0
@@ -583,6 +672,10 @@ struct SessionArchive: Codable, Sendable {
 		case sendCrossPSKLedger = 30
 		case rotationCandidate = 31
 		case spawnToken = 32
+		case listenRendezvous = 33
+		case recvHeaderKeys = 34
+		case recvHeaderKeysPQ = 35
+		case initialTheirKP = 36
 	}
 }
 
@@ -640,7 +733,8 @@ extension TwoMLSSession {
 			recvPQEpoch: recvGroup?.pq?.context.epoch,
 			sendClassicalGroupID: sendGroup?.classical.context.groupID,
 			recvClassicalGroupID: recvGroup?.classical.context.groupID,
-			identity: try IdentityArchive(identity),
+			identity: try IdentityArchive(
+				identity, includeInitSecrets: recvGroup == nil),
 			auth: auth,
 			sendGroup: try sendGroup?.makeGroupEntry(kind: kind),
 			recvGroup: try recvGroup?.makeGroupEntry(kind: kind),
@@ -664,7 +758,11 @@ extension TwoMLSSession {
 			sendCrossPSKLedger: ArchiveIntegerKeyedMap(
 				sendCrossPSKLedger.mapValues(ExportedPskArchive.init)),
 			rotationCandidate: rotationCandidate.map(RotationCandidateArchive.init),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken,
+			listenRendezvous: ArchiveIntegerKeyedMap(listenRendezvous),
+			recvHeaderKeys: ArchiveIntegerKeyedMap(recvHeaderKeys),
+			recvHeaderKeysPQ: ArchiveIntegerKeyedMap(recvHeaderKeysPQ),
+			initialTheirKP: try initialTheirKP.map(CombinerKeyPackageArchive.init))
 		return try SecretArchive(encoding: body)
 	}
 }

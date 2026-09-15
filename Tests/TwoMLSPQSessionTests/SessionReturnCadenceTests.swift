@@ -225,14 +225,18 @@ final class SessionReturnCadenceTests: XCTestCase {
 	func testIdempotentResendsStillReturnAStateUpdateOfTheSameKind() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
+		// PR2: each re-serve re-seals under a fresh nonce, so the SEALED
+		// bytes always differ even though the plaintext is idempotent —
+		// compare the OPENED plaintexts (via the recipient's window)
+		// instead.
 		let first = try alice.pqBootstrapBegin()
 		let second = try alice.pqBootstrapBegin()
-		XCTAssertEqual(first.frame, second.frame)
+		XCTAssertEqual(bob.openOrRaw(first.frame), bob.openOrRaw(second.frame))
 		XCTAssertEqual(second.update.kind, .core)
 
 		let welcome1 = try bob.pqBootstrapRespond(first.frame)
 		let welcome2 = try bob.pqBootstrapRespond(first.frame)
-		XCTAssertEqual(welcome1.frame, welcome2.frame)
+		XCTAssertEqual(alice.openOrRaw(welcome1.frame), alice.openOrRaw(welcome2.frame))
 		XCTAssertEqual(welcome2.update.kind, .checkpoint)
 	}
 
@@ -517,7 +521,11 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// (so `applyBind` still applies and moves Bob's `recvGroup.pq`), one
 		// flipped byte in the APP section (so `unprotect` throws AFTER that
 		// move).
-		let (staple, proposal, app) = try Frames.decodeMessageFrame(bound.frame)
+		// PR2: opened via `bob` (the recipient); the reconstructed
+		// `tamperedFrame` below passes straight through `processIncoming`'s
+		// `openOrRaw`.
+		let (staple, proposal, app) = try Frames.decodeMessageFrame(
+			bob.openOrRaw(bound.frame))
 		var tamperedApp = app
 		tamperedApp[
 			tamperedApp.index(tamperedApp.startIndex, offsetBy: tamperedApp.count / 2)] ^=

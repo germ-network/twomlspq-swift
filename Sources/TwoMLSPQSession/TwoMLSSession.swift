@@ -256,6 +256,13 @@ public struct TwoMLSSession: Sendable {
 	/// The responder's (Bob's) pinned `H(KP′)`, validated at `receive` —
 	/// `nil` on the initiator.
 	var expectedBootstrapKPCommitment: Data?
+	/// The peer's published combiner key package (`initiate`'s `their`) —
+	/// retained ONLY on the initiator, so `pendingOutbound()` (slice 9,
+	/// PR3b) can re-seal the §A.1 establishment envelope on every re-send.
+	/// Cleared at `joinGroupBIfNeeded` (Messaging.swift) once Group_B is
+	/// joined: the initiator has nothing left to establish past that point.
+	/// `nil` on the responder, which never sends this envelope.
+	var initialTheirKP: CombinerKeyPackage?
 	/// Whose turn it is to drive the next PQ-bootstrap/bind step — `true` on
 	/// the initiator (Alice owns the bootstrap), `false` on the responder,
 	/// until the bind passes it back (`applyBind`).
@@ -340,6 +347,46 @@ public struct TwoMLSSession: Sendable {
 	/// outstanding commits either side's unlicensed fold cadence can produce
 	/// in flight, matching the Rust reference's own `SEND_PSK_WINDOW`.
 	static let sendCrossPSKLedgerWindow = 8
+
+	// MARK: Routing (rendezvous, slice 9 PR1)
+
+	/// Every retained classical epoch's rendezvous address for THIS
+	/// session's own send group — `rendezvousSecret(sendGroup.classical)` at
+	/// each epoch it has occupied. Captured live by `recordListenRendezvous()`
+	/// at every site `sendGroup.classical`'s epoch advances or the group is
+	/// first created (an exporter is only derivable at its own epoch, never
+	/// retroactively) — group creation in `initiate`/`receive`, and
+	/// `committingRound`'s success point (which also covers an owed §4b bind
+	/// discharge: it folds into that same commit). Retained to
+	/// `sendGroup.classical.retention.resumptionPskDepth` behind the current
+	/// epoch, pruned on every capture, so the listen window is exactly the
+	/// window a peer's frame can still be routed against (book
+	/// session-lifecycle.md, "Routing"). `shouldListenOn()` only reads this —
+	/// a mutating backstop there would violate the return-based persistence
+	/// contract (nothing calling it returns a `StateUpdate`).
+	var listenRendezvous: [UInt64: Data] = [:]
+
+	// MARK: Header encryption (slice 9, PR2)
+
+	/// Every retained classical epoch's `HeaderKey` for THIS session's own
+	/// send group — captured by `recordListenRendezvous()` in lockstep with
+	/// `listenRendezvous` (same sites, same idempotency, same retention):
+	/// "routable ⟺ openable", the classical header window is exactly the
+	/// rendezvous listen window (book header-encryption.md, "Receive rule").
+	/// Trial-opened FIRST (before `recvHeaderKeysPQ`), newest epoch first.
+	var recvHeaderKeys: [UInt64: Data] = [:]
+	/// Every retained `pq_epoch`'s `HeaderKeyPQ` for THIS session's own
+	/// send-PQ group — captured by `recordPQHeaderKey()` wherever
+	/// `sendGroup.pq`'s epoch advances or the half is founded. No rendezvous
+	/// coupling (the PQ side-band keeps no routing addresses of its own);
+	/// retained to a flat keep-newest `pqHeaderWindow` regardless of
+	/// classical traffic.
+	var recvHeaderKeysPQ: [UInt64: Data] = [:]
+	/// `PQ_HEADER_WINDOW` (header-encryption.md, "Receive rule" — the
+	/// two-windows bullet) — a plain keep-newest count, not an
+	/// epoch-arithmetic floor: A.3/A.5 are turn-based with one op in flight,
+	/// so a few keys cover any lag regardless of classical traffic.
+	static let pqHeaderWindow = 4
 
 	// MARK: §15 classical principal rotation (slice 6)
 
@@ -472,6 +519,7 @@ public struct TwoMLSSession: Sendable {
 				keyPackage: MLS.RFC9420.KeyPackage
 			)? = nil,
 		expectedBootstrapKPCommitment: Data? = nil,
+		initialTheirKP: CombinerKeyPackage? = nil,
 		pqTurnMine: Bool,
 		owedBind: OwedBind? = nil,
 		pqInflight: PQInflight? = nil,
@@ -495,6 +543,7 @@ public struct TwoMLSSession: Sendable {
 		self.initiated = initiated
 		self.bootstrapKPSecret = bootstrapKPSecret
 		self.expectedBootstrapKPCommitment = expectedBootstrapKPCommitment
+		self.initialTheirKP = initialTheirKP
 		self.pqTurnMine = pqTurnMine
 		self.owedBind = owedBind
 		self.pqInflight = pqInflight
