@@ -90,21 +90,43 @@ extension ArchiveIntegerKeyedMap: Equatable where Value: Equatable {}
 /// `TwoMLSIdentity`'s archived form: the leaf HPKE secrets and the Ed25519
 /// signing key ride `.data` into `@SecretField`s (the keys themselves
 /// aren't `SecretRestorable`); the two `KeyPackage`s ride their own MLS wire
-/// encoding. The two INIT secrets are deliberately NOT archived: they are
-/// join-only (spent the moment this identity's own `KeyPackage` is joined
-/// with) and, for an invitation's identity, the SAME
-/// published key package's private material rides every spawned session —
-/// archiving an already-spent init secret would needlessly widen one leaked
-/// session archive's blast radius to the still-published key package.
-/// `restore()` always reconstructs both as `nil`; a live identity that still
-/// needs one (it has not yet joined with it) simply hasn't been archived
-/// from — `TwoMLSSession.restore` only ever runs on an ESTABLISHED session.
+/// encoding.
+///
+/// The two INIT secrets are archived **conditionally**, gated by
+/// `includeInitSecrets` at encode time (not inferred from whether they
+/// happen to be `nil`):
+///  - A **session** identity uses `includeInitSecrets: false`, so a session
+///    archive never carries them. For an ESTABLISHED session that is moot —
+///    both are already spent (`TwoMLSIdentity.clearingInitSecrets`). For an
+///    in-flight INITIATOR (post-`initiate`, before it joins its receive
+///    group) the classical init secret is still live, kept until
+///    `joinGroupBIfNeeded`; the `false` flag deliberately keeps it out of
+///    the archive, so a session archived mid-establishment cannot re-join
+///    its receive group after a restore. That gap is orthogonal to this
+///    invitation change and left unaddressed here (the initiator's identity
+///    is per-session and never published, so no blast-radius concern
+///    applies to fixing it later).
+///  - An **invitation** identity DOES carry them, when still un-consumed:
+///    a published `Invitation` is a durable receiving capability, and its
+///    published key package's init secrets are exactly what a later
+///    `receive` needs to open a welcome (`TwoMLSIdentity.classicalJoin-
+///    Credentials`/`pqJoinCredentials`) — dropping them on restore made a
+///    restored invitation permanently unable to `receive`. A spent
+///    single-use invitation still never re-archives them: `Invitation`
+///    nils its whole `identity` on consume, so there is nothing left to
+///    pass `includeInitSecrets: true` over.
+/// `SecretField<SecretBytes>?`, not `@SecretField var … : SecretBytes?`:
+/// the wrapper's `Value` must be `SecretRestorable`, which `Optional
+/// <SecretBytes>` is not (mirrors swift-mls's own `Snapshot.headSecret`
+/// idiom).
 struct IdentityArchive: Codable, Sendable {
 	var clientID: Data
 	@SecretField var signingKey: SecretBytes
 	var signatureKey: Data
 	@SecretField var classicalLeafSecretKey: SecretBytes
+	var classicalInitSecretKey: SecretField<SecretBytes>?
 	@SecretField var pqLeafSecretKey: SecretBytes
+	var pqInitSecretKey: SecretField<SecretBytes>?
 	var classicalKeyPackage: Data
 	var pqKeyPackage: Data
 
@@ -113,7 +135,9 @@ struct IdentityArchive: Codable, Sendable {
 		case signingKey = 1
 		case signatureKey = 2
 		case classicalLeafSecretKey = 3
+		case classicalInitSecretKey = 4
 		case pqLeafSecretKey = 5
+		case pqInitSecretKey = 6
 		case classicalKeyPackage = 7
 		case pqKeyPackage = 8
 	}
@@ -126,13 +150,28 @@ struct IdentityArchive: Codable, Sendable {
 /// OS floor to describe or decode.
 @available(iOS 26, macOS 26, *)
 extension IdentityArchive {
-	init(_ identity: TwoMLSIdentity) throws {
+	/// `includeInitSecrets` is an explicit control, never inferred from
+	/// whether `identity`'s init secrets happen to be `nil` at the call
+	/// site — see the type doc for why. Defaults to `false` (the session
+	/// path's existing, unchanged shape); the invitation path opts in
+	/// explicitly.
+	init(_ identity: TwoMLSIdentity, includeInitSecrets: Bool = false) throws {
 		self.init(
 			clientID: identity.clientID,
 			signingKey: identity.signingKey.data,
 			signatureKey: identity.signatureKey.data,
 			classicalLeafSecretKey: identity.classicalLeafSecretKey.data,
+			classicalInitSecretKey: includeInitSecrets
+				? identity.classicalInitSecretKey.map {
+					SecretField(wrappedValue: $0.data)
+				}
+				: nil,
 			pqLeafSecretKey: identity.pqLeafSecretKey.data,
+			pqInitSecretKey: includeInitSecrets
+				? identity.pqInitSecretKey.map {
+					SecretField(wrappedValue: $0.data)
+				}
+				: nil,
 			classicalKeyPackage: try identity.keyPackage.classical.mlsEncoded(),
 			pqKeyPackage: try identity.keyPackage.pq.mlsEncoded())
 	}
@@ -147,9 +186,13 @@ extension IdentityArchive {
 			signingKey: try MLS.SignatureSecretKey(signingKey),
 			signatureKey: derivedSignatureKey,
 			classicalLeafSecretKey: try MLS.HpkeSecretKey(classicalLeafSecretKey),
-			classicalInitSecretKey: nil,
+			classicalInitSecretKey: try classicalInitSecretKey.map {
+				try MLS.HpkeSecretKey($0.wrappedValue)
+			},
 			pqLeafSecretKey: try MLS.HpkeSecretKey(pqLeafSecretKey),
-			pqInitSecretKey: nil,
+			pqInitSecretKey: try pqInitSecretKey.map {
+				try MLS.HpkeSecretKey($0.wrappedValue)
+			},
 			keyPackage: CombinerKeyPackage(
 				classical: try MLS.RFC9420.KeyPackage(
 					mlsEncoded: classicalKeyPackage),
@@ -654,7 +697,7 @@ extension TwoMLSSession {
 			recvPQEpoch: recvGroup?.pq?.context.epoch,
 			sendClassicalGroupID: sendGroup?.classical.context.groupID,
 			recvClassicalGroupID: recvGroup?.classical.context.groupID,
-			identity: try IdentityArchive(identity),
+			identity: try IdentityArchive(identity, includeInitSecrets: false),
 			auth: auth,
 			sendGroup: try sendGroup?.makeGroupEntry(kind: kind),
 			recvGroup: try recvGroup?.makeGroupEntry(kind: kind),

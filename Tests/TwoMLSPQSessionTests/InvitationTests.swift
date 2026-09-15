@@ -233,6 +233,134 @@ final class InvitationTests: XCTestCase {
 		}
 	}
 
+	// MARK: - Init-secret persistence (PR3a)
+	//
+	// A published `Invitation` is a durable receiving capability: its KP′
+	// init secrets must survive restore, or a restored (never-yet-consumed)
+	// invitation can't `receive` at all (`TwoMLSIdentity.classicalJoin-
+	// Credentials`/`pqJoinCredentials` throw `.sessionNotReady` once their
+	// secret is `nil`).
+
+	/// Headline case: a **last-resort** invitation, archived while
+	/// un-consumed, then restored, successfully `receive`s a welcome. This
+	/// is the case with no coverage before this test existed — the fix is
+	/// `IdentityArchive`'s `includeInitSecrets` control (`SessionArchive.swift`).
+	func testRestoredLastResortInvitationCanReceiveAWelcome() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let bobPrincipal = try makePrincipal("bob")
+		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+
+		// Archived BEFORE any welcome — the durable, "not yet used" state a
+		// freshly-published invitation sits in for most of its life.
+		let archive = try invitation.makeInvitationArchive()
+		var restored = try Invitation.restore(
+			archive: archive,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		let round = try acceptOneWelcome(from: alicePrincipal, into: &restored)
+		XCTAssertTrue(round.bob.isEstablished)
+		XCTAssertFalse(round.alice.isEstablished)
+	}
+
+	/// A **single-use** invitation, archived BEFORE its first receive, then
+	/// restored, also successfully `receive`s — its init secrets survived
+	/// even though the invitation is single-use (not yet consumed, so
+	/// nothing has nil'd `identity` yet).
+	func testRestoredSingleUseInvitationCanReceiveBeforeItsFirstWelcome() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let bobPrincipal = try makePrincipal("bob")
+		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+
+		let archive = try invitation.makeInvitationArchive()
+		var restored = try Invitation.restore(
+			archive: archive,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		let round = try acceptOneWelcome(from: alicePrincipal, into: &restored)
+		XCTAssertTrue(round.bob.isEstablished)
+		XCTAssertNil(restored.combinerKeyPackage)
+	}
+
+	/// A **single-use** invitation that has `receive`d once (consumed —
+	/// `identity` nil'd on consume, `Invitation.swift`) still cannot
+	/// `receive` again after being archived + restored — the book's
+	/// spent-can't-replay property survives restore, `includeInitSecrets`
+	/// notwithstanding (there is no identity left to archive secrets from).
+	func testRestoredSingleUseInvitationCannotReceiveAgainAfterConsumption() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let carolPrincipal = try makePrincipal("carol")
+		let bobPrincipal = try makePrincipal("bob")
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+		// Captured before consumption, so a second party can still attempt
+		// to initiate against the now-spent published KP.
+		let publishedKP = try XCTUnwrap(invitation.combinerKeyPackage)
+
+		let firstRound = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
+
+		var restored = try Invitation.restore(
+			archive: firstRound.archive,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertNil(restored.combinerKeyPackage)
+
+		let carolInitiated = try TwoMLSSession.initiate(
+			principal: carolPrincipal, their: publishedKP)
+		XCTAssertThrowsError(
+			try restored.receive(
+				welcome: carolInitiated.welcome,
+				theirClassicalKeyPackage: carolInitiated.session.identity.keyPackage
+					.classical,
+				bootstrapKPCommitment: try carolInitiated.session
+					.bootstrapKPCommitment(),
+				spawnToken: freshSpawnToken())
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .invitationSpent)
+		}
+	}
+
+	/// Round-trip functional proof: an un-consumed invitation's archive
+	/// carries BOTH KP′ init secrets (`receive` needs both — Group_A is
+	/// always a dual-tree `APQGroup.joinFull` join, `classicalJoinCredentials`
+	/// AND `pqJoinCredentials`). Drives a restored invitation all the way
+	/// through a full bidirectional exchange plus A.3 bootstrap, mirroring
+	/// the live happy-path test, so a missing half (only one secret
+	/// persisted) would surface here even if it happened to not fail the
+	/// simpler headline check.
+	func testRestoredInvitationArchiveCarriesBothInitSecretsFullRoundTrip() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let bobPrincipal = try makePrincipal("bob")
+		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+
+		let archive = try invitation.makeInvitationArchive()
+		var restored = try Invitation.restore(
+			archive: archive,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		let round = try acceptOneWelcome(from: alicePrincipal, into: &restored)
+		var alice = round.alice
+		var bob = round.bob
+		XCTAssertTrue(bob.isEstablished)
+
+		_ = try bob.prepareToEncrypt()
+		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		_ = try alice.processIncoming(bobFrame)
+		XCTAssertTrue(alice.isEstablished)
+
+		_ = try alice.prepareToEncrypt()
+		let aliceFrame = try alice.encrypt(Data("alice-hello".utf8)).frame
+		let aliceDecrypted = try bob.processIncoming(aliceFrame)
+		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("alice-hello".utf8))
+
+		let kpFrame = try alice.pqBootstrapBegin().frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
+		XCTAssertTrue(alice.isFullyEstablished)
+		XCTAssertTrue(bob.isFullyEstablished)
+	}
+
 	// MARK: - forwarded(spawnToken:)
 
 	func testForwardedSpawnTokenRoutesCorrectlyAndRejectsAMismatch() throws {

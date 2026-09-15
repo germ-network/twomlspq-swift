@@ -42,6 +42,15 @@ final class SessionArchiveTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
+		// PR3a: a SESSION archive never carries KP′ init secrets — unlike an
+		// invitation archive (`InvitationTests`). For an established session
+		// both are already spent, so this round-trip only re-confirms `nil`;
+		// the load-bearing no-leak check — an in-flight initiator's LIVE
+		// secret must still not be archived — is
+		// `testInFlightInitiatorArchiveOmitsLiveInitSecret`.
+		XCTAssertNil(restored.identity.classicalInitSecretKey)
+		XCTAssertNil(restored.identity.pqInitSecretKey)
+
 		_ = try restored.prepareToEncrypt()
 		let frame = try restored.encrypt(Data("hello".utf8)).frame
 		let decrypted = try bob.processIncoming(frame)
@@ -51,6 +60,35 @@ final class SessionArchiveTests: XCTestCase {
 		let reply = try bob.encrypt(Data("hi".utf8)).frame
 		let replyDecrypted = try restored.processIncoming(reply)
 		XCTAssertEqual(replyDecrypted.applicationMessage, Data("hi".utf8))
+	}
+
+	/// The load-bearing no-leak check for `includeInitSecrets: false`: an
+	/// in-flight initiator (post-`initiate`, before joining its receive
+	/// group) still holds a LIVE classical init secret, yet the session
+	/// archive must omit it. The established round-trip above only
+	/// re-confirms `nil` (the secret is spent by then); this one fails if
+	/// the session path ever archives a live init secret.
+	func testInFlightInitiatorArchiveOmitsLiveInitSecret() throws {
+		let alicePrincipal = try Principal.generate(
+			clientID: Data("alice".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let bobPrincipal = try Principal.generate(
+			clientID: Data("bob".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirKP)
+
+		// Precondition: the runtime secret is genuinely live, else vacuous.
+		XCTAssertNotNil(initiated.session.identity.classicalInitSecretKey)
+
+		let archive = try initiated.session.makeSessionArchive(kind: .checkpoint)
+		let body = try sealAndOpen(archive).decode(SessionArchive.self)
+		XCTAssertNil(body.identity.classicalInitSecretKey)
+		XCTAssertNil(body.identity.pqInitSecretKey)
 	}
 
 	// MARK: - 2. classical fold, then Core@higher-seq over Checkpoint@lower-seq
