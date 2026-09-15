@@ -140,6 +140,107 @@ final class AppBindingTests: XCTestCase {
 		XCTAssertNoThrow(try verifyPQHalfUnbound(nil))
 	}
 
+	/// End-to-end counterpart of the unit test above: a crafted `APQWelcome`
+	/// whose PQ half ALSO carries the `AppBinding` (the classical half
+	/// carries the real, matching one) is rejected by the ACTUAL join path
+	/// (`TwoMLSSession.receive`) — not just `verifyPQHalfUnbound` in
+	/// isolation — proving the guard is wired into production. Mirrors the
+	/// Rust reference's `test_welcome_with_pq_half_binding_rejected`,
+	/// port-natively: both halves are hand-rolled the same way
+	/// `APQGroup.establishClassicalOnly`/`foundPQHalf` do (`Group.create` +
+	/// `.committing`, never `CombinerGroup.establish` — its public API only
+	/// exposes `classicalExtraExtensions`, with no PQ-half seam a wired
+	/// caller could ever misuse this way), so the smuggled shape is one a
+	/// wired initiator can never itself produce.
+	func testReceiveRejectsAWelcomeWithASmuggledPQHalfBinding() throws {
+		let alice = try SessionTestSupport.identity("pq-smuggle-alice")
+		let bob = try SessionTestSupport.identity("pq-smuggle-bob")
+		let classicalProvider = SessionTestSupport.classicalProvider
+		let pqProvider = SessionTestSupport.pqProvider
+		let deployedCodepoints = MLS.Combiner.Codepoints.deployed
+
+		try withDeployedWireConventions {
+			let tGroupID = classicalProvider.randomBytes(classicalProvider.hashSize)
+			let pqGroupID = pqProvider.randomBytes(pqProvider.hashSize)
+			let info = MLS.Combiner.APQInfo(
+				tSessionGroupID: tGroupID, pqSessionGroupID: pqGroupID, mode: 0,
+				tCipherSuite: classicalProvider.cipherSuite,
+				pqCipherSuite: pqProvider.cipherSuite, tEpoch: 1, pqEpoch: 1)
+			let infoExtension = try info.asExtension(
+				type: deployedCodepoints.apqInfoExtensionType)
+			let bindingExtension = try AppBinding(data: Self.binding).asExtension()
+			let attestationProposal = MLS.RFC9420.ProposalOrRef.proposal(
+				try MLS.Combiner.ApqInfoUpdate(tEpoch: 1, pqEpoch: 1).proposal(
+					componentID: deployedCodepoints.apqComponentID))
+
+			// PQ half FIRST, carrying the smuggled binding too — the crafted
+			// shape `CombinerGroup.establish` can never itself produce.
+			let pqEpoch0 = try MLS.RFC9420.Group.create(
+				pqProvider, groupID: pqGroupID,
+				leafNode: alice.keyPackage.pq.leafNode,
+				leafSecretKey: alice.pqLeafSecretKey,
+				extensions: [infoExtension, bindingExtension],
+				epochSecret: SecretBytes(randomByteCount: pqProvider.hashSize))
+			let pqTransition = try pqEpoch0.committing(
+				pqProvider,
+				proposals: [
+					.proposal(.add(bob.keyPackage.pq)), attestationProposal,
+				],
+				signingKey: alice.signingKey, randomness: try .generate(pqProvider),
+				psk: { _ in nil })
+			let pqAdopted = pqTransition.group
+			let pqSent = pqTransition.takeOutput()
+			let pqWelcome = try XCTUnwrap(pqSent.welcome)
+			var pqGroup = try pqSent.takePending().apply(onto: pqAdopted).group
+
+			let apqPSK = try MLS.Combiner.ExportedPsk.export(
+				from: &pqGroup, pqProvider,
+				componentID: deployedCodepoints.apqComponentID)
+			var pskStore = MLS.Combiner.PSKStore()
+			pskStore.register(apqPSK)
+			let nonce = classicalProvider.randomBytes(classicalProvider.hashSize)
+
+			// Classical half, carrying the SAME (real, matching) binding.
+			let tEpoch0 = try MLS.RFC9420.Group.create(
+				classicalProvider, groupID: tGroupID,
+				leafNode: alice.keyPackage.classical.leafNode,
+				leafSecretKey: alice.classicalLeafSecretKey,
+				extensions: [infoExtension, bindingExtension],
+				epochSecret: SecretBytes(
+					randomByteCount: classicalProvider.hashSize))
+			let tTransition = try tEpoch0.committing(
+				classicalProvider,
+				proposals: [
+					.proposal(.add(bob.keyPackage.classical)),
+					.proposal(apqPSK.proposal(nonce: nonce)),
+					attestationProposal,
+				],
+				signingKey: alice.signingKey,
+				randomness: try .generate(classicalProvider),
+				psk: pskStore.resolver())
+			let tAdopted = tTransition.group
+			let tSent = tTransition.takeOutput()
+			let tWelcome = try XCTUnwrap(tSent.welcome)
+			_ = try tSent.takePending().apply(onto: tAdopted)
+
+			let crafted = Frames.encodeAPQWelcome(
+				t: try tWelcome.mlsEncoded(), pq: try pqWelcome.mlsEncoded())
+
+			// The REAL join path — not just `verifyPQHalfUnbound` in isolation.
+			XCTAssertThrowsError(
+				try TwoMLSSession.receive(
+					identity: bob, welcome: crafted,
+					theirClassicalKeyPackage: alice.keyPackage.classical,
+					bootstrapKPCommitment: Data(repeating: 0, count: 32),
+					classicalProvider: classicalProvider,
+					pqProvider: pqProvider,
+					expectedAppBinding: Self.binding)
+			) { error in
+				XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
+			}
+		}
+	}
+
 	// MARK: - Leaf advertisement (port-side defense in depth)
 
 	/// `ensureAppBindingLeafAdvert`/`ensureAppBindingCreatorLeafAdvert` reject
@@ -200,6 +301,42 @@ final class AppBindingTests: XCTestCase {
 				identity: alice, their: theirs,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider))
+	}
+
+	/// Rule 8's tail (group-rules.md:77-78): "Leaves advertise the extension
+	/// type, so a binding-carrying group can only ever contain
+	/// capability-bearing leaves." The checks above cover creation and join;
+	/// this covers the one gap left — a PEER's Update proposal folding in a
+	/// REPLACEMENT leaf that lacks `0xF0A2`, on the CLASSICAL update path
+	/// (`queueProposal`/`validateOfferedUpdate`). Hand-forges the Update the
+	/// way `EstablishmentTests.forgedGroupBWelcome` hand-rolls a welcome:
+	/// `Group.verifying(proposal:)` authenticates only the ENCLOSING framing
+	/// (the current occupant's signature + membership tag), never the
+	/// embedded leaf's own shape (its own doc comment says so), so a validly
+	/// framed proposal can carry any leaf at all — exactly the gap this gate
+	/// closes. A BOUND acceptor's own send group (Group_B, which mirrors the
+	/// binding) rejects it; the identical forgery into an UNBOUND acceptor's
+	/// send group is accepted — the gate is binding-conditional, not
+	/// unconditional.
+	func testQueueProposalRejectsAnUncapableReplacementLeafOnlyWhenGroupIsBound() throws {
+		let bound = try Self.forgedUncapableUpdate(
+			appBinding: Self.binding, suffix: "bound")
+		var boundCommitter = bound.committer
+		boundCommitter.offeredProposal = (
+			digest: bound.digest, proposing: bound.proposingID, message: bound.message
+		)
+		XCTAssertThrowsError(try boundCommitter.queueProposal(digest: bound.digest)) {
+			error in
+			XCTAssertEqual(error as? TwoMLSError, .appBindingLeafUnadvertised)
+		}
+
+		let unbound = try Self.forgedUncapableUpdate(appBinding: nil, suffix: "unbound")
+		var unboundCommitter = unbound.committer
+		unboundCommitter.offeredProposal = (
+			digest: unbound.digest, proposing: unbound.proposingID,
+			message: unbound.message
+		)
+		XCTAssertNoThrow(try unboundCommitter.queueProposal(digest: unbound.digest))
 	}
 
 	// MARK: - Establishment round trip
@@ -282,8 +419,18 @@ final class AppBindingTests: XCTestCase {
 		) { error in
 			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
 		}
-		XCTAssertNotNil(
-			invitation.combinerKeyPackage, "a rejected welcome must claim nothing")
+		// CODE FIX 2: `generateInvitation(lastResort: true)` never nils
+		// `identity`, so `combinerKeyPackage != nil` would pass here
+		// regardless of whether `receive` actually claimed anything — assert
+		// the invitation's OWN tables instead: neither the digest-keyed nor
+		// the token-keyed table a successful `receive` would have written
+		// got written.
+		XCTAssertNil(
+			invitation.processedWelcomeGroupID(welcome: initiated.welcome),
+			"a rejected welcome must not be recorded as processed")
+		XCTAssertNil(
+			invitation.forwardGroupID(spawnToken: spawnToken),
+			"a rejected welcome must not claim its spawn token")
 
 		// The same welcome, now with the CORRECT expectation, still receives.
 		let received = try invitation.receive(
@@ -293,6 +440,56 @@ final class AppBindingTests: XCTestCase {
 			spawnToken: spawnToken, expectedAppBinding: Self.binding)
 		XCTAssertTrue(received.session.isEstablished)
 		XCTAssertEqual(try received.session.appBinding(), Self.binding)
+	}
+
+	/// The `lastResort` invitation above can never tell a claim-nothing
+	/// rejection from a successful `receive` via `combinerKeyPackage` alone
+	/// (last-resort never nils `identity`, full stop). A SINGLE-USE
+	/// invitation's `combinerKeyPackage` DOES go `nil` on a successful
+	/// `receive` (`Invitation.receive`'s `if !lastResort { next.identity =
+	/// nil }`) — so asserting it stays non-nil after a REJECTED one here
+	/// actually proves the KP was never consumed.
+	func testInvitationReceiveRejectsMismatchLeavesASingleUseKeyPackageUnconsumed() throws {
+		let alicePrincipal = try Principal.generate(
+			clientID: Data("single-use-mismatch-alice".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let bobPrincipal = try Principal.generate(
+			clientID: Data("single-use-mismatch-bob".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+		let theirCombinerKP = try XCTUnwrap(invitation.combinerKeyPackage)
+
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirCombinerKP, appBinding: Self.binding)
+		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
+
+		XCTAssertThrowsError(
+			try invitation.receive(
+				welcome: initiated.welcome,
+				theirClassicalKeyPackage: initiated.session.identity.keyPackage
+					.classical,
+				bootstrapKPCommitment: try initiated.session
+					.bootstrapKPCommitment(),
+				spawnToken: spawnToken,
+				expectedAppBinding: Data("wrong-digest".utf8))
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
+		}
+		XCTAssertNotNil(
+			invitation.combinerKeyPackage,
+			"a single-use invitation's KP must remain unconsumed by a rejected receive"
+		)
+
+		// The same welcome, now with the CORRECT expectation, consumes the KP.
+		let received = try invitation.receive(
+			welcome: initiated.welcome,
+			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			spawnToken: spawnToken, expectedAppBinding: Self.binding)
+		XCTAssertTrue(received.session.isEstablished)
+		XCTAssertNil(invitation.combinerKeyPackage)
 	}
 
 	/// `Some` expected, welcome carries none — rejected.
@@ -341,23 +538,23 @@ final class AppBindingTests: XCTestCase {
 		}
 	}
 
-	/// An EMPTY expectation is rejected up front, regardless of what the
-	/// welcome actually carries — empty is reserved-invalid, so it could
-	/// never legitimately match.
+	/// An EMPTY expectation is rejected UP FRONT — before any welcome decode
+	/// or join is even attempted, never merely because the eventual verifier
+	/// happens to reject it too. Proven by pairing it with an UNDECODABLE
+	/// welcome: if the up-front guard did not fire first, decoding garbage
+	/// would throw `.unsupportedStapleTag` (or similar), never
+	/// `.appBindingMismatch` — so this welcome and key package are never even
+	/// real ones (CODE FIX 4: the old version used a genuine welcome, which
+	/// the verifier would ALSO have rejected for the same error, so it could
+	/// not tell the two guards apart).
 	func testReceiveRejectsEmptyExpectation() throws {
-		let alice = try SessionTestSupport.identity("empty-expect-alice")
 		let bob = try SessionTestSupport.identity("empty-expect-bob")
-		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
-			classicalProvider: SessionTestSupport.classicalProvider,
-			pqProvider: SessionTestSupport.pqProvider)
 
 		XCTAssertThrowsError(
 			try TwoMLSSession.receive(
-				identity: bob, welcome: initiated.welcome,
-				theirClassicalKeyPackage: alice.keyPackage.classical,
-				bootstrapKPCommitment: try initiated.session
-					.bootstrapKPCommitment(),
+				identity: bob, welcome: Data("not-a-real-welcome".utf8),
+				theirClassicalKeyPackage: bob.keyPackage.classical,
+				bootstrapKPCommitment: Data(repeating: 0, count: 32),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider,
 				expectedAppBinding: Data())
@@ -512,13 +709,22 @@ final class AppBindingTests: XCTestCase {
 
 	// MARK: - Test helpers
 
-	/// A classical `KeyPackage` for `clientID` with capabilities matching a
-	/// pre-AppBinding-cut leaf: both suites, `APQInfo`, and `AppDataUpdate`,
-	/// but NOT `0xF0A2` — mirrors `TwoMLSIdentity`'s private
-	/// `signedKeyPackage`, with a restricted capability set standing in for
-	/// an old client build. Basic credentials carry no proof (the leaf's
-	/// signing key need not match any real identity's), matching
-	/// `EstablishmentTests.forgedGroupBWelcome`'s same technique.
+	/// Capabilities matching a pre-AppBinding-cut leaf: both suites,
+	/// `APQInfo`, and `AppDataUpdate`, but NOT `0xF0A2` — standing in for an
+	/// old client build, shared by every rogue-leaf helper below.
+	private static let preCutCapabilities = MLS.RFC9420.Capabilities(
+		versions: [.mls10],
+		cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
+		extensions: [MLS.Combiner.Codepoints.deployed.apqInfoExtensionType],
+		proposals: [MLS.RFC9420.ProposalType(.appDataUpdate)],
+		credentials: [MLS.RFC9420.CredentialType(.basic)])
+
+	/// A classical `KeyPackage` for `clientID` with `preCutCapabilities` —
+	/// mirrors `TwoMLSIdentity`'s private `signedKeyPackage`, with a
+	/// restricted capability set standing in for an old client build. Basic
+	/// credentials carry no proof (the leaf's signing key need not match any
+	/// real identity's), matching `EstablishmentTests.forgedGroupBWelcome`'s
+	/// same technique.
 	private static func rogueClassicalKeyPackage(clientID: Data) throws
 		-> MLS.RFC9420.KeyPackage
 	{
@@ -526,13 +732,6 @@ final class AppBindingTests: XCTestCase {
 		let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (_, leafPublicKey) = try provider.hpkeGenerateKeyPair()
 		let (_, initPublicKey) = try provider.hpkeGenerateKeyPair()
-
-		let preCutCapabilities = MLS.RFC9420.Capabilities(
-			versions: [.mls10],
-			cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
-			extensions: [MLS.Combiner.Codepoints.deployed.apqInfoExtensionType],
-			proposals: [MLS.RFC9420.ProposalType(.appDataUpdate)],
-			credentials: [MLS.RFC9420.CredentialType(.basic)])
 
 		var leaf = MLS.RFC9420.LeafNode(
 			encryptionKey: leafPublicKey, signatureKey: signatureKey,
@@ -549,5 +748,67 @@ final class AppBindingTests: XCTestCase {
 			provider, privateKey: signingKey, label: "KeyPackageTBS",
 			content: try keyPackage.toBeSigned())
 		return keyPackage
+	}
+
+	/// Builds a fresh (initiator, acceptor) pair — bound when `appBinding` is
+	/// non-nil — and hand-forges a validly-FRAMED "Alice Update" targeting
+	/// the acceptor's own send group (Group_B): the enclosing proposal is
+	/// signed under Alice's REAL, currently-occupying classical key (so
+	/// `Group.verifying(proposal:)` accepts the framing), but the embedded
+	/// replacement leaf swaps in `preCutCapabilities` (missing `0xF0A2`) —
+	/// credential and signature key stay identical to Alice's real leaf, so
+	/// this is a plain non-rotating Update, never touching AS/successor
+	/// logic. Mirrors `EstablishmentTests.forgedGroupBWelcome`'s hand-rolling
+	/// technique one level down (a proposal instead of a welcome).
+	private static func forgedUncapableUpdate(appBinding: Data?, suffix: String) throws -> (
+		committer: TwoMLSSession, message: Data, digest: Data, proposingID: Data
+	) {
+		let provider = SessionTestSupport.classicalProvider
+		let alice = try SessionTestSupport.identity("update-leaf-alice-\(suffix)")
+		let bob = try SessionTestSupport.identity("update-leaf-bob-\(suffix)")
+
+		let initiated = try TwoMLSSession.initiate(
+			identity: alice, their: bob.keyPackage, classicalProvider: provider,
+			pqProvider: SessionTestSupport.pqProvider, appBinding: appBinding)
+		let received = try TwoMLSSession.receive(
+			identity: bob, welcome: initiated.welcome,
+			theirClassicalKeyPackage: alice.keyPackage.classical,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			classicalProvider: provider, pqProvider: SessionTestSupport.pqProvider,
+			expectedAppBinding: appBinding)
+
+		let committerSend = try XCTUnwrap(received.session.sendGroup).classical
+		let aliceLeafIndex = try XCTUnwrap(
+			committerSend.tree.nonBlankLeaves()
+				.first { $0.index != committerSend.myLeafIndex }?.index)
+		let realLeafRecord = try XCTUnwrap(committerSend.tree.leaf(at: aliceLeafIndex))
+		let realLeaf = try MLS.RFC9420.LeafNode(mlsEncoded: realLeafRecord.encoded)
+
+		let (_, rogueEncryptionKey) = try provider.hpkeGenerateKeyPair()
+		var rogueLeaf = realLeaf
+		rogueLeaf.encryptionKey = rogueEncryptionKey
+		rogueLeaf.capabilities = preCutCapabilities
+		rogueLeaf.source = .update
+		rogueLeaf.signature = try MLS.signWithLabel(
+			provider, privateKey: alice.signingKey, label: "LeafNodeTBS",
+			content: try rogueLeaf.toBeSigned(
+				placement: .inGroup(
+					groupID: committerSend.context.groupID,
+					leafIndex: aliceLeafIndex)))
+
+		let content = MLS.RFC9420.FramedContent(
+			groupID: committerSend.context.groupID, epoch: committerSend.context.epoch,
+			sender: .member(aliceLeafIndex), authenticatedData: Data(),
+			content: .proposal(.update(rogueLeaf)))
+		let forged = try MLS.RFC9420.protectPublic(
+			provider, content: content, groupContext: committerSend.context,
+			confirmationTag: nil, signingKey: alice.signingKey,
+			membershipKey: committerSend.epoch.membershipKey)
+		let message = try MLS.RFC9420.Message.publicMessage(forged).mlsEncoded()
+
+		return (
+			committer: received.session, message: message,
+			digest: provider.randomBytes(8), proposingID: alice.clientID
+		)
 	}
 }

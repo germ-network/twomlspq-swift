@@ -34,10 +34,11 @@ extension APQGroup {
 	///
 	/// `appBinding`, when non-nil, is welded into the classical half only (the
 	/// PQ half inherits coverage through the `APQInfo` half-binding, book
-	/// group-rules.md rule 8) via the PR-0 `classicalExtraExtensions` seam.
-	/// Empty is reserved-invalid (rejected defensively here too, even though
-	/// every wired caller already rejects it at its own choke point — mirrors
-	/// Rust's shared `with_app_binding`, which both directions call through);
+	/// group-rules.md rule 8) via the swift-mls `classicalExtraExtensions`
+	/// capability. Empty is reserved-invalid (rejected defensively here too,
+	/// even though every wired caller already rejects it at its own choke
+	/// point — mirrors Rust's shared `with_app_binding`, which both directions
+	/// call through);
 	/// non-nil additionally requires both the founder's own leaf and the
 	/// peer's leaf to advertise `0xF0A2` (swift-mls does not enforce this the
 	/// way mls-rs's per-client extension registration does).

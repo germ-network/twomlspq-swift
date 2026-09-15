@@ -110,6 +110,11 @@ extension TwoMLSSession {
 			else {
 				throw TwoMLSError.rekeyProposalRejected
 			}
+			// No AppBinding leaf-advert gate here (contrast
+			// `validateOfferedUpdate`'s classical-side one): PQ halves carry
+			// NO binding (rule 8, group-rules.md:71-72), so the
+			// "binding-carrying group" predicate `sendPQ` would be gated on
+			// is always false.
 			// Belt: the mechanical re-key carries no credential/signature-key
 			// rotation — read the sender's CURRENT occupant off the live tree
 			// and require the proposed leaf's credential AND signature key to
