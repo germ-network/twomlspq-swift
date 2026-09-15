@@ -148,9 +148,10 @@ struct IdentityArchive: Codable, Sendable {
 
 /// Gated because this bridges the plain Codable wire struct to the port's
 /// own live `TwoMLSIdentity`, which is itself `@available(iOS 26, macOS 26, *)`
-/// (it's built on CryptoKit's native ML-KEM-768 provider, macOS 26/iOS 26+
-/// only). The wire structs stay ungated so the archive's byte shape needs no
-/// OS floor to describe or decode.
+/// (it's built on the ML-KEM-768 provider, which resolves to CryptoKit on
+/// Apple — macOS 26/iOS 26+ — and to swift-crypto's BoringSSL off-Apple, where
+/// the trailing `*` leaves the type unrestricted). The wire structs stay
+/// ungated so the archive's byte shape needs no OS floor to describe or decode.
 @available(iOS 26, macOS 26, *)
 extension IdentityArchive {
 	/// `includeInitSecrets` is an explicit control, never inferred from

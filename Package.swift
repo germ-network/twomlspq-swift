@@ -38,6 +38,10 @@ let package = Package(
 			url: "https://github.com/germ-network/GermConvenience.git",
 			.upToNextMinor(from: "0.8.0")
 		),
+		// Already resolved transitively via swift-mls (pinned `from: "4.0.0"`,
+		// matching swift-mls's own rule); wiring it directly here brings the
+		// `Crypto` product into these targets for the off-Apple ML-KEM path.
+		.package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
 	],
 	targets: [
 		.target(
@@ -47,6 +51,7 @@ let package = Package(
 				.product(name: "MLSCodec", package: "swift-mls"),
 				.product(name: "MLSCrypto", package: "swift-mls"),
 				.product(name: "SecretBytes", package: "swift-secret-bytes"),
+				.product(name: "Crypto", package: "swift-crypto"),
 			]
 		),
 		.testTarget(
@@ -56,6 +61,7 @@ let package = Package(
 				.product(name: "MLSCodec", package: "swift-mls"),
 				.product(name: "MLSCrypto", package: "swift-mls"),
 				.product(name: "SecretBytes", package: "swift-secret-bytes"),
+				.product(name: "Crypto", package: "swift-crypto"),
 			]
 		),
 		.target(
