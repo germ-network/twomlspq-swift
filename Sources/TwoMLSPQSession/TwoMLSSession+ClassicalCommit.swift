@@ -95,6 +95,16 @@ extension TwoMLSSession {
 			else {
 				throw TwoMLSError.proposalRejected
 			}
+			// Rule 8 tail (group-rules.md:77-78): "Leaves advertise the
+			// extension type, so a binding-carrying group can only ever
+			// contain capability-bearing leaves." The peer's offered Update
+			// replaces their occupied leaf — when THIS classical group
+			// already carries an AppBinding, the replacement leaf must
+			// advertise `0xF0A2` too, gated on the group actually being
+			// bound (an unbound group never required leaf capability).
+			if try AppBinding.read(fromExtensionsOf: send.classical.context) != nil {
+				try ensureAppBindingCreatorLeafAdvert(leafNode)
+			}
 			guard let currentRecord = send.classical.tree.leaf(at: senderLeaf) else {
 				throw TwoMLSError.proposalRejected
 			}
@@ -305,6 +315,16 @@ extension TwoMLSSession {
 					case .basic(let remoteIdentity) = leafNode.credential
 				else {
 					throw TwoMLSError.invalidFoldEffects
+				}
+				// Rule 8 tail (group-rules.md:77-78), same gate as
+				// `validateOfferedUpdate`'s: re-checked here (defense in
+				// depth, not redundant — `queueProposal`'s validation and
+				// this fold happen at different times) against the SAME
+				// pre-commit `send.classical` this fold is about to land in.
+				if try AppBinding.read(fromExtensionsOf: send.classical.context)
+					!= nil
+				{
+					try ensureAppBindingCreatorLeafAdvert(leafNode)
 				}
 				let ref = try proposalStore.insert(verified, classicalProvider)
 				proposals.append(.reference(ref))

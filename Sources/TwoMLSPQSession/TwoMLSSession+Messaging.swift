@@ -365,6 +365,23 @@ extension TwoMLSSession {
 			provider: classicalProvider, codepoints: codepoints)
 		try TwoPartyRules.ensureTwoParty(groupB.classical)
 
+		// App-state binding: the return welcome must carry back exactly THIS
+		// session's own binding — read off Group_A (`groupA.classical`, this
+		// session's send group) rather than any wire-carried claim — so an
+		// absent or different binding here is a strip/downgrade or
+		// wrong-relationship welcome (book group-rules.md rule 8, mirrors
+		// Rust's `test_return_welcome_without_app_binding_rejected`). Group_B
+		// is classical-only at this point (`pq == nil`), so
+		// `verifyPQHalfUnbound` is a no-op here — kept for call-site symmetry
+		// with every other PQ-half join.
+		let ownAppBinding = try AppBinding.read(fromExtensionsOf: groupA.classical.context)
+		try verifyAppBinding(groupB.classical, expected: ownAppBinding)
+		try verifyPQHalfUnbound(groupB.pq)
+		if ownAppBinding != nil {
+			let creatorLeaf = try Self.joinedCreatorLeaf(of: groupB.classical)
+			try ensureAppBindingCreatorLeafAdvert(creatorLeaf)
+		}
+
 		// Value semantics: every throwing call above ran on locals, so a failed
 		// join leaves `self`'s Group_A exporter leaf unspent (the whole C-3 fix).
 		sendGroup = groupA

@@ -87,15 +87,23 @@ public struct TwoMLSIdentity: Sendable {
 
 	/// The leaf capabilities every occupied leaf this module creates
 	/// advertises: both suites (so either half's `KeyPackage` validates), the
-	/// `APQInfo` GCE, and the `AppDataUpdate` proposal — group-rules rule 8
-	/// ("every occupied leaf must advertise APQInfo + AppDataUpdate").
-	/// Advertising a superset is always valid against the profile's
+	/// `APQInfo` GCE and the `AppDataUpdate` proposal — every occupied leaf
+	/// must support both (book wire-format.md: "Every occupied leaf must
+	/// advertise the `APQInfo` extension (`0xF0A1`) and the `AppDataUpdate`
+	/// proposal (`0x0008`) types; a leaf that cannot support them is rejected
+	/// rather than silently degraded") — and the `AppBinding` GCE (`0xF0A2`,
+	/// book group-rules.md rule 8: "Leaves advertise the extension type, so a
+	/// binding-carrying group can only ever contain capability-bearing
+	/// leaves"). Advertising a superset is always valid against the profile's
 	/// `validatePolicy`.
 	static var leafCapabilities: MLS.RFC9420.Capabilities {
 		MLS.RFC9420.Capabilities(
 			versions: [.mls10],
 			cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
-			extensions: [MLS.Combiner.Codepoints.deployed.apqInfoExtensionType],
+			extensions: [
+				MLS.Combiner.Codepoints.deployed.apqInfoExtensionType,
+				AppBinding.extensionType,
+			],
 			proposals: [MLS.RFC9420.ProposalType(.appDataUpdate)],
 			credentials: [MLS.RFC9420.CredentialType(.basic)])
 	}
