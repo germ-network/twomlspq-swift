@@ -375,5 +375,8 @@ extension TwoMLSSession {
 		// (`initiate` deferred clearing it exactly for this join) — clear it
 		// now so it can never be archived once spent.
 		identity = identity.clearingInitSecrets(classical: true, pq: false)
+		// The initiator has nothing left to establish past this point —
+		// `pendingOutbound()` (PR3b) has no more envelope to re-seal.
+		initialTheirKP = nil
 	}
 }

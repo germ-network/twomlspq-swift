@@ -136,7 +136,11 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// `CTSeal.open` failed to recover `S` — a bounds-checked `wireCT` decode
 	/// failure, or the AEAD open itself. The AEAD open is the explicit reject
 	/// for a stale/misdirected CT: ML-KEM decapsulation alone never throws on a
-	/// mismatched ciphertext, it just returns the wrong bytes.
+	/// mismatched ciphertext, it just returns the wrong bytes. Also
+	/// `Invitation.openInitial`'s HPKE-open failure, same reasoning: a wrong
+	/// key, tampered ciphertext, or downgrade-mismatched `envelopeFramingAAD`
+	/// only ever surfaces at the AEAD (wire-format.md, "The seal binds the
+	/// declared suite via untransmitted AAD").
 	case decryptionFailed
 
 	// MARK: §A.5 PQ re-key (mechanical)
@@ -269,4 +273,21 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// mis-route (book session-lifecycle.md, "Invitations & replayed initial
 	/// frames").
 	case misroutedSpawnToken
+
+	// MARK: §A.1 HPKE establishment envelope (slice 9, PR3b)
+
+	/// `EstablishmentEnvelope.decodePlaintext` found an establishment
+	/// vector (`ESTABLISHMENT_VECTOR_TAG`) carrying neither `appPayload` nor
+	/// `welcome` — the either/or wire rule requires at least one
+	/// (protocol-flows.md, "one envelope, two shapes (either/or)").
+	case neitherAppPayloadNorWelcomePresent
+	/// An HPKE-opened §A.1 plaintext's leading tag matched neither
+	/// `ESTABLISHMENT_VECTOR_TAG` (`0x07`) nor the parallel bootstrap-KP tag
+	/// (`0x13`, `Frames.pqBootstrapKPTag`).
+	case unsupportedEstablishmentTag(UInt8)
+	/// `TwoMLSSession.pendingOutbound()` was called with no retained peer
+	/// key package to re-seal against: the initiator has already joined
+	/// Group_B (`initialTheirKP` cleared at `joinGroupBIfNeeded`), or this
+	/// session is a responder (which never retains one).
+	case noPendingEstablishmentEnvelope
 }

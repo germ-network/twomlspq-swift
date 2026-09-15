@@ -271,6 +271,33 @@ extension BootstrapKPSecretArchive {
 	}
 }
 
+/// `initialTheirKP`'s archived form (slice 9, PR3b) — the peer's published
+/// combiner key package, wire-encoded per half. No secret material (it's
+/// the PEER's own published KP), so no `@SecretField`.
+struct CombinerKeyPackageArchive: Codable, Sendable, Equatable {
+	var classical: Data
+	var pq: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case classical = 0
+		case pq = 1
+	}
+}
+
+extension CombinerKeyPackageArchive {
+	init(_ keyPackage: CombinerKeyPackage) throws {
+		try self.init(
+			classical: keyPackage.classical.mlsEncoded(), pq: keyPackage.pq.mlsEncoded()
+		)
+	}
+
+	func restore() throws -> CombinerKeyPackage {
+		CombinerKeyPackage(
+			classical: try MLS.RFC9420.KeyPackage(mlsEncoded: classical),
+			pq: try MLS.RFC9420.KeyPackage(mlsEncoded: pq))
+	}
+}
+
 /// The initiator's held §A.4 ephemeral (`PQEphemeral`), archived.
 struct PQEphemeralArchive: Codable, Sendable, Equatable {
 	@SecretField var secretKey: SecretBytes
@@ -602,6 +629,11 @@ struct SessionArchive: Codable, Sendable {
 	/// current epoch's key(s) at once.
 	var recvHeaderKeys: ArchiveIntegerKeyedMap<Data>?
 	var recvHeaderKeysPQ: ArchiveIntegerKeyedMap<Data>?
+	/// `initialTheirKP`, added slice 9 PR3b — Optional so a pre-existing
+	/// archive still decodes; `nil` for every session except a live
+	/// pre-Group_B-join initiator (the only state `pendingOutbound()`
+	/// applies to).
+	var initialTheirKP: CombinerKeyPackageArchive?
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case version = 0
@@ -640,6 +672,7 @@ struct SessionArchive: Codable, Sendable {
 		case listenRendezvous = 33
 		case recvHeaderKeys = 34
 		case recvHeaderKeysPQ = 35
+		case initialTheirKP = 36
 	}
 }
 
@@ -724,7 +757,8 @@ extension TwoMLSSession {
 			spawnToken: spawnToken,
 			listenRendezvous: ArchiveIntegerKeyedMap(listenRendezvous),
 			recvHeaderKeys: ArchiveIntegerKeyedMap(recvHeaderKeys),
-			recvHeaderKeysPQ: ArchiveIntegerKeyedMap(recvHeaderKeysPQ))
+			recvHeaderKeysPQ: ArchiveIntegerKeyedMap(recvHeaderKeysPQ),
+			initialTheirKP: try initialTheirKP.map(CombinerKeyPackageArchive.init))
 		return try SecretArchive(encoding: body)
 	}
 }

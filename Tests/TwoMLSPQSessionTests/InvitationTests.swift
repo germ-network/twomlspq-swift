@@ -361,6 +361,93 @@ final class InvitationTests: XCTestCase {
 		XCTAssertTrue(bob.isFullyEstablished)
 	}
 
+	// MARK: - open_initial (slice 9, PR3b)
+	//
+	// The round-trip, AAD-downgrade, and codec tests live in
+	// `EnvelopeTests.swift`; these cover `Invitation.openInitial`'s own
+	// decrypt-only / no-consume contract.
+
+	/// `openInitial` is decrypt-only: opening a single-use invitation's
+	/// envelope does NOT consume it — `combinerKeyPackage` stays non-nil,
+	/// and the invitation is still able to `receive` the very welcome the
+	/// opened envelope carried.
+	func testOpenInitialDoesNotConsumeASingleUseInvitation() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let bobPrincipal = try makePrincipal("bob")
+		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirKP)
+
+		let envelope = try initiated.session.pendingOutbound()
+		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
+			return XCTFail("expected .establishment")
+		}
+		XCTAssertNotNil(invitation.combinerKeyPackage, "openInitial must not consume")
+
+		var mutableInvitation = invitation
+		let returnKP = try MLS.RFC9420.KeyPackage(
+			mlsEncoded: try XCTUnwrap(frame.returnKeyPackage))
+		let received = try mutableInvitation.receive(
+			welcome: try XCTUnwrap(frame.welcome), theirClassicalKeyPackage: returnKP,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			spawnToken: freshSpawnToken())
+		XCTAssertTrue(received.session.isEstablished)
+	}
+
+	/// A spent single-use invitation (`identity` nil'd on consume) fails
+	/// `openInitial` cleanly with `.invitationSpent`, rather than crash.
+	func testOpenInitialFailsCleanlyOnASpentSingleUseInvitation() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let carolPrincipal = try makePrincipal("carol")
+		let bobPrincipal = try makePrincipal("bob")
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+		// Captured before consumption, so a second party's envelope can
+		// still be sealed against the now-spent published KP.
+		let publishedKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		_ = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
+		XCTAssertNil(invitation.combinerKeyPackage)
+
+		let carolInitiated = try TwoMLSSession.initiate(
+			principal: carolPrincipal, their: publishedKP)
+		let envelope = try carolInitiated.session.pendingOutbound()
+
+		XCTAssertThrowsError(try invitation.openInitial(envelope)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .invitationSpent)
+		}
+	}
+
+	/// PR3a made this hold: a restored last-resort invitation's PQ init
+	/// secret survives, so a restored (never-yet-consumed) invitation can
+	/// both `openInitial` a fresh envelope AND `receive` off it.
+	func testRestoredLastResortInvitationCanOpenInitialAndReceive() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let bobPrincipal = try makePrincipal("bob")
+		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+
+		let archive = try invitation.makeInvitationArchive()
+		var restored = try Invitation.restore(
+			archive: archive,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirKP)
+		let envelope = try initiated.session.pendingOutbound()
+
+		guard case .establishment(let frame) = try restored.openInitial(envelope) else {
+			return XCTFail("expected .establishment")
+		}
+		let returnKP = try MLS.RFC9420.KeyPackage(
+			mlsEncoded: try XCTUnwrap(frame.returnKeyPackage))
+		let received = try restored.receive(
+			welcome: try XCTUnwrap(frame.welcome), theirClassicalKeyPackage: returnKP,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			spawnToken: freshSpawnToken())
+		XCTAssertTrue(received.session.isEstablished)
+	}
+
 	// MARK: - forwarded(spawnToken:)
 
 	func testForwardedSpawnTokenRoutesCorrectlyAndRejectsAMismatch() throws {

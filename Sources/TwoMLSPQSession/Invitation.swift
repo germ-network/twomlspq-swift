@@ -172,4 +172,31 @@ public struct Invitation: Sendable {
 		guard let digest = try? classicalProvider.hash(untagged) else { return nil }
 		return bootstrapRouting[digest]
 	}
+
+	// MARK: - open_initial (slice 9, PR3b)
+
+	/// Opens a §A.1 envelope with this invitation's own (still-live) PQ
+	/// init secret. Decrypt-only: no table writes, no consume — the four
+	/// tables and `identity` are untouched either way, so an un-consumed
+	/// invitation (single-use or last-resort) stays fully `receive`-able
+	/// afterward, and re-opens are harmless. A spent single-use invitation
+	/// (`identity` already `nil`) fails cleanly with `.invitationSpent`
+	/// rather than crash.
+	public func openInitial(_ envelope: Data) throws -> OpenedInitial {
+		guard let identity else { throw TwoMLSError.invitationSpent }
+		guard let pqInitSecretKey = identity.pqInitSecretKey else {
+			throw TwoMLSError.sessionNotReady
+		}
+		let (enc, ciphertext) = try EstablishmentEnvelope.unframeHpkeBlob(envelope)
+		let plaintext: Data
+		do {
+			plaintext = try pqProvider.hpkeOpen(
+				enc: enc, secretKey: pqInitSecretKey, info: clientID,
+				aad: EstablishmentEnvelope.envelopeFramingAAD(),
+				ciphertext: ciphertext)
+		} catch {
+			throw TwoMLSError.decryptionFailed
+		}
+		return try EstablishmentEnvelope.decodePlaintext(plaintext)
+	}
 }

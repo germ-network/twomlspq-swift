@@ -256,6 +256,13 @@ public struct TwoMLSSession: Sendable {
 	/// The responder's (Bob's) pinned `H(KP′)`, validated at `receive` —
 	/// `nil` on the initiator.
 	var expectedBootstrapKPCommitment: Data?
+	/// The peer's published combiner key package (`initiate`'s `their`) —
+	/// retained ONLY on the initiator, so `pendingOutbound()` (slice 9,
+	/// PR3b) can re-seal the §A.1 establishment envelope on every re-send.
+	/// Cleared at `joinGroupBIfNeeded` (Messaging.swift) once Group_B is
+	/// joined: the initiator has nothing left to establish past that point.
+	/// `nil` on the responder, which never sends this envelope.
+	var initialTheirKP: CombinerKeyPackage?
 	/// Whose turn it is to drive the next PQ-bootstrap/bind step — `true` on
 	/// the initiator (Alice owns the bootstrap), `false` on the responder,
 	/// until the bind passes it back (`applyBind`).
@@ -512,6 +519,7 @@ public struct TwoMLSSession: Sendable {
 				keyPackage: MLS.RFC9420.KeyPackage
 			)? = nil,
 		expectedBootstrapKPCommitment: Data? = nil,
+		initialTheirKP: CombinerKeyPackage? = nil,
 		pqTurnMine: Bool,
 		owedBind: OwedBind? = nil,
 		pqInflight: PQInflight? = nil,
@@ -535,6 +543,7 @@ public struct TwoMLSSession: Sendable {
 		self.initiated = initiated
 		self.bootstrapKPSecret = bootstrapKPSecret
 		self.expectedBootstrapKPCommitment = expectedBootstrapKPCommitment
+		self.initialTheirKP = initialTheirKP
 		self.pqTurnMine = pqTurnMine
 		self.owedBind = owedBind
 		self.pqInflight = pqInflight

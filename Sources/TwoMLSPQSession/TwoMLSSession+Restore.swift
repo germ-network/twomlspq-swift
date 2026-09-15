@@ -258,6 +258,7 @@ extension TwoMLSSession {
 			joinedWelcomeDigest: body.joinedWelcomeDigest, initiated: body.initiated,
 			bootstrapKPSecret: try body.bootstrapKPSecret?.restore(),
 			expectedBootstrapKPCommitment: body.expectedBootstrapKPCommitment,
+			initialTheirKP: try body.initialTheirKP?.restore(),
 			pqTurnMine: body.pqTurnMine, owedBind: body.owedBind,
 			pqInflight: try body.pqInflight?.restore(),
 			pendingSideBand: body.pendingSideBand,

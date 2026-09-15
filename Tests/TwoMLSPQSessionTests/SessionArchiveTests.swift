@@ -91,6 +91,47 @@ final class SessionArchiveTests: XCTestCase {
 		XCTAssertNil(body.identity.pqInitSecretKey)
 	}
 
+	/// `initialTheirKP` (slice 9, PR3b) DOES survive a session archive
+	/// round-trip — unlike the init secrets above, it carries no secret
+	/// material (the PEER's own published KP), and it's exactly what a
+	/// restored in-flight initiator needs to keep re-sealing
+	/// `pendingOutbound()`. Deliberately stops short of joining Group_B off
+	/// the restored session — that hits the KNOWN, separately-filed
+	/// limitation that a restored in-flight initiator's classical init
+	/// secret isn't archived (`SessionArchive.swift`'s `IdentityArchive`
+	/// doc); `pendingOutbound()` needs no init secret, only `currentStaple`
+	/// + `identity.keyPackage.classical` + `initialTheirKP`, all of which
+	/// this restore does carry.
+	func testInFlightInitiatorArchiveCarriesInitialTheirKPForPendingOutbound() throws {
+		let alicePrincipal = try Principal.generate(
+			clientID: Data("alice".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let bobPrincipal = try Principal.generate(
+			clientID: Data("bob".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirKP)
+
+		let archive = try initiated.session.makeSessionArchive(kind: .checkpoint)
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: try sealAndOpen(archive),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		let envelope = try restored.pendingOutbound()
+		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
+			return XCTFail("expected .establishment")
+		}
+		XCTAssertEqual(frame.welcome, initiated.welcome)
+		XCTAssertEqual(
+			frame.returnKeyPackage,
+			try initiated.session.identity.keyPackage.classical.mlsEncoded())
+	}
+
 	// MARK: - 2. classical fold, then Core@higher-seq over Checkpoint@lower-seq
 
 	/// A Core-kind archive never carries a PQ snapshot (regardless of

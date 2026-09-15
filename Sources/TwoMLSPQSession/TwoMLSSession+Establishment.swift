@@ -110,7 +110,7 @@ extension TwoMLSSession {
 				leafSecretKey: bootstrap.leafSecretKey,
 				initSecretKey: bootstrap.initSecretKey,
 				keyPackage: bootstrap.keyPackage
-			), pqTurnMine: true)
+			), initialTheirKP: their, pqTurnMine: true)
 		// The send group (Group_A) exists from construction: capture its
 		// birth epoch's rendezvous address before minting the baseline
 		// archive (routing works from birth, book session-lifecycle.md).
