@@ -168,7 +168,7 @@ extension APQGroup {
 		}
 	}
 
-	/// Slice 11 (§C.2): the creator-pin mode a Group_B join is expected under
+	/// Slice 11 (protocol-flows.md:407-432): the creator-pin mode a Group_B join is expected under
 	/// — `.bare` for a plain (un-enveloped) welcome, pinned to the
 	/// invitation identity (protocol-flows.md:428: a mismatch here means the
 	/// welcome names a DIFFERENT creator than the one this session's
@@ -197,8 +197,8 @@ extension APQGroup {
 	/// session derived off its own Group_A, and the join is refused
 	/// (`.missingCrossPartyPSK`) if it never did, because the establishment PSK
 	/// is the join's authenticity gate (`psk-binding.md`) — then pins the
-	/// joined creator leaf's `.basic` identity against `mode` (§C.2's
-	/// mode-based reject), then the hand-written deferred-`APQInfo` check
+	/// joined creator leaf's `.basic` identity against `mode` (the
+	/// mode-based reject above), then the hand-written deferred-`APQInfo` check
 	/// (there is no combiner `verifyPair` for a pq-less pair — it reads the
 	/// absent `pq.context`).
 	static func joinClassicalOnly(
