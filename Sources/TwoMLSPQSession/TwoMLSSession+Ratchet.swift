@@ -163,9 +163,14 @@ extension TwoMLSSession {
 	/// repeated peeks of the same parked leg are byte-different but open to
 	/// the same plaintext — matching `seal`/`sealSideBand`'s own contract.
 	/// `nil` both when nothing is parked and, defensively, if sealing itself
-	/// fails (never falls back to returning the leg unsealed).
+	/// fails (never falls back to returning the leg unsealed). Also `nil`
+	/// while `owesEstablishmentEnvelope` (defense-in-depth, slice 11): every
+	/// side-band round-starter already gates on
+	/// `ensureEstablishmentDelegated()` before ever parking a leg, so this
+	/// should be unreachable in practice, but matches the Rust peer's own
+	/// `pq_pending_outbound` gating rather than relying solely on that.
 	public func pqPendingOutbound() -> Data? {
-		guard let pending = pendingSideBand else { return nil }
+		guard !owesEstablishmentEnvelope, let pending = pendingSideBand else { return nil }
 		return try? sealSideBand(pending)
 	}
 
