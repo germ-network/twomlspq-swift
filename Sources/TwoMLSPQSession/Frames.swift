@@ -13,12 +13,19 @@ enum Frames {
 	static let pqCTTag: UInt8 = 0x19
 	static let pqRekeyUpdTag: UInt8 = 0x1B
 	static let pqRekeyCommitTag: UInt8 = 0x1D
+	/// Slice 11 (contract-26): the born-dedicated establishment handoff —
+	/// `[0x0B][u32 envelope][u32 welcome]`, wire-format.md:17. Wraps the
+	/// acceptor's own `0x01` birth welcome (the structural reading of the
+	/// book's `APQWelcome_A` label — a book-internal naming slip; see
+	/// protocol-flows.md:407-432).
+	static let establishmentHandoffTag: UInt8 = 0x0B
 
 	/// The staple slot self-discriminates by its first byte.
 	enum StapleKind: Equatable {
 		case welcome
 		case mlsMessage
 		case apqPrivateMessage
+		case establishmentHandoff
 		case unsupported(UInt8)
 	}
 
@@ -27,6 +34,7 @@ enum Frames {
 		case apqWelcomeTag: .welcome
 		case mlsMessageStapleTag: .mlsMessage
 		case apqPrivateMessageTag: .apqPrivateMessage
+		case establishmentHandoffTag: .establishmentHandoff
 		default: .unsupported(firstByte)
 		}
 	}
@@ -298,6 +306,37 @@ enum Frames {
 		let sections = try readSections(
 			staple[staple.index(after: staple.startIndex)...], count: 2)
 		guard sections.allSatisfy({ !$0.isEmpty }) else { throw TwoMLSError.emptySection }
+		return (sections[0], sections[1])
+	}
+
+	// MARK: - `0x0B` contract-26 establishment handoff (slice 11)
+
+	/// `[0x0B][u32 envelope][u32 welcome]` — `welcome` is the full, unmodified
+	/// `0x01` APQ welcome bytes (wire-format.md:17, "unmodified welcome").
+	static func encodeEstablishmentHandoff(envelope: Data, welcome: Data) -> Data {
+		var buffer = Data([establishmentHandoffTag])
+		pushSection(envelope, into: &buffer)
+		pushSection(welcome, into: &buffer)
+		return buffer
+	}
+
+	static func decodeEstablishmentHandoff(_ staple: Data) throws -> (
+		envelope: Data, welcome: Data
+	) {
+		guard let tag = staple.first else { throw TwoMLSError.truncatedSection }
+		guard tag == establishmentHandoffTag else {
+			throw TwoMLSError.unsupportedStapleTag(tag)
+		}
+		let sections = try readSections(
+			staple[staple.index(after: staple.startIndex)...], count: 2)
+		guard !sections[0].isEmpty else { throw TwoMLSError.emptySection }
+		guard !sections[1].isEmpty else { throw TwoMLSError.emptySection }
+		// wire-format.md:17: the inner section is the unmodified `0x01`
+		// welcome — reject anything else outright rather than let a
+		// downstream decode fail with a less specific error.
+		guard sections[1][sections[1].startIndex] == apqWelcomeTag else {
+			throw TwoMLSError.unsupportedStapleTag(sections[1][sections[1].startIndex])
+		}
 		return (sections[0], sections[1])
 	}
 }

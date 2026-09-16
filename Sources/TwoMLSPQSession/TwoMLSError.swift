@@ -324,4 +324,30 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// group-creation site ledgers the current epoch before this could ever
 	/// be asked for it.
 	case attachmentComponentUnavailable
+
+	// MARK: Born-dedicated principal + contract-26 handoff (slice 11)
+
+	/// `Invitation.receive`/`TwoMLSSession.receive` was called with a
+	/// non-nil, empty `newClientID` — the reserved slot the dedicated
+	/// principal is minted under. Empty is reserved-invalid, matching every
+	/// other identity/binding field this module rejects that way.
+	case invalidClientID
+	/// A frame-producing method was called while the acceptor still owes
+	/// the contract-26 signed handoff envelope (`owesEstablishmentEnvelope`)
+	/// — the non-emittable gate (Fable MAJ-6). Also `installEstablishmentEnvelope`'s
+	/// own empty-argument case, and a `.bare`-mode Group_B join whose
+	/// creator differs from the invitation identity (protocol-flows.md:428
+	/// — the join needs the envelope before it can trust a different
+	/// creator).
+	case establishmentEnvelopeRequired
+	/// `installEstablishmentEnvelope` was handed envelope bytes different
+	/// from the one already installed — a corrupt or conflicting caller,
+	/// never a legitimate re-send (an idempotent re-install of the SAME
+	/// bytes is a no-op, not this error).
+	case establishmentEnvelopeConflict
+	/// `processIncomingApproved`'s approved Group_B join landed on a
+	/// creator different from the `expectedCreator` the caller pinned — the
+	/// approval names a specific dedicated principal, and a join that
+	/// disagrees with it is discarded whole, never partially trusted.
+	case establishmentCreatorMismatch
 }
