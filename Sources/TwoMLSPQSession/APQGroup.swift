@@ -168,23 +168,44 @@ extension APQGroup {
 		}
 	}
 
+	/// Slice 11 (§C.2): the creator-pin mode a Group_B join is expected under
+	/// — `.bare` for a plain (un-enveloped) welcome, pinned to the
+	/// invitation identity (protocol-flows.md:428: a mismatch here means the
+	/// welcome names a DIFFERENT creator than the one this session's
+	/// invitation-based topology can trust WITHOUT the signed contract-26
+	/// handoff, so it is not yet distinguishable from a born-dedicated
+	/// welcome pre-approval — `.establishmentEnvelopeRequired`, not a bare
+	/// identity mismatch); `.approved` for a welcome whose PAIRED handoff
+	/// envelope has already been verified out of band and pins a SPECIFIC
+	/// expected creator (a mismatch there discards the join whole —
+	/// `.establishmentCreatorMismatch`, never partially trusted).
+	enum JoinCreatorMode {
+		case bare(Data)
+		case approved(Data)
+
+		var expectedCreatorID: Data {
+			switch self {
+			case .bare(let id): return id
+			case .approved(let id): return id
+			}
+		}
+	}
+
 	/// Group_B join: a bare classical `Group.joining` that now REQUIRES the
 	/// cross-party `0xFF02` PSK the Welcome references — a recording resolver
 	/// flags that swift-mls asked for the exact `(componentID, pskID)` this
 	/// session derived off its own Group_A, and the join is refused
 	/// (`.missingCrossPartyPSK`) if it never did, because the establishment PSK
 	/// is the join's authenticity gate (`psk-binding.md`) — then pins the
-	/// joined creator leaf's `.basic` identity to the caller-supplied
-	/// `expectedCreatorID` (the invitation identity, `group-rules.md`;
-	/// mirroring the Rust reference's bare-welcome creator ≡ invitation-identity
-	/// contract-26 rule), then the hand-written deferred-`APQInfo` check (there
-	/// is no combiner `verifyPair` for a pq-less pair — it reads the absent
-	/// `pq.context`).
+	/// joined creator leaf's `.basic` identity against `mode` (§C.2's
+	/// mode-based reject), then the hand-written deferred-`APQInfo` check
+	/// (there is no combiner `verifyPair` for a pq-less pair — it reads the
+	/// absent `pq.context`).
 	static func joinClassicalOnly(
 		welcome: MLS.RFC9420.Welcome,
 		credentials: MLS.RFC9420.Group.JoinerCredentials,
 		crossPSK: MLS.Combiner.ExportedPsk,
-		expectedCreatorID: Data,
+		mode: JoinCreatorMode,
 		provider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> APQGroup {
@@ -215,8 +236,11 @@ extension APQGroup {
 			try TwoPartyRules.ensureTwoParty(group)
 			let creatorID = try basicIdentifier(
 				TwoMLSSession.joinedCreatorLeaf(of: group).credential)
-			guard creatorID == expectedCreatorID else {
-				throw TwoMLSError.remoteIdentityMismatch
+			guard creatorID == mode.expectedCreatorID else {
+				switch mode {
+				case .bare: throw TwoMLSError.establishmentEnvelopeRequired
+				case .approved: throw TwoMLSError.establishmentCreatorMismatch
+				}
 			}
 			try verifyAPQInfoDeferred(on: group, codepoints: codepoints)
 			return APQGroup(

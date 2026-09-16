@@ -596,6 +596,11 @@ extension TwoMLSSession {
 			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
 			auth = authCopy
+			// Slice 11, §C.4: retire the recv-leaf catch-up custody once my
+			// own leaf's fold actually lands (even a no-op `mine.commit`,
+			// since `auth.mine` was already D from `receive` — the fold
+			// landing is what matters, not the commit's own return).
+			if ownCanonicalized { recvLeafPrincipal = nil }
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)
@@ -878,6 +883,8 @@ extension TwoMLSSession {
 				lastSendPQExported = pendingSendPQExportedStamp
 			}
 			auth = authCopy
+			// Slice 11, §C.4: same retirement as `applyFoldCommit`'s.
+			if ownCanonicalized { recvLeafPrincipal = nil }
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)
