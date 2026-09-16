@@ -532,12 +532,14 @@ public struct TwoMLSSession: Sendable {
 	/// alongside a stored property of that name (Swift, not a design choice).
 	public internal(set) var stateSeq: UInt64 = 0
 	/// The `stateSeq` at which `currentStaple` was last (re)installed by a
-	/// real fold/bind commit (`committingRound`, the only writer of
-	/// `currentStaple` past construction) — `PrepareResult.dependsOnSeq`'s
-	/// durability watermark. `restore` seeds it to the reconciled `stateSeq`
-	/// too: a safe, never-under value (that blob is already durable, or the
-	/// app could not have restored from it), even though it may overstate
-	/// exactly when `currentStaple` was first installed.
+	/// real fold/bind commit (`committingRound`) — or, since slice 11, by
+	/// `installEstablishmentEnvelope`, the SECOND writer of `currentStaple`
+	/// past construction (wrapping the bare `0x01` in the signed `0x0B`
+	/// handoff) — `PrepareResult.dependsOnSeq`'s durability watermark.
+	/// `restore` seeds it to the reconciled `stateSeq` too: a safe,
+	/// never-under value (that blob is already durable, or the app could
+	/// not have restored from it), even though it may overstate exactly
+	/// when `currentStaple` was first installed.
 	var currentStapleSeq: UInt64 = 0
 	/// The PQ-epoch manifest as of the last `.checkpoint` `StateUpdate` this
 	/// session actually minted — `stateUpdate(kind:)`'s sticky invariant
