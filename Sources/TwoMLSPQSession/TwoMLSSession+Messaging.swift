@@ -360,12 +360,24 @@ extension TwoMLSSession {
 		guard let crossPSK = ledger[groupA.classical.context.epoch] else {
 			throw TwoMLSError.notEstablished  // unreachable: just remembered
 		}
+		// Same reasoning, `0xFF03` attachment component (+Attachment.swift) —
+		// Group_A is this session's send group, so this is a send-side capture.
+		var attachmentLedger = sendAttachmentLedger
+		try rememberSendAttachmentComponent(
+			classical: &groupA.classical, ledger: &attachmentLedger)
 
-		let groupB = try APQGroup.joinClassicalOnly(
+		var groupB = try APQGroup.joinClassicalOnly(
 			welcome: welcome, credentials: try identity.classicalJoinCredentials,
 			crossPSK: crossPSK, expectedCreatorID: expectedCreator,
 			provider: classicalProvider, codepoints: codepoints)
 		try TwoPartyRules.ensureTwoParty(groupB.classical)
+		// CAPTURE-ON-ENTRY (+Attachment.swift): `groupB` becomes `recvGroup`
+		// for the FIRST time below — ledger its birth epoch's `0xFF03`
+		// component now, mirroring `receive`'s own recv-group-creation
+		// capture.
+		var recvAttachmentLedgerLocal = recvAttachmentLedger
+		try rememberRecvAttachmentComponent(
+			classical: &groupB.classical, ledger: &recvAttachmentLedgerLocal)
 
 		// App-state binding: the return welcome must carry back exactly THIS
 		// session's own binding — read off Group_A (`groupA.classical`, this
@@ -388,7 +400,9 @@ extension TwoMLSSession {
 		// join leaves `self`'s Group_A exporter leaf unspent (the whole C-3 fix).
 		sendGroup = groupA
 		sendCrossPSKLedger = ledger
+		sendAttachmentLedger = attachmentLedger
 		recvGroup = groupB
+		recvAttachmentLedger = recvAttachmentLedgerLocal
 		joinedWelcomeDigest = digest
 		// This was the initiator's own classical init secret's one use
 		// (`initiate` deferred clearing it exactly for this join) — clear it

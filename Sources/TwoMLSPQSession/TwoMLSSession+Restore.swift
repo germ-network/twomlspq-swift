@@ -2,6 +2,7 @@ import Foundation
 import MLSCodec
 import MLSCombiner
 import MLSCrypto
+import MLSExtensions
 import MLSProfileRFC9420
 import SecretBytes
 
@@ -204,6 +205,25 @@ extension TwoMLSSession {
 		{
 			throw TwoMLSError.archiveInvalid
 		}
+		// Same reasoning, the `0xFF03` attachment components
+		// (+Attachment.swift): each is a `safeExportSecret` output, exactly
+		// `KDF.Nh` (32 bytes for the deployed classical suite) — a
+		// wrong-length entry is corrupt or adversarial, same fail-closed
+		// treatment as the windows above.
+		if let sendAttachment = body.sendAttachmentLedger,
+			!sendAttachment.entries.values.allSatisfy({
+				$0.wrappedValue.byteCount == 32
+			})
+		{
+			throw TwoMLSError.archiveInvalid
+		}
+		if let recvAttachment = body.recvAttachmentLedger,
+			!recvAttachment.entries.values.allSatisfy({
+				$0.wrappedValue.byteCount == 32
+			})
+		{
+			throw TwoMLSError.archiveInvalid
+		}
 	}
 
 	// MARK: - Steps 6-7: rebuild groups + pair verification
@@ -274,6 +294,13 @@ extension TwoMLSSession {
 		session.sendCrossPSKLedger = try body.sendCrossPSKLedger.entries.mapValues {
 			try $0.restore()
 		}
+		// Optional-with-empty-default, same reasoning as `listenRendezvous`
+		// below: absent on a pre-existing archive, in which case this starts
+		// empty and the capture-on-restore call further down populates it.
+		session.sendAttachmentLedger =
+			body.sendAttachmentLedger?.entries.mapValues { $0.wrappedValue } ?? [:]
+		session.recvAttachmentLedger =
+			body.recvAttachmentLedger?.entries.mapValues { $0.wrappedValue } ?? [:]
 		session.rotationCandidate = try body.rotationCandidate?.restore()
 		// Optional-with-empty-default (SessionArchive.swift): absent on a
 		// pre-existing v1 archive, in which case this starts empty. Restore
@@ -289,6 +316,27 @@ extension TwoMLSSession {
 		session.recvHeaderKeysPQ = body.recvHeaderKeysPQ?.entries ?? [:]
 		try session.recordListenRendezvous()
 		try session.recordPQHeaderKey()
+		// Same "restore is itself a capture site" reasoning, `0xFF03`
+		// attachment component (+Attachment.swift): unlike the rendezvous/
+		// header-key exporters above, `safeExportSecret` CONSUMES its leaf,
+		// so a live capture here can genuinely fail — only when the
+		// restored group's exporter tree shows the current epoch's
+		// component already spent while the archived ledger (just restored
+		// above) does not carry it, an internal inconsistency a corrupt or
+		// tampered archive could produce. Maps that specific
+		// `ExporterTree.ExportError` to the one uniform `archiveInvalid`
+		// `restore` promises, rather than leaking a profile-internal error
+		// type to callers — `safeExportSecret`'s other possible throw,
+		// `GroupError.exporterTreeUnavailable`, is left uncaught: it would
+		// mean the restored group itself is internally inconsistent (no
+		// exporter tree for its own current epoch at all), which is
+		// unreachable for any archive this port ever writes.
+		do {
+			try session.captureSendAttachmentComponent()
+			try session.captureRecvAttachmentComponent()
+		} catch is MLS.Extensions.ExporterTree.ExportError {
+			throw TwoMLSError.archiveInvalid
+		}
 		// Return cadence (slice 8a): the reconciled `stateSeq` becomes both
 		// the live counter to advance from and `currentStapleSeq`'s seed — a
 		// safe, never-under value for the durability gate (this blob is

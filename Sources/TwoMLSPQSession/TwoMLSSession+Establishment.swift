@@ -130,6 +130,9 @@ extension TwoMLSSession {
 		// exists immediately too — capture its birth-epoch header key
 		// alongside (PR2).
 		try session.recordPQHeaderKey()
+		// Same "works from birth" reasoning, `0xFF03` attachment component
+		// (+Attachment.swift).
+		try session.captureSendAttachmentComponent()
 		// `apqWelcomeA` IS this session's first staple — the baseline
 		// `StateUpdate` (there is no separate sink/`installSink` call).
 		session.markStapleInstalled()
@@ -306,6 +309,12 @@ extension TwoMLSSession {
 		// call-site symmetry with `initiate` and against a future establish
 		// shape that founds the PQ half earlier.
 		try session.recordPQHeaderKey()
+		// Same "works from birth" reasoning, `0xFF03` attachment component
+		// (+Attachment.swift) — send-side (Group_B) and, CAPTURE-ON-ENTRY,
+		// recv-side (Group_A, this session's recv group from the moment it
+		// joins here).
+		try session.captureSendAttachmentComponent()
+		try session.captureRecvAttachmentComponent()
 		// `apqWelcomeB` IS this session's first staple — the baseline
 		// `StateUpdate` (there is no separate sink/`installSink` call).
 		session.markStapleInstalled()
