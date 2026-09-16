@@ -7,9 +7,10 @@ import SecretBytes
 
 // MARK: - Principal (slice 8b)
 //
-// The credential-scoped signer (book concepts.md's `TwoMlsPqPrincipal`): one
-// signing identity plus the provider config, minting fresh key packages and
-// invitations that all share its one signing key. Not a hub for group
+// The credential-scoped signer (book concepts.md's `TwoMlsPqPrincipal`): two
+// independent per-half signing identities (D1) plus the provider config,
+// minting fresh key packages and invitations that share its per-half keys
+// (classical values under the classical key, PQ under the PQ key). Not a hub for group
 // operations — `Session.initiate(principal:)` and `Invitation.receive` do
 // the actual establishment work, each layered over the identity-based
 // primitives in `TwoMLSSession+Establishment.swift`.

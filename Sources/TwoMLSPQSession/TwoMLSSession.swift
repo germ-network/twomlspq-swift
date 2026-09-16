@@ -516,24 +516,25 @@ public struct TwoMLSSession: Sendable {
 
 	// MARK: Born-dedicated principal + contract-26 handoff (slice 11)
 
-	/// Retained custody over the invitation identity's classical signing
-	/// key, while Bob's `recvGroup` leaf still presents it — see
-	/// `RecvLeafPrincipal`'s own doc. `nil` for every session except a
+	/// Retained custody over the invitation identity's per-half signing keys
+	/// (classical AND PQ), while Bob's `recvGroup` leaves still present them —
+	/// see `RecvLeafPrincipal`'s own doc. `nil` for every session except a
 	/// born-dedicated acceptor (and for the degenerate `newClientID ==
 	/// nil`/`== invitation id` topology, which never mints one at all). NOT
 	/// cleared when the CLASSICAL recv-leaf catch-up (group-rules.md rule 4) converges —
 	/// `recvGroup.pq`'s leaf keeps presenting the invitation identity
 	/// independently, until a later slice's PQ catch-up ("Chunk 2", out of
 	/// scope here) converges it too; the PQ custody resolver
-	/// (`pqSigningKey`) needs this same retained key until then. A stale
+	/// (`pqSigningKey`) needs the retained PQ pair until then (the classical
+	/// pair backs `classicalSigningKey` until rule-4 convergence). A stale
 	/// entry once both converge would be harmless (mirrors
 	/// `rotationCandidate`'s own reasoning), but nothing in this slice ever
 	/// proves that condition, so retirement is left to that later slice.
 	/// Archive exposure: this struct carries the invitation Principal's own
-	/// long-term signing key, so it rides the sealed session archive like
-	/// any other live credential material — no wider than the exposure the
+	/// long-term per-half signing keys, so it rides the sealed session archive
+	/// like any other live credential material — no wider than the exposure the
 	/// non-dedicated baseline already accepts for `identity`. The PQ-catch-up
-	/// slice's retirement of this field also removes that key from the
+	/// slice's retirement of this field also removes those keys from the
 	/// archive, not just from live memory.
 	var recvLeafPrincipal: RecvLeafPrincipal? = nil
 	/// The non-emittable gate: `true` from the moment a

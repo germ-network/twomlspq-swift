@@ -71,6 +71,24 @@ final class SessionArchiveTests: XCTestCase {
 		}
 	}
 
+	/// A corrupted `pqSigningKey` SECRET (public left intact) must fail the PQ
+	/// derive-check at `restore()` — `pub(pqSigningKey) != pqSignatureKey` →
+	/// `.archiveInvalid`. The public-key corruption test above cannot reach this
+	/// path (the leaf-presents-key check would also fire); this isolates the
+	/// secret→public derivation guard.
+	func testIdentityArchiveRestoreRejectsCorruptPQSigningKeySecret() throws {
+		let identity = try TwoMLSIdentity.generate(
+			clientID: Data("corrupt-pq-secret".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var archive = try IdentityArchive(identity, includeInitSecrets: true)
+		archive.pqSigningKey = SecretBytes(randomByteCount: 32)
+
+		XCTAssertThrowsError(try archive.restore()) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
 	// MARK: - 1. established + exchanged
 
 	func testEstablishedCheckpointRoundTripContinuesSendingAndReceiving() throws {

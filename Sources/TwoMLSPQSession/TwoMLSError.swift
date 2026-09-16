@@ -228,9 +228,10 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// The custody resolver (`classicalSigningKey(presenting:)`, or its PQ
 	/// analogue `pqSigningKey(presenting:)`, slice 11) found no principal —
 	/// founding identity, the single in-flight `rotationCandidate`, or the
-	/// retained `recvLeafPrincipal` — whose `signatureKey` matches what a
-	/// leaf currently presents; fail-closed rather than sign with the wrong
-	/// key. Also thrown by `prepareToEncrypt(rotating:)` for an empty
+	/// retained `recvLeafPrincipal` — whose signature key matches what a
+	/// leaf currently presents (the classical resolver matches the classical
+	/// `signatureKey`, the PQ resolver the `pqSignatureKey`); fail-closed
+	/// rather than sign with the wrong key. Also thrown by `prepareToEncrypt(rotating:)` for an empty
 	/// candidate id, or for a `rotating` that names this session's OWN
 	/// recv-leaf CURRENT id: that "rotation" could never canonicalize
 	/// (`PartySequence.commit`'s own `current == id` early return is a

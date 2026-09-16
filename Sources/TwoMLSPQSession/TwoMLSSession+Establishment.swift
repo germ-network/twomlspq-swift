@@ -11,8 +11,9 @@ import SecretBytes
 extension TwoMLSSession {
 	/// Alice's side of establishment, layered over the identity-based
 	/// primitive below: mint a fresh Group_A leaf bundle under `principal`'s
-	/// signing key (book concepts.md's credential-scoped signer — every leaf
-	/// a principal mints shares its one signing key) and delegate.
+	/// per-half signing keys (book concepts.md's credential-scoped signer —
+	/// the classical leaf signs under the classical key, the PQ leaf under the
+	/// PQ key) and delegate.
 	public static func initiate(
 		principal: Principal,
 		their: CombinerKeyPackage,
