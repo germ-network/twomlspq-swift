@@ -94,7 +94,7 @@ final class BootstrapTests: XCTestCase {
 		var (aliceSession, bobSession) = (initiated.session, received.session)
 		_ = try bobSession.prepareToEncrypt()
 		let frame = try bobSession.encrypt(Data("bob-hello".utf8)).frame
-		_ = try aliceSession.processIncoming(frame)
+		_ = try aliceSession.processIncomingDecrypted(frame)
 
 		let kpFrame = try aliceSession.pqBootstrapBegin().frame
 		XCTAssertThrowsError(try bobSession.pqBootstrapRespond(kpFrame)) { error in
@@ -138,7 +138,7 @@ final class BootstrapTests: XCTestCase {
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
 		XCTAssertEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
 
-		let decrypted = try bob.processIncoming(frame)
+		let decrypted = try bob.processIncomingDecrypted(frame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
 		XCTAssertTrue(bob.myPQTurn)
 
@@ -167,13 +167,13 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try alice.prepareToEncrypt()
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
-		_ = try bob.processIncoming(boundFrame)
+		_ = try bob.processIncomingDecrypted(boundFrame)
 
 		let secondPrepared = try alice.prepareToEncrypt()
 		XCTAssertFalse(secondPrepared.didCommit)
 		let secondFrame = try alice.encrypt(Data("again".utf8)).frame
 
-		let decrypted = try bob.processIncoming(secondFrame)
+		let decrypted = try bob.processIncomingDecrypted(secondFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("again".utf8))
 
 		let bobRecvPQEpoch = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
@@ -254,13 +254,13 @@ final class BootstrapTests: XCTestCase {
 		let bobRecvClassicalEpochBefore = bob.recvGroup?.classical.context.epoch
 		let bobRecvPQEpochBefore = bob.recvGroup?.pq?.context.epoch
 
-		XCTAssertThrowsError(try bob.processIncoming(corruptedFrame))
+		XCTAssertThrowsError(try bob.processIncomingDecrypted(corruptedFrame))
 
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobRecvClassicalEpochBefore)
 		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobRecvPQEpochBefore)
 
 		// The genuine frame still applies cleanly after the rejected attempt.
-		let decrypted = try bob.processIncoming(frame)
+		let decrypted = try bob.processIncomingDecrypted(frame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
 		XCTAssertTrue(bob.myPQTurn)
 
@@ -270,7 +270,7 @@ final class BootstrapTests: XCTestCase {
 		// Alice already joined it.
 		_ = try bob.prepareToEncrypt()
 		let postBindFrame = try bob.encrypt(Data("post-bind".utf8)).frame
-		let aliceDecrypted = try alice.processIncoming(postBindFrame)
+		let aliceDecrypted = try alice.processIncomingDecrypted(postBindFrame)
 		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("post-bind".utf8))
 	}
 
@@ -346,7 +346,7 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let helloFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		_ = try alice.processIncoming(helloFrame)
+		_ = try alice.processIncomingDecrypted(helloFrame)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
@@ -382,7 +382,7 @@ final class BootstrapTests: XCTestCase {
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
+		XCTAssertThrowsError(try bob.processIncomingDecrypted(badFrame)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .missingBindPSK)
 		}
 		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
@@ -395,7 +395,7 @@ final class BootstrapTests: XCTestCase {
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
-		let decrypted = try bob.processIncoming(boundFrame)
+		let decrypted = try bob.processIncomingDecrypted(boundFrame)
 		XCTAssertTrue(decrypted.didApplyRemoteCommit)
 		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore + 1)
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore + 1)
@@ -418,7 +418,7 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let helloFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		_ = try alice.processIncoming(helloFrame)
+		_ = try alice.processIncomingDecrypted(helloFrame)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
@@ -446,7 +446,7 @@ final class BootstrapTests: XCTestCase {
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
+		XCTAssertThrowsError(try bob.processIncomingDecrypted(badFrame)) { error in
 			XCTAssertEqual(error as? MLS.Combiner.Error, .apqPskNotBound)
 		}
 		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
@@ -459,7 +459,7 @@ final class BootstrapTests: XCTestCase {
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
-		let decrypted = try bob.processIncoming(boundFrame)
+		let decrypted = try bob.processIncomingDecrypted(boundFrame)
 		XCTAssertTrue(decrypted.didApplyRemoteCommit)
 		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore + 1)
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore + 1)
@@ -479,7 +479,7 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let helloFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		_ = try alice.processIncoming(helloFrame)
+		_ = try alice.processIncomingDecrypted(helloFrame)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
@@ -564,7 +564,7 @@ final class BootstrapTests: XCTestCase {
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
+		XCTAssertThrowsError(try bob.processIncomingDecrypted(badFrame)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .invalidBindEffects)
 		}
 		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
@@ -599,7 +599,7 @@ final class BootstrapTests: XCTestCase {
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try bob.processIncoming(badFrame)) { error in
+		XCTAssertThrowsError(try bob.processIncomingDecrypted(badFrame)) { error in
 			XCTAssertEqual(error as? MLS.Combiner.Error, .attestationMismatch)
 		}
 		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
@@ -624,7 +624,7 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let helloFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		_ = try alice.processIncoming(helloFrame)
+		_ = try alice.processIncomingDecrypted(helloFrame)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
@@ -713,7 +713,7 @@ final class BootstrapTests: XCTestCase {
 		let frame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appBytes)
 
-		XCTAssertThrowsError(try bob.processIncoming(frame)) { error in
+		XCTAssertThrowsError(try bob.processIncomingDecrypted(frame)) { error in
 			XCTAssertEqual(error as? MLS.Combiner.Error, .attestationMismatch)
 		}
 
@@ -789,6 +789,6 @@ final class BootstrapTests: XCTestCase {
 				SessionTestSupport.classicalProvider,
 				componentID: TwoMLSSession.crossPartyComponentID))
 
-		_ = try bob.processIncoming(frame)
+		_ = try bob.processIncomingDecrypted(frame)
 	}
 }

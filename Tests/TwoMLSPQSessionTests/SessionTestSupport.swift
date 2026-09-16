@@ -4,6 +4,7 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import TwoMLSPQCrypto
+import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -73,7 +74,30 @@ enum SessionTestSupport {
 		var (alice, bob, _, _, _, _) = try established(alice: aliceName, bob: bobName)
 		_ = try bob.prepareToEncrypt()
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		_ = try alice.processIncoming(frame)
+		_ = try alice.processIncomingDecrypted(frame)
 		return (alice: alice, bob: bob)
+	}
+}
+
+/// Slice 11: `processIncoming` now returns the 4-case `IncomingResult`
+/// instead of a bare `DecryptResult` — this mechanically migrates the
+/// hundreds of pre-existing call sites that only ever cared about the
+/// everyday `0x03` app-frame path. Fails the test (via `XCTFail`, not a
+/// thrown error) on any other case, since none of those call sites expect
+/// one.
+@available(iOS 26, macOS 26, *)
+extension TwoMLSSession {
+	mutating func processIncomingDecrypted(
+		_ inbound: Data, file: StaticString = #filePath, line: UInt = #line
+	) throws -> DecryptResult {
+		switch try processIncoming(inbound) {
+		case .decrypted(let result):
+			return result
+		case .joined, .pendingEstablishment, .ignored:
+			XCTFail(
+				"expected .decrypted, got a non-decrypted IncomingResult", file: file,
+				line: line)
+			throw TwoMLSError.notEstablished
+		}
 	}
 }

@@ -369,7 +369,7 @@ final class AppBindingTests: XCTestCase {
 
 		_ = try bobSession.prepareToEncrypt()
 		let bobFrame = try bobSession.encrypt(Data("bob-hello".utf8)).frame
-		_ = try aliceSession.processIncoming(bobFrame)
+		_ = try aliceSession.processIncomingDecrypted(bobFrame)
 		XCTAssertTrue(aliceSession.isEstablished)
 		XCTAssertEqual(try aliceSession.appBinding(), Self.binding)
 	}
@@ -653,7 +653,7 @@ final class AppBindingTests: XCTestCase {
 		let forgedFrame = Frames.encodeMessageFrame(
 			staple: strippedStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try aliceSession.processIncoming(forgedFrame)) { error in
+		XCTAssertThrowsError(try aliceSession.processIncomingDecrypted(forgedFrame)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
 		}
 		XCTAssertNil(aliceSession.recvGroup)
@@ -662,7 +662,7 @@ final class AppBindingTests: XCTestCase {
 		// Bob's real, un-stripped first frame still joins cleanly afterward —
 		// value semantics leave nothing wedged (mirrors
 		// `testMalformedWelcomeStapleLeavesTheGenuineOneJoinable`).
-		let decrypted = try aliceSession.processIncoming(genuineFrame)
+		let decrypted = try aliceSession.processIncomingDecrypted(genuineFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("genuine".utf8))
 		XCTAssertTrue(aliceSession.isEstablished)
 	}

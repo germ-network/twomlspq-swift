@@ -81,20 +81,20 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// Bob's first frame establishes Alice (her recvGroup is founded here).
 		_ = try bob.prepareToEncrypt()
 		let bobHello = try bob.encrypt(Data("bob-hello".utf8))
-		let aliceGotHello = try alice.processIncoming(bobHello.frame)
+		let aliceGotHello = try alice.processIncomingDecrypted(bobHello.frame)
 		try store.save(aliceGotHello.update)
 
 		// A routine message from Alice.
 		_ = try alice.prepareToEncrypt()
 		let aliceHello = try alice.encrypt(Data("hello bob".utf8))
 		try store.save(aliceHello.update)
-		_ = try bob.processIncoming(aliceHello.frame)
+		_ = try bob.processIncomingDecrypted(aliceHello.frame)
 
 		// Bob offers a routine Update; Alice approves it (a fold) and folds
 		// it into her next commit.
 		_ = try bob.prepareToEncrypt()
 		let bobOffer = try bob.encrypt(Data("bob-offer".utf8))
-		let aliceOffered = try alice.processIncoming(bobOffer.frame)
+		let aliceOffered = try alice.processIncomingDecrypted(bobOffer.frame)
 		try store.save(aliceOffered.update)
 		try store.save(alice.queueProposal(digest: aliceOffered.queuedProposal.digest))
 
@@ -103,7 +103,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		try store.save(alicePrepared.update)
 		let aliceFolded = try alice.encrypt(Data("folded".utf8))
 		try store.save(aliceFolded.update)
-		_ = try bob.processIncoming(aliceFolded.frame)
+		_ = try bob.processIncomingDecrypted(aliceFolded.frame)
 
 		// Alice's fold just advanced her OWN send epoch past the epoch Bob's
 		// last-seen offer licensed (the discharge-license gating, book
@@ -112,7 +112,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// has no license to fire on.
 		_ = try bob.prepareToEncrypt()
 		let bobPostFold = try bob.encrypt(Data("post-fold".utf8))
-		try store.save(alice.processIncoming(bobPostFold.frame).update)
+		try store.save(alice.processIncomingDecrypted(bobPostFold.frame).update)
 
 		// The §A.3 bootstrap-and-bind — a Checkpoint-heavy stretch.
 		let kp = try alice.pqBootstrapBegin()
@@ -126,7 +126,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		try store.save(boundPrepared.update)
 		let boundFrame = try alice.encrypt(Data("bound".utf8))
 		try store.save(boundFrame.update)
-		_ = try bob.processIncoming(boundFrame.frame)
+		_ = try bob.processIncomingDecrypted(boundFrame.frame)
 
 		// Mid-stream restore of Alice from whatever the store holds now.
 		let savedCheckpoint = try XCTUnwrap(store.checkpoint)
@@ -139,12 +139,12 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// Both directions continue off the restored session.
 		_ = try restoredAlice.prepareToEncrypt()
 		let postRestore = try restoredAlice.encrypt(Data("post-restore".utf8))
-		let bobDecrypted = try bob.processIncoming(postRestore.frame)
+		let bobDecrypted = try bob.processIncomingDecrypted(postRestore.frame)
 		XCTAssertEqual(bobDecrypted.applicationMessage, Data("post-restore".utf8))
 
 		_ = try bob.prepareToEncrypt()
 		let bobReply = try bob.encrypt(Data("reply".utf8))
-		let aliceDecrypted = try restoredAlice.processIncoming(bobReply.frame)
+		let aliceDecrypted = try restoredAlice.processIncomingDecrypted(bobReply.frame)
 		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("reply".utf8))
 	}
 
@@ -163,7 +163,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		XCTAssertEqual(alicePrepared.update.kind, .core)
 		let aliceHello = try alice.encrypt(Data("hello".utf8))
 		XCTAssertEqual(aliceHello.update.kind, .core)
-		_ = try bob.processIncoming(aliceHello.frame)
+		_ = try bob.processIncomingDecrypted(aliceHello.frame)
 
 		// §A.3 bootstrap: begin (classical-only parking) → .core; respond
 		// (founds sendGroup.pq) / join (joins recvGroup.pq) → .checkpoint.
@@ -182,7 +182,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		XCTAssertEqual(boundPrepared.update.kind, .core)
 		let boundFrame = try alice.encrypt(Data("bound".utf8))
 		XCTAssertEqual(boundFrame.update.kind, .core)
-		let bobGotBind = try bob.processIncoming(boundFrame.frame)
+		let bobGotBind = try bob.processIncomingDecrypted(boundFrame.frame)
 		// `applyBind` rides `processIncoming` and moves Bob's recvGroup.pq —
 		// the ONE dynamically-derived kind, covered on its own below.
 		XCTAssertEqual(bobGotBind.update.kind, .checkpoint)
@@ -193,7 +193,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// (`pqRatchetBind`, owePQBind commits sendGroup.pq → .checkpoint).
 		_ = try bob.prepareToEncrypt()
 		let stage = try bob.encrypt(Data("stage-ek".utf8))
-		_ = try alice.processIncoming(stage.frame)
+		_ = try alice.processIncomingDecrypted(stage.frame)
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame)
 		XCTAssertEqual(ctFrame.update.kind, .core)
@@ -202,7 +202,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let ratchetPrepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(ratchetPrepared.didCommit)
 		let ratchetBound = try bob.encrypt(Data("ratchet-bound".utf8))
-		_ = try alice.processIncoming(ratchetBound.frame)
+		_ = try alice.processIncomingDecrypted(ratchetBound.frame)
 		XCTAssertTrue(alice.myPQTurn)
 
 		// §A.5 mechanical re-key: begin (stages Upd′ into recvGroup.pq — no
@@ -263,7 +263,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		XCTAssertTrue(prepared.didCommit)
 		let bound = try alice.encrypt(Data("bound".utf8))
 
-		let decrypted = try bob.processIncoming(bound.frame)
+		let decrypted = try bob.processIncomingDecrypted(bound.frame)
 		XCTAssertEqual(decrypted.update.kind, .checkpoint)
 
 		// Counterfactual: a Core taken from Bob NOW (always PQ-tree-omitting,
@@ -306,7 +306,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 
 		let encrypted = try alice.encrypt(Data("hello".utf8))
 		XCTAssertGreaterThan(encrypted.update.stateSeq, prepared.update.stateSeq)
-		_ = try bob.processIncoming(encrypted.frame)
+		_ = try bob.processIncomingDecrypted(encrypted.frame)
 
 		let kp = try alice.pqBootstrapBegin()
 		XCTAssertGreaterThan(kp.update.stateSeq, encrypted.update.stateSeq)
@@ -337,14 +337,14 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// Bob offers; Alice approves and folds — a fresh commit/staple.
 		_ = try bob.prepareToEncrypt()
 		let offer = try bob.encrypt(Data("offer".utf8))
-		let offered = try alice.processIncoming(offer.frame)
+		let offered = try alice.processIncomingDecrypted(offer.frame)
 		_ = try alice.queueProposal(digest: offered.queuedProposal.digest)
 
 		let foldPrepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(foldPrepared.didCommit)
 		XCTAssertEqual(foldPrepared.dependsOnSeq, foldPrepared.update.stateSeq)
 		let foldFrame = try alice.encrypt(Data("folded".utf8))
-		_ = try bob.processIncoming(foldFrame.frame)
+		_ = try bob.processIncomingDecrypted(foldFrame.frame)
 
 		// A routine round after that: no new commit, so `dependsOnSeq` stays
 		// pinned to the fold's own seq — already durable, no additional wait.
@@ -377,7 +377,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let routine = try restored.prepareToEncrypt()
 		XCTAssertFalse(routine.didCommit)
 		XCTAssertEqual(routine.dependsOnSeq, seededStateSeq)
-		_ = try alice.processIncoming(try restored.encrypt(Data("post-restore".utf8)).frame)
+		_ = try alice.processIncomingDecrypted(try restored.encrypt(Data("post-restore".utf8)).frame)
 	}
 
 	// MARK: - 5. mid-A.3 / mid-A.4 reached and restored via the live cadence
@@ -409,7 +409,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobHello = try bob.encrypt(Data("bob-hello".utf8))
-		_ = try alice.processIncoming(bobHello.frame)
+		_ = try alice.processIncomingDecrypted(bobHello.frame)
 
 		let kp = try alice.pqBootstrapBegin()
 		let welcome = try bob.pqBootstrapRespond(kp.frame)
@@ -436,7 +436,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let prepared = try restoredAlice.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let bound = try restoredAlice.encrypt(Data("bound".utf8))
-		let decrypted = try bob.processIncoming(bound.frame)
+		let decrypted = try bob.processIncomingDecrypted(bound.frame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
 	}
 
@@ -457,7 +457,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let boundPrepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(boundPrepared.didCommit)
 		let bound = try alice.encrypt(Data("bound".utf8))
-		_ = try bob.processIncoming(bound.frame)
+		_ = try bob.processIncomingDecrypted(bound.frame)
 		XCTAssertTrue(bob.myPQTurn)
 
 		// §A.4: Bob (turn-holder) stages an EK; Alice responds, sealing `S`
@@ -466,7 +466,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// (and splices cleanly over) the `joined` Checkpoint above.
 		_ = try bob.prepareToEncrypt()
 		let staged = try bob.encrypt(Data("m".utf8))
-		_ = try alice.processIncoming(staged.frame)
+		_ = try alice.processIncomingDecrypted(staged.frame)
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame)
 		guard case .responding = alice.pqInflight else {
@@ -484,7 +484,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		XCTAssertTrue(prepared.didCommit)
 		let boundAgain = try bob.encrypt(Data("bound-again".utf8))
 
-		let decrypted = try restoredAlice.processIncoming(boundAgain.frame)
+		let decrypted = try restoredAlice.processIncomingDecrypted(boundAgain.frame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound-again".utf8))
 		XCTAssertTrue(restoredAlice.myPQTurn)
 	}
@@ -533,7 +533,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let tamperedFrame = Frames.encodeMessageFrame(
 			staple: staple, proposal: proposal, app: tamperedApp)
 
-		XCTAssertThrowsError(try bob.processIncoming(tamperedFrame))
+		XCTAssertThrowsError(try bob.processIncomingDecrypted(tamperedFrame))
 		// The bind already landed on `bob.recvGroup.pq` despite the throw —
 		// an un-checkpointed PQ-tree move, with no `StateUpdate` ever
 		// returned for it. `advanceStateSeq()` sits AFTER the throwing step
@@ -550,7 +550,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// `stateSeq` since the un-checkpointed move.
 		_ = try alice.prepareToEncrypt()
 		let nextFrame = try alice.encrypt(Data("next".utf8))
-		let decrypted = try bob.processIncoming(nextFrame.frame)
+		let decrypted = try bob.processIncomingDecrypted(nextFrame.frame)
 
 		// The sticky invariant catches the manifest drift and upgrades this
 		// call's own kind, even though its own before/after snapshot saw
@@ -583,7 +583,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 
 		_ = try restoredBob.prepareToEncrypt()
 		let post = try restoredBob.encrypt(Data("post-repair".utf8))
-		let final = try alice.processIncoming(post.frame)
+		let final = try alice.processIncomingDecrypted(post.frame)
 		XCTAssertEqual(final.applicationMessage, Data("post-repair".utf8))
 	}
 }
