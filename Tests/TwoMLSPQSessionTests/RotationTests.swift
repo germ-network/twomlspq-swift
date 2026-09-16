@@ -222,7 +222,8 @@ final class RotationTests: XCTestCase {
 			randomness: try .generate(SessionTestSupport.classicalProvider),
 			includePath: true, framing: .publicMessage,
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
-				credential: .basic(identity: sameID), signatureKey: freshSignatureKey))
+				credential: .basic(identity: sameID),
+				signatureKey: freshSignatureKey))
 		let adopted = transition.group
 		let sent = transition.takeOutput()
 		let commitBytes = try sent.message.mlsEncoded()
@@ -242,7 +243,8 @@ final class RotationTests: XCTestCase {
 		// sender leaf's CURRENTLY presented key, so a clean decrypt below is
 		// itself the "subsequent verify uses the new key" proof.
 		let appPM = try send.classical.protect(
-			SessionTestSupport.classicalProvider, applicationData: Data("bob-rotated".utf8),
+			SessionTestSupport.classicalProvider,
+			applicationData: Data("bob-rotated".utf8),
 			authenticatedData: proposalHash, signingKey: freshSigningKey)
 		let appBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
 

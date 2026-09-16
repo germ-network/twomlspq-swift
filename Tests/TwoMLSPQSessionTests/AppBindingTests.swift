@@ -186,7 +186,8 @@ final class AppBindingTests: XCTestCase {
 				proposals: [
 					.proposal(.add(bob.keyPackage.pq)), attestationProposal,
 				],
-				signingKey: alice.pqSigningKey, randomness: try .generate(pqProvider),
+				signingKey: alice.pqSigningKey,
+				randomness: try .generate(pqProvider),
 				psk: { _ in nil })
 			let pqAdopted = pqTransition.group
 			let pqSent = pqTransition.takeOutput()

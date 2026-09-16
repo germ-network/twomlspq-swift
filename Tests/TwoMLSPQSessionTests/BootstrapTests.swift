@@ -138,7 +138,8 @@ final class BootstrapTests: XCTestCase {
 
 		// Symmetrically, Alice's Group_A.pq own-leaf (present from
 		// construction — Group_A is a full pair from `initiate`).
-		let aliceOwnPQLeaf = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.sendGroup?.pq))
+		let aliceOwnPQLeaf = try TwoMLSSession.ownLeaf(
+			of: try XCTUnwrap(alice.sendGroup?.pq))
 		XCTAssertEqual(aliceOwnPQLeaf.signatureKey, alice.identity.pqSignatureKey)
 		XCTAssertNotEqual(aliceOwnPQLeaf.signatureKey, alice.identity.signatureKey)
 
