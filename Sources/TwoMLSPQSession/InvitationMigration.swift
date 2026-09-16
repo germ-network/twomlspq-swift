@@ -155,57 +155,28 @@ public enum InvitationMigration {
 	/// `IdentityArchive(_:includeInitSecrets: true)` invitation path (init
 	/// secrets always carried when present) — then runs the SAME checks
 	/// `restore` would, plus the HPKE/KP checks restore never does, so a bad
-	/// migration mapping is a loud mint-time failure.
+	/// migration mapping is a loud mint-time failure. The checks live in
+	/// `checkedIdentityArchive` (SessionMigration.swift), shared with the
+	/// session minter so the two cannot drift; the invitation path's only
+	/// difference is supplying BOTH init secrets unconditionally (a published
+	/// invitation is a durable receiving capability — see `MigratedIdentity`)
+	/// and binding the identity's own id to the top-level `clientID`.
 	private static func archiveIdentity(
 		_ identity: MigratedIdentity, clientID: Data
 	) throws -> IdentityArchive {
-		guard try derivedEd25519Public(from: identity.signingKey) == identity.signatureKey,
-			try derivedEd25519Public(from: identity.pqSigningKey)
-				== identity.pqSignatureKey
-		else {
+		guard identity.clientID == clientID else {
 			throw TwoMLSError.archiveInvalid
 		}
-		// Keyed decodes folded to fail-closed `archiveInvalid` — an
-		// MLSMessage-FRAMED KeyPackage (the migrator's likeliest mistake)
-		// otherwise escapes as a raw `CodecError`.
-		let classicalKP: MLS.RFC9420.KeyPackage
-		let pqKP: MLS.RFC9420.KeyPackage
-		do {
-			classicalKP = try MLS.RFC9420.KeyPackage(
-				mlsEncoded: identity.classicalKeyPackage)
-			pqKP = try MLS.RFC9420.KeyPackage(mlsEncoded: identity.pqKeyPackage)
-		} catch is MLS.CodecError {
-			throw TwoMLSError.archiveInvalid
-		}
-		guard classicalKP.version == .mls10, pqKP.version == .mls10,
-			classicalKP.cipherSuite == TwoMLSSuite.classical,
-			pqKP.cipherSuite == TwoMLSSuite.pq,
-			try basicIdentifier(classicalKP.leafNode.credential) == identity.clientID,
-			try basicIdentifier(pqKP.leafNode.credential) == identity.clientID,
-			identity.clientID == clientID,
-			classicalKP.leafNode.signatureKey.data == identity.signatureKey,
-			pqKP.leafNode.signatureKey.data == identity.pqSignatureKey,
-			try classicalPublic(from: identity.classicalLeafSecretKey)
-				== classicalKP.leafNode.encryptionKey.data,
-			try pqPublic(from: identity.pqLeafSecretKey)
-				== pqKP.leafNode.encryptionKey.data,
-			try classicalPublic(from: identity.classicalInitSecretKey)
-				== classicalKP.initKey.data,
-			try pqPublic(from: identity.pqInitSecretKey) == pqKP.initKey.data
-		else {
-			throw TwoMLSError.archiveInvalid
-		}
-		return IdentityArchive(
+		return try checkedIdentityArchive(
 			clientID: identity.clientID,
 			signingKey: identity.signingKey,
 			signatureKey: identity.signatureKey,
 			pqSigningKey: identity.pqSigningKey,
 			pqSignatureKey: identity.pqSignatureKey,
 			classicalLeafSecretKey: identity.classicalLeafSecretKey,
-			classicalInitSecretKey: SecretField(
-				wrappedValue: identity.classicalInitSecretKey),
+			classicalInitSecretKey: identity.classicalInitSecretKey,
 			pqLeafSecretKey: identity.pqLeafSecretKey,
-			pqInitSecretKey: SecretField(wrappedValue: identity.pqInitSecretKey),
+			pqInitSecretKey: identity.pqInitSecretKey,
 			classicalKeyPackage: identity.classicalKeyPackage,
 			pqKeyPackage: identity.pqKeyPackage)
 	}
@@ -222,7 +193,7 @@ public enum InvitationMigration {
 	/// Same idiom as `derivedSignaturePublicKey` in SessionArchive.swift: this
 	/// layer pins Ed25519 signing, so one hardcoded primitive is worth the
 	/// fail-closed cross-check.
-	private static func derivedEd25519Public(from signingKey: SecretBytes) throws -> Data {
+	static func derivedEd25519Public(from signingKey: SecretBytes) throws -> Data {
 		guard
 			let privateKey = try? Curve25519.Signing.PrivateKey(
 				rawRepresentation: signingKey)
@@ -234,7 +205,7 @@ public enum InvitationMigration {
 	/// representation (any clamped 32 bytes is a valid scalar). No plaintext
 	/// copy: `SecretBytes` is itself `ContiguousBytes`, exactly what the
 	/// `rawRepresentation` initializer takes.
-	private static func classicalPublic(from secretKey: SecretBytes) throws -> Data {
+	static func classicalPublic(from secretKey: SecretBytes) throws -> Data {
 		guard secretKey.byteCount == 32 else { throw TwoMLSError.archiveInvalid }
 		guard
 			let key = try? Curve25519.KeyAgreement.PrivateKey(
@@ -247,7 +218,7 @@ public enum InvitationMigration {
 	/// Representation` secret — the PQ provider's archival convention. A
 	/// wrong/corrupt 96 bytes fails the integrity check (a CryptoKit error,
 	/// folded here to fail-closed `archiveInvalid`).
-	private static func pqPublic(from secretKey: SecretBytes) throws -> Data {
+	static func pqPublic(from secretKey: SecretBytes) throws -> Data {
 		guard
 			let privateKey = try? secretKey.withUnsafeBytes({ raw in
 				try MLKEM768.PrivateKey(integrityCheckedRepresentation: Data(raw))

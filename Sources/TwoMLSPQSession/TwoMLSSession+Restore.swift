@@ -183,7 +183,11 @@ extension TwoMLSSession {
 	/// serialized as one whole `Codable` value (`PQInflightArchive`), so a
 	/// `.responding` round's `secret`/`wireCT` pair can't decode partially —
 	/// a short archive fails at `decode` itself, before reaching here.
-	private static func validateDecodeInvariants(_ body: SessionArchive) throws {
+	/// Internal (not `private`): the session migration minter
+	/// (`SessionMigration.swift`) runs it kind-independently at mint — a
+	/// core-kind mint gets no trial restore, which is the only other path to
+	/// these checks.
+	static func validateDecodeInvariants(_ body: SessionArchive) throws {
 		if let commitment = body.expectedBootstrapKPCommitment, commitment.count != 32 {
 			throw TwoMLSError.archiveInvalid
 		}
