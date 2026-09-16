@@ -596,11 +596,14 @@ extension TwoMLSSession {
 			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
 			auth = authCopy
-			// Slice 11, §C.4: retire the recv-leaf catch-up custody once my
-			// own leaf's fold actually lands (even a no-op `mine.commit`,
-			// since `auth.mine` was already D from `receive` — the fold
-			// landing is what matters, not the commit's own return).
-			if ownCanonicalized { recvLeafPrincipal = nil }
+			// Slice 11, §C.4: `recvLeafPrincipal` is NOT retired here even
+			// when `ownCanonicalized` reports the CLASSICAL leaf converged —
+			// the PQ custody resolver (`pqSigningKey`) still needs this same
+			// retained key for `recvGroup.pq`'s leaf, which keeps presenting
+			// the invitation identity until a later slice's PQ catch-up
+			// ("Chunk 2", out of scope here). A stale-but-unused custody
+			// entry is harmless (mirrors `rotationCandidate`'s own "a stale
+			// candidate is harmless" reasoning).
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)
@@ -883,8 +886,9 @@ extension TwoMLSSession {
 				lastSendPQExported = pendingSendPQExportedStamp
 			}
 			auth = authCopy
-			// Slice 11, §C.4: same retirement as `applyFoldCommit`'s.
-			if ownCanonicalized { recvLeafPrincipal = nil }
+			// Slice 11, §C.4: `recvLeafPrincipal` is retained here too — see
+			// `applyFoldCommit`'s own comment on why classical convergence
+			// alone must not clear it.
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)

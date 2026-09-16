@@ -229,8 +229,10 @@ struct RotationCandidate: Sendable {
 /// concept; the one-generation rotation budget stays untouched by this).
 /// Bob's `identity` becomes the dedicated principal D at `receive`, but his
 /// `recvGroup` (Group_A) was joined under the invitation identity's leaf,
-/// so he must keep signing `Upd(self)` there under it until the recv-leaf
-/// catch-up (§C.4) converges inv → D. Retired once that catch-up lands.
+/// so he must keep signing `Upd(self)` there under it: the classical half
+/// until the recv-leaf catch-up (§C.4) converges inv → D, and the PQ half
+/// independently until a later slice's PQ catch-up ("Chunk 2") does the
+/// same — this slice never retires it (see the field's own doc).
 struct RecvLeafPrincipal: Sendable {
 	let clientID: Data
 	let signingKey: MLS.SignatureSecretKey
@@ -499,9 +501,16 @@ public struct TwoMLSSession: Sendable {
 	/// Retained custody over the invitation identity's classical signing
 	/// key, while Bob's `recvGroup` leaf still presents it — see
 	/// `RecvLeafPrincipal`'s own doc. `nil` for every session except a
-	/// born-dedicated acceptor pre-catch-up (and for the degenerate
-	/// `newClientID == nil`/`== invitation id` topology, which never mints
-	/// one at all).
+	/// born-dedicated acceptor (and for the degenerate `newClientID ==
+	/// nil`/`== invitation id` topology, which never mints one at all). NOT
+	/// cleared when the CLASSICAL recv-leaf catch-up (§C.4) converges —
+	/// `recvGroup.pq`'s leaf keeps presenting the invitation identity
+	/// independently, until a later slice's PQ catch-up ("Chunk 2", out of
+	/// scope here) converges it too; the PQ custody resolver
+	/// (`pqSigningKey`) needs this same retained key until then. A stale
+	/// entry once both converge would be harmless (mirrors
+	/// `rotationCandidate`'s own reasoning), but nothing in this slice ever
+	/// proves that condition, so retirement is left to that later slice.
 	var recvLeafPrincipal: RecvLeafPrincipal? = nil
 	/// The non-emittable gate (Fable MAJ-6): `true` from the moment a
 	/// dedicated principal is minted (`receive(newClientID:)`) until
