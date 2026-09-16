@@ -15,15 +15,15 @@ let package = Package(
 		.library(name: "TwoMLSPQSession", targets: ["TwoMLSPQSession"]),
 	],
 	dependencies: [
-		// swift-mls has no tags; pin by commit. `MLSCrypto` is the CipherSuiteProvider seam.
-		// 590f161 = germ-network/swift-mls main (PR #95 merged), adding
-		// `CombinerGroup.establish(classicalExtraExtensions:)` — the seam this package's
-		// `AppBinding` (0xF0A2) GroupContext extension rides into Group_A's classical
-		// half. Additive over 3c1dc21 (the public non-consuming RFC 9420 §8.5
-		// `Group.exportSecret(_:label:context:length:)`, swift-mls #94).
+		// Pinned to swift-mls's first tagged release. `MLSCrypto` is the
+		// CipherSuiteProvider seam this package's ML-KEM-768 provider conforms to;
+		// `AppBinding` (0xF0A2) rides into Group_A's classical half via
+		// `CombinerGroup.establish(classicalExtraExtensions:)`. Exact pin: both
+		// packages are pre-1.0 and released together, with no compatibility
+		// contract established yet.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			revision: "590f16192cfbd32eabeb2d41b4d3d68916c967be"
+			exact: "0.1.0"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		.package(
