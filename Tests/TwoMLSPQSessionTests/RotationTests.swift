@@ -177,6 +177,101 @@ final class RotationTests: XCTestCase {
 		XCTAssertEqual(fromBob.applicationMessage, Data("post-rotation-bob".utf8))
 	}
 
+	// MARK: - D4/NIT6: classical receive tolerates a same-credential key-only rotation
+
+	/// D4: on the CLASSICAL path, a peer that rotates only its LEAF SIGNING
+	/// KEY while keeping the SAME `clientID` is already accepted today — no
+	/// code change (`.credentialReplaced` fires on a signature-key-only
+	/// change too, `CredentialPresentation` being `Equatable` over both
+	/// credential AND key; `TwoPartyRules.validateTwoPartyUpdateCommit`
+	/// counts it as an ordinary moved leaf; `AuthCore.validSuccessor`'s
+	/// `pred == succ` clause trivially licenses a same-id "successor"). This
+	/// is a TEST that pins that tolerance.
+	///
+	/// The rotating peer must be HAND-ROLLED with raw swift-mls calls (the
+	/// `newIdentity:`-carrying `committing(...)` pattern at
+	/// `bindPQCommitWithoutInjectedS`-adjacent fixtures / `RotationTests`
+	/// above): our own `TwoMLSSession` API cannot drive this scenario at
+	/// all — `prepareToEncrypt(rotating: sameID)` rejects a same-id target
+	/// outright (`Messaging.swift`, `guard rotating != myCurrentID`), and
+	/// even a raw same-id rotating `Upd` staged through the module couldn't
+	/// be FOLDED then SIGNED FROM afterward: neither custody resolver
+	/// (`classicalSigningKey(presenting:)`/`pqSigningKey(presenting:)`) has
+	/// an arm for "my own just-rotated key under an unchanged id" — only
+	/// `identity`'s own pair, `rotationCandidate`, and `recvLeafPrincipal`
+	/// are known principals, none of which fits a bare same-id key swap.
+	func testClassicalReceiveToleratesPeerSigningKeyRotationUnderSameCredential() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+
+		// Bob's own copy of Group_B (his `sendGroup`, classical-only
+		// pre-bootstrap) — the same logical group Alice mirrors as her
+		// `recvGroup`.
+		var send = try XCTUnwrap(bob.sendGroup)
+		let sameID = bob.identity.clientID
+		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+
+		// A self-committing leaf rotation: SAME `clientID`, a brand-new
+		// signing key — exactly the `newIdentity:`-carrying `committing(...)`
+		// shape used elsewhere in this file/`BootstrapTests`, just with the
+		// credential held fixed.
+		let transition = try send.classical.committing(
+			SessionTestSupport.classicalProvider, proposals: [],
+			sign: MLS.RFC9420.signingClosure(
+				SessionTestSupport.classicalProvider,
+				current: bob.identity.signingKey, new: freshSigningKey),
+			randomness: try .generate(SessionTestSupport.classicalProvider),
+			includePath: true, framing: .publicMessage,
+			newIdentity: MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: sameID),
+				signatureKey: freshSignatureKey))
+		let adopted = transition.group
+		let sent = transition.takeOutput()
+		let commitBytes = try sent.message.mlsEncoded()
+		let advanced = try sent.takePending().apply(onto: adopted)
+		send.classical = advanced.group
+
+		// A routine `Upd(self)`, staged for the NEXT round and already
+		// re-signed under the just-rotated key (§11 MF3's every-round shape).
+		let (nextProposal, _) = try send.classical.proposeUpdate(
+			SessionTestSupport.classicalProvider, signingKey: freshSigningKey,
+			framing: .publicMessage)
+		let proposalBytes = try nextProposal.mlsEncoded()
+		let proposalHash = try SessionTestSupport.classicalProvider.hash(proposalBytes)
+
+		// The app payload, PROTECTED ON THE POST-ROTATION EPOCH under the new
+		// key — `unprotect` verifies a PrivateMessage's signature against the
+		// sender leaf's CURRENTLY presented key, so a clean decrypt below is
+		// itself the "subsequent verify uses the new key" proof.
+		let appPM = try send.classical.protect(
+			SessionTestSupport.classicalProvider,
+			applicationData: Data("bob-rotated".utf8),
+			authenticatedData: proposalHash, signingKey: freshSigningKey)
+		let appBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
+
+		let staple = Frames.encodeMlsMessageStaple(commitBytes)
+		let proposalSection = Frames.encodeProposalSection(
+			proposing: sameID, message: proposalBytes)
+		// Unsealed, like `testCorruptedBindStapleIsRejected`'s hand-rolled
+		// frame: `openOrRaw` tries a header-open first and falls back to
+		// treating an unsealable blob as already-raw, so a hand-rolled
+		// caller with no header key of its own needs no seal step.
+		let frame = Frames.encodeMessageFrame(
+			staple: staple, proposal: proposalSection, app: appBytes)
+
+		let decrypted = try alice.processIncomingDecrypted(frame)
+		XCTAssertEqual(decrypted.applicationMessage, Data("bob-rotated".utf8))
+		XCTAssertTrue(decrypted.didApplyRemoteCommit)
+		XCTAssertFalse(decrypted.ownCredentialCanonicalized)
+
+		// NIT6: `canonicalize` (+ClassicalCommit.swift) sets `newSender`
+		// whenever the PEER's leaf moves to a new PRESENTATION — id and/or
+		// key — so it fires here too, equal to the (unchanged) id; see
+		// `DecryptResult.newSender`'s own doc for why this is the intended
+		// reading, not a bug.
+		XCTAssertEqual(decrypted.newSender, sameID)
+		XCTAssertEqual(alice.theirPrincipalState, .sync(sameID))
+	}
+
 	/// Load-bearing custody regression: after Alice's full rotation converges
 	/// (both her classical leaves on the new key), the §A.4 PQ ratchet — three
 	/// classical `protect` sites in `+Ratchet.swift`, easily missed — still

@@ -598,8 +598,8 @@ extension TwoMLSSession {
 			auth = authCopy
 			// Slice 11 (group-rules.md rule 4): `recvLeafPrincipal` is NOT retired here even
 			// when `ownCanonicalized` reports the CLASSICAL leaf converged —
-			// the PQ custody resolver (`pqSigningKey`) still needs this same
-			// retained key for `recvGroup.pq`'s leaf, which keeps presenting
+			// the PQ custody resolver (`pqSigningKey`) still needs its retained
+			// PQ pair for `recvGroup.pq`'s leaf, which keeps presenting
 			// the invitation identity until a later slice's PQ catch-up
 			// ("Chunk 2", out of scope here). A stale-but-unused custody
 			// entry is harmless (mirrors `rotationCandidate`'s own "a stale

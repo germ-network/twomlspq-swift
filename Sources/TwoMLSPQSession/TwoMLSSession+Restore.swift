@@ -21,8 +21,9 @@ extension TwoMLSSession {
 	/// 1. decode both bodies; validate `version`/suite/`kind`.
 	/// 2. no Core → the Checkpoint alone is the result.
 	/// 3. both present → the two must agree on session identity (client id,
-	///    signature key, both classical group ids) — guards an app that
-	///    mis-pairs two different sessions' blobs.
+	///    BOTH independent per-half signature keys (D1), both classical
+	///    group ids) — guards an app that mis-pairs two different sessions'
+	///    blobs.
 	/// 4. `checkpoint.stateSeq >= core.stateSeq` → take the Checkpoint
 	///    outright (`>=` skips a redundant splice on the tie a fresh
 	///    baseline produces); else splice the Checkpoint's PQ halves into
@@ -120,6 +121,7 @@ extension TwoMLSSession {
 	) throws {
 		guard core.identity.clientID == checkpoint.identity.clientID,
 			core.identity.signatureKey == checkpoint.identity.signatureKey,
+			core.identity.pqSignatureKey == checkpoint.identity.pqSignatureKey,
 			core.sendClassicalGroupID == checkpoint.sendClassicalGroupID
 		else {
 			throw TwoMLSError.archiveInvalid

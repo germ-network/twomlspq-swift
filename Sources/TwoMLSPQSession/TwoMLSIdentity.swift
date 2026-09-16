@@ -18,10 +18,14 @@ public struct CombinerKeyPackage: Sendable {
 	}
 }
 
-/// A party's principal: one Ed25519 signing keypair (both halves sign with
-/// it — `0xFDEA` forwards signing to the same Ed25519 primitive, it is
-/// confidentiality-only) plus a per-half HPKE leaf/init keypair, and the two
-/// already-signed `KeyPackage`s built from them.
+/// A party's principal: TWO independent Ed25519 signing keypairs — one per
+/// half (`signingKey`/`signatureKey` for the classical leaf,
+/// `pqSigningKey`/`pqSignatureKey` for the PQ leaf; `0xFDEA` forwards
+/// signing to the same Ed25519 primitive, it is confidentiality-only, but
+/// the two halves never share a key) — plus a per-half HPKE leaf/init
+/// keypair, and the two already-signed `KeyPackage`s built from them.
+/// Mirrors a deployed Rust `CombinerClient`, which likewise mints and holds
+/// two independent signing pairs per principal.
 ///
 /// The two init secrets are join-only: each is read exactly once, to join
 /// the group its own `KeyPackage` was added to (never to found one — that
@@ -43,6 +47,8 @@ public struct TwoMLSIdentity: Sendable {
 	public let clientID: Data
 	public let signingKey: MLS.SignatureSecretKey
 	public let signatureKey: MLS.SignaturePublicKey
+	public let pqSigningKey: MLS.SignatureSecretKey
+	public let pqSignatureKey: MLS.SignaturePublicKey
 	public let classicalLeafSecretKey: MLS.HpkeSecretKey
 	public let classicalInitSecretKey: MLS.HpkeSecretKey?
 	public let pqLeafSecretKey: MLS.HpkeSecretKey
@@ -79,6 +85,7 @@ public struct TwoMLSIdentity: Sendable {
 	func clearingInitSecrets(classical: Bool, pq: Bool) -> TwoMLSIdentity {
 		TwoMLSIdentity(
 			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
+			pqSigningKey: pqSigningKey, pqSignatureKey: pqSignatureKey,
 			classicalLeafSecretKey: classicalLeafSecretKey,
 			classicalInitSecretKey: classical ? nil : classicalInitSecretKey,
 			pqLeafSecretKey: pqLeafSecretKey,
@@ -153,14 +160,18 @@ public struct TwoMLSIdentity: Sendable {
 	}
 
 	/// Mint a fresh combiner key-package bundle — fresh leaf/init HPKE
-	/// secrets, fresh classical+PQ `KeyPackage`s — signed under an ALREADY
-	/// existing signing identity. This is the shape `Principal` needs (book
+	/// secrets, fresh classical+PQ `KeyPackage`s — signed under two ALREADY
+	/// existing, independent per-half signing identities (classical KP under
+	/// `signingKey`/`signatureKey`, PQ KP under `pqSigningKey`/
+	/// `pqSignatureKey`). This is the shape `Principal` needs (book
 	/// concepts.md: "credential-scoped signer"): every KP or session leaf it
-	/// mints shares its one signing key, rather than each getting its own.
+	/// mints shares its two per-half keys, rather than each getting its own.
 	public static func generate(
 		clientID: Data,
 		signingKey: MLS.SignatureSecretKey,
 		signatureKey: MLS.SignaturePublicKey,
+		pqSigningKey: MLS.SignatureSecretKey,
+		pqSignatureKey: MLS.SignaturePublicKey,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider
 	) throws -> TwoMLSIdentity {
@@ -182,12 +193,13 @@ public struct TwoMLSIdentity: Sendable {
 		)
 		let pqKeyPackage = try signedKeyPackage(
 			cipherSuite: MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID),
-			provider: pqProvider, clientID: clientID, signingKey: signingKey,
-			signatureKey: signatureKey, leafPublicKey: pqLeafPublicKey,
+			provider: pqProvider, clientID: clientID, signingKey: pqSigningKey,
+			signatureKey: pqSignatureKey, leafPublicKey: pqLeafPublicKey,
 			initPublicKey: pqInitPublicKey)
 
 		return TwoMLSIdentity(
 			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
+			pqSigningKey: pqSigningKey, pqSignatureKey: pqSignatureKey,
 			classicalLeafSecretKey: classicalLeafSecretKey,
 			classicalInitSecretKey: classicalInitSecretKey,
 			pqLeafSecretKey: pqLeafSecretKey, pqInitSecretKey: pqInitSecretKey,
@@ -195,24 +207,27 @@ public struct TwoMLSIdentity: Sendable {
 				classical: classicalKeyPackage, pq: pqKeyPackage))
 	}
 
-	/// Generate a fresh, standalone principal identity: a fresh signing
-	/// keypair plus the signing-key-scoped `generate` above's fresh KP
-	/// bundle. Used directly by tests/internals that need no enclosing
-	/// `Principal`; `Principal` itself always goes through the overload
-	/// above, so every KP/leaf it mints shares its one signing key.
+	/// Generate a fresh, standalone principal identity: two fresh, independent
+	/// signing keypairs (classical + PQ) plus the signing-key-scoped
+	/// `generate` above's fresh KP bundle. Used directly by tests/internals
+	/// that need no enclosing `Principal`; `Principal` itself always goes
+	/// through the overload above, so every KP/leaf it mints shares its two
+	/// per-half keys.
 	public static func generate(
 		clientID: Data,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider
 	) throws -> TwoMLSIdentity {
 		let (signingKey, signatureKey) = try mintSignatureKeypair()
+		let (pqSigningKey, pqSignatureKey) = try mintSignatureKeypair()
 		return try generate(
 			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
+			pqSigningKey: pqSigningKey, pqSignatureKey: pqSignatureKey,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
 	}
 
 	/// Mint a fresh PQ `KeyPackage` KP′ — a brand-new leaf+init HPKE keypair
-	/// (suite `0xFDEA`), signed with `self.signingKey`/`signatureKey` and
+	/// (suite `0xFDEA`), signed with `self.pqSigningKey`/`pqSignatureKey` and
 	/// `leafCapabilities` — distinct from `keyPackage.pq` (this identity's own
 	/// leaf IN Group_A). KP′ is what the peer Adds into the new Group_B.pq at
 	/// §A.3 bootstrap.
@@ -224,8 +239,8 @@ public struct TwoMLSIdentity: Sendable {
 		let (initSecretKey, initPublicKey) = try pqProvider.hpkeGenerateKeyPair()
 		let keyPackage = try Self.signedKeyPackage(
 			cipherSuite: MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID),
-			provider: pqProvider, clientID: clientID, signingKey: signingKey,
-			signatureKey: signatureKey, leafPublicKey: leafPublicKey,
+			provider: pqProvider, clientID: clientID, signingKey: pqSigningKey,
+			signatureKey: pqSignatureKey, leafPublicKey: leafPublicKey,
 			initPublicKey: initPublicKey)
 		return (keyPackage, leafSecretKey, initSecretKey)
 	}

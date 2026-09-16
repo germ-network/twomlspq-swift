@@ -248,7 +248,7 @@ final class RekeyTests: XCTestCase {
 		let sneakyPQ = try XCTUnwrap(bob.recvGroup?.pq)
 		let transition = try sneakyPQ.committing(
 			SessionTestSupport.pqProvider, proposals: [],
-			signingKey: bob.identity.signingKey,
+			signingKey: bob.identity.pqSigningKey,
 			randomness: try .generate(SessionTestSupport.pqProvider),
 			includePath: true, framing: .publicMessage)
 		let commitBytes = try transition.takeOutput().message.mlsEncoded()
@@ -293,7 +293,7 @@ final class RekeyTests: XCTestCase {
 		let transition = try sendPQ.committing(
 			SessionTestSupport.pqProvider,
 			proposals: [.reference(ref), .proposal(.add(mallory.keyPackage.pq))],
-			proposalStore: proposalStore, signingKey: alice.identity.signingKey,
+			proposalStore: proposalStore, signingKey: alice.identity.pqSigningKey,
 			randomness: try .generate(SessionTestSupport.pqProvider), includePath: true,
 			framing: .publicMessage)
 		let commitBytes = try transition.takeOutput().message.mlsEncoded()
@@ -334,7 +334,7 @@ final class RekeyTests: XCTestCase {
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider,
-				current: bob.identity.signingKey, new: freshSigningKey),
+				current: bob.identity.pqSigningKey, new: freshSigningKey),
 			framing: .publicMessage,
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: Data("mallory-never-approved".utf8)),
