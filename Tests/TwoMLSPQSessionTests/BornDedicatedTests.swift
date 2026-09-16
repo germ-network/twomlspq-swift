@@ -622,4 +622,178 @@ final class BornDedicatedTests: XCTestCase {
 			return XCTFail("expected a second pause")
 		}
 	}
+
+	// MARK: - M-1: stapled 0x03+0x0B (the book's PRIMARY born-dedicated delivery)
+
+	/// Every other case in this file exercises the STANDALONE `0x0B` — but the
+	/// book's PRIMARY delivery is Bob's first `0x03` message frame STAPLING
+	/// the handoff (`prepareToEncrypt`/`encrypt` produce it directly once
+	/// installed, with no separate standalone send needed). This pins that
+	/// path end-to-end: pause, tamper (envelope digest, then welcome digest),
+	/// wrong creator, approve, a later standalone re-delivery dedups, and
+	/// Bob's own recv-leaf (Group_A) converges to D off Alice's fold.
+	func testStapledEstablishmentHandoffFullPath() throws {
+		var (alice, bob, _, _, dedicatedClientID) =
+			try SessionTestSupport.establishedDedicated()
+		let envelope = fakeEnvelope()
+		_ = try bob.installEstablishmentEnvelope(envelope)
+
+		// Bob's first frame carries the 0x0B staple directly (`prepareToEncrypt`
+		// stages nothing to fold/discharge yet, so his own staple never moves
+		// off the just-installed handoff).
+		_ = try bob.prepareToEncrypt()
+		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		let opened = try XCTUnwrap(try alice.openIncoming(frame))
+		XCTAssertEqual(opened.kind, .message)
+		let decodedFrame = try Frames.decodeMessageFrame(opened.frame)
+		XCTAssertEqual(decodedFrame.staple.first, Frames.establishmentHandoffTag)
+
+		// Pure parse: an un-approved pause never touches `stateSeq`/`recvGroup`.
+		let stateSeqBefore = alice.stateSeq
+		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
+			return XCTFail("expected a pause on the stapled, un-approved 0x0B")
+		}
+		XCTAssertEqual(alice.stateSeq, stateSeqBefore)
+		XCTAssertNil(alice.recvGroup)
+
+		let approval = try approvalTriple(
+			installedOn: bob, expectedCreator: dedicatedClientID)
+
+		// Tampered envelope digest: re-pauses, never joins.
+		guard
+			case .pendingEstablishment = try alice.processIncomingApproved(
+				opened.frame, approvedEnvelopeDigest: Data("garbage".utf8),
+				approvedWelcomeDigest: approval.welcomeDigest,
+				expectedCreator: approval.expectedCreator)
+		else {
+			return XCTFail("expected re-pause on a tampered envelope digest")
+		}
+		XCTAssertNil(alice.recvGroup)
+
+		// Tampered welcome digest: re-pauses, never joins.
+		guard
+			case .pendingEstablishment = try alice.processIncomingApproved(
+				opened.frame, approvedEnvelopeDigest: approval.envelopeDigest,
+				approvedWelcomeDigest: Data("garbage".utf8),
+				expectedCreator: approval.expectedCreator)
+		else {
+			return XCTFail("expected re-pause on a tampered welcome digest")
+		}
+		XCTAssertNil(alice.recvGroup)
+
+		// Wrong expectedCreator: throws, discards the join whole — the
+		// cross-party PSK ledger stays unspent.
+		XCTAssertThrowsError(
+			try alice.processIncomingApproved(
+				opened.frame, approvedEnvelopeDigest: approval.envelopeDigest,
+				approvedWelcomeDigest: approval.welcomeDigest,
+				expectedCreator: Data("someone-else".utf8))
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .establishmentCreatorMismatch)
+		}
+		XCTAssertNil(alice.recvGroup)
+		XCTAssertTrue(alice.sendCrossPSKLedger.isEmpty)
+
+		// Approved re-feed: joins and decrypts in one step.
+		guard
+			case .decrypted(let decrypted) = try alice.processIncomingApproved(
+				opened.frame, approvedEnvelopeDigest: approval.envelopeDigest,
+				approvedWelcomeDigest: approval.welcomeDigest,
+				expectedCreator: approval.expectedCreator)
+		else {
+			return XCTFail("expected .decrypted on the approved stapled re-feed")
+		}
+		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
+		XCTAssertEqual(decrypted.newSender, dedicatedClientID)
+		XCTAssertFalse(decrypted.didApplyRemoteCommit)
+		XCTAssertEqual(decrypted.queuedProposal.proposing, dedicatedClientID)
+		XCTAssertTrue(alice.isEstablished)
+
+		// A LATER standalone re-delivery of the same welcome dedups.
+		let standaloneAgain = try XCTUnwrap(try bob.standaloneWelcome())
+		let openedAgain = try XCTUnwrap(try alice.openIncoming(standaloneAgain))
+		guard case .ignored = try alice.processIncoming(openedAgain.frame) else {
+			return XCTFail("expected .ignored on a later standalone re-delivery")
+		}
+
+		// Alice's fold converges Bob's own recv-leaf (Group_A) to D.
+		_ = try alice.queueProposal(digest: decrypted.queuedProposal.digest)
+		let alicePrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(alicePrepared.didCommit)
+		XCTAssertEqual(alicePrepared.committedRemoteClientID, dedicatedClientID)
+		let aliceFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
+		let bobDecrypted = try bob.processIncomingDecrypted(aliceFrame)
+		XCTAssertTrue(bobDecrypted.didApplyRemoteCommit)
+		XCTAssertTrue(bobDecrypted.ownCredentialCanonicalized)
+		let leafAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
+		XCTAssertEqual(try basicIdentifier(leafAfter.credential), dedicatedClientID)
+	}
+
+	// MARK: - m-5: defense-in-depth adoption screen
+
+	/// A host blunder that hands back one of Alice's OWN known ids as the
+	/// dedicated principal must never be adopted — `auth.mine.knownIDs`
+	/// screens the approved join before it ever commits into `auth.theirs`.
+	/// White-box (`@testable import`): the public API can never itself put an
+	/// id into `auth.mine.knownIDs` before Alice's own first join (there is
+	/// no `recvGroup` yet for `prepareToEncrypt(rotating:)` to run against),
+	/// so this simulates the id already being known some other way — the
+	/// guard is defense-in-depth precisely for a case this specific, not
+	/// reachable through today's flow alone.
+	func testApprovedJoinRejectsCreatorEqualToOwnKnownID() throws {
+		var (alice, bob, _, _, dedicatedClientID) =
+			try SessionTestSupport.establishedDedicated()
+		alice.auth.mine.authorize(dedicatedClientID)
+		let envelope = fakeEnvelope()
+		_ = try bob.installEstablishmentEnvelope(envelope)
+		let standalone = try XCTUnwrap(try bob.standaloneWelcome())
+		let opened = try XCTUnwrap(try alice.openIncoming(standalone))
+		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
+			return XCTFail()
+		}
+		let approval = try approvalTriple(
+			installedOn: bob, expectedCreator: dedicatedClientID)
+		XCTAssertThrowsError(
+			try alice.processIncomingApproved(
+				opened.frame, approvedEnvelopeDigest: approval.envelopeDigest,
+				approvedWelcomeDigest: approval.welcomeDigest,
+				expectedCreator: approval.expectedCreator)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		}
+		XCTAssertFalse(alice.isEstablished)
+		XCTAssertNil(alice.recvGroup)
+	}
+
+	/// `receive` rejects a `newClientID` equal to the remote/initiator's own
+	/// id outright — a dedicated principal can never legitimately be the
+	/// very peer it is meant to be dedicated FOR.
+	func testNewClientIDEqualToPeerIDIsRejected() throws {
+		let bobPrincipal = try Principal.generate(
+			clientID: Data("bob".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		let alicePrincipal = try Principal.generate(
+			clientID: Data("alice".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		guard let theirCombinerKP = invitation.combinerKeyPackage else {
+			return XCTFail()
+		}
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirCombinerKP)
+		let spawnToken = classicalProvider.randomBytes(16)
+		XCTAssertThrowsError(
+			try invitation.receive(
+				welcome: initiated.welcome,
+				theirClassicalKeyPackage: initiated.session.identity.keyPackage
+					.classical,
+				bootstrapKPCommitment: try initiated.session
+					.bootstrapKPCommitment(),
+				spawnToken: spawnToken, newClientID: Data("alice".utf8))
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .invalidClientID)
+		}
+	}
 }
