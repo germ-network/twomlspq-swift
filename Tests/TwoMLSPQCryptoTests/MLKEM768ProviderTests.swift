@@ -39,6 +39,8 @@ final class MLKEM768ProviderTests: XCTestCase {
 		XCTAssertEqual(provider.hashSize, 32)
 		XCTAssertEqual(provider.aeadKeySize, 16)
 		XCTAssertEqual(provider.aeadNonceSize, 12)
+		// Nsk: satisfies swift-mls #97 restore length-check
+		XCTAssertEqual(provider.hpkeSecretKeySize, 96)
 	}
 
 	/// The HPKE `suite_id` is a load-bearing, never-transmitted domain separator.

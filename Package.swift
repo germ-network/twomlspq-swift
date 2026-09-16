@@ -23,7 +23,7 @@ let package = Package(
 		// contract established yet.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			exact: "0.1.0"
+			exact: "0.1.1"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		.package(
