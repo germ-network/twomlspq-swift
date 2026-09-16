@@ -1,5 +1,13 @@
 # @germ-network/twomlspq-swift
 
+## 0.1.1
+
+### Patch Changes
+
+- [#46](https://github.com/germ-network/twomlspq-swift/pull/46) [`198723c`](https://github.com/germ-network/twomlspq-swift/commit/198723c24c9da33b7a8b95fdccb9d7dc0701204f) Thanks [@germ-mark](https://github.com/germ-mark)! - Add `MLKEM768CipherSuiteProvider.hpkeSecretKeySize` (96, the CryptoKit `integrityCheckedRepresentation` length) so snapshot restore can length-check ML-KEM-768 HPKE secret keys against `Nsk` (spec/snapshot.md §3.1).
+
+- [#44](https://github.com/germ-network/twomlspq-swift/pull/44) [`672ad80`](https://github.com/germ-network/twomlspq-swift/commit/672ad80b94a703b3cbad246fb33da4e65be27dcd) Thanks [@germ-mark](https://github.com/germ-mark)! - Add `SessionMigration.mintArchive` — a public session-level parts→`SecretArchive` minter (the session analog of `InvitationMigration.mintArchive`). Builds a native `SessionArchive` from a legacy Rust session's raw parts, restoring each group half through `Group.restore`/`makeSnapshot`, with mint-time cross-checks shared with the invitation minter.
+
 ## 0.1.0
 
 ### Minor Changes
