@@ -98,13 +98,16 @@ public struct Invitation: Sendable {
 	///
 	/// `expectedAppBinding` is a TRAILING optional (see
 	/// `TwoMLSSession.receive`) — the app-state binding the welcome must
-	/// carry, `nil` for an unbound session.
+	/// carry, `nil` for an unbound session. `newClientID` (slice 11,
+	/// contract-26) mirrors `TwoMLSSession.receive`'s own trailing slot —
+	/// see its doc for the dedicated-principal semantics.
 	public mutating func receive(
 		welcome: Data,
 		theirClassicalKeyPackage: MLS.RFC9420.KeyPackage,
 		bootstrapKPCommitment: Data,
 		spawnToken: Data,
-		expectedAppBinding: Data? = nil
+		expectedAppBinding: Data? = nil,
+		newClientID: Data? = nil
 	) throws -> (session: TwoMLSSession, archive: SecretArchive) {
 		guard bootstrapKPCommitment.count == 32 else {
 			throw TwoMLSError.bootstrapKPMismatch
@@ -127,7 +130,8 @@ public struct Invitation: Sendable {
 			theirClassicalKeyPackage: theirClassicalKeyPackage,
 			bootstrapKPCommitment: bootstrapKPCommitment, spawnToken: spawnToken,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: codepoints, expectedAppBinding: expectedAppBinding)
+			codepoints: codepoints, expectedAppBinding: expectedAppBinding,
+			newClientID: newClientID)
 		guard let recvGroupID = result.session.recvGroup?.classical.context.groupID else {
 			throw TwoMLSError.sessionNotReady
 		}

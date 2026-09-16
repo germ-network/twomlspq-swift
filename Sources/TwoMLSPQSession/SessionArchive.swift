@@ -577,6 +577,38 @@ extension RotationCandidateArchive {
 	}
 }
 
+/// `RecvLeafPrincipal`, archived (slice 11, §E) — same shape/pattern as
+/// `RotationCandidateArchive` minus the epoch field.
+struct RecvLeafPrincipalArchive: Codable, Sendable {
+	var clientID: Data
+	@SecretField var signingKey: SecretBytes
+	var signatureKey: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case clientID = 0
+		case signingKey = 1
+		case signatureKey = 2
+	}
+}
+
+extension RecvLeafPrincipalArchive {
+	init(_ principal: RecvLeafPrincipal) {
+		self.init(
+			clientID: principal.clientID, signingKey: principal.signingKey.data,
+			signatureKey: principal.signatureKey.data)
+	}
+
+	func restore() throws -> RecvLeafPrincipal {
+		let derivedSignatureKey = try derivedSignaturePublicKey(from: signingKey)
+		guard derivedSignatureKey.data == signatureKey else {
+			throw TwoMLSError.archiveInvalid
+		}
+		return RecvLeafPrincipal(
+			clientID: clientID, signingKey: try MLS.SignatureSecretKey(signingKey),
+			signatureKey: derivedSignatureKey)
+	}
+}
+
 // MARK: - The session archive body
 
 /// The `SessionArchive` wire body — one `Codable` struct for both Core and
@@ -648,6 +680,15 @@ struct SessionArchive: Codable, Sendable {
 	/// unlike a ledgered `ExportedPsk` — carries no other archived metadata.
 	var sendAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
 	var recvAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
+	/// Slice 11, §E — Optional so a pre-existing archive still decodes
+	/// (absent means `false`, matching the live field's own default): the
+	/// non-emittable gate's live state, so a RESTORED owed-but-not-installed
+	/// Bob still owes.
+	var owesEstablishmentEnvelope: Bool?
+	/// Slice 11, §E — Optional, `nil` for every pre-slice-11 archive and
+	/// every non-dedicated session: the recv-leaf catch-up custody, so a
+	/// restored Bob mid-catch-up still holds it.
+	var recvLeafPrincipal: RecvLeafPrincipalArchive?
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case version = 0
@@ -689,6 +730,8 @@ struct SessionArchive: Codable, Sendable {
 		case initialTheirKP = 36
 		case sendAttachmentLedger = 37
 		case recvAttachmentLedger = 38
+		case owesEstablishmentEnvelope = 39
+		case recvLeafPrincipal = 40
 	}
 }
 
@@ -779,7 +822,9 @@ extension TwoMLSSession {
 			sendAttachmentLedger: ArchiveIntegerKeyedMap(
 				sendAttachmentLedger.mapValues { SecretField(wrappedValue: $0) }),
 			recvAttachmentLedger: ArchiveIntegerKeyedMap(
-				recvAttachmentLedger.mapValues { SecretField(wrappedValue: $0) }))
+				recvAttachmentLedger.mapValues { SecretField(wrappedValue: $0) }),
+			owesEstablishmentEnvelope: owesEstablishmentEnvelope,
+			recvLeafPrincipal: recvLeafPrincipal.map(RecvLeafPrincipalArchive.init))
 		return try SecretArchive(encoding: body)
 	}
 }
