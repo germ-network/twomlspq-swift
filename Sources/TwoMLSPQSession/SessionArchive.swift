@@ -87,9 +87,11 @@ extension ArchiveIntegerKeyedMap: Equatable where Value: Equatable {}
 
 // MARK: - Field archive types
 
-/// `TwoMLSIdentity`'s archived form: the leaf HPKE secrets and the Ed25519
-/// signing key ride `.data` into `@SecretField`s (the keys themselves
-/// aren't `SecretRestorable`); the two `KeyPackage`s ride their own MLS wire
+/// `TwoMLSIdentity`'s archived form: the leaf HPKE secrets and the two
+/// independent per-half Ed25519 signing keys (`signingKey` classical,
+/// `pqSigningKey` PQ — both NON-optional, mirroring the live identity) ride
+/// `.data` into `@SecretField`s (the keys themselves aren't
+/// `SecretRestorable`); the two `KeyPackage`s ride their own MLS wire
 /// encoding.
 ///
 /// The two INIT secrets are archived **conditionally**, gated by
@@ -126,6 +128,8 @@ struct IdentityArchive: Codable, Sendable {
 	var clientID: Data
 	@SecretField var signingKey: SecretBytes
 	var signatureKey: Data
+	@SecretField var pqSigningKey: SecretBytes
+	var pqSignatureKey: Data
 	@SecretField var classicalLeafSecretKey: SecretBytes
 	var classicalInitSecretKey: SecretField<SecretBytes>?
 	@SecretField var pqLeafSecretKey: SecretBytes
@@ -143,6 +147,8 @@ struct IdentityArchive: Codable, Sendable {
 		case pqInitSecretKey = 6
 		case classicalKeyPackage = 7
 		case pqKeyPackage = 8
+		case pqSigningKey = 9
+		case pqSignatureKey = 10
 	}
 }
 
@@ -164,6 +170,8 @@ extension IdentityArchive {
 			clientID: identity.clientID,
 			signingKey: identity.signingKey.data,
 			signatureKey: identity.signatureKey.data,
+			pqSigningKey: identity.pqSigningKey.data,
+			pqSignatureKey: identity.pqSignatureKey.data,
 			classicalLeafSecretKey: identity.classicalLeafSecretKey.data,
 			classicalInitSecretKey: includeInitSecrets
 				? identity.classicalInitSecretKey.map {
@@ -180,15 +188,33 @@ extension IdentityArchive {
 			pqKeyPackage: try identity.keyPackage.pq.mlsEncoded())
 	}
 
+	/// Two independent derive-checks (classical, then PQ — NIT8 additionally
+	/// checks each half's archived `KeyPackage` leaf actually presents the
+	/// derived key, so a corrupt-but-authenticated archive fails here at
+	/// restore rather than surfacing later as `.credentialUnknown`).
 	func restore() throws -> TwoMLSIdentity {
 		let derivedSignatureKey = try derivedSignaturePublicKey(from: signingKey)
 		guard derivedSignatureKey.data == signatureKey else {
+			throw TwoMLSError.archiveInvalid
+		}
+		let derivedPQSignatureKey = try derivedSignaturePublicKey(from: pqSigningKey)
+		guard derivedPQSignatureKey.data == pqSignatureKey else {
+			throw TwoMLSError.archiveInvalid
+		}
+		let classicalKeyPackageDecoded = try MLS.RFC9420.KeyPackage(
+			mlsEncoded: classicalKeyPackage)
+		let pqKeyPackageDecoded = try MLS.RFC9420.KeyPackage(mlsEncoded: pqKeyPackage)
+		guard classicalKeyPackageDecoded.leafNode.signatureKey.data == signatureKey,
+			pqKeyPackageDecoded.leafNode.signatureKey.data == pqSignatureKey
+		else {
 			throw TwoMLSError.archiveInvalid
 		}
 		return TwoMLSIdentity(
 			clientID: clientID,
 			signingKey: try MLS.SignatureSecretKey(signingKey),
 			signatureKey: derivedSignatureKey,
+			pqSigningKey: try MLS.SignatureSecretKey(pqSigningKey),
+			pqSignatureKey: derivedPQSignatureKey,
 			classicalLeafSecretKey: try MLS.HpkeSecretKey(classicalLeafSecretKey),
 			classicalInitSecretKey: try classicalInitSecretKey.map {
 				try MLS.HpkeSecretKey($0.wrappedValue)
@@ -198,9 +224,7 @@ extension IdentityArchive {
 				try MLS.HpkeSecretKey($0.wrappedValue)
 			},
 			keyPackage: CombinerKeyPackage(
-				classical: try MLS.RFC9420.KeyPackage(
-					mlsEncoded: classicalKeyPackage),
-				pq: try MLS.RFC9420.KeyPackage(mlsEncoded: pqKeyPackage)))
+				classical: classicalKeyPackageDecoded, pq: pqKeyPackageDecoded))
 	}
 }
 
@@ -578,16 +602,22 @@ extension RotationCandidateArchive {
 }
 
 /// `RecvLeafPrincipal`, archived (slice 11, §E) — same shape/pattern as
-/// `RotationCandidateArchive` minus the epoch field.
+/// `RotationCandidateArchive` minus the epoch field, widened (D1) to carry
+/// the retained custody's PQ pair alongside the classical one — both
+/// NON-optional, mirroring the live `RecvLeafPrincipal`.
 struct RecvLeafPrincipalArchive: Codable, Sendable {
 	var clientID: Data
 	@SecretField var signingKey: SecretBytes
 	var signatureKey: Data
+	@SecretField var pqSigningKey: SecretBytes
+	var pqSignatureKey: Data
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case clientID = 0
 		case signingKey = 1
 		case signatureKey = 2
+		case pqSigningKey = 3
+		case pqSignatureKey = 4
 	}
 }
 
@@ -595,7 +625,9 @@ extension RecvLeafPrincipalArchive {
 	init(_ principal: RecvLeafPrincipal) {
 		self.init(
 			clientID: principal.clientID, signingKey: principal.signingKey.data,
-			signatureKey: principal.signatureKey.data)
+			signatureKey: principal.signatureKey.data,
+			pqSigningKey: principal.pqSigningKey.data,
+			pqSignatureKey: principal.pqSignatureKey.data)
 	}
 
 	func restore() throws -> RecvLeafPrincipal {
@@ -603,9 +635,15 @@ extension RecvLeafPrincipalArchive {
 		guard derivedSignatureKey.data == signatureKey else {
 			throw TwoMLSError.archiveInvalid
 		}
+		let derivedPQSignatureKey = try derivedSignaturePublicKey(from: pqSigningKey)
+		guard derivedPQSignatureKey.data == pqSignatureKey else {
+			throw TwoMLSError.archiveInvalid
+		}
 		return RecvLeafPrincipal(
 			clientID: clientID, signingKey: try MLS.SignatureSecretKey(signingKey),
-			signatureKey: derivedSignatureKey)
+			signatureKey: derivedSignatureKey,
+			pqSigningKey: try MLS.SignatureSecretKey(pqSigningKey),
+			pqSignatureKey: derivedPQSignatureKey)
 	}
 }
 

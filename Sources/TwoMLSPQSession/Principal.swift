@@ -14,14 +14,16 @@ import SecretBytes
 // the actual establishment work, each layered over the identity-based
 // primitives in `TwoMLSSession+Establishment.swift`.
 
-/// A credential-scoped signer: one `clientID` + one Ed25519 signing keypair,
-/// plus the provider config every KP/session leaf/invitation it mints needs.
-/// Every value `Principal` produces is signed by that same key — book
-/// concepts.md: "its job is minting key packages and invitations and
-/// holding their private material only until it is captured into an
-/// invitation"; `Principal` itself never retains a minted KP's private
-/// material — each mint is fresh, local, and moved straight into its
-/// result.
+/// A credential-scoped signer: one `clientID` + TWO independent Ed25519
+/// signing keypairs (D1 — `signingKey`/`signatureKey` classical,
+/// `pqSigningKey`/`pqSignatureKey` PQ), plus the provider config every
+/// KP/session leaf/invitation it mints needs. Every classical value
+/// `Principal` produces is signed by its classical key, every PQ value by
+/// its PQ key — book concepts.md: "its job is minting key packages and
+/// invitations and holding their private material only until it is
+/// captured into an invitation"; `Principal` itself never retains a minted
+/// KP's private material — each mint is fresh, local, and moved straight
+/// into its result.
 @available(iOS 26, macOS 26, *)
 public struct Principal: Sendable {
 	let classicalProvider: any MLS.CipherSuiteProvider
@@ -30,11 +32,13 @@ public struct Principal: Sendable {
 	public let clientID: Data
 	let signingKey: MLS.SignatureSecretKey
 	let signatureKey: MLS.SignaturePublicKey
+	let pqSigningKey: MLS.SignatureSecretKey
+	let pqSignatureKey: MLS.SignaturePublicKey
 
-	/// Mint a fresh principal identity for `clientID`: a fresh Ed25519
-	/// signing keypair, independent of the id (book api-reference.md: "the
-	/// MLS signing keys are generated internally and are independent of
-	/// it").
+	/// Mint a fresh principal identity for `clientID`: two fresh, independent
+	/// Ed25519 signing keypairs (D1), both independent of the id (book
+	/// api-reference.md: "the MLS signing keys are generated internally and
+	/// are independent of it").
 	public static func generate(
 		clientID: Data,
 		classicalProvider: any MLS.CipherSuiteProvider,
@@ -45,10 +49,12 @@ public struct Principal: Sendable {
 			pqProvider.cipherSuite == TwoMLSSuite.pq
 		else { throw TwoMLSError.cipherSuiteMismatch }
 		let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (pqSigningKey, pqSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		return Principal(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: codepoints, clientID: clientID, signingKey: signingKey,
-			signatureKey: signatureKey)
+			signatureKey: signatureKey, pqSigningKey: pqSigningKey,
+			pqSignatureKey: pqSignatureKey)
 	}
 
 	/// Mint a fresh combiner key package, capture ITS private material plus
@@ -67,6 +73,7 @@ public struct Principal: Sendable {
 	) {
 		let mintedIdentity = try TwoMLSIdentity.generate(
 			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
+			pqSigningKey: pqSigningKey, pqSignatureKey: pqSignatureKey,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
 		let invitation = Invitation(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,

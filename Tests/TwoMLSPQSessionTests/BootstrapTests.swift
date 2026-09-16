@@ -123,9 +123,24 @@ final class BootstrapTests: XCTestCase {
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		XCTAssertTrue(bob.isFullyEstablished)
 
+		// NIT5 — THE fidelity proof (D1): each side's PQ leaf presents its
+		// OWN independent pq signing pair, distinct from its classical pair
+		// — mirrors the deployed Rust `CombinerClient`'s two independent
+		// per-half signing keys. Bob's Group_B.pq is founded fresh here
+		// (`pqBootstrapRespond`), so this is provable immediately.
+		let bobOwnPQLeaf = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.sendGroup?.pq))
+		XCTAssertEqual(bobOwnPQLeaf.signatureKey, bob.identity.pqSignatureKey)
+		XCTAssertNotEqual(bobOwnPQLeaf.signatureKey, bob.identity.signatureKey)
+
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		XCTAssertTrue(alice.isFullyEstablished)
 		XCTAssertNotNil(alice.owedBind)
+
+		// Symmetrically, Alice's Group_A.pq own-leaf (present from
+		// construction — Group_A is a full pair from `initiate`).
+		let aliceOwnPQLeaf = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.sendGroup?.pq))
+		XCTAssertEqual(aliceOwnPQLeaf.signatureKey, alice.identity.pqSignatureKey)
+		XCTAssertNotEqual(aliceOwnPQLeaf.signatureKey, alice.identity.signatureKey)
 
 		// Bob's establishment-time frame already licensed Alice (§11 #8), so
 		// the very next `prepareToEncrypt` discharges immediately.
@@ -300,7 +315,7 @@ final class BootstrapTests: XCTestCase {
 			]
 			let transition = try sendPQ.committing(
 				SessionTestSupport.pqProvider, proposals: proposals,
-				signingKey: aliceIdentity.signingKey,
+				signingKey: aliceIdentity.pqSigningKey,
 				randomness: try .generate(SessionTestSupport.pqProvider),
 				includePath: false, framing: .publicMessage, psk: { _ in nil })
 			return try transition.takeOutput().message.mlsEncoded()

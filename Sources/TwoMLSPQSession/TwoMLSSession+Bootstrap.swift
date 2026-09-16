@@ -95,7 +95,7 @@ extension TwoMLSSession {
 		let (pqGroup, welcome) = try APQGroup.foundPQHalf(
 			sendGroupClassical: send.classical,
 			ownPQLeaf: identity.keyPackage.pq.leafNode,
-			ownPQLeafSecret: identity.pqLeafSecretKey, signingKey: identity.signingKey,
+			ownPQLeafSecret: identity.pqLeafSecretKey, signingKey: identity.pqSigningKey,
 			peerBootstrapKP: peerBootstrapKP, randomness: try .generate(pqProvider),
 			epochSecret: SecretBytes(randomByteCount: pqProvider.hashSize),
 			pqProvider: pqProvider,

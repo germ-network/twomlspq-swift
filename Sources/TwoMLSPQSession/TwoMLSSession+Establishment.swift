@@ -21,6 +21,8 @@ extension TwoMLSSession {
 		let identity = try TwoMLSIdentity.generate(
 			clientID: principal.clientID, signingKey: principal.signingKey,
 			signatureKey: principal.signatureKey,
+			pqSigningKey: principal.pqSigningKey,
+			pqSignatureKey: principal.pqSignatureKey,
 			classicalProvider: principal.classicalProvider,
 			pqProvider: principal.pqProvider)
 		return try initiate(
@@ -80,11 +82,13 @@ extension TwoMLSSession {
 		let classicalHalf = try halfCreation(
 			identity: identity, half: identity.keyPackage.classical,
 			leafSecretKey: identity.classicalLeafSecretKey,
+			signingKey: identity.signingKey,
 			peerKeyPackage: their.classical,
 			provider: classicalProvider)
 		let pqHalf = try halfCreation(
 			identity: identity, half: identity.keyPackage.pq,
-			leafSecretKey: identity.pqLeafSecretKey, peerKeyPackage: their.pq,
+			leafSecretKey: identity.pqLeafSecretKey, signingKey: identity.pqSigningKey,
+			peerKeyPackage: their.pq,
 			provider: pqProvider)
 
 		let (groupA, welcome) = try APQGroup.establishFull(
@@ -297,6 +301,7 @@ extension TwoMLSSession {
 		let founderHalf = try halfCreation(
 			identity: founderIdentity, half: founderIdentity.keyPackage.classical,
 			leafSecretKey: founderIdentity.classicalLeafSecretKey,
+			signingKey: founderIdentity.signingKey,
 			peerKeyPackage: theirClassicalKeyPackage, provider: classicalProvider)
 		// Pre-allocated: Group_B's PQ half is not founded in slice 1 (A.3), but
 		// its `APQInfo` still names the eventual group id (a draft-02 PARTIAL).
@@ -337,7 +342,9 @@ extension TwoMLSSession {
 			auth = AuthCore(mine: mine, theirs: .seeded(peerID))
 			recvLeafPrincipal = RecvLeafPrincipal(
 				clientID: identity.clientID, signingKey: identity.signingKey,
-				signatureKey: identity.signatureKey)
+				signatureKey: identity.signatureKey,
+				pqSigningKey: identity.pqSigningKey,
+				pqSignatureKey: identity.pqSignatureKey)
 		} else {
 			auth = AuthCore(mine: .seeded(identity.clientID), theirs: .seeded(peerID))
 			recvLeafPrincipal = nil
@@ -450,11 +457,16 @@ extension TwoMLSSession {
 
 	/// A `HalfCreation` for `identity`'s own already-signed half adding `peer`,
 	/// with fresh randomness/group id — the founder side of either an
-	/// `establishFull` or an `establishClassicalOnly`.
+	/// `establishFull` or an `establishClassicalOnly`. `signingKey` is a
+	/// REQUIRED param (D1, FIX3): under independent per-half signing keys
+	/// there is no single "the" identity signing key to default to — every
+	/// caller states which of `identity`'s two pairs signs this half
+	/// (classical → `identity.signingKey`, PQ → `identity.pqSigningKey`).
 	private static func halfCreation(
 		identity: TwoMLSIdentity,
 		half: MLS.RFC9420.KeyPackage,
 		leafSecretKey: MLS.HpkeSecretKey,
+		signingKey: MLS.SignatureSecretKey,
 		peerKeyPackage: MLS.RFC9420.KeyPackage,
 		provider: any MLS.CipherSuiteProvider
 	) throws -> MLS.Combiner.HalfCreation {
@@ -462,7 +474,7 @@ extension TwoMLSSession {
 			groupID: provider.randomBytes(provider.hashSize),
 			leafNode: half.leafNode,
 			leafSecretKey: leafSecretKey,
-			signingKey: identity.signingKey,
+			signingKey: signingKey,
 			epochSecret: SecretBytes(randomByteCount: provider.hashSize),
 			randomness: try .generate(provider),
 			peerKeyPackage: peerKeyPackage)

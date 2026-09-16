@@ -30,6 +30,47 @@ final class SessionArchiveTests: XCTestCase {
 		return try SecretArchive.open(sealed, with: testKey, aad: testAAD)
 	}
 
+	// MARK: - IdentityArchive: two independent per-half signing keys (D1)
+
+	/// The two-key archive round-trip: `IdentityArchive`'s own encode/restore,
+	/// isolated from the enclosing `SessionArchive` — both per-half pairs
+	/// survive, remain independent (`signatureKey != pqSignatureKey`), and
+	/// both derive-checks (classical + PQ, `restore()`) hold.
+	func testIdentityArchiveRoundTripPreservesBothIndependentSigningPairs() throws {
+		let identity = try TwoMLSIdentity.generate(
+			clientID: Data("two-key-identity".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertNotEqual(identity.signatureKey, identity.pqSignatureKey)
+
+		let archive = try IdentityArchive(identity, includeInitSecrets: true)
+		let opened = try sealAndOpen(try SecretArchive(encoding: archive))
+		let decoded = try opened.decode(IdentityArchive.self)
+		let restored = try decoded.restore()
+
+		XCTAssertEqual(restored.signatureKey, identity.signatureKey)
+		XCTAssertEqual(restored.pqSignatureKey, identity.pqSignatureKey)
+		XCTAssertNotEqual(restored.signatureKey, restored.pqSignatureKey)
+		XCTAssertEqual(restored.signingKey.data, identity.signingKey.data)
+		XCTAssertEqual(restored.pqSigningKey.data, identity.pqSigningKey.data)
+	}
+
+	/// A corrupted `pqSignatureKey` (independent of the classical derive-check)
+	/// must fail its OWN derive-check at `restore()` — `.archiveInvalid`, not a
+	/// silently-adopted wrong key.
+	func testIdentityArchiveRestoreRejectsCorruptPQSignatureKey() throws {
+		let identity = try TwoMLSIdentity.generate(
+			clientID: Data("corrupt-pq-key".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var archive = try IdentityArchive(identity, includeInitSecrets: true)
+		archive.pqSignatureKey = Data(repeating: 0xAB, count: 32)
+
+		XCTAssertThrowsError(try archive.restore()) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
 	// MARK: - 1. established + exchanged
 
 	func testEstablishedCheckpointRoundTripContinuesSendingAndReceiving() throws {
@@ -538,6 +579,24 @@ final class SessionArchiveTests: XCTestCase {
 			.decode(SessionArchive.self)
 		var core = checkpoint
 		core.identity.clientID = Data("someone-else".utf8)
+
+		XCTAssertThrowsError(
+			try TwoMLSSession.validateIdentityAgreement(
+				core: core, checkpoint: checkpoint)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// NIT9/§7: the PQ half's signature key is compared too, symmetric with
+	/// the classical `signatureKey` check above (D1 — the two per-half keys
+	/// are independent, so a mispair on either must be caught).
+	func testValidateIdentityAgreementRejectsMismatchedPQSignatureKey() throws {
+		let alice = try SessionTestSupport.established().alice
+		let checkpoint = try alice.makeSessionArchive(kind: .checkpoint)
+			.decode(SessionArchive.self)
+		var core = checkpoint
+		core.identity.pqSignatureKey = Data(repeating: 0xFF, count: 32)
 
 		XCTAssertThrowsError(
 			try TwoMLSSession.validateIdentityAgreement(
