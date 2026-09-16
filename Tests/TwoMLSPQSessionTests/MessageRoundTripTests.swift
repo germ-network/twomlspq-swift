@@ -16,7 +16,7 @@ final class MessageRoundTripTests: XCTestCase {
 		XCTAssertFalse(prepared.didCommit)
 		let frame = try bob.encrypt(plaintext).frame
 
-		let result = try alice.processIncoming(frame)
+		let result = try alice.processIncomingDecrypted(frame)
 		XCTAssertEqual(result.applicationMessage, plaintext)
 		XCTAssertTrue(alice.isEstablished)
 	}
@@ -30,7 +30,7 @@ final class MessageRoundTripTests: XCTestCase {
 		XCTAssertFalse(prepared.didCommit)
 		let frame = try alice.encrypt(plaintext).frame
 
-		let result = try bob.processIncoming(frame)
+		let result = try bob.processIncomingDecrypted(frame)
 		XCTAssertEqual(result.applicationMessage, plaintext)
 	}
 
@@ -45,7 +45,7 @@ final class MessageRoundTripTests: XCTestCase {
 
 		let prepared = try bob.prepareToEncrypt()
 		let frame = try bob.encrypt(Data("payload".utf8)).frame
-		let result = try alice.processIncoming(frame)
+		let result = try alice.processIncomingDecrypted(frame)
 
 		let expectedHash = try SessionTestSupport.classicalProvider.hash(
 			prepared.proposalMessage)
@@ -66,7 +66,7 @@ final class MessageRoundTripTests: XCTestCase {
 		let frame = try bob.encrypt(plaintext).frame
 		XCTAssertNil(frame.range(of: plaintext))
 
-		let result = try alice.processIncoming(frame)
+		let result = try alice.processIncomingDecrypted(frame)
 		XCTAssertEqual(result.applicationMessage, plaintext)
 		XCTAssertFalse(prepared.didCommit)
 	}

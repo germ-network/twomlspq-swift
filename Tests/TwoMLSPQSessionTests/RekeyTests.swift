@@ -32,7 +32,7 @@ final class RekeyTests: XCTestCase {
 		_ = try initiator.pqRekeyApply(commitFrame)
 		let prepared = try initiator.prepareToEncrypt()
 		let boundFrame = try initiator.encrypt(Data("rekey-bound".utf8)).frame
-		_ = try committer.processIncoming(boundFrame)
+		_ = try committer.processIncomingDecrypted(boundFrame)
 		return prepared.didCommit
 	}
 
@@ -97,7 +97,7 @@ final class RekeyTests: XCTestCase {
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
-		let decrypted = try alice.processIncoming(boundFrame)
+		let decrypted = try alice.processIncomingDecrypted(boundFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
 
 		XCTAssertTrue(alice.myPQTurn)
@@ -113,12 +113,12 @@ final class RekeyTests: XCTestCase {
 		// 5: round-trip app messages both directions still work post-rekey.
 		_ = try alice.prepareToEncrypt()
 		let aliceMsg = try alice.encrypt(Data("post-rekey-alice".utf8)).frame
-		let fromAlice = try bob.processIncoming(aliceMsg)
+		let fromAlice = try bob.processIncomingDecrypted(aliceMsg)
 		XCTAssertEqual(fromAlice.applicationMessage, Data("post-rekey-alice".utf8))
 
 		_ = try bob.prepareToEncrypt()
 		let bobMsg = try bob.encrypt(Data("post-rekey-bob".utf8)).frame
-		let fromBob = try alice.processIncoming(bobMsg)
+		let fromBob = try alice.processIncomingDecrypted(bobMsg)
 		XCTAssertEqual(fromBob.applicationMessage, Data("post-rekey-bob".utf8))
 	}
 
@@ -175,7 +175,7 @@ final class RekeyTests: XCTestCase {
 		XCTAssertFalse(alice.myPQTurn)
 		_ = try bob.prepareToEncrypt()
 		let msg = try bob.encrypt(Data("post-round-2".utf8)).frame
-		let decrypted = try alice.processIncoming(msg)
+		let decrypted = try alice.processIncomingDecrypted(msg)
 		XCTAssertEqual(decrypted.applicationMessage, Data("post-round-2".utf8))
 	}
 
@@ -371,7 +371,7 @@ final class RekeyTests: XCTestCase {
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
-		let decrypted = try alice.processIncoming(boundFrame)
+		let decrypted = try alice.processIncomingDecrypted(boundFrame)
 		XCTAssertTrue(decrypted.didApplyRemoteCommit)
 		XCTAssertEqual(alice.auth.theirs.current, bob.identity.clientID)
 	}
@@ -387,7 +387,7 @@ final class RekeyTests: XCTestCase {
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
-		_ = try alice.processIncoming(boundFrame)
+		_ = try alice.processIncomingDecrypted(boundFrame)
 
 		XCTAssertThrowsError(try alice.pqRekeyRespond(updFrame)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
@@ -429,7 +429,7 @@ final class RekeyTests: XCTestCase {
 		let preparedA4 = try bob.prepareToEncrypt()
 		XCTAssertTrue(preparedA4.didCommit)
 		let boundFrameA4 = try bob.encrypt(Data("bound-a4".utf8)).frame
-		_ = try alice.processIncoming(boundFrameA4)
+		_ = try alice.processIncomingDecrypted(boundFrameA4)
 		XCTAssertTrue(alice.myPQTurn)
 		XCTAssertNil(bob.lastCrossInjectedPQ)
 
@@ -482,7 +482,7 @@ final class RekeyTests: XCTestCase {
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try alice.encrypt(Data("inject-bound".utf8)).frame
-		_ = try bob.processIncoming(boundFrame)
+		_ = try bob.processIncomingDecrypted(boundFrame)
 
 		XCTAssertTrue(bob.myPQTurn)
 		XCTAssertFalse(alice.myPQTurn)
@@ -491,7 +491,7 @@ final class RekeyTests: XCTestCase {
 
 		_ = try alice.prepareToEncrypt()
 		let msg = try alice.encrypt(Data("post-inject".utf8)).frame
-		let decrypted = try bob.processIncoming(msg)
+		let decrypted = try bob.processIncomingDecrypted(msg)
 		XCTAssertEqual(decrypted.applicationMessage, Data("post-inject".utf8))
 	}
 

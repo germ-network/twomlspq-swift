@@ -169,7 +169,7 @@ final class EstablishmentTests: XCTestCase {
 		// bytes straight through, so the sealed path fails at the frame
 		// decode (a near-uniform random leading byte) rather than the
 		// welcome-digest check this test originally pinned.
-		XCTAssertThrowsError(try alice.processIncoming(intruderFrame))
+		XCTAssertThrowsError(try alice.processIncomingDecrypted(intruderFrame))
 
 		// Restore the deterministic check via the documented `openOrRaw`
 		// pass-through: `otherAlice` (the intruder pair's own recipient) can
@@ -182,7 +182,7 @@ final class EstablishmentTests: XCTestCase {
 		// `joinGroupBIfNeeded` and rejects the foreign welcome digest
 		// deterministically.
 		let raw = try XCTUnwrap(otherAlice.tryOpen(intruderFrame))
-		XCTAssertThrowsError(try alice.processIncoming(raw)) {
+		XCTAssertThrowsError(try alice.processIncomingDecrypted(raw)) {
 			XCTAssertEqual($0 as? TwoMLSError, .unexpectedWelcome)
 		}
 	}
@@ -207,7 +207,7 @@ final class EstablishmentTests: XCTestCase {
 		let forgedFrame = Frames.encodeMessageFrame(
 			staple: fullWelcomeStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try alice.processIncoming(forgedFrame)) { error in
+		XCTAssertThrowsError(try alice.processIncomingDecrypted(forgedFrame)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .fullEstablishmentStapleUnsupported)
 		}
 	}
@@ -297,7 +297,7 @@ final class EstablishmentTests: XCTestCase {
 			creatorName: "bob", adding: aliceIdentity.keyPackage.classical)
 		let forgedFrame = forgedWelcomeFrame(staple: forgedStaple, app: appSection)
 
-		XCTAssertThrowsError(try alice.processIncoming(forgedFrame)) { error in
+		XCTAssertThrowsError(try alice.processIncomingDecrypted(forgedFrame)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .missingCrossPartyPSK)
 		}
 		XCTAssertFalse(alice.isEstablished)
@@ -309,9 +309,12 @@ final class EstablishmentTests: XCTestCase {
 	/// cross-party PSK (Alice's own, exported off a copy of her Group_A) but
 	/// created under a different identity ("mallory", not the "bob" Alice is
 	/// established against) passes the PSK gate and is caught by the creator
-	/// pin — `.remoteIdentityMismatch`, the same error `receive` throws for a
-	/// wrong KeyPackage. This is the only route to the creator gate: a foreign
-	/// welcome without the PSK never gets here.
+	/// pin. Slice 11, §C.2: a `.bare`-mode creator mismatch is no longer
+	/// distinguishable from an un-approved born-dedicated welcome, so this
+	/// now throws `.establishmentEnvelopeRequired` rather than
+	/// `.remoteIdentityMismatch` (which stays reserved for `receive`'s own
+	/// KP≡creator binding check). This is the only route to the creator
+	/// gate: a foreign welcome without the PSK never gets here.
 	func testGroupBJoinRejectsAWelcomeFromAnUnexpectedCreator() throws {
 		var (alice, bob, aliceIdentity, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
@@ -329,8 +332,8 @@ final class EstablishmentTests: XCTestCase {
 			crossPSK: crossPSK)
 		let forgedFrame = forgedWelcomeFrame(staple: forgedStaple, app: appSection)
 
-		XCTAssertThrowsError(try alice.processIncoming(forgedFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .remoteIdentityMismatch)
+		XCTAssertThrowsError(try alice.processIncomingDecrypted(forgedFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
 		}
 		XCTAssertFalse(alice.isEstablished)
 		XCTAssertNil(alice.recvGroup)
@@ -355,7 +358,7 @@ final class EstablishmentTests: XCTestCase {
 		let garbageStaple = Frames.encodeAPQWelcome(
 			t: Data("not-a-welcome".utf8), pq: Data())
 		XCTAssertThrowsError(
-			try alice.processIncoming(
+			try alice.processIncomingDecrypted(
 				forgedWelcomeFrame(staple: garbageStaple, app: appSection)))
 		XCTAssertTrue(alice.sendCrossPSKLedger.isEmpty)
 		XCTAssertFalse(alice.isEstablished)
@@ -373,7 +376,7 @@ final class EstablishmentTests: XCTestCase {
 		let (_, _, otherAppSection) = try Frames.decodeMessageFrame(
 			otherAlice.openOrRaw(otherGenuineFrame))
 		XCTAssertThrowsError(
-			try alice.processIncoming(
+			try alice.processIncomingDecrypted(
 				forgedWelcomeFrame(staple: otherWelcomeB, app: otherAppSection))
 		) { error in
 			XCTAssertEqual(error as? MLS.RFC9420.GroupError, .noMatchingWelcomeSecret)
@@ -384,7 +387,7 @@ final class EstablishmentTests: XCTestCase {
 		// Bob's genuine first frame now joins cleanly — no wedge.
 		_ = try bob.prepareToEncrypt()
 		let realFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		let decrypted = try alice.processIncoming(realFrame)
+		let decrypted = try alice.processIncomingDecrypted(realFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
 		XCTAssertTrue(alice.isEstablished)
 	}

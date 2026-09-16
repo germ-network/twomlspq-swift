@@ -8,10 +8,12 @@ import MLSTreeMath
 import SecretBytes
 import TwoMLSPQCrypto
 
-/// The result of `initiate`/`receive`: the session plus the welcome staple to
-/// hand the peer out of band. Slice 1 omits the §A.1 header-encryption
-/// envelope, so the frame rides un-sealed — the Welcome still HPKE-seals its
-/// own group secrets to the joiner; only the outer envelope is deferred.
+/// The result of `initiate`/`receive`: the session plus the plaintext birth
+/// welcome to hand the peer out of band (the invitation/rendezvous channel,
+/// not a header-sealed message-path frame) — the Welcome still HPKE-seals
+/// its own group secrets to the joiner; only the outer message-path seal is
+/// what `standaloneWelcome()` (slice 11) applies for a LATER re-send
+/// on the message path.
 @available(iOS 26, macOS 26, *)
 public struct EstablishResult: Sendable {
 	public let session: TwoMLSSession
@@ -124,7 +126,10 @@ public struct DecryptResult: Sendable {
 	/// The peer's NEW credential, when this apply moved the PEER's leaf in
 	/// this recv group to a credential different from before (their own-leaf
 	/// rotation catch-up, or the first fold of their rotating `Upd`) — `nil`
-	/// otherwise. Slice 6.
+	/// otherwise. Slice 6. Also set (slice 11) for a Group_B join that
+	/// adopts a dedicated principal D: `didApplyRemoteCommit` stays `false`
+	/// there (that Bool means "applied a remote *commit*"; a join is not
+	/// one) — `newSender` is the sole adoption signal in that case.
 	public let newSender: Data?
 	/// Whether this apply moved MY OWN leaf in this recv group to a new
 	/// credential — the first canonicalization of a rotation I authored via
@@ -142,6 +147,33 @@ public struct DecryptResult: Sendable {
 public struct EncryptResult: Sendable {
 	public let frame: Data
 	public let update: StateUpdate
+}
+
+/// Slice 11 (contract-26): the paused `0x0B` establishment handoff a
+/// `processIncoming` call surfaced instead of joining — the caller verifies
+/// `envelope`'s signature out of band, then re-feeds the SAME (or a later)
+/// frame carrying this exact pair to `processIncomingApproved`.
+public struct PendingEstablishment: Sendable, Equatable {
+	public let envelope: Data
+	public let welcome: Data
+}
+
+/// The result of `processIncoming`/`processIncomingApproved` (slice 11):
+/// the compiler-forced-unmissable 4-case sum, Rust lib.rs:586-92.
+/// `.decrypted` is the everyday `0x03` app frame (unchanged join/commit
+/// hints ride `DecryptResult` as before); `.joined` is a STANDALONE
+/// welcome's FIRST join (a bare `0x01`, or an approved standalone `0x0B`) —
+/// state-advancing, carrying that join's own `StateUpdate`; `.pendingEstablishment`
+/// is any `0x0B` pre-approval pause (only while `recvGroup == nil`) — no
+/// state change at all; `.ignored` is idempotent welcome RE-DELIVERY only,
+/// never a first join (a first join is always state-advancing, so it is
+/// always `.joined`/`.decrypted` — never this case, else a restore would
+/// lose it).
+public enum IncomingResult: Sendable {
+	case decrypted(DecryptResult)
+	case joined(newSender: Data?, update: StateUpdate)
+	case pendingEstablishment(PendingEstablishment)
+	case ignored
 }
 
 /// The shared result shape for every side-band round-starter/responder that
@@ -172,8 +204,8 @@ public enum PrincipalState: Sendable, Equatable {
 	}
 }
 
-/// A minted classical successor, held while a rotation is in flight (F2:
-/// a single candidate at a time) — the second entry in the F4 custody
+/// A minted classical successor, held while a rotation is in flight (a
+/// single candidate at a time) — the second entry in the custody
 /// keyring alongside the founding `identity`. Its `.basic(clientID)` +
 /// `signatureKey` is what `NewSigningIdentity` carries when authoring the
 /// rotation or catching up the lagging leaf; `signingKey` is the ring's
@@ -189,6 +221,28 @@ struct RotationCandidate: Sendable {
 	/// rotation may replace this candidate even though it has not yet
 	/// canonicalized.
 	let proposedAtRecvEpoch: UInt64
+}
+
+/// Slice 11 (contract-26): the born-dedicated acceptor's
+/// retained custody over the INVITATION identity's classical signing key —
+/// distinct from `rotationCandidate` (a classical-principal-rotation
+/// concept; the one-generation rotation budget stays untouched by this).
+/// Bob's `identity` becomes the dedicated principal D at `receive`, but his
+/// `recvGroup` (Group_A) was joined under the invitation identity's leaf,
+/// so he must keep signing `Upd(self)` there under it: the classical half
+/// until the recv-leaf catch-up (group-rules.md rule 4) converges inv → D, and the PQ half
+/// independently until a later slice's PQ catch-up ("Chunk 2") does the
+/// same — this slice never retires it (see the field's own doc). The
+/// retained `signingKey` IS the invitation Principal's long-term signing
+/// key — its exposure here is no wider than the non-dedicated baseline
+/// (that same key already lives in `identity` for the lifetime of any
+/// session that never mints a dedicated principal at all); the PQ-catch-up
+/// slice removes it from this struct, and hence from the archive, once it
+/// retires the field.
+struct RecvLeafPrincipal: Sendable {
+	let clientID: Data
+	let signingKey: MLS.SignatureSecretKey
+	let signatureKey: MLS.SignaturePublicKey
 }
 
 /// `handleStaple`'s internal result — `applyFoldCommit`/`applyBind` widened
@@ -448,6 +502,36 @@ public struct TwoMLSSession: Sendable {
 	/// which needs the PQ catch-up of a later slice).
 	var rotationCandidate: RotationCandidate? = nil
 
+	// MARK: Born-dedicated principal + contract-26 handoff (slice 11)
+
+	/// Retained custody over the invitation identity's classical signing
+	/// key, while Bob's `recvGroup` leaf still presents it — see
+	/// `RecvLeafPrincipal`'s own doc. `nil` for every session except a
+	/// born-dedicated acceptor (and for the degenerate `newClientID ==
+	/// nil`/`== invitation id` topology, which never mints one at all). NOT
+	/// cleared when the CLASSICAL recv-leaf catch-up (group-rules.md rule 4) converges —
+	/// `recvGroup.pq`'s leaf keeps presenting the invitation identity
+	/// independently, until a later slice's PQ catch-up ("Chunk 2", out of
+	/// scope here) converges it too; the PQ custody resolver
+	/// (`pqSigningKey`) needs this same retained key until then. A stale
+	/// entry once both converge would be harmless (mirrors
+	/// `rotationCandidate`'s own reasoning), but nothing in this slice ever
+	/// proves that condition, so retirement is left to that later slice.
+	/// Archive exposure: this struct carries the invitation Principal's own
+	/// long-term signing key, so it rides the sealed session archive like
+	/// any other live credential material — no wider than the exposure the
+	/// non-dedicated baseline already accepts for `identity`. The PQ-catch-up
+	/// slice's retirement of this field also removes that key from the
+	/// archive, not just from live memory.
+	var recvLeafPrincipal: RecvLeafPrincipal? = nil
+	/// The non-emittable gate: `true` from the moment a
+	/// dedicated principal is minted (`receive(newClientID:)`) until
+	/// `installEstablishmentEnvelope` succeeds. `ensureEstablishmentDelegated()`
+	/// is consulted first by every frame-producing public method while this
+	/// is set, so Bob can never emit a frame under the bare, unauthenticated
+	/// `0x01` staple before the signed contract-26 handoff wraps it.
+	var owesEstablishmentEnvelope: Bool = false
+
 	// MARK: Return cadence (slice 8a)
 
 	/// This session's own persistence sequence number — every state-advancing
@@ -460,12 +544,14 @@ public struct TwoMLSSession: Sendable {
 	/// alongside a stored property of that name (Swift, not a design choice).
 	public internal(set) var stateSeq: UInt64 = 0
 	/// The `stateSeq` at which `currentStaple` was last (re)installed by a
-	/// real fold/bind commit (`committingRound`, the only writer of
-	/// `currentStaple` past construction) — `PrepareResult.dependsOnSeq`'s
-	/// durability watermark. `restore` seeds it to the reconciled `stateSeq`
-	/// too: a safe, never-under value (that blob is already durable, or the
-	/// app could not have restored from it), even though it may overstate
-	/// exactly when `currentStaple` was first installed.
+	/// real fold/bind commit (`committingRound`) — or, since slice 11, by
+	/// `installEstablishmentEnvelope`, the SECOND writer of `currentStaple`
+	/// past construction (wrapping the bare `0x01` in the signed `0x0B`
+	/// handoff) — `PrepareResult.dependsOnSeq`'s durability watermark.
+	/// `restore` seeds it to the reconciled `stateSeq` too: a safe,
+	/// never-under value (that blob is already durable, or the app could
+	/// not have restored from it), even though it may overstate exactly
+	/// when `currentStaple` was first installed.
 	var currentStapleSeq: UInt64 = 0
 	/// The PQ-epoch manifest as of the last `.checkpoint` `StateUpdate` this
 	/// session actually minted — `stateUpdate(kind:)`'s sticky invariant
@@ -516,7 +602,7 @@ public struct TwoMLSSession: Sendable {
 		return .sync(current)
 	}
 
-	/// F4/MF5 custody: resolve the signing secret for whichever principal
+	/// Custody resolution: resolve the signing secret for whichever principal
 	/// currently presents `signatureKey` on some classical leaf — the
 	/// founding identity or the single in-flight `rotationCandidate`. Keyed
 	/// on `signatureKey`, not the `.basic` id (what a peer's `verifying`/
@@ -530,6 +616,29 @@ public struct TwoMLSSession: Sendable {
 		if signatureKey == identity.signatureKey { return identity.signingKey }
 		if let candidate = rotationCandidate, candidate.signatureKey == signatureKey {
 			return candidate.signingKey
+		}
+		// Slice 11: the third custody arm — the born-dedicated
+		// acceptor's recv-leaf (Group_A) still presents the invitation
+		// identity until the recv-leaf catch-up (group-rules.md rule 4) converges it to D.
+		if let recvLeafPrincipal, recvLeafPrincipal.signatureKey == signatureKey {
+			return recvLeafPrincipal.signingKey
+		}
+		throw TwoMLSError.credentialUnknown
+	}
+
+	/// The PQ custody analogue of `classicalSigningKey(presenting:)` (slice
+	/// 11) — no `rotationCandidate` arm: a PQ leaf never
+	/// presents a classical rotation candidate (rotation only ever touches
+	/// classical leaves). With `identity` = D, this is correct for
+	/// Group_B.pq (born under D) but resolves Group_A.pq's leaf to the
+	/// retained invitation custody instead, since it keeps presenting the
+	/// invitation identity until a later slice's PQ catch-up ("Chunk 2").
+	private func pqSigningKey(presenting signatureKey: MLS.SignaturePublicKey) throws
+		-> MLS.SignatureSecretKey
+	{
+		if signatureKey == identity.signatureKey { return identity.signingKey }
+		if let recvLeafPrincipal, recvLeafPrincipal.signatureKey == signatureKey {
+			return recvLeafPrincipal.signingKey
 		}
 		throw TwoMLSError.credentialUnknown
 	}
@@ -562,6 +671,24 @@ public struct TwoMLSSession: Sendable {
 			presenting: Self.ownLeaf(of: recv.classical).signatureKey)
 	}
 
+	/// Resolve `sendGroup.pq`'s own leaf's CURRENT signing key (slice 11)
+	/// — `owePQBind`'s commit and `pqRekeyRespond`'s commit.
+	func sendPQSigningKey() throws -> MLS.SignatureSecretKey {
+		guard let send = sendGroup, let sendPQ = send.pq else {
+			throw TwoMLSError.notEstablished
+		}
+		return try pqSigningKey(presenting: Self.ownLeaf(of: sendPQ).signatureKey)
+	}
+
+	/// Resolve `recvGroup.pq`'s own leaf's CURRENT signing key (slice 11)
+	/// — `pqRekeyBegin`'s `proposeUpdate`.
+	func recvPQSigningKey() throws -> MLS.SignatureSecretKey {
+		guard let recv = recvGroup, let recvPQ = recv.pq else {
+			throw TwoMLSError.notEstablished
+		}
+		return try pqSigningKey(presenting: Self.ownLeaf(of: recvPQ).signatureKey)
+	}
+
 	init(
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
@@ -589,7 +716,9 @@ public struct TwoMLSSession: Sendable {
 		lastCrossInjected: UInt64? = nil,
 		lastCrossInjectedPQ: UInt64? = nil,
 		lastSendPQExported: UInt64? = nil,
-		spawnToken: Data? = nil
+		spawnToken: Data? = nil,
+		recvLeafPrincipal: RecvLeafPrincipal? = nil,
+		owesEstablishmentEnvelope: Bool = false
 	) {
 		self.classicalProvider = classicalProvider
 		self.pqProvider = pqProvider
@@ -614,5 +743,7 @@ public struct TwoMLSSession: Sendable {
 		self.lastCrossInjectedPQ = lastCrossInjectedPQ
 		self.lastSendPQExported = lastSendPQExported
 		self.spawnToken = spawnToken
+		self.recvLeafPrincipal = recvLeafPrincipal
+		self.owesEstablishmentEnvelope = owesEstablishmentEnvelope
 	}
 }

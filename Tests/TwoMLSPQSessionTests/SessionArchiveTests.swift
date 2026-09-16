@@ -53,12 +53,12 @@ final class SessionArchiveTests: XCTestCase {
 
 		_ = try restored.prepareToEncrypt()
 		let frame = try restored.encrypt(Data("hello".utf8)).frame
-		let decrypted = try bob.processIncoming(frame)
+		let decrypted = try bob.processIncomingDecrypted(frame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("hello".utf8))
 
 		_ = try bob.prepareToEncrypt()
 		let reply = try bob.encrypt(Data("hi".utf8)).frame
-		let replyDecrypted = try restored.processIncoming(reply)
+		let replyDecrypted = try restored.processIncomingDecrypted(reply)
 		XCTAssertEqual(replyDecrypted.applicationMessage, Data("hi".utf8))
 	}
 
@@ -216,13 +216,13 @@ final class SessionArchiveTests: XCTestCase {
 		// The restored initiator joins Group_B off Bob's first frame here —
 		// exactly the step that throws `.sessionNotReady` without PR3c's
 		// carried classical init secret.
-		let decrypted = try restored.processIncoming(bobFrame)
+		let decrypted = try restored.processIncomingDecrypted(bobFrame)
 		XCTAssertTrue(restored.isEstablished)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
 
 		_ = try restored.prepareToEncrypt()
 		let aliceFrame = try restored.encrypt(Data("alice-hello".utf8)).frame
-		let bobDecrypted = try bob.processIncoming(aliceFrame)
+		let bobDecrypted = try bob.processIncomingDecrypted(aliceFrame)
 		XCTAssertEqual(bobDecrypted.applicationMessage, Data("alice-hello".utf8))
 	}
 
@@ -241,7 +241,7 @@ final class SessionArchiveTests: XCTestCase {
 		// into her next commit — classical-only, PQ untouched.
 		_ = try bob.prepareToEncrypt()
 		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
-		_ = try alice.processIncoming(offerFrame)
+		_ = try alice.processIncomingDecrypted(offerFrame)
 		// PR2: opened via `alice` (the recipient).
 		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(offerFrame))
@@ -252,7 +252,7 @@ final class SessionArchiveTests: XCTestCase {
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let foldFrame = try alice.encrypt(Data("folded".utf8)).frame
-		_ = try bob.processIncoming(foldFrame)
+		_ = try bob.processIncomingDecrypted(foldFrame)
 
 		let coreStateSeq = alice.stateSeq
 		let coreArchive = try alice.makeSessionArchive(kind: .core)
@@ -274,7 +274,7 @@ final class SessionArchiveTests: XCTestCase {
 
 		_ = try restored.prepareToEncrypt()
 		let frame = try restored.encrypt(Data("post-restore".utf8)).frame
-		let decrypted = try bob.processIncoming(frame)
+		let decrypted = try bob.processIncomingDecrypted(frame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("post-restore".utf8))
 
 		// The spliced-in PQ half is functional, not just present: complete a
@@ -290,7 +290,7 @@ final class SessionArchiveTests: XCTestCase {
 		let ratchetPrepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(ratchetPrepared.didCommit)
 		let ratchetBoundFrame = try bob.encrypt(Data("pq-round-bound".utf8)).frame
-		let ratchetDecrypted = try restored.processIncoming(ratchetBoundFrame)
+		let ratchetDecrypted = try restored.processIncomingDecrypted(ratchetBoundFrame)
 		XCTAssertEqual(ratchetDecrypted.applicationMessage, Data("pq-round-bound".utf8))
 		XCTAssertTrue(restored.myPQTurn)
 	}
@@ -319,7 +319,7 @@ final class SessionArchiveTests: XCTestCase {
 		let prepared = try restored.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let frame = try restored.encrypt(Data("bound".utf8)).frame
-		let decrypted = try bob.processIncoming(frame)
+		let decrypted = try bob.processIncomingDecrypted(frame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
 	}
 
@@ -348,7 +348,7 @@ final class SessionArchiveTests: XCTestCase {
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 
-		let decrypted = try restoredAlice.processIncoming(boundFrame)
+		let decrypted = try restoredAlice.processIncomingDecrypted(boundFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
 		XCTAssertTrue(restoredAlice.myPQTurn)
 	}
@@ -369,7 +369,7 @@ final class SessionArchiveTests: XCTestCase {
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
-		_ = try alice.processIncoming(boundFrame)
+		_ = try alice.processIncomingDecrypted(boundFrame)
 
 		let coreArchive = try alice.makeSessionArchive(kind: .core)
 
@@ -494,7 +494,7 @@ final class SessionArchiveTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		_ = try alice.processIncoming(frame)
+		_ = try alice.processIncomingDecrypted(frame)
 		XCTAssertNotNil(alice.recvGroup)
 
 		let coreArchive = try alice.makeSessionArchive(kind: .core)
@@ -509,12 +509,12 @@ final class SessionArchiveTests: XCTestCase {
 		// Both directions continue.
 		_ = try restored.prepareToEncrypt()
 		let outFrame = try restored.encrypt(Data("hello".utf8)).frame
-		let decrypted = try bob.processIncoming(outFrame)
+		let decrypted = try bob.processIncomingDecrypted(outFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("hello".utf8))
 
 		_ = try bob.prepareToEncrypt()
 		let replyFrame = try bob.encrypt(Data("hi".utf8)).frame
-		let replyDecrypted = try restored.processIncoming(replyFrame)
+		let replyDecrypted = try restored.processIncomingDecrypted(replyFrame)
 		XCTAssertEqual(replyDecrypted.applicationMessage, Data("hi".utf8))
 
 		// A.3 then completes off the restored session.
@@ -526,7 +526,7 @@ final class SessionArchiveTests: XCTestCase {
 		let prepared = try restored.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try restored.encrypt(Data("bound".utf8)).frame
-		let boundDecrypted = try bob.processIncoming(boundFrame)
+		let boundDecrypted = try bob.processIncomingDecrypted(boundFrame)
 		XCTAssertEqual(boundDecrypted.applicationMessage, Data("bound".utf8))
 	}
 
@@ -614,7 +614,7 @@ final class SessionArchiveTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
-		_ = try alice.processIncoming(offerFrame)
+		_ = try alice.processIncomingDecrypted(offerFrame)
 		// PR2: opened via `alice` (the recipient).
 		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(offerFrame))
@@ -664,7 +664,7 @@ final class SessionArchiveTests: XCTestCase {
 		let prepared = try restoredBob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try restoredBob.encrypt(Data("bound".utf8)).frame
-		let decrypted = try alice.processIncoming(boundFrame)
+		let decrypted = try alice.processIncomingDecrypted(boundFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
 	}
 
@@ -690,7 +690,7 @@ final class SessionArchiveTests: XCTestCase {
 		let prepared = try restoredBob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try restoredBob.encrypt(Data("rekey-bound".utf8)).frame
-		let decrypted = try alice.processIncoming(boundFrame)
+		let decrypted = try alice.processIncomingDecrypted(boundFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("rekey-bound".utf8))
 	}
 }

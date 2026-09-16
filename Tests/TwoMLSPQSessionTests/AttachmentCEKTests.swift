@@ -38,11 +38,11 @@ final class AttachmentCEKTests: XCTestCase {
 	) throws {
 		_ = try proposer.prepareToEncrypt()
 		let offerFrame = try proposer.encrypt(Data("offer".utf8)).frame
-		let offered = try approver.processIncoming(offerFrame)
+		let offered = try approver.processIncomingDecrypted(offerFrame)
 		_ = try approver.queueProposal(digest: offered.queuedProposal.digest)
 		_ = try approver.prepareToEncrypt()
 		let foldFrame = try approver.encrypt(Data("fold".utf8)).frame
-		_ = try proposer.processIncoming(foldFrame)
+		_ = try proposer.processIncomingDecrypted(foldFrame)
 	}
 
 	// MARK: - Cross-peer equality, determinism, keyId sensitivity

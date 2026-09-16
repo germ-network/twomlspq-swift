@@ -17,6 +17,8 @@ extension TwoMLSSession {
 	/// still nil, so a spent round (the bind already landed) falls through
 	/// to the normal guard instead of re-emitting a stale `0x13`.
 	public mutating func pqBootstrapBegin() throws -> SideBandResult {
+		// Slice 11: the non-emittable gate.
+		try ensureEstablishmentDelegated()
 		if case .bootstrapInitiated = pqInflight, let pending = pendingSideBand,
 			recvGroup?.pq == nil
 		{
@@ -57,6 +59,8 @@ extension TwoMLSSession {
 	/// Group_B.pq the real peer never agrees to join, so the bind can never
 	/// complete.
 	public mutating func pqBootstrapRespond(_ inbound: Data) throws -> SideBandResult {
+		// Slice 11: the non-emittable gate.
+		try ensureEstablishmentDelegated()
 		// Entry (PR2): the peer's `0x13` arrives header-sealed.
 		let frame = openOrRaw(inbound)
 		if sendGroup?.pq != nil {
@@ -83,6 +87,11 @@ extension TwoMLSSession {
 		}
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
 
+		// Slice 11: founding always presents `identity`'s OWN
+		// fresh PQ leaf — with `identity` = D that is Group_B.pq's own
+		// founder, so this is already correct without the resolver (which
+		// would resolve to the same key via its first arm); no existing
+		// group to read a "presented leaf" off yet.
 		let (pqGroup, welcome) = try APQGroup.foundPQHalf(
 			sendGroupClassical: send.classical,
 			ownPQLeaf: identity.keyPackage.pq.leafNode,
@@ -211,7 +220,8 @@ extension TwoMLSSession {
 						).mlsEncoded())),
 			]
 			let transition = try sendPQ.committing(
-				pqProvider, proposals: proposals, signingKey: identity.signingKey,
+				pqProvider, proposals: proposals,
+				signingKey: try sendPQSigningKey(),
 				randomness: try .generate(pqProvider), includePath: false,
 				framing: .publicMessage,
 				psk: { identifier in

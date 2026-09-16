@@ -207,7 +207,7 @@ extension TwoMLSSession {
 		}
 	}
 
-	/// F4/§3c, slice 6: does `send`'s own classical leaf lag the canonical
+	/// The own-leaf catch-up (§3c, slice 6): does `send`'s own classical leaf lag the canonical
 	/// principal `candidate` already achieved on `recv`'s own leaf (the FIRST
 	/// leaf to canonicalize a rotation, per `applyFoldCommit`/`applyBind`)?
 	/// Both reads are tree-derived (never a cached claim), so this can never
@@ -265,7 +265,7 @@ extension TwoMLSSession {
 		// It stays so a fold can never strand an owed bind by advancing the
 		// epoch without discharging it, should that invariant ever change.
 		let willDischargeBind = owed != nil && (folded != nil || licensed)
-		// F4/§3c, now evidence-gated (`protocol-flows.md` §Evidence-gating):
+		// The catch-up (§3c), now evidence-gated (`protocol-flows.md` §Evidence-gating):
 		// the catch-up fires only on a LICENSED round, so every committing
 		// round is either a fold (holding the peer's proposal IS the evidence)
 		// or licensed — an unlicensed commit could otherwise produce a staple
@@ -402,7 +402,7 @@ extension TwoMLSSession {
 			try rememberSendAttachmentComponent(
 				classical: &send.classical, ledger: &attachmentLedger)
 
-			// F4/§3c: the own-leaf catch-up threads the rotation ring +
+			// §3c: the own-leaf catch-up threads the rotation ring +
 			// `newIdentity` through this SAME commit machinery — the ring's
 			// `.framedContent` stays on the CURRENT (still-OLD) send key, so
 			// the enclosing commit envelope verifies against the pre-commit
@@ -596,6 +596,14 @@ extension TwoMLSSession {
 			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
 			auth = authCopy
+			// Slice 11 (group-rules.md rule 4): `recvLeafPrincipal` is NOT retired here even
+			// when `ownCanonicalized` reports the CLASSICAL leaf converged —
+			// the PQ custody resolver (`pqSigningKey`) still needs this same
+			// retained key for `recvGroup.pq`'s leaf, which keeps presenting
+			// the invitation identity until a later slice's PQ catch-up
+			// ("Chunk 2", out of scope here). A stale-but-unused custody
+			// entry is harmless (mirrors `rotationCandidate`'s own "a stale
+			// candidate is harmless" reasoning).
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)
@@ -878,6 +886,9 @@ extension TwoMLSSession {
 				lastSendPQExported = pendingSendPQExportedStamp
 			}
 			auth = authCopy
+			// Slice 11 (group-rules.md rule 4): `recvLeafPrincipal` is retained here too — see
+			// `applyFoldCommit`'s own comment on why classical convergence
+			// alone must not clear it.
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)

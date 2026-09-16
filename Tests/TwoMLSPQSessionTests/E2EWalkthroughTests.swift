@@ -93,14 +93,14 @@ final class E2EWalkthroughTests: XCTestCase {
 		XCTAssertEqual(
 			bobFirstStaple, welcomeB,
 			"Bob's first frame staples EstablishResult.welcome, not the PQ side-band")
-		_ = try alice.processIncoming(bobFirstFrame)
+		_ = try alice.processIncomingDecrypted(bobFirstFrame)
 		XCTAssertTrue(alice.isEstablished)
 		XCTAssertTrue(bob.isEstablished)
 
 		// [5] Routine round: Alice -> Bob, no commit.
 		_ = try alice.prepareToEncrypt()
 		let helloFrame = try alice.encrypt(Data("hello bob".utf8)).frame
-		let helloDecrypted = try bob.processIncoming(helloFrame)
+		let helloDecrypted = try bob.processIncomingDecrypted(helloFrame)
 		XCTAssertEqual(helloDecrypted.applicationMessage, Data("hello bob".utf8))
 		XCTAssertFalse(helloDecrypted.didApplyRemoteCommit)
 
@@ -111,7 +111,7 @@ final class E2EWalkthroughTests: XCTestCase {
 			alice.sendGroup?.classical.context.epoch)
 		_ = try bob.prepareToEncrypt()
 		let bobProposalFrame = try bob.encrypt(Data("bob update".utf8)).frame
-		let proposalDecrypted = try alice.processIncoming(bobProposalFrame)
+		let proposalDecrypted = try alice.processIncomingDecrypted(bobProposalFrame)
 		_ = try alice.queueProposal(digest: proposalDecrypted.queuedProposal.digest)
 
 		let foldPrepared = try alice.prepareToEncrypt()
@@ -121,7 +121,7 @@ final class E2EWalkthroughTests: XCTestCase {
 			alice.sendGroup?.classical.context.epoch, aliceSendEpochBeforeFold + 1)
 
 		let committedFrame = try alice.encrypt(Data("committed".utf8)).frame
-		let committedDecrypted = try bob.processIncoming(committedFrame)
+		let committedDecrypted = try bob.processIncomingDecrypted(committedFrame)
 		XCTAssertTrue(committedDecrypted.didApplyRemoteCommit)
 		XCTAssertEqual(committedDecrypted.applicationMessage, Data("committed".utf8))
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, aliceSendEpochBeforeFold + 1)
@@ -129,7 +129,7 @@ final class E2EWalkthroughTests: XCTestCase {
 		// [7] Continued bidirectional messaging post-refresh: Bob -> Alice.
 		_ = try bob.prepareToEncrypt()
 		let replyFrame = try bob.encrypt(Data("reply".utf8)).frame
-		let replyDecrypted = try alice.processIncoming(replyFrame)
+		let replyDecrypted = try alice.processIncomingDecrypted(replyFrame)
 		XCTAssertEqual(replyDecrypted.applicationMessage, Data("reply".utf8))
 
 		// [8] Principal credential rotation: Alice proposes a successor on
@@ -148,7 +148,7 @@ final class E2EWalkthroughTests: XCTestCase {
 			.pending(old: alice.identity.clientID, new: newAliceID))
 
 		let rotatingFrame = try alice.encrypt(Data("rotating".utf8)).frame
-		let rotatingDecrypted = try bob.processIncoming(rotatingFrame)
+		let rotatingDecrypted = try bob.processIncomingDecrypted(rotatingFrame)
 		XCTAssertEqual(rotatingDecrypted.queuedProposal.proposing, newAliceID)
 		_ = try bob.queueProposal(digest: rotatingDecrypted.queuedProposal.digest)
 
@@ -157,7 +157,7 @@ final class E2EWalkthroughTests: XCTestCase {
 		XCTAssertEqual(rotationPrepared.committedRemoteClientID, newAliceID)
 
 		let canonicalizeFrame = try bob.encrypt(Data("canonicalize".utf8)).frame
-		let canonicalizeDecrypted = try alice.processIncoming(canonicalizeFrame)
+		let canonicalizeDecrypted = try alice.processIncomingDecrypted(canonicalizeFrame)
 		XCTAssertTrue(canonicalizeDecrypted.ownCredentialCanonicalized)
 		XCTAssertEqual(alice.myPrincipalState, .sync(newAliceID))
 	}

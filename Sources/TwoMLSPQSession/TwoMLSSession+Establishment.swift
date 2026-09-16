@@ -176,16 +176,24 @@ extension TwoMLSSession {
 	/// those direct callers — a session accepted that way has no forward-
 	/// table routing to acknowledge.
 	///
-	/// `expectedAppBinding` is a TRAILING optional (leaving room after
-	/// `codepoints` for a future dedicated-principal `newClientID` param) —
-	/// the app-state binding the joined welcome must carry: an exact,
-	/// symmetric match (`Some` byte-equal, `None` unbound), verified against
-	/// Group_A right after the join and BEFORE the AS seed or any caller-side
-	/// state claim (book group-rules.md rule 8) — a rejected welcome consumes
-	/// nothing (`Invitation.receive` stages its four tables on a copy only
-	/// after this call returns). An empty expectation is rejected up front,
-	/// before any group is even decoded — empty is reserved-invalid, so it
-	/// could never match.
+	/// `expectedAppBinding` is a TRAILING optional — the app-state binding
+	/// the joined welcome must carry: an exact, symmetric match (`Some`
+	/// byte-equal, `None` unbound), verified against Group_A right after the
+	/// join and BEFORE the AS seed or any caller-side state claim (book
+	/// group-rules.md rule 8) — a rejected welcome consumes nothing
+	/// (`Invitation.receive` stages its four tables on a copy only after
+	/// this call returns). An empty expectation is rejected up front, before
+	/// any group is even decoded — empty is reserved-invalid, so it could
+	/// never match.
+	///
+	/// `newClientID` (slice 11, contract-26) is the reserved trailing slot:
+	/// when it differs from `identity.clientID`, this mints a fresh,
+	/// dedicated principal D under it to found Group_B — the session
+	/// `identity` becomes D, while `recvGroup` (Group_A) stays joined under
+	/// the invitation identity (protocol-flows.md:407-432). `nil` or equal
+	/// to `identity.clientID` degenerates to today's nil topology
+	/// (unchanged, no gate, no `0x0B` staple). Empty (but non-nil) is
+	/// reserved-invalid, rejected here before any group is even decoded.
 	static func receive(
 		identity: TwoMLSIdentity,
 		welcome: Data,
@@ -195,13 +203,17 @@ extension TwoMLSSession {
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
 		codepoints: MLS.Combiner.Codepoints = .deployed,
-		expectedAppBinding: Data? = nil
+		expectedAppBinding: Data? = nil,
+		newClientID: Data? = nil
 	) throws -> EstablishResult {
 		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
 			pqProvider.cipherSuite == TwoMLSSuite.pq
 		else { throw TwoMLSError.cipherSuiteMismatch }
 		guard expectedAppBinding.map(\.isEmpty) != true else {
 			throw TwoMLSError.appBindingMismatch
+		}
+		if let newClientID {
+			guard !newClientID.isEmpty else { throw TwoMLSError.invalidClientID }
 		}
 
 		guard bootstrapKPCommitment.count == 32 else {
@@ -235,6 +247,12 @@ extension TwoMLSSession {
 		let peerID = try basicIdentifier(peerLeaf.credential)
 		guard try basicIdentifier(theirClassicalKeyPackage.leafNode.credential) == peerID
 		else { throw TwoMLSError.remoteIdentityMismatch }
+		// Defense-in-depth: a dedicated id equal to the remote/initiator's own
+		// id can never be legitimate (it would found Group_B under an identity
+		// the peer already occupies in Group_A) — reject before minting.
+		if let newClientID, newClientID == peerID {
+			throw TwoMLSError.invalidClientID
+		}
 
 		// App-state binding: the joined welcome must carry exactly the binding
 		// the caller expects (book group-rules.md rule 8) — verified before the
@@ -253,16 +271,32 @@ extension TwoMLSSession {
 		let verifiedAppBinding = try AppBinding.read(
 			fromExtensionsOf: groupA.classical.context)
 
-		let auth = AuthCore(
-			mine: .seeded(identity.clientID), theirs: .seeded(peerID))
+		// Mint the dedicated principal D ONLY when `newClientID` differs from
+		// the invitation identity (protocol-flows.md:420, credential-differ
+		// rule) — equal/nil
+		// degenerates to today's nil topology below. D founds Group_B under
+		// a completely fresh identity (fresh signing key, fresh classical+PQ
+		// leaves): a born-dedicated principal never joins, so both init
+		// secrets are cleared immediately (mirrors `clearingInitSecrets`'s
+		// "never separately read" reasoning at `initiate`/`receive`).
+		let dedicated: TwoMLSIdentity?
+		if let newClientID, newClientID != identity.clientID {
+			dedicated = try TwoMLSIdentity.generate(
+				clientID: newClientID, classicalProvider: classicalProvider,
+				pqProvider: pqProvider
+			).clearingInitSecrets(classical: true, pq: true)
+		} else {
+			dedicated = nil
+		}
+		let founderIdentity = dedicated ?? identity
 
 		let crossPSK = try MLS.Combiner.ExportedPsk.export(
 			from: &groupA.classical, classicalProvider,
 			componentID: crossPartyComponentID)
 
 		let founderHalf = try halfCreation(
-			identity: identity, half: identity.keyPackage.classical,
-			leafSecretKey: identity.classicalLeafSecretKey,
+			identity: founderIdentity, half: founderIdentity.keyPackage.classical,
+			leafSecretKey: founderIdentity.classicalLeafSecretKey,
 			peerKeyPackage: theirClassicalKeyPackage, provider: classicalProvider)
 		// Pre-allocated: Group_B's PQ half is not founded in slice 1 (A.3), but
 		// its `APQInfo` still names the eventual group id (a draft-02 PARTIAL).
@@ -288,10 +322,30 @@ extension TwoMLSSession {
 		// it accepts, so a leaked (sealed) session archive must not also
 		// expose the still-published key package's init secret.
 		let establishedIdentity = identity.clearingInitSecrets(classical: true, pq: true)
+		let sessionIdentity = dedicated ?? establishedIdentity
+
+		// AS both sides (Bob): with a dedicated principal, seed `mine`
+		// from the invitation identity then commit D — `.current == D`,
+		// with the invitation id retained in `history` for the recv leaf's
+		// custody arm (`myPrincipalState == .sync(D)`). Degenerate topology
+		// is unchanged.
+		let auth: AuthCore
+		let recvLeafPrincipal: RecvLeafPrincipal?
+		if dedicated != nil, let newClientID {
+			var mine = PartySequence.seeded(identity.clientID)
+			try mine.commit(newClientID)
+			auth = AuthCore(mine: mine, theirs: .seeded(peerID))
+			recvLeafPrincipal = RecvLeafPrincipal(
+				clientID: identity.clientID, signingKey: identity.signingKey,
+				signatureKey: identity.signatureKey)
+		} else {
+			auth = AuthCore(mine: .seeded(identity.clientID), theirs: .seeded(peerID))
+			recvLeafPrincipal = nil
+		}
 
 		var session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: codepoints, identity: establishedIdentity, auth: auth,
+			codepoints: codepoints, identity: sessionIdentity, auth: auth,
 			sendGroup: groupB, recvGroup: groupA,
 			currentStaple: apqWelcomeB, pendingProposal: nil,
 			joinedWelcomeDigest: try classicalProvider.hash(welcome), initiated: false,
@@ -300,7 +354,9 @@ extension TwoMLSSession {
 			// (Group_A, joined above) at the last cross-party PSK injection —
 			// Bob's freshly-joined copy is already at epoch 1, so the watermark
 			// seeds there too.
-			lastCrossInjected: 1, spawnToken: spawnToken)
+			lastCrossInjected: 1, spawnToken: spawnToken,
+			recvLeafPrincipal: recvLeafPrincipal,
+			owesEstablishmentEnvelope: dedicated != nil)
 		// The send group (Group_B) exists from construction: capture its
 		// birth epoch's rendezvous address before minting the baseline
 		// archive (routing works from birth, book session-lifecycle.md).
@@ -320,6 +376,60 @@ extension TwoMLSSession {
 		session.markStapleInstalled()
 		let baseline = try session.stateUpdate(kind: .checkpoint)
 		return EstablishResult(session: session, welcome: apqWelcomeB, baseline: baseline)
+	}
+
+	// MARK: - Contract-26 non-emittable gate + install
+
+	/// The non-emittable gate: throws while a dedicated
+	/// principal's contract-26 handoff is still owed. Call FIRST in every
+	/// frame-producing public method — a commit before install would
+	/// replace the bare `0x01` staple and make `installEstablishmentEnvelope`
+	/// fail `.sessionNotReady` forever.
+	func ensureEstablishmentDelegated() throws {
+		guard !owesEstablishmentEnvelope else {
+			throw TwoMLSError.establishmentEnvelopeRequired
+		}
+	}
+
+	/// Wraps `currentStaple` (still the bare `0x01` `apqWelcomeB`) in the
+	/// contract-26 signed handoff blob — NOT the §A.1 HPKE envelope of
+	/// `EstablishmentEnvelope.swift`, a different mechanism entirely: this is
+	/// the signed delegation the host mints (over `initialWelcome()`'s bytes)
+	/// proving D's succession from the invitation identity, carried on the
+	/// message path as a `0x0B` staple (`Frames.encodeEstablishmentHandoff`).
+	///
+	/// - empty `envelope` → `.establishmentEnvelopeRequired`.
+	/// - already installed, IDENTICAL `envelope` → idempotent no-op (still
+	///   bumps `stateSeq`/returns a fresh `StateUpdate`, like every other
+	///   idempotent re-send in this module).
+	/// - already installed, DIFFERENT `envelope` → `.establishmentEnvelopeConflict`.
+	/// - not owed, and not already installed → `.sessionNotReady` (also the
+	///   fail-closed catch-all when `currentStaple` somehow moved off the
+	///   bare `0x01` shape without ever installing, Rust mod.rs:2018-22).
+	/// - success: `currentStaple` becomes the `0x0B` handoff, the gate
+	///   clears, and — being a SECOND writer of `currentStaple` alongside
+	///   `committingRound` — this advances `stateSeq` then
+	///   `markStapleInstalled()` before persisting, so `PrepareResult.dependsOnSeq`
+	///   gates transmitting a later re-staple on this update's durability.
+	public mutating func installEstablishmentEnvelope(_ envelope: Data) throws -> StateUpdate {
+		guard !envelope.isEmpty else { throw TwoMLSError.establishmentEnvelopeRequired }
+		if currentStaple.first == Frames.establishmentHandoffTag {
+			let (installed, _) = try Frames.decodeEstablishmentHandoff(currentStaple)
+			guard installed == envelope else {
+				throw TwoMLSError.establishmentEnvelopeConflict
+			}
+			advanceStateSeq()
+			return try stateUpdate(kind: .core)
+		}
+		guard owesEstablishmentEnvelope, currentStaple.first == Frames.apqWelcomeTag else {
+			throw TwoMLSError.sessionNotReady
+		}
+		currentStaple = Frames.encodeEstablishmentHandoff(
+			envelope: envelope, welcome: currentStaple)
+		owesEstablishmentEnvelope = false
+		advanceStateSeq()
+		markStapleInstalled()
+		return try stateUpdate(kind: .core)
 	}
 
 	/// The peer's occupied leaf in a freshly-joined 2-party group, read

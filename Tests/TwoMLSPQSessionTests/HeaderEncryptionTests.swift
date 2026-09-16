@@ -27,11 +27,11 @@ final class HeaderEncryptionTests: XCTestCase {
 	) throws {
 		_ = try proposer.prepareToEncrypt()
 		let offerFrame = try proposer.encrypt(Data("offer-\(round)".utf8)).frame
-		let decrypted = try approver.processIncoming(offerFrame)
+		let decrypted = try approver.processIncomingDecrypted(offerFrame)
 		_ = try approver.queueProposal(digest: decrypted.queuedProposal.digest)
 		_ = try approver.prepareToEncrypt()
 		let commitFrame = try approver.encrypt(Data("commit-\(round)".utf8)).frame
-		_ = try proposer.processIncoming(commitFrame)
+		_ = try proposer.processIncomingDecrypted(commitFrame)
 	}
 
 	private let testKey = SecretBytes(randomByteCount: 32)
@@ -149,7 +149,7 @@ final class HeaderEncryptionTests: XCTestCase {
 		let bindPrepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(bindPrepared.didCommit)
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
-		_ = try bob.processIncoming(boundFrame)
+		_ = try bob.processIncomingDecrypted(boundFrame)
 		XCTAssertTrue(bob.myPQTurn)
 
 		// §A.4: bob (turn-holder) self-stages an EK (`0x17`); alice responds
@@ -168,7 +168,7 @@ final class HeaderEncryptionTests: XCTestCase {
 		let ratchetDischarge = try bob.prepareToEncrypt()
 		XCTAssertTrue(ratchetDischarge.didCommit)
 		let ratchetBoundFrame = try bob.encrypt(Data("ratchet-bound".utf8)).frame
-		_ = try alice.processIncoming(ratchetBoundFrame)
+		_ = try alice.processIncomingDecrypted(ratchetBoundFrame)
 		XCTAssertTrue(alice.myPQTurn)
 
 		// §A.5: alice (turn-holder) proposes Upd′ (`0x1B`); bob commits
@@ -228,7 +228,7 @@ final class HeaderEncryptionTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		let decrypted = try restored.processIncoming(messageFrame)
+		let decrypted = try restored.processIncomingDecrypted(messageFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("in-flight".utf8))
 
 		let openedSideBand = try XCTUnwrap(restored.openIncoming(updFrame))
@@ -254,7 +254,7 @@ final class HeaderEncryptionTests: XCTestCase {
 		let (staple, _, _) = try Frames.decodeMessageFrame(opened.frame)
 		XCTAssertEqual(staple, welcomeB)
 
-		let decrypted = try alice.processIncoming(firstFrame)
+		let decrypted = try alice.processIncomingDecrypted(firstFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bob-first".utf8))
 		XCTAssertTrue(alice.isEstablished)
 	}
@@ -322,7 +322,7 @@ final class HeaderEncryptionTests: XCTestCase {
 		let bindPrepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(bindPrepared.didCommit)
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
-		_ = try bob.processIncoming(boundFrame)
+		_ = try bob.processIncomingDecrypted(boundFrame)
 		XCTAssertTrue(bob.myPQTurn)
 
 		// §A.4: both legs are classical — their inner MLS message rides the
@@ -339,7 +339,7 @@ final class HeaderEncryptionTests: XCTestCase {
 		let ratchetDischarge = try bob.prepareToEncrypt()
 		XCTAssertTrue(ratchetDischarge.didCommit)
 		let ratchetBoundFrame = try bob.encrypt(Data("ratchet-bound".utf8)).frame
-		_ = try alice.processIncoming(ratchetBoundFrame)
+		_ = try alice.processIncomingDecrypted(ratchetBoundFrame)
 		XCTAssertTrue(alice.myPQTurn)
 
 		// §A.5: both frames are PQ.
@@ -411,7 +411,7 @@ final class HeaderEncryptionTests: XCTestCase {
 		_ = try bob.pqRekeyApply(commitFrame)
 		_ = try bob.prepareToEncrypt()
 		let rekeyBoundFrame = try bob.encrypt(Data("rekey-bound".utf8)).frame
-		_ = try alice.processIncoming(rekeyBoundFrame)
+		_ = try alice.processIncomingDecrypted(rekeyBoundFrame)
 		XCTAssertTrue(alice.myPQTurn)
 
 		// --- Classical: seal at Group_A's current classical epoch N, then
@@ -530,7 +530,7 @@ final class HeaderEncryptionTests: XCTestCase {
 		_ = try initiator.pqRekeyApply(commitFrame)
 		_ = try initiator.prepareToEncrypt()
 		let boundFrame = try initiator.encrypt(Data("rekey-bound-\(round)".utf8)).frame
-		_ = try committer.processIncoming(boundFrame)
+		_ = try committer.processIncomingDecrypted(boundFrame)
 	}
 
 	// MARK: - 14. Side-band padding (`setPadTarget`)
@@ -583,7 +583,7 @@ final class HeaderEncryptionTests: XCTestCase {
 		let discharge = try bob.prepareToEncrypt()
 		XCTAssertTrue(discharge.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
-		let decrypted = try alice.processIncoming(boundFrame)
+		let decrypted = try alice.processIncomingDecrypted(boundFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
 	}
 

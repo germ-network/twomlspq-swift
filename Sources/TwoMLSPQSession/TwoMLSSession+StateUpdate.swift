@@ -50,9 +50,10 @@ extension TwoMLSSession {
 	}
 
 	/// Records that a NEW staple/commit was just installed at the CURRENT
-	/// `stateSeq` — call only from the one path that actually assigns a fresh
-	/// `currentStaple` (`committingRound`'s success point), after
-	/// `advanceStateSeq()`.
+	/// `stateSeq` — call only from a path that actually assigns a fresh
+	/// `currentStaple`: `committingRound`'s success point, or (slice 11)
+	/// `installEstablishmentEnvelope`'s success point, which wraps the bare
+	/// `0x01` in the signed `0x0B` handoff. Call after `advanceStateSeq()`.
 	mutating func markStapleInstalled() {
 		currentStapleSeq = stateSeq
 	}

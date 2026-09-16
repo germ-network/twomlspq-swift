@@ -67,17 +67,17 @@ final class InvitationTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		_ = try alice.processIncoming(bobFrame)
+		_ = try alice.processIncomingDecrypted(bobFrame)
 		XCTAssertTrue(alice.isEstablished)
 
 		_ = try alice.prepareToEncrypt()
 		let aliceFrame = try alice.encrypt(Data("alice-hello".utf8)).frame
-		let aliceDecrypted = try bob.processIncoming(aliceFrame)
+		let aliceDecrypted = try bob.processIncomingDecrypted(aliceFrame)
 		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("alice-hello".utf8))
 
 		_ = try bob.prepareToEncrypt()
 		let bobReply = try bob.encrypt(Data("bob-reply".utf8)).frame
-		let bobDecrypted = try alice.processIncoming(bobReply)
+		let bobDecrypted = try alice.processIncomingDecrypted(bobReply)
 		XCTAssertEqual(bobDecrypted.applicationMessage, Data("bob-reply".utf8))
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
@@ -346,12 +346,12 @@ final class InvitationTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		_ = try alice.processIncoming(bobFrame)
+		_ = try alice.processIncomingDecrypted(bobFrame)
 		XCTAssertTrue(alice.isEstablished)
 
 		_ = try alice.prepareToEncrypt()
 		let aliceFrame = try alice.encrypt(Data("alice-hello".utf8)).frame
-		let aliceDecrypted = try bob.processIncoming(aliceFrame)
+		let aliceDecrypted = try bob.processIncomingDecrypted(aliceFrame)
 		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("alice-hello".utf8))
 
 		let kpFrame = try alice.pqBootstrapBegin().frame

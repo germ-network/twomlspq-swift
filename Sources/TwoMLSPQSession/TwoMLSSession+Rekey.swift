@@ -35,6 +35,8 @@ extension TwoMLSSession {
 	/// — and park it as a `0x1B` side-band frame. Idempotent while a begin
 	/// is already outstanding, like `pqBootstrapBegin`.
 	public mutating func pqRekeyBegin() throws -> SideBandResult {
+		// Slice 11: the non-emittable gate.
+		try ensureEstablishmentDelegated()
 		if case .rekeyInitiated = pqInflight, let pending = pendingSideBand {
 			let sealed = try sealSideBand(pending)
 			advanceStateSeq()
@@ -51,7 +53,7 @@ extension TwoMLSSession {
 		}
 
 		let (message, _) = try recvPQ.proposeUpdate(
-			pqProvider, signingKey: identity.signingKey, framing: .publicMessage)
+			pqProvider, signingKey: try recvPQSigningKey(), framing: .publicMessage)
 		recv.pq = recvPQ
 		recvGroup = recv
 
@@ -72,7 +74,7 @@ extension TwoMLSSession {
 	/// (the group actually being re-keyed), folds it into an `includePath:
 	/// true` commit there — optionally carrying a fresh cross-party `0xFF02`
 	/// PSK exported off `recvGroup.pq` (the initiator's own send-PQ mirror,
-	/// event-driven off `lastCrossInjectedPQ`, §13 F3) — and parks the
+	/// event-driven off `lastCrossInjectedPQ`, §13) — and parks the
 	/// result as a `0x1D` side-band frame. Every export/write-back is
 	/// deferred to the success point after the commit lands (§13 M3): a
 	/// throw above that discards the local `recv`/`send` copies untouched.
@@ -159,7 +161,7 @@ extension TwoMLSSession {
 
 			let transition = try sendPQ.committing(
 				pqProvider, proposals: proposals, proposalStore: proposalStore,
-				signingKey: identity.signingKey,
+				signingKey: try sendPQSigningKey(),
 				randomness: try .generate(pqProvider),
 				includePath: true, framing: .publicMessage, psk: pskStore.resolver()
 			)

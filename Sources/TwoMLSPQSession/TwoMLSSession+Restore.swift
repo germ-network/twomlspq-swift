@@ -286,7 +286,9 @@ extension TwoMLSSession {
 			lastCrossInjected: body.lastCrossInjected,
 			lastCrossInjectedPQ: body.lastCrossInjectedPQ,
 			lastSendPQExported: body.lastSendPQExported,
-			spawnToken: body.spawnToken)
+			spawnToken: body.spawnToken,
+			recvLeafPrincipal: try body.recvLeafPrincipal?.restore(),
+			owesEstablishmentEnvelope: body.owesEstablishmentEnvelope ?? false)
 
 		session.offeredProposal = body.offeredProposal?.asTuple
 		session.queuedProposal = body.queuedProposal?.asTuple

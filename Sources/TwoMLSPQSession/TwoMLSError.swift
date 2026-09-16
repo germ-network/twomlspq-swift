@@ -79,7 +79,11 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	case deferredPQMirrorMismatch
 	/// A host method requiring specific turn/establishment state
 	/// (`pqBootstrapBegin`, `pqBootstrapRespond`, `pqBootstrapJoin`) was
-	/// called outside that state.
+	/// called outside that state. Also `installEstablishmentEnvelope`'s
+	/// fail-closed catch-all (slice 11): not owed, and `currentStaple` is
+	/// not the bare `0x01` shape either — an envelope installed onto a
+	/// session that never owed one, or one whose staple already moved past
+	/// establishment.
 	case sessionNotReady
 
 	// MARK: §A.3 bind
@@ -195,7 +199,11 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// `.externalSender` case here: the profile already rejects every
 	/// external sender with `unsupportedSender` before a credential ever
 	/// reaches this AS (this protocol is strictly 2-party and P2P, with no
-	/// external-sender path).
+	/// external-sender path). Also thrown by `joinGroupB`'s (slice 11)
+	/// defense-in-depth adoption screen: a joined creator id that is already
+	/// one of MY OWN known ids (`auth.mine.knownIDs`) is never adopted, even
+	/// if a host blunder handed it back as the dedicated principal — a
+	/// same-id "succession" onto myself can never be legitimate.
 	case invalidSuccession
 	/// The peer's presented identity does not match the party actually bound
 	/// at establishment: at `receive`, the caller-supplied
@@ -217,9 +225,10 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 
 	// MARK: Classical principal rotation (slice 6)
 
-	/// The custody resolver (`classicalSigningKey(presenting:)`) found no
-	/// principal — founding identity or the single in-flight
-	/// `rotationCandidate` — whose `signatureKey` matches what a classical
+	/// The custody resolver (`classicalSigningKey(presenting:)`, or its PQ
+	/// analogue `pqSigningKey(presenting:)`, slice 11) found no principal —
+	/// founding identity, the single in-flight `rotationCandidate`, or the
+	/// retained `recvLeafPrincipal` — whose `signatureKey` matches what a
 	/// leaf currently presents; fail-closed rather than sign with the wrong
 	/// key. Also thrown by `prepareToEncrypt(rotating:)` for an empty
 	/// candidate id, or for a `rotating` that names this session's OWN
@@ -324,4 +333,34 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// group-creation site ledgers the current epoch before this could ever
 	/// be asked for it.
 	case attachmentComponentUnavailable
+
+	// MARK: Born-dedicated principal + contract-26 handoff (slice 11)
+
+	/// `Invitation.receive`/`TwoMLSSession.receive` was called with a
+	/// non-nil, empty `newClientID` — the reserved slot the dedicated
+	/// principal is minted under. Empty is reserved-invalid, matching every
+	/// other identity/binding field this module rejects that way. Also
+	/// thrown when a non-nil `newClientID` equals the remote/initiator's own
+	/// id (`peerID`, read off the just-joined Group_A creator leaf) —
+	/// defense-in-depth: a dedicated principal can never legitimately be
+	/// the very party it is meant to be dedicated FOR.
+	case invalidClientID
+	/// A frame-producing method was called while the acceptor still owes
+	/// the contract-26 signed handoff envelope (`owesEstablishmentEnvelope`)
+	/// — the non-emittable gate. Also `installEstablishmentEnvelope`'s
+	/// own empty-argument case, and a `.bare`-mode Group_B join whose
+	/// creator differs from the invitation identity (protocol-flows.md:428
+	/// — the join needs the envelope before it can trust a different
+	/// creator).
+	case establishmentEnvelopeRequired
+	/// `installEstablishmentEnvelope` was handed envelope bytes different
+	/// from the one already installed — a corrupt or conflicting caller,
+	/// never a legitimate re-send (an idempotent re-install of the SAME
+	/// bytes is a no-op, not this error).
+	case establishmentEnvelopeConflict
+	/// `processIncomingApproved`'s approved Group_B join landed on a
+	/// creator different from the `expectedCreator` the caller pinned — the
+	/// approval names a specific dedicated principal, and a join that
+	/// disagrees with it is discarded whole, never partially trusted.
+	case establishmentCreatorMismatch
 }

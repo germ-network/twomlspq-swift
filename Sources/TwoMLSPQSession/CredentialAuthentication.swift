@@ -258,9 +258,11 @@ struct AuthCore: Sendable, Equatable, Codable {
 	/// advanced would desync the group from the AS. The classical join-roster
 	/// seam, by contrast, is WIRED: `joinClassicalOnly` (+Messaging) requires
 	/// the Welcome to name the cross-party `0xFF02` PSK and pins the joined
-	/// creator leaf against `auth.theirs` (`.missingCrossPartyPSK` /
-	/// `.remoteIdentityMismatch`), so the AS needs no separate roster
-	/// admission there. `joinPQHalf` remains credential-unadjudicated — it
+	/// creator leaf against a mode-supplied expectation (`.missingCrossPartyPSK`
+	/// / `.establishmentEnvelopeRequired` for a `.bare` join, `.establishmentCreatorMismatch`
+	/// for an `.approved` one — slice 11, `APQGroup.JoinCreatorMode`), so the
+	/// AS needs no separate roster admission there. `joinPQHalf` remains
+	/// credential-unadjudicated — it
 	/// discards `PendingJoin.roster` without checking the creator against
 	/// `theirs` — but is pinned instead by the KP′ hash commitment (`H(KP′)`)
 	/// checked at `receive` / `pqBootstrapRespond`.

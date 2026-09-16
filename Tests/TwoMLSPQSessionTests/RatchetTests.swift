@@ -34,7 +34,7 @@ final class RatchetTests: XCTestCase {
 
 		_ = try alice.prepareToEncrypt()
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
-		_ = try bob.processIncoming(boundFrame)
+		_ = try bob.processIncomingDecrypted(boundFrame)
 
 		XCTAssertTrue(bob.myPQTurn)
 		XCTAssertFalse(alice.myPQTurn)
@@ -93,7 +93,7 @@ final class RatchetTests: XCTestCase {
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 
-		let decrypted = try alice.processIncoming(boundFrame)
+		let decrypted = try alice.processIncomingDecrypted(boundFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
 
 		XCTAssertTrue(alice.myPQTurn)
@@ -131,7 +131,7 @@ final class RatchetTests: XCTestCase {
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
-		_ = try alice.processIncoming(boundFrame)
+		_ = try alice.processIncomingDecrypted(boundFrame)
 
 		XCTAssertNil(alice.pqPendingOutbound())
 		XCTAssertNil(bob.pqPendingOutbound())
@@ -214,7 +214,7 @@ final class RatchetTests: XCTestCase {
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
-		_ = try alice.processIncoming(boundFrame)
+		_ = try alice.processIncomingDecrypted(boundFrame)
 
 		// Group_B's classical epoch (alice's mirror) has now advanced past
 		// the epoch `staleEKFrame` was framed at.

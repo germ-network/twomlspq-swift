@@ -70,12 +70,12 @@ final class EnvelopeTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		_ = try alice.processIncoming(bobFrame)
+		_ = try alice.processIncomingDecrypted(bobFrame)
 		XCTAssertTrue(alice.isEstablished)
 
 		_ = try alice.prepareToEncrypt()
 		let aliceFrame = try alice.encrypt(Data("alice-hello".utf8)).frame
-		let decrypted = try bob.processIncoming(aliceFrame)
+		let decrypted = try bob.processIncomingDecrypted(aliceFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("alice-hello".utf8))
 	}
 

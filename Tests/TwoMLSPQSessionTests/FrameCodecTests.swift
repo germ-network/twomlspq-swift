@@ -207,4 +207,74 @@ final class FrameCodecTests: XCTestCase {
 			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
 		}
 	}
+
+	// MARK: - `0x0B` contract-26 establishment handoff
+
+	func testEstablishmentHandoffRoundTrips() throws {
+		let envelope = Data("signed-handoff-blob".utf8)
+		let welcome = Frames.encodeAPQWelcome(t: Data("t-welcome".utf8), pq: Data())
+		let staple = Frames.encodeEstablishmentHandoff(envelope: envelope, welcome: welcome)
+		let decoded = try Frames.decodeEstablishmentHandoff(staple)
+		XCTAssertEqual(decoded.envelope, envelope)
+		XCTAssertEqual(decoded.welcome, welcome)
+	}
+
+	/// wire-format.md:17: the inner section must be the unmodified `0x01`
+	/// welcome — anything else is rejected outright, keyed on the inner
+	/// section's own first byte.
+	func testEstablishmentHandoffRejectsNonWelcomeInner() {
+		let envelope = Data("signed-handoff-blob".utf8)
+		let notAWelcome = Data([0x00, 0xAA, 0xBB])
+		let staple = Frames.encodeEstablishmentHandoff(
+			envelope: envelope, welcome: notAWelcome)
+		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unsupportedStapleTag(0x00))
+		}
+	}
+
+	func testEstablishmentHandoffRejectsEmptyEnvelopeSection() {
+		let welcome = Frames.encodeAPQWelcome(t: Data("t-welcome".utf8), pq: Data())
+		let staple = Frames.encodeEstablishmentHandoff(envelope: Data(), welcome: welcome)
+		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .emptySection)
+		}
+	}
+
+	func testEstablishmentHandoffRejectsEmptyWelcomeSection() {
+		let staple = Frames.encodeEstablishmentHandoff(
+			envelope: Data("signed-handoff-blob".utf8), welcome: Data())
+		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .emptySection)
+		}
+	}
+
+	func testEstablishmentHandoffRejectsWrongOuterTag() {
+		var staple = Frames.encodeEstablishmentHandoff(
+			envelope: Data("signed-handoff-blob".utf8),
+			welcome: Frames.encodeAPQWelcome(t: Data("t-welcome".utf8), pq: Data()))
+		staple[staple.startIndex] = 0x02
+		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unsupportedStapleTag(0x02))
+		}
+	}
+
+	func testEstablishmentHandoffRejectsTrailingBytes() {
+		var staple = Frames.encodeEstablishmentHandoff(
+			envelope: Data("signed-handoff-blob".utf8),
+			welcome: Frames.encodeAPQWelcome(t: Data("t-welcome".utf8), pq: Data()))
+		staple.append(0xFF)
+		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .trailingBytes)
+		}
+	}
+
+	func testEstablishmentHandoffRejectsTruncation() {
+		var staple = Frames.encodeEstablishmentHandoff(
+			envelope: Data("signed-handoff-blob".utf8),
+			welcome: Frames.encodeAPQWelcome(t: Data("t-welcome".utf8), pq: Data()))
+		staple.removeLast()
+		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
+		}
+	}
 }

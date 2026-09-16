@@ -30,11 +30,11 @@ final class RoutingTests: XCTestCase {
 	) throws -> UInt64 {
 		_ = try proposer.prepareToEncrypt()
 		let offerFrame = try proposer.encrypt(Data("offer-\(round)".utf8)).frame
-		let decrypted = try approver.processIncoming(offerFrame)
+		let decrypted = try approver.processIncomingDecrypted(offerFrame)
 		_ = try approver.queueProposal(digest: decrypted.queuedProposal.digest)
 		_ = try approver.prepareToEncrypt()
 		let commitFrame = try approver.encrypt(Data("commit-\(round)".utf8)).frame
-		_ = try proposer.processIncoming(commitFrame)
+		_ = try proposer.processIncomingDecrypted(commitFrame)
 		return try XCTUnwrap(approver.sendGroup?.classical.context.epoch)
 	}
 
