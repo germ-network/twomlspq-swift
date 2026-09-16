@@ -653,7 +653,8 @@ final class AppBindingTests: XCTestCase {
 		let forgedFrame = Frames.encodeMessageFrame(
 			staple: strippedStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try aliceSession.processIncomingDecrypted(forgedFrame)) { error in
+		XCTAssertThrowsError(try aliceSession.processIncomingDecrypted(forgedFrame)) {
+			error in
 			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
 		}
 		XCTAssertNil(aliceSession.recvGroup)

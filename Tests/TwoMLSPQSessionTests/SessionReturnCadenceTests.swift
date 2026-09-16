@@ -377,7 +377,8 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let routine = try restored.prepareToEncrypt()
 		XCTAssertFalse(routine.didCommit)
 		XCTAssertEqual(routine.dependsOnSeq, seededStateSeq)
-		_ = try alice.processIncomingDecrypted(try restored.encrypt(Data("post-restore".utf8)).frame)
+		_ = try alice.processIncomingDecrypted(
+			try restored.encrypt(Data("post-restore".utf8)).frame)
 	}
 
 	// MARK: - 5. mid-A.3 / mid-A.4 reached and restored via the live cadence
