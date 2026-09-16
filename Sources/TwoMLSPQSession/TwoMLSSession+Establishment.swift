@@ -247,6 +247,12 @@ extension TwoMLSSession {
 		let peerID = try basicIdentifier(peerLeaf.credential)
 		guard try basicIdentifier(theirClassicalKeyPackage.leafNode.credential) == peerID
 		else { throw TwoMLSError.remoteIdentityMismatch }
+		// Defense-in-depth: a dedicated id equal to the remote/initiator's own
+		// id can never be legitimate (it would found Group_B under an identity
+		// the peer already occupies in Group_A) — reject before minting.
+		if let newClientID, newClientID == peerID {
+			throw TwoMLSError.invalidClientID
+		}
 
 		// App-state binding: the joined welcome must carry exactly the binding
 		// the caller expects (book group-rules.md rule 8) — verified before the
@@ -265,9 +271,9 @@ extension TwoMLSSession {
 		let verifiedAppBinding = try AppBinding.read(
 			fromExtensionsOf: groupA.classical.context)
 
-		// Slice 11, §C.1 (Fable CRIT-1): mint the dedicated principal D ONLY
-		// when `newClientID` differs from the invitation identity
-		// (protocol-flows.md:420, credential-differ rule) — equal/nil
+		// Mint the dedicated principal D ONLY when `newClientID` differs from
+		// the invitation identity (protocol-flows.md:420, credential-differ
+		// rule) — equal/nil
 		// degenerates to today's nil topology below. D founds Group_B under
 		// a completely fresh identity (fresh signing key, fresh classical+PQ
 		// leaves): a born-dedicated principal never joins, so both init
@@ -318,7 +324,7 @@ extension TwoMLSSession {
 		let establishedIdentity = identity.clearingInitSecrets(classical: true, pq: true)
 		let sessionIdentity = dedicated ?? establishedIdentity
 
-		// AS both sides (Bob, §C.1): with a dedicated principal, seed `mine`
+		// AS both sides (Bob): with a dedicated principal, seed `mine`
 		// from the invitation identity then commit D — `.current == D`,
 		// with the invitation id retained in `history` for the recv leaf's
 		// custody arm (`myPrincipalState == .sync(D)`). Degenerate topology
@@ -372,9 +378,9 @@ extension TwoMLSSession {
 		return EstablishResult(session: session, welcome: apqWelcomeB, baseline: baseline)
 	}
 
-	// MARK: - Contract-26 non-emittable gate + install (slice 11, §C.1)
+	// MARK: - Contract-26 non-emittable gate + install
 
-	/// The non-emittable gate (Fable MAJ-6): throws while a dedicated
+	/// The non-emittable gate: throws while a dedicated
 	/// principal's contract-26 handoff is still owed. Call FIRST in every
 	/// frame-producing public method — a commit before install would
 	/// replace the bare `0x01` staple and make `installEstablishmentEnvelope`

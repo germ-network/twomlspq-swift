@@ -28,7 +28,7 @@ extension TwoMLSSession {
 	/// single-key form. Rejects `rotating` naming my own recv-leaf's
 	/// CURRENT id outright (`.credentialUnknown`) — that offer could never
 	/// canonicalize (`PartySequence.commit`'s own `current == id` no-op),
-	/// so it would sit `.pending` forever. F2's one-generation cap: a
+	/// so it would sit `.pending` forever. The one-generation rotation cap: a
 	/// DIFFERENT id while a candidate is still outstanding is
 	/// `.rotationInFlight`, UNLESS the wedge relaxation applies — the
 	/// outstanding candidate never canonicalized (`auth.mine.history` does
@@ -43,7 +43,7 @@ extension TwoMLSSession {
 		guard recvGroup != nil, sendGroup != nil else {
 			throw TwoMLSError.notEstablished
 		}
-		// Slice 11 (Fable MAJ-6): the non-emittable gate, BEFORE `committingRound()`
+		// Slice 11: the non-emittable gate, BEFORE `committingRound()`
 		// — a commit landing here before install would replace the bare
 		// `0x01` staple and make `installEstablishmentEnvelope` fail
 		// `.sessionNotReady` forever.
@@ -63,7 +63,7 @@ extension TwoMLSSession {
 		// forever with no fold ever able to canonicalize it.
 		let myCurrentID = try basicIdentifier(Self.ownLeaf(of: recv.classical).credential)
 
-		// Slice 11, §C.4 (Fable CRIT-2): the recv-leaf catch-up — my own
+		// Slice 11 (group-rules.md rule 4): the recv-leaf catch-up — my own
 		// recv-leaf still lags my canonical principal (the born-dedicated
 		// acceptor's Group_A leaf presenting the invitation identity while
 		// `auth.mine.current` is already D) AND custody over the lagging
@@ -227,7 +227,7 @@ extension TwoMLSSession {
 	/// MLS leaf signature, checked when folded (`queueProposal`/
 	/// `committingRound`/`applyFoldCommit`, slice 5) (M1).
 	public mutating func encrypt(_ app: Data) throws -> EncryptResult {
-		// Slice 11 (Fable MAJ-6): the non-emittable gate.
+		// Slice 11: the non-emittable gate.
 		try ensureEstablishmentDelegated()
 		guard let pending = pendingProposal else { throw TwoMLSError.noPendingProposal }
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
@@ -265,7 +265,7 @@ extension TwoMLSSession {
 		return EncryptResult(frame: sealedFrame, update: update)
 	}
 
-	/// Slice 11, §C.2/§C.5: which pre-verified `0x0B` (envelope, welcome)
+	/// Slice 11 (protocol-flows.md:407-432): which pre-verified `0x0B` (envelope, welcome)
 	/// pair `processIncomingApproved` pins, or the absence of one for plain
 	/// `processIncoming` — threaded through the shared dispatch below so the
 	/// two public entry points share every code path except this.
@@ -278,7 +278,7 @@ extension TwoMLSSession {
 	/// `0x05` bind — idempotently, when the staple merely re-rides a commit
 	/// already applied off an earlier frame), decrypt the app section against
 	/// the receive group, and surface the peer's staged proposal uninterpreted
-	/// (`queueProposal` is the approval step that folds it). Slice 11, §C.5:
+	/// (`queueProposal` is the approval step that folds it). Slice 11 (session-lifecycle.md:32-38):
 	/// also dispatches a STANDALONE `0x01`/`0x0B` frame (no `0x03` wrapper),
 	/// and PAUSES on a `0x0B` (stapled or standalone) while `recvGroup ==
 	/// nil` rather than joining — see `IncomingResult`.
@@ -286,16 +286,27 @@ extension TwoMLSSession {
 		try dispatchIncoming(inbound, approval: .unapproved)
 	}
 
-	/// Slice 11, §C.2: re-feed a frame carrying a `0x0B` pair the caller has
+	/// Slice 11 (protocol-flows.md:407-432): re-feed a frame carrying a `0x0B` pair the caller has
 	/// already verified out of band, pinned by digest over EXACTLY the two
 	/// `0x0B` sections — not "same inbound only": ANY frame carrying that
 	/// approved pair is approvable, including a LATER re-staple (how a
 	/// dropped early frame heals). Stateless: both digests must match else
 	/// this re-pauses (`.pendingEstablishment`, never joins) exactly like an
-	/// unapproved `processIncoming` would. §D Fable F4: the approval is
+	/// unapproved `processIncoming` would. The approval is
 	/// consulted IFF the frame carries a `0x0B` section AND `recvGroup ==
 	/// nil` — every other input processes exactly as `processIncoming`, so
 	/// approval can never launder a bare welcome.
+	///
+	/// Host ordering: an approved join CONSUMES the establishment —
+	/// `recvGroup` is no longer `nil` once this returns `.joined`, so every
+	/// later re-staple of the same welcome only ever dedups (`.ignored`),
+	/// never re-pauses. The host must therefore durably record its admission
+	/// decision (having verified the envelope) BEFORE calling this, not
+	/// after: a crash between verifying and calling loses nothing (the next
+	/// re-feed re-verifies and re-approves), but a crash between this
+	/// returning `.joined` and the host recording that fact would strand the
+	/// join with no later frame able to re-surface it for approval. The
+	/// converse order — record first, call second — always heals.
 	public mutating func processIncomingApproved(
 		_ inbound: Data, approvedEnvelopeDigest: Data, approvedWelcomeDigest: Data,
 		expectedCreator: Data
@@ -372,9 +383,9 @@ extension TwoMLSSession {
 		return .decrypted(result)
 	}
 
-	/// Standalone `0x01` (§C.5): a factored Group_B join under `.bare` mode,
-	/// no app section — the FIRST join is state-advancing (`.joined`,
-	/// Fable F3), an idempotent re-delivery is `.ignored`.
+	/// Standalone `0x01` (session-lifecycle.md:32-38): a factored Group_B join under `.bare` mode,
+	/// no app section — the FIRST join is state-advancing (`.joined`),
+	/// an idempotent re-delivery is `.ignored`.
 	private mutating func processStandaloneWelcome(_ frame: Data) throws -> IncomingResult {
 		guard let expectedCreator = auth.theirs.current else {
 			throw TwoMLSError.unknownIdentity
@@ -389,7 +400,7 @@ extension TwoMLSSession {
 		return .joined(newSender: newSender, update: try stateUpdate(kind: .core))
 	}
 
-	/// Standalone `0x0B` (§C.5): PAUSES ONLY while `recvGroup == nil` — an
+	/// Standalone `0x0B` (protocol-flows.md:407-432): PAUSES ONLY while `recvGroup == nil` — an
 	/// approved re-feed joins in the same call; already joined, this dedups
 	/// on the INNER welcome digest (`.ignored`) or rejects a different one
 	/// (`.unexpectedWelcome`) — NEVER re-pauses post-join.
@@ -481,7 +492,7 @@ extension TwoMLSSession {
 
 	/// `0x01`/`0x0B` welcome → join Group_B if this staple hasn't been
 	/// joined yet (idempotent otherwise, dedup-ing on the INNER `0x01`
-	/// welcome digest — Fable F5); `0x00` mlsMessage → the fold-only commit
+	/// welcome digest); `0x00` mlsMessage → the fold-only commit
 	/// apply arm (§11 checkpoint 3); `0x05` apqPrivateMessage → `applyBind`.
 	/// Returns whether a remote commit was actually applied (`false` for a
 	/// welcome/handoff, or an idempotent skip of a commit already applied
@@ -563,14 +574,14 @@ extension TwoMLSSession {
 	/// already joined (idempotent re-delivery) or it isn't
 	/// (`.unexpectedWelcome`, covering both a genuinely different welcome
 	/// and the acceptor's `recvGroup`-from-birth topology, whose
-	/// `joinedWelcomeDigest` is always `nil` — Fable F1/T1/T2).
+	/// `joinedWelcomeDigest` is always `nil`).
 	private func dedupJoinedWelcome(digest: Data) throws {
 		guard let joined = joinedWelcomeDigest, joined == digest else {
 			throw TwoMLSError.unexpectedWelcome
 		}
 	}
 
-	/// Slice 11, §C.5 (Fable F5): the shared join primitive for all four
+	/// Slice 11 (session-lifecycle.md:32-38): the shared join primitive for all four
 	/// callers (stapled/standalone × `0x01`/`0x0B`) — join Group_B from the
 	/// INNER `0x01` welcome bytes under `mode`. Callers must have already
 	/// established `recvGroup == nil` (a genuinely new join); a re-delivery
@@ -644,20 +655,29 @@ extension TwoMLSSession {
 			try ensureAppBindingCreatorLeafAdvert(creatorLeaf)
 		}
 
-		// Slice 11, §C.2: admit the joined creator into `auth.theirs` when
+		// Slice 11 (protocol-flows.md:407-432): admit the joined creator into `auth.theirs` when
 		// it's new — the born-dedicated adoption. A `.bare`-mode join can
 		// only ever reach this point already equal to `auth.theirs.current`
 		// (a mismatch there throws inside `joinClassicalOnly` instead), so
 		// this only ever fires for an `.approved` join.
 		let creatorID = try basicIdentifier(creatorLeaf.credential)
+		// Defense-in-depth: a host blunder that hands back one of MY OWN
+		// known ids as the joined creator must never be adopted — checked
+		// before the commit below, so it fails closed alongside every other
+		// guard in this function.
+		guard !auth.mine.knownIDs.contains(creatorID) else {
+			throw TwoMLSError.invalidSuccession
+		}
 		var newSender: Data?
 		if creatorID != auth.theirs.current {
 			try auth.theirs.commit(creatorID)
 			newSender = creatorID
 		}
 
-		// Value semantics: every throwing call above ran on locals, so a failed
-		// join leaves `self`'s Group_A exporter leaf unspent (the whole C-3 fix).
+		// Value semantics: every throwing call above ran on locals, EXCEPT
+		// `auth.theirs.commit` just above, which runs on `self` — but
+		// `commit` itself throws BEFORE mutating (`PartySequence.commit`), so
+		// a failed join still leaves `self`'s Group_A exporter leaf unspent.
 		sendGroup = groupA
 		sendCrossPSKLedger = ledger
 		sendAttachmentLedger = attachmentLedger
