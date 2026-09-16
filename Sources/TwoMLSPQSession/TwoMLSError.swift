@@ -313,4 +313,15 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// old-capability key package cannot be added to (or trusted as creator
 	/// of) a binding-carrying group.
 	case appBindingLeafUnadvertised
+
+	// MARK: Attachment CEK export (value-engine parity)
+
+	/// `exportAttachmentCEKSend`/`exportAttachmentCEKRecv` found no `0xFF03`
+	/// attachment component ledgered at the epoch asked for. Recv-side: an
+	/// epoch outside `attachmentLedgerWindow`'s retention, or one that was
+	/// simply never captured. Send-side reaching this at all would mean a
+	/// gap in the send-capture sites — every send-classical commit and
+	/// group-creation site ledgers the current epoch before this could ever
+	/// be asked for it.
+	case attachmentComponentUnavailable
 }

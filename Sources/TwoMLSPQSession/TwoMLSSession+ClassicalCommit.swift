@@ -397,6 +397,10 @@ extension TwoMLSSession {
 			// this exact epoch may still be in flight.
 			var ledger = sendCrossPSKLedger
 			try rememberSendCrossPSK(classical: &send.classical, ledger: &ledger)
+			// Same reasoning, `0xFF03` attachment component (+Attachment.swift).
+			var attachmentLedger = sendAttachmentLedger
+			try rememberSendAttachmentComponent(
+				classical: &send.classical, ledger: &attachmentLedger)
 
 			// F4/§3c: the own-leaf catch-up threads the rotation ring +
 			// `newIdentity` through this SAME commit machinery — the ring's
@@ -454,9 +458,12 @@ extension TwoMLSSession {
 			// commit referencing it still resolves even if this session
 			// commits again before that peer commit arrives.
 			try rememberSendCrossPSK(classical: &send.classical, ledger: &ledger)
+			try rememberSendAttachmentComponent(
+				classical: &send.classical, ledger: &attachmentLedger)
 
 			sendGroup = send
 			sendCrossPSKLedger = ledger
+			sendAttachmentLedger = attachmentLedger
 			auth = authCopy
 			// Classical epoch just advanced (a bare fold, or a fold+bind
 			// discharge sharing this same commit) — capture its rendezvous
@@ -532,6 +539,10 @@ extension TwoMLSSession {
 			var ledger = sendCrossPSKLedger
 			var store = MLS.Combiner.PSKStore()
 			try rememberSendCrossPSK(classical: &send.classical, ledger: &ledger)
+			// Same reasoning, `0xFF03` attachment component (+Attachment.swift).
+			var attachmentLedger = sendAttachmentLedger
+			try rememberSendAttachmentComponent(
+				classical: &send.classical, ledger: &attachmentLedger)
 			for exported in ledger.values { store.register(exported) }
 
 			// Exact-id allow-list: only the currently-ledgered cross-party
@@ -561,6 +572,14 @@ extension TwoMLSSession {
 			let advanced = try pending.apply(onto: recv.classical)
 			recv.classical = advanced.group
 			try TwoPartyRules.ensureTwoParty(recv.classical)
+			// CAPTURE-ON-ENTRY (+Attachment.swift): ledger the recv group's
+			// NEWLY-CURRENT epoch's `0xFF03` component right after it lands —
+			// `exportAttachmentCEKRecv` is a pure read with no live-export
+			// fallback, so this epoch must already be ledgered before a
+			// caller can ever ask for it.
+			var recvAttachmentLedgerLocal = recvAttachmentLedger
+			try rememberRecvAttachmentComponent(
+				classical: &recv.classical, ledger: &recvAttachmentLedgerLocal)
 
 			// Value semantics extend to `auth` (§11's discipline, slice 6):
 			// `canonicalize` is pure and can throw (a rollback `commit`
@@ -573,6 +592,8 @@ extension TwoMLSSession {
 			recvGroup = recv
 			sendGroup = send
 			sendCrossPSKLedger = ledger
+			sendAttachmentLedger = attachmentLedger
+			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
 			auth = authCopy
 			return StapleApplyResult(
@@ -779,6 +800,10 @@ extension TwoMLSSession {
 			var store = MLS.Combiner.PSKStore()
 			store.register(apqPSK)
 			try rememberSendCrossPSK(classical: &send.classical, ledger: &ledger)
+			// Same reasoning, `0xFF03` attachment component (+Attachment.swift).
+			var attachmentLedger = sendAttachmentLedger
+			try rememberSendAttachmentComponent(
+				classical: &send.classical, ledger: &attachmentLedger)
 			for exported in ledger.values { store.register(exported) }
 
 			// Exact-id allow-list, classical half: the current PQ epoch's
@@ -813,6 +838,12 @@ extension TwoMLSSession {
 			let myLeaf = recv.classical.myLeafIndex
 			let tTransition = try tPending.apply(onto: recv.classical)
 			recv.classical = tTransition.group
+			// CAPTURE-ON-ENTRY (+Attachment.swift): ledger the recv group's
+			// NEWLY-CURRENT epoch's `0xFF03` component right after it lands —
+			// same reasoning as `applyFoldCommit`'s own capture.
+			var recvAttachmentLedgerLocal = recvAttachmentLedger
+			try rememberRecvAttachmentComponent(
+				classical: &recv.classical, ledger: &recvAttachmentLedgerLocal)
 
 			// Bundles the §6.1 attestation check (both halves attest the
 			// same, actual post-commit epoch pair) AND §6.2 (the classical
@@ -837,6 +868,8 @@ extension TwoMLSSession {
 			recvGroup = recv
 			sendGroup = send
 			sendCrossPSKLedger = ledger
+			sendAttachmentLedger = attachmentLedger
+			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
 			pqTurnMine = true
 			pqInflight = nil

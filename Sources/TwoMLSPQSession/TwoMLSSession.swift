@@ -348,6 +348,40 @@ public struct TwoMLSSession: Sendable {
 	/// in flight, matching the Rust reference's own `SEND_PSK_WINDOW`.
 	static let sendCrossPSKLedgerWindow = 8
 
+	// MARK: Attachment CEK export (value-engine parity)
+
+	/// The session-layer `0xFF03` attachment component id — distinct from
+	/// the combiner's own `apq_psk` (`0xFF01`) and the cross-party PSK
+	/// (`0xFF02`, `crossPartyComponentID` above); the deployed engine's own
+	/// attachment component. `exportAttachmentCEKSend`/
+	/// `exportAttachmentCEKRecv` (+Attachment.swift) derive each
+	/// attachment's CEK from it via `ExpandWithLabel`; the id itself never
+	/// rides the wire.
+	static let attachmentComponentID = MLS.Extensions.ComponentID(rawValue: 0xFF03)
+
+	/// The bounded send-side `0xFF03` attachment-component ledger over
+	/// `sendGroup.classical`, keyed by epoch — mirrors `sendCrossPSKLedger`'s
+	/// own shape and rationale (+Attachment.swift's
+	/// `rememberSendAttachmentComponent`): `safeExportSecret` consumes a
+	/// `(group, epoch, component)` leaf on export and the exporter tree
+	/// retains only the current epoch's frontier, so every send-classical
+	/// commit/creation site remembers it eagerly, keeping
+	/// `exportAttachmentCEKSend` a pure read. Bounded to
+	/// `attachmentLedgerWindow` entries, oldest evicted first.
+	var sendAttachmentLedger: [UInt64: SecretBytes] = [:]
+	/// The receive-side analogue of `sendAttachmentLedger`, keyed by
+	/// `recvGroup.classical` epoch — CAPTURE-ON-ENTRY
+	/// (+Attachment.swift's `rememberRecvAttachmentComponent`): every
+	/// recv-group creation/advance site ledgers the newly-current epoch's
+	/// component immediately, since `exportAttachmentCEKRecv` is a pure read
+	/// with no live-export fallback for the epoch a caller actually asks
+	/// for.
+	var recvAttachmentLedger: [UInt64: SecretBytes] = [:]
+	/// `sendAttachmentLedger`/`recvAttachmentLedger`'s shared retention
+	/// depth — mirrors `sendCrossPSKLedgerWindow`'s own generous-over-
+	/// in-flight-commits reasoning.
+	static let attachmentLedgerWindow = 8
+
 	// MARK: Routing (rendezvous, slice 9 PR1)
 
 	/// Every retained classical epoch's rendezvous address for THIS

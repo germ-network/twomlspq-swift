@@ -638,6 +638,16 @@ struct SessionArchive: Codable, Sendable {
 	/// pre-Group_B-join initiator (the only state `pendingOutbound()`
 	/// applies to).
 	var initialTheirKP: CombinerKeyPackageArchive?
+	/// `sendAttachmentLedger`/`recvAttachmentLedger` (+Attachment.swift),
+	/// added for attachment CEK export — same optional-with-empty-default
+	/// shape as `listenRendezvous`/`recvHeaderKeys`: absent on a
+	/// pre-existing archive, in which case `restore` re-captures the
+	/// current epoch's `0xFF03` component at once (restore is itself a
+	/// capture site, same as those windows). Reuses the `@SecretField`
+	/// wrapper (`IdentityArchive`'s own pattern) since the raw component —
+	/// unlike a ledgered `ExportedPsk` — carries no other archived metadata.
+	var sendAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
+	var recvAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case version = 0
@@ -677,6 +687,8 @@ struct SessionArchive: Codable, Sendable {
 		case recvHeaderKeys = 34
 		case recvHeaderKeysPQ = 35
 		case initialTheirKP = 36
+		case sendAttachmentLedger = 37
+		case recvAttachmentLedger = 38
 	}
 }
 
@@ -763,7 +775,11 @@ extension TwoMLSSession {
 			listenRendezvous: ArchiveIntegerKeyedMap(listenRendezvous),
 			recvHeaderKeys: ArchiveIntegerKeyedMap(recvHeaderKeys),
 			recvHeaderKeysPQ: ArchiveIntegerKeyedMap(recvHeaderKeysPQ),
-			initialTheirKP: try initialTheirKP.map(CombinerKeyPackageArchive.init))
+			initialTheirKP: try initialTheirKP.map(CombinerKeyPackageArchive.init),
+			sendAttachmentLedger: ArchiveIntegerKeyedMap(
+				sendAttachmentLedger.mapValues { SecretField(wrappedValue: $0) }),
+			recvAttachmentLedger: ArchiveIntegerKeyedMap(
+				recvAttachmentLedger.mapValues { SecretField(wrappedValue: $0) }))
 		return try SecretArchive(encoding: body)
 	}
 }
