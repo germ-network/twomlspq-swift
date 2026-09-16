@@ -68,6 +68,47 @@ enum SessionTestSupport {
 	/// to Alice, so both sides are `isEstablished` — matching the reference's
 	/// "initiator established only once it has received the acceptor's first
 	/// frame" ordering.
+	/// Slice 11: `established()`'s born-dedicated analogue — Bob receives
+	/// under a fresh `newClientID`, so his session founds Group_B under a
+	/// dedicated principal D distinct from the invitation identity, and owes
+	/// the contract-26 handoff envelope. `invitationClientID` is Bob's
+	/// invitation identity's own clientID (== `bobName`, `TwoMLSIdentity.
+	/// generate`'s `clientID` param passed straight through by
+	/// `Principal.generateInvitation`) — the id `bob.recvLeafPrincipal`
+	/// should carry until the recv-leaf catch-up.
+	static func establishedDedicated(
+		alice aliceName: String = "alice", bob bobName: String = "bob",
+		dedicatedClientID: Data = Data("bob-dedicated".utf8)
+	) throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
+		invitationClientID: Data, dedicatedClientID: Data
+	) {
+		let alicePrincipal = try Principal.generate(
+			clientID: Data(aliceName.utf8), classicalProvider: classicalProvider,
+			pqProvider: pqProvider)
+		let bobPrincipal = try Principal.generate(
+			clientID: Data(bobName.utf8), classicalProvider: classicalProvider,
+			pqProvider: pqProvider)
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		guard let theirCombinerKP = invitation.combinerKeyPackage else {
+			throw TwoMLSError.invitationSpent
+		}
+
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirCombinerKP)
+		let spawnToken = classicalProvider.randomBytes(16)
+		let received = try invitation.receive(
+			welcome: initiated.welcome,
+			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			spawnToken: spawnToken, newClientID: dedicatedClientID)
+
+		return (
+			alice: initiated.session, bob: received.session,
+			aliceIdentity: initiated.session.identity,
+			invitationClientID: Data(bobName.utf8), dedicatedClientID: dedicatedClientID)
+	}
+
 	static func establishedAndExchanged(
 		alice aliceName: String = "alice", bob bobName: String = "bob"
 	) throws -> (alice: TwoMLSSession, bob: TwoMLSSession) {
