@@ -106,7 +106,8 @@ enum SessionTestSupport {
 		return (
 			alice: initiated.session, bob: received.session,
 			aliceIdentity: initiated.session.identity,
-			invitationClientID: Data(bobName.utf8), dedicatedClientID: dedicatedClientID)
+			invitationClientID: Data(bobName.utf8), dedicatedClientID: dedicatedClientID
+		)
 	}
 
 	static func establishedAndExchanged(
@@ -136,7 +137,8 @@ extension TwoMLSSession {
 			return result
 		case .joined, .pendingEstablishment, .ignored:
 			XCTFail(
-				"expected .decrypted, got a non-decrypted IncomingResult", file: file,
+				"expected .decrypted, got a non-decrypted IncomingResult",
+				file: file,
 				line: line)
 			throw TwoMLSError.notEstablished
 		}
