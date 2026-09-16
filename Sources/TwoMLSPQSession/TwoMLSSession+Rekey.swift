@@ -35,6 +35,8 @@ extension TwoMLSSession {
 	/// — and park it as a `0x1B` side-band frame. Idempotent while a begin
 	/// is already outstanding, like `pqBootstrapBegin`.
 	public mutating func pqRekeyBegin() throws -> SideBandResult {
+		// Slice 11 (Fable MAJ-6): the non-emittable gate.
+		try ensureEstablishmentDelegated()
 		if case .rekeyInitiated = pqInflight, let pending = pendingSideBand {
 			let sealed = try sealSideBand(pending)
 			advanceStateSeq()
@@ -51,7 +53,7 @@ extension TwoMLSSession {
 		}
 
 		let (message, _) = try recvPQ.proposeUpdate(
-			pqProvider, signingKey: identity.signingKey, framing: .publicMessage)
+			pqProvider, signingKey: try recvPQSigningKey(), framing: .publicMessage)
 		recv.pq = recvPQ
 		recvGroup = recv
 
@@ -159,7 +161,7 @@ extension TwoMLSSession {
 
 			let transition = try sendPQ.committing(
 				pqProvider, proposals: proposals, proposalStore: proposalStore,
-				signingKey: identity.signingKey,
+				signingKey: try sendPQSigningKey(),
 				randomness: try .generate(pqProvider),
 				includePath: true, framing: .publicMessage, psk: pskStore.resolver()
 			)

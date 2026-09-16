@@ -146,6 +146,39 @@ extension TwoMLSSession {
 		}
 	}
 
+	// MARK: - Standalone welcome / handoff delivery (slice 11, §C.5)
+
+	/// The read-only PLAINTEXT `currentStaple` iff it is still the bare
+	/// `0x01` birth welcome, else `nil` — NO gate, NO seal. This is the
+	/// sign-over input a host's contract-26 handoff-blob minting binds
+	/// `sha256` over, so a RESTORED owed-but-not-installed Bob (who has no
+	/// `EstablishResult.welcome` any more) can still mint the envelope at
+	/// all.
+	public func initialWelcome() -> Data? {
+		currentStaple.first == Frames.apqWelcomeTag ? currentStaple : nil
+	}
+
+	/// The gated, SEALED standalone deliverable (slice 11, §C.5): a
+	/// message-path frame every acceptor message-path frame must be sealed
+	/// under `HeaderKey(recvGroup)` like (header-encryption.md:286-88,
+	/// 327-35), re-sealed under a fresh nonce on every call (mirrors the
+	/// initiator's own `pendingOutbound()` re-send unlinkability) — never
+	/// `advanceStateSeq` (a PURE read, not a take+persist sink). `nil` once
+	/// `currentStaple` has moved past the establishment staples (a fold/bind
+	/// has landed). Throws `.establishmentEnvelopeRequired` while the
+	/// contract-26 handoff is still owed — a bare, unauthenticated `0x01`
+	/// standalone welcome is exactly the emission door the gate exists to
+	/// close.
+	public func standaloneWelcome() throws -> Data? {
+		try ensureEstablishmentDelegated()
+		switch currentStaple.first {
+		case Frames.apqWelcomeTag, Frames.establishmentHandoffTag:
+			return try seal(currentStaple)
+		default:
+			return nil
+		}
+	}
+
 	// MARK: - Receive
 
 	/// Trial-decrypt `blob` against both receive windows —
@@ -229,7 +262,7 @@ extension TwoMLSSession {
 		guard let frame = tryOpen(blob) else { return nil }
 		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
 		switch tag {
-		case Frames.apqWelcomeTag, Frames.messageFrameTag:
+		case Frames.apqWelcomeTag, Frames.messageFrameTag, Frames.establishmentHandoffTag:
 			return OpenedFrame(kind: .message, frame: frame)
 		case Frames.pqBootstrapKPTag:
 			return OpenedFrame(kind: .pqSideBand(.bootstrapKP), frame: frame)
