@@ -21,6 +21,11 @@ public struct EstablishResult: Sendable {
 	/// The baseline `StateUpdate` (always `.checkpoint`) — there is no
 	/// sink/`installSink`; this return IS the first thing the app saves.
 	public let baseline: StateUpdate
+	/// The session's own classical KeyPackage — the establishment product an
+	/// initiator/replier puts into the welcome's keyMaterial (the Rust
+	/// `PQClient.reply`'s `myKeyPackage` 4th value; the invitation path's
+	/// `InitialFrame.returnKeyPackage` is the same idea).
+	public let returnKeyPackage: MLS.RFC9420.KeyPackage
 }
 
 /// The result of `prepareToEncrypt`: first runs a committing round — folding
