@@ -1,5 +1,11 @@
 # @germ-network/twomlspq-swift
 
+## 0.1.2
+
+### Patch Changes
+
+- [#47](https://github.com/germ-network/twomlspq-swift/pull/47) [`0b0a619`](https://github.com/germ-network/twomlspq-swift/commit/0b0a6190ba80fb5fd093c0cfa223d235a264c456) Thanks [@germ-mark](https://github.com/germ-mark)! - Add `EstablishResult.returnKeyPackage`, carrying the established session's own classical KeyPackage so an initiator/replier can put it into the welcome's keyMaterial (the value the Rust `PQClient.reply` returns as `myKeyPackage`).
+
 ## 0.1.1
 
 ### Patch Changes
