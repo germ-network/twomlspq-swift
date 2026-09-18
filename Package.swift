@@ -15,15 +15,17 @@ let package = Package(
 		.library(name: "TwoMLSPQSession", targets: ["TwoMLSPQSession"]),
 	],
 	dependencies: [
-		// Pinned to swift-mls's first tagged release. `MLSCrypto` is the
-		// CipherSuiteProvider seam this package's ML-KEM-768 provider conforms to;
-		// `AppBinding` (0xF0A2) rides into Group_A's classical half via
-		// `CombinerGroup.establish(classicalExtraExtensions:)`. Exact pin: both
-		// packages are pre-1.0 and released together, with no compatibility
-		// contract established yet.
+		// From swift-mls 0.1.2 (the `@_optimize(none)` fix for the Swift
+		// 6.4.0 Android-SDK `-c release` compiler crash in
+		// `MLSCombiner.createAndAdd`). `MLSCrypto` is the CipherSuiteProvider
+		// seam this package's ML-KEM-768 provider conforms to; `AppBinding`
+		// (0xF0A2) rides into Group_A's classical half via
+		// `CombinerGroup.establish(classicalExtraExtensions:)`. Both packages
+		// are pre-1.0 and released together; a range lets consumers pull the
+		// fix without waiting on another release here.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			exact: "0.1.1"
+			from: "0.1.2"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		.package(
