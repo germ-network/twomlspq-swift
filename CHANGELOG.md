@@ -1,5 +1,11 @@
 # @germ-network/twomlspq-swift
 
+## 0.1.4
+
+### Patch Changes
+
+- [#52](https://github.com/germ-network/twomlspq-swift/pull/52) [`a72435f`](https://github.com/germ-network/twomlspq-swift/commit/a72435f7a044dcd407e99f91a481e18c93b5d28f) Thanks [@germ-mark](https://github.com/germ-mark)! - Widen the GermConvenience requirement from `.upToNextMinor(from: "0.8.0")` to `from: "0.8.0"`. Consumers pin this package exactly, so the minor ceiling capped their whole graph below GermConvenience 0.9.0 — that is what made 0.9.0 unreachable for CoreAppLogic (GER-2495). This package imports only the base `GermConvenience` product, which 0.9.0 leaves untouched (its change is in `GermConvenienceHTTP`).
+
 ## 0.1.3
 
 ### Patch Changes
