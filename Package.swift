@@ -33,10 +33,12 @@ let package = Package(
 		// The shared `tryUnwrap` (safe unwrap) and other Germ conveniences. 0.8.0
 		// splits the HTTP helpers into GermConvenienceHTTP, so the base product
 		// this package imports no longer links swift-http-types.
-		.package(
-			url: "https://github.com/germ-network/GermConvenience.git",
-			.upToNextMinor(from: "0.8.0")
-		),
+		//
+		// A range rather than `.upToNextMinor`: consumers pin this package
+		// exactly, so a minor ceiling here caps the whole graph's GermConvenience
+		// (0.9.0 was unreachable for CoreAppLogic because of it — GER-2495). This
+		// package imports only the base product, which 0.9.0 leaves untouched.
+		.package(url: "https://github.com/germ-network/GermConvenience.git", from: "0.8.0"),
 		// Already resolved transitively via swift-mls (pinned `from: "4.0.0"`,
 		// matching swift-mls's own rule); wiring it directly here brings the
 		// `Crypto` product into these targets for the off-Apple ML-KEM path.
