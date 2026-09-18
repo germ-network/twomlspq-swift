@@ -142,7 +142,9 @@ extension TwoMLSSession {
 		// `StateUpdate` (there is no separate sink/`installSink` call).
 		session.markStapleInstalled()
 		let baseline = try session.stateUpdate(kind: .checkpoint)
-		return EstablishResult(session: session, welcome: apqWelcomeA, baseline: baseline)
+		return EstablishResult(
+			session: session, welcome: apqWelcomeA, baseline: baseline,
+			returnKeyPackage: session.identity.keyPackage.classical)
 	}
 
 	/// KP′'s MLSMessage-wrapped wire bytes (§11 #7), derived on demand from
@@ -383,7 +385,9 @@ extension TwoMLSSession {
 		// `StateUpdate` (there is no separate sink/`installSink` call).
 		session.markStapleInstalled()
 		let baseline = try session.stateUpdate(kind: .checkpoint)
-		return EstablishResult(session: session, welcome: apqWelcomeB, baseline: baseline)
+		return EstablishResult(
+			session: session, welcome: apqWelcomeB, baseline: baseline,
+			returnKeyPackage: session.identity.keyPackage.classical)
 	}
 
 	// MARK: - Contract-26 non-emittable gate + install
