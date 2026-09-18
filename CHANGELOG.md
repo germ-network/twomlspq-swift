@@ -1,5 +1,11 @@
 # @germ-network/twomlspq-swift
 
+## 0.1.5
+
+### Patch Changes
+
+- [#54](https://github.com/germ-network/twomlspq-swift/pull/54) [`a96b817`](https://github.com/germ-network/twomlspq-swift/commit/a96b817c46fb55ba4e837d05af5c9ea560dc914b) Thanks [@germ-mark](https://github.com/germ-mark)! - Bump the swift-mls exact pin from 0.1.1 to 0.1.2. 0.1.2 fixes an Android release-build compiler crash (`@_optimize(none)` on `MLSCombiner.createAndAdd`); this package's exact-pin discipline means consumers can't take that fix until this bump ships.
+
 ## 0.1.4
 
 ### Patch Changes
