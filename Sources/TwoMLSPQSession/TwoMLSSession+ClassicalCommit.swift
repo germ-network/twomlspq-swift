@@ -431,62 +431,62 @@ extension TwoMLSSession {
 				randomness: try .generate(classicalProvider), includePath: true,
 				framing: .publicMessage, psk: store.resolver(),
 				newIdentity: newIdentity)
-			let adopted = transition.group
-			let sent = transition.takeOutput()
-			let commitBytes = try sent.message.mlsEncoded()
-			let pending = sent.takePending()
-			let effects = pending.effects
+			return try withTransitionHandoff(transition) { adopted, sent in
+				let commitBytes = try sent.message.mlsEncoded()
+				let pending = sent.takePending()
+				let effects = pending.effects
 
-			if willDischargeBind {
-				try TwoPartyRules.validateBindClassicalEffects(
-					effects, foldedPeerUpdate: folded != nil)
-			} else {
-				try TwoPartyRules.validateTwoPartyUpdateCommit(
-					effects, foldedPeerUpdate: folded != nil,
-					allowAppDataUpdate: false,
-					orThrow: .invalidFoldEffects)
+				if willDischargeBind {
+					try TwoPartyRules.validateBindClassicalEffects(
+						effects, foldedPeerUpdate: folded != nil)
+				} else {
+					try TwoPartyRules.validateTwoPartyUpdateCommit(
+						effects, foldedPeerUpdate: folded != nil,
+						allowAppDataUpdate: false,
+						orThrow: .invalidFoldEffects)
+				}
+
+				let advanced = try pending.apply(onto: adopted)
+				send.classical = advanced.group
+				// Should-fix (slice 6 review): symmetry with every apply arm's
+				// own `ensureTwoParty(recv.classical)` — cheap and catches a
+				// construction bug on the send side just as fast.
+				try TwoPartyRules.ensureTwoParty(send.classical)
+
+				// MF4: also remember the newly-landed epoch, so a crossed peer
+				// commit referencing it still resolves even if this session
+				// commits again before that peer commit arrives.
+				try rememberSendCrossPSK(classical: &send.classical, ledger: &ledger)
+				try rememberSendAttachmentComponent(
+					classical: &send.classical, ledger: &attachmentLedger)
+
+				sendGroup = send
+				sendCrossPSKLedger = ledger
+				sendAttachmentLedger = attachmentLedger
+				auth = authCopy
+				// Classical epoch just advanced (a bare fold, or a fold+bind
+				// discharge sharing this same commit) — capture its rendezvous
+				// address before this round's caller (`prepareToEncrypt`) mints
+				// its own `StateUpdate`.
+				try recordListenRendezvous()
+
+				if let pqCommitMessageForStaple {
+					currentStaple = Frames.encodeAPQPrivateMessage(
+						t: commitBytes, pq: pqCommitMessageForStaple)
+					owedBind = nil
+					pqTurnMine = false
+				} else {
+					currentStaple = Frames.encodeMlsMessageStaple(commitBytes)
+				}
+				// Either way this round is now fully spent: the fold it carried
+				// (if any) is consumed, and any still-unapproved offer is bound
+				// to the epoch this commit just left behind (§11 MF8's "the peer
+				// re-proposes at the new epoch once it sees this commit's
+				// staple").
+				queuedProposal = nil
+				offeredProposal = nil
+				return (true, committedRemoteClientID)
 			}
-
-			let advanced = try pending.apply(onto: adopted)
-			send.classical = advanced.group
-			// Should-fix (slice 6 review): symmetry with every apply arm's
-			// own `ensureTwoParty(recv.classical)` — cheap and catches a
-			// construction bug on the send side just as fast.
-			try TwoPartyRules.ensureTwoParty(send.classical)
-
-			// MF4: also remember the newly-landed epoch, so a crossed peer
-			// commit referencing it still resolves even if this session
-			// commits again before that peer commit arrives.
-			try rememberSendCrossPSK(classical: &send.classical, ledger: &ledger)
-			try rememberSendAttachmentComponent(
-				classical: &send.classical, ledger: &attachmentLedger)
-
-			sendGroup = send
-			sendCrossPSKLedger = ledger
-			sendAttachmentLedger = attachmentLedger
-			auth = authCopy
-			// Classical epoch just advanced (a bare fold, or a fold+bind
-			// discharge sharing this same commit) — capture its rendezvous
-			// address before this round's caller (`prepareToEncrypt`) mints
-			// its own `StateUpdate`.
-			try recordListenRendezvous()
-
-			if let pqCommitMessageForStaple {
-				currentStaple = Frames.encodeAPQPrivateMessage(
-					t: commitBytes, pq: pqCommitMessageForStaple)
-				owedBind = nil
-				pqTurnMine = false
-			} else {
-				currentStaple = Frames.encodeMlsMessageStaple(commitBytes)
-			}
-			// Either way this round is now fully spent: the fold it carried
-			// (if any) is consumed, and any still-unapproved offer is bound
-			// to the epoch this commit just left behind (§11 MF8's "the peer
-			// re-proposes at the new epoch once it sees this commit's
-			// staple").
-			queuedProposal = nil
-			offeredProposal = nil
-			return (true, committedRemoteClientID)
 		}
 	}
 

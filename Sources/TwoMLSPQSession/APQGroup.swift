@@ -164,17 +164,17 @@ extension APQGroup {
 			let transition = try epoch0.committing(
 				provider, proposals: proposals, signingKey: founder.signingKey,
 				randomness: founder.randomness, psk: pskStore.resolver())
-			let adopted = transition.group
-			let sent = transition.takeOutput()
-			guard let welcome = sent.welcome else {
-				throw MLS.Combiner.Error.missingWelcome
-			}
-			let advanced = try sent.takePending().apply(onto: adopted)
+			return try withTransitionHandoff(transition) { adopted, sent in
+				guard let welcome = sent.welcome else {
+					throw MLS.Combiner.Error.missingWelcome
+				}
+				let advanced = try sent.takePending().apply(onto: adopted)
 
-			let group = APQGroup(
-				classical: advanced.group, pq: nil, pskStore: pskStore,
-				codepoints: codepoints)
-			return (group, welcome)
+				let group = APQGroup(
+					classical: advanced.group, pq: nil, pskStore: pskStore,
+					codepoints: codepoints)
+				return (group, welcome)
+			}
 		}
 	}
 
@@ -371,14 +371,14 @@ extension APQGroup {
 			let transition = try epoch0.committing(
 				pqProvider, proposals: proposals, signingKey: signingKey,
 				randomness: randomness, includePath: true, psk: { _ in nil })
-			let adopted = transition.group
-			let sent = transition.takeOutput()
-			guard let welcome = sent.welcome else {
-				throw MLS.Combiner.Error.missingWelcome
-			}
-			let advanced = try sent.takePending().apply(onto: adopted)
+			return try withTransitionHandoff(transition) { adopted, sent in
+				guard let welcome = sent.welcome else {
+					throw MLS.Combiner.Error.missingWelcome
+				}
+				let advanced = try sent.takePending().apply(onto: adopted)
 
-			return (advanced.group, welcome)
+				return (advanced.group, welcome)
+			}
 		}
 	}
 

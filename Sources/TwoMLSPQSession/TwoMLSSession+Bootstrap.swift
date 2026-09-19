@@ -233,22 +233,22 @@ extension TwoMLSSession {
 					}
 					return s
 				})
-			let adopted = transition.group
-			let sent = transition.takeOutput()
-			let commitBytes = try sent.message.mlsEncoded()
-			let advanced = try sent.takePending().apply(onto: adopted)
-			send.pq = advanced.group
-			sendGroup = send
-			// The single funnel for every discharge-triggering commit on
-			// `sendGroup.pq` (`pqBootstrapJoin`/`pqRatchetBind`/
-			// `pqRekeyApply` all call this) — capture its just-advanced
-			// epoch's header key here, once, rather than at each call site
-			// (PR2).
-			try recordPQHeaderKey()
+			try withTransitionHandoff(transition) { adopted, sent in
+				let commitBytes = try sent.message.mlsEncoded()
+				let advanced = try sent.takePending().apply(onto: adopted)
+				send.pq = advanced.group
+				sendGroup = send
+				// The single funnel for every discharge-triggering commit on
+				// `sendGroup.pq` (`pqBootstrapJoin`/`pqRatchetBind`/
+				// `pqRekeyApply` all call this) — capture its just-advanced
+				// epoch's header key here, once, rather than at each call site
+				// (PR2).
+				try recordPQHeaderKey()
 
-			owedBind = OwedBind(
-				pqCommitMessage: commitBytes, tEpoch: attestation.tEpoch,
-				pqEpoch: attestation.pqEpoch)
+				owedBind = OwedBind(
+					pqCommitMessage: commitBytes, tEpoch: attestation.tEpoch,
+					pqEpoch: attestation.pqEpoch)
+			}
 		}
 	}
 }
