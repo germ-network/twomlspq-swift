@@ -456,7 +456,8 @@ extension TwoMLSSession {
 				// MF4: also remember the newly-landed epoch, so a crossed peer
 				// commit referencing it still resolves even if this session
 				// commits again before that peer commit arrives.
-				try rememberSendCrossPSK(classical: &send.classical, ledger: &ledger)
+				try rememberSendCrossPSK(
+					classical: &send.classical, ledger: &ledger)
 				try rememberSendAttachmentComponent(
 					classical: &send.classical, ledger: &attachmentLedger)
 
