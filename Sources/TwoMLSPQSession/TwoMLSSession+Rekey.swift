@@ -165,34 +165,34 @@ extension TwoMLSSession {
 				randomness: try .generate(pqProvider),
 				includePath: true, framing: .publicMessage, psk: pskStore.resolver()
 			)
-			let adopted = transition.group
-			let sent = transition.takeOutput()
-			let commitBytes = try sent.message.mlsEncoded()
-			let pending = sent.takePending()
-			try TwoPartyRules.validateRekeyCommitEffects(pending.effects)
-			let advanced = try pending.apply(onto: adopted)
-			sendPQ = advanced.group
-			try TwoPartyRules.ensureTwoParty(sendPQ)
+			return try withTransitionHandoff(transition) { adopted, sent in
+				let commitBytes = try sent.message.mlsEncoded()
+				let pending = sent.takePending()
+				try TwoPartyRules.validateRekeyCommitEffects(pending.effects)
+				let advanced = try pending.apply(onto: adopted)
+				sendPQ = advanced.group
+				try TwoPartyRules.ensureTwoParty(sendPQ)
 
-			send.pq = sendPQ
-			sendGroup = send
-			// The committer's own advance of `sendGroup.pq` (PR2) — a second,
-			// independent commit from the initiator's later `owePQBind` one.
-			try recordPQHeaderKey()
-			if let crossInjectedEpoch {
-				recvGroup = recv
-				lastCrossInjectedPQ = crossInjectedEpoch
+				send.pq = sendPQ
+				sendGroup = send
+				// The committer's own advance of `sendGroup.pq` (PR2) — a second,
+				// independent commit from the initiator's later `owePQBind` one.
+				try recordPQHeaderKey()
+				if let crossInjectedEpoch {
+					recvGroup = recv
+					lastCrossInjectedPQ = crossInjectedEpoch
+				}
+
+				let responseFrame = Frames.encodePQRekeyCommit(commitBytes)
+				pqInflight = .rekeyResponded
+				pendingSideBand = responseFrame
+				let sealed = try sealSideBand(responseFrame)
+
+				// Return cadence (slice 8a): committed `sendGroup.pq` → `.checkpoint`.
+				advanceStateSeq()
+				return SideBandResult(
+					frame: sealed, update: try stateUpdate(kind: .checkpoint))
 			}
-
-			let responseFrame = Frames.encodePQRekeyCommit(commitBytes)
-			pqInflight = .rekeyResponded
-			pendingSideBand = responseFrame
-			let sealed = try sealSideBand(responseFrame)
-
-			// Return cadence (slice 8a): committed `sendGroup.pq` → `.checkpoint`.
-			advanceStateSeq()
-			return SideBandResult(
-				frame: sealed, update: try stateUpdate(kind: .checkpoint))
 		}
 	}
 
