@@ -1,5 +1,11 @@
 # @germ-network/twomlspq-swift
 
+## 0.1.7
+
+### Patch Changes
+
+- [#58](https://github.com/germ-network/twomlspq-swift/pull/58) [`3402d17`](https://github.com/germ-network/twomlspq-swift/commit/3402d17f3c431da23ae50702da7c5768e4f1c217) Thanks [@germ-mark](https://github.com/germ-mark)! - Funnel every Transition read-group-then-takeOutput() handoff through one @\_optimize(none) @inline(never) helper, dodging the Swift 6.4.0 Android release-mode SIL verifier crash at every call site.
+
 ## 0.1.6
 
 ### Patch Changes
