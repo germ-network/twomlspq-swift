@@ -106,6 +106,16 @@ extension APQGroup {
 	/// empty expectation at its own choke point, mirroring Rust's shared
 	/// `with_app_binding`; non-nil additionally requires both the founder's
 	/// own leaf and the peer's leaf to advertise `0xF0A2`.
+	///
+	/// The read-`group`-then-`takeOutput()` handoff on `Transition` (a
+	/// non-frozen `~Copyable` struct) trips a Swift 6.4.0 optimizer bug under
+	/// `-O` — SIL verification fails with "read-only scope invalidated by a
+	/// local write" once a public caller makes this function a specialization
+	/// target (the same family swift-mls 0.1.2 fixed in `CombinerGroup
+	/// .createAndAdd`; the crash reproduces only cross-compiling for
+	/// Android). This is a one-shot handshake orchestration path, so opt it
+	/// out of optimization.
+	@_optimize(none)
 	static func establishClassicalOnly(
 		founder: MLS.Combiner.HalfCreation,
 		pqGroupID: Data,
