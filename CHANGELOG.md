@@ -1,5 +1,24 @@
 # @germ-network/twomlspq-swift
 
+## 0.2.0
+
+### Minor Changes
+
+- [#60](https://github.com/germ-network/twomlspq-swift/pull/60) [`34c0a3a`](https://github.com/germ-network/twomlspq-swift/commit/34c0a3a42595430fca8707c4b97e49c523144b5a) Thanks [@germ-mark](https://github.com/germ-mark)! - Widen the `swift-crypto` dependency to `from: "5.0.0"` and move
+  `swift-secret-bytes` to its 0.5.0 (swift-crypto 5) release, as part of the
+  org-wide swift-crypto 5 migration.
+
+  **Breaking — platform floor rises to macOS 15 / iOS 18**, matching swift-mls
+  (which now floors there via swift-secret-bytes 0.5.0).
+
+  Two dependencies are revision-pinned pending their own releases: swift-mls
+  (germ-network/swift-mls#103, the swift-crypto 5 move). GermConvenience is its
+  released 0.10.0 (the swift-crypto-5 release).
+
+  No source changes were required, and secret custody is already complete — the
+  session/identity secrets ride `SecretBytes` and the persisted archives ride
+  `SecretArchive`.
+
 ## 0.1.7
 
 ### Patch Changes
