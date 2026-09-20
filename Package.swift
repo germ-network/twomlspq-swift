@@ -6,45 +6,53 @@ let package = Package(
 	// Import/link floor matches swift-mls. The ML-KEM-768 provider additionally
 	// requires OS 26 (CryptoKit ML-KEM) at RUNTIME — that floor sits on the
 	// `@available(iOS 26, macOS 26)` types, not on importing or linking this package.
+	// Import/link floor matches swift-mls, which now floors at macOS 15 /
+	// iOS 18 (it rides swift-secret-bytes 0.5.0, whose own floor is iOS 18 /
+	// macOS 15). The ML-KEM-768 provider additionally requires OS 26
+	// (CryptoKit ML-KEM) at RUNTIME — that floor sits on the
+	// `@available(iOS 26, macOS 26)` types, not on importing or linking this package.
 	platforms: [
-		.macOS(.v14),
-		.iOS(.v17),
+		.macOS(.v15),
+		.iOS(.v18),
 	],
 	products: [
 		.library(name: "TwoMLSPQCrypto", targets: ["TwoMLSPQCrypto"]),
 		.library(name: "TwoMLSPQSession", targets: ["TwoMLSPQSession"]),
 	],
 	dependencies: [
-		// From swift-mls 0.1.2 (the `@_optimize(none)` fix for the Swift
-		// 6.4.0 Android-SDK `-c release` compiler crash in
-		// `MLSCombiner.createAndAdd`). `MLSCrypto` is the CipherSuiteProvider
-		// seam this package's ML-KEM-768 provider conforms to; `AppBinding`
-		// (0xF0A2) rides into Group_A's classical half via
-		// `CombinerGroup.establish(classicalExtraExtensions:)`. Both packages
-		// are pre-1.0 and released together; a range lets consumers pull the
-		// fix without waiting on another release here.
+		// Temporary revision pin to the swift-mls swift-crypto-5 branch tip
+		// (germ-network/swift-mls#103), which carries the swift-crypto 5 move
+		// this package rides; replace with the released version once it cuts.
+		// `MLSCrypto` is the CipherSuiteProvider seam this package's ML-KEM-768
+		// provider conforms to; `AppBinding` (0xF0A2) rides into Group_A's
+		// classical half via `CombinerGroup.establish(classicalExtraExtensions:)`.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			from: "0.1.2"
+			from: "0.1.3"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
+		// 0.5.0 is its swift-crypto-5 release.
 		.package(
 			url: "https://github.com/germ-network/swift-secret-bytes.git",
-			.upToNextMinor(from: "0.4.0")
+			.upToNextMinor(from: "0.5.0")
 		),
 		// The shared `tryUnwrap` (safe unwrap) and other Germ conveniences. 0.8.0
 		// splits the HTTP helpers into GermConvenienceHTTP, so the base product
 		// this package imports no longer links swift-http-types.
 		//
-		// A range rather than `.upToNextMinor`: consumers pin this package
-		// exactly, so a minor ceiling here caps the whole graph's GermConvenience
-		// (0.9.0 was unreachable for CoreAppLogic because of it — GER-2495). This
-		// package imports only the base product, which 0.9.0 leaves untouched.
-		.package(url: "https://github.com/germ-network/GermConvenience.git", from: "0.8.0"),
-		// Already resolved transitively via swift-mls (pinned `from: "4.0.0"`,
-		// matching swift-mls's own rule); wiring it directly here brings the
-		// `Crypto` product into these targets for the off-Apple ML-KEM path.
-		.package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
+		// Temporary revision pin to GermConvenience main, whose released line
+		// (≤0.9.0) still caps swift-crypto at `..<5.0.0`; main has the
+		// org-wide swift-crypto 5 move. Replace with the released version once
+		// the next GermConvenience cuts.
+		.package(
+			url: "https://github.com/germ-network/GermConvenience.git",
+			// 0.10.0 is its swift-crypto-5 release — the revision pin drops.
+			from: "0.10.0"
+		),
+		// Already resolved transitively via swift-mls (now `from: "5.0.0"`);
+		// wiring it directly here brings the `Crypto` product into these targets
+		// for the off-Apple ML-KEM path.
+		.package(url: "https://github.com/apple/swift-crypto.git", from: "5.0.0"),
 	],
 	targets: [
 		.target(
