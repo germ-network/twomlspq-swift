@@ -28,7 +28,7 @@ let package = Package(
 		// classical half via `CombinerGroup.establish(classicalExtraExtensions:)`.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			revision: "9182f8755690c2129b57f8ba5b8ef549c57cb9ab"
+			revision: "c6bd2c1521174b0fa3efdde512fa1baeb4ba3cfc"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		// 0.5.0 is its swift-crypto-5 release.
