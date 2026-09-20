@@ -10,8 +10,8 @@ org-wide swift-crypto 5 migration.
 (which now floors there via swift-secret-bytes 0.5.0).
 
 Two dependencies are revision-pinned pending their own releases: swift-mls
-(germ-network/swift-mls#103, the swift-crypto 5 move) and GermConvenience
-(released line ≤0.9.0 still caps swift-crypto at `..<5.0.0`; main has the move).
+(germ-network/swift-mls#103, the swift-crypto 5 move). GermConvenience is its
+released 0.10.0 (the swift-crypto-5 release).
 
 No source changes were required, and secret custody is already complete — the
 session/identity secrets ride `SecretBytes` and the persisted archives ride

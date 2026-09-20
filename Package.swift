@@ -46,7 +46,8 @@ let package = Package(
 		// the next GermConvenience cuts.
 		.package(
 			url: "https://github.com/germ-network/GermConvenience.git",
-			revision: "f907c9018dd4c2f0110ab5f1f37c7c53fa0ae6ca"
+			// 0.10.0 is its swift-crypto-5 release — the revision pin drops.
+			from: "0.10.0"
 		),
 		// Already resolved transitively via swift-mls (now `from: "5.0.0"`);
 		// wiring it directly here brings the `Crypto` product into these targets

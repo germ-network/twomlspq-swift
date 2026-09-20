@@ -1,12 +1,13 @@
 {
-  "originHash" : "e40453f255972f2adb0f33250af4e476e200db7a859c265a0a38128f8037557b",
+  "originHash" : "06ec8566a7164db8e29cbddc45c68c9e598f9c05f0a0a915e0b38733b249cb3a",
   "pins" : [
     {
       "identity" : "germconvenience",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/germ-network/GermConvenience.git",
       "state" : {
-        "revision" : "f907c9018dd4c2f0110ab5f1f37c7c53fa0ae6ca"
+        "revision" : "305053c5194bfd129a3feda8fe214ec33addee03",
+        "version" : "0.10.0"
       }
     },
     {
