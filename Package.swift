@@ -34,7 +34,7 @@ let package = Package(
 		// 0.5.0 is its swift-crypto-5 release.
 		.package(
 			url: "https://github.com/germ-network/swift-secret-bytes.git",
-			.upToNextMinor(from: "0.5.0")
+			from: "0.5.0"
 		),
 		// The shared `tryUnwrap` (safe unwrap) and other Germ conveniences. 0.8.0
 		// splits the HTTP helpers into GermConvenienceHTTP, so the base product
