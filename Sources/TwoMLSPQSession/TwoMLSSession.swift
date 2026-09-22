@@ -156,6 +156,15 @@ public struct DecryptResult: Sendable {
 	public let update: StateUpdate
 }
 
+/// One directional group pair's `{pqEpoch, classicalEpoch}` — mirrors the
+/// Rust reference's `ApqEpochs` (`lib.rs:517-519`). `pqEpoch` is `0` while
+/// that group's PQ half is deferred (pre-§A.3 Group_B) or the pair is absent
+/// entirely.
+public struct GroupEpochs: Sendable, Hashable {
+	public let pqEpoch: UInt64
+	public let classicalEpoch: UInt64
+}
+
 /// `encrypt`'s result: the sealed frame plus this call's own `StateUpdate`
 /// (`.core` — `encrypt` never touches a PQ tree).
 public struct EncryptResult: Sendable {
@@ -598,6 +607,19 @@ public struct TwoMLSSession: Sendable {
 	/// bootstrap's completion condition.
 	public var isFullyEstablished: Bool { sendGroup?.pq != nil && recvGroup?.pq != nil }
 	public var myPQTurn: Bool { pqTurnMine }
+
+	/// The send group's epoch pair — mirrors the reference's `epochs()`
+	/// (`mod.rs:2095-2105`); zeros while unestablished.
+	public var epochs: GroupEpochs { Self.groupEpochs(of: sendGroup) }
+
+	/// One directional group pair's `{pqEpoch, classicalEpoch}` — `epochs`'s
+	/// underlying computation. Zeros for a `nil` pair (mirrors the
+	/// reference's absent-group `epochs()`).
+	static func groupEpochs(of group: APQGroup?) -> GroupEpochs {
+		GroupEpochs(
+			pqEpoch: group?.pq?.context.epoch ?? 0,
+			classicalEpoch: group?.classical.context.epoch ?? 0)
+	}
 
 	/// My own classical-credential state, DERIVED from the Authentication
 	/// Service's `auth.mine` (never separately cached, so it cannot desync
