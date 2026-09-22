@@ -35,8 +35,8 @@ final class LifecycleE2ETests: XCTestCase {
 
 		/// One queued wire blob: the sender's own classification (what it
 		/// queued this as) plus, for a message frame, the sender's own
-		/// `EncryptResult.epochs.classicalEpoch` — cross-checked against the
-		/// receiver's `DecryptResult.epoch` for the same frame.
+		/// `session.epochs.classicalEpoch` as of that send — cross-checked
+		/// against the receiver's `DecryptResult.epoch` for the same frame.
 		struct Blob {
 			let bytes: Data
 			let expectedKind: TwoMLSSession.OpenedFrameKind
@@ -96,13 +96,15 @@ final class LifecycleE2ETests: XCTestCase {
 			let result = try session.encrypt(app)
 			persist(result.update)
 
-			XCTAssertEqual(result.epochs, session.epochs, file: file, line: line)
+			// `session.epochs` right after `encrypt` against the internal
+			// send-group read it derives from.
+			let sendEpochs = session.epochs
 			if let send = session.sendGroup {
 				XCTAssertEqual(
-					result.epochs.classicalEpoch, send.classical.context.epoch,
+					sendEpochs.classicalEpoch, send.classical.context.epoch,
 					file: file, line: line)
 				XCTAssertEqual(
-					result.epochs.pqEpoch, send.pq?.context.epoch ?? 0,
+					sendEpochs.pqEpoch, send.pq?.context.epoch ?? 0,
 					file: file,
 					line: line)
 			}
@@ -121,7 +123,7 @@ final class LifecycleE2ETests: XCTestCase {
 			outbox.append(
 				Blob(
 					bytes: result.frame, expectedKind: .message,
-					sourceClassicalEpoch: result.epochs.classicalEpoch))
+					sourceClassicalEpoch: sendEpochs.classicalEpoch))
 			if let pending = session.pqPendingOutbound() {
 				// A SEND-side classification: `openIncoming` needs MY OWN
 				// receive windows, which key opening messages addressed TO
@@ -204,7 +206,7 @@ final class LifecycleE2ETests: XCTestCase {
 							line: line)
 					}
 					XCTAssertEqual(
-						session.receiveEpochs?.classicalEpoch, d.epoch,
+						session.recvGroup?.classical.context.epoch, d.epoch,
 						file: file,
 						line: line)
 				case .joined(_, let u):
@@ -281,7 +283,8 @@ final class LifecycleE2ETests: XCTestCase {
 			file: StaticString = #filePath, line: UInt = #line
 		) throws {
 			let epochsBefore = session.epochs
-			let receiveEpochsBefore = session.receiveEpochs
+			let recvClassicalBefore = session.recvGroup?.classical.context.epoch
+			let recvPQBefore = session.recvGroup?.pq?.context.epoch
 			let checkpoint = try XCTUnwrap(latestCheckpoint, file: file, line: line)
 			session = try TwoMLSSession.restore(
 				core: latestCore, checkpoint: checkpoint,
@@ -289,7 +292,12 @@ final class LifecycleE2ETests: XCTestCase {
 				pqProvider: SessionTestSupport.pqProvider)
 			XCTAssertEqual(session.epochs, epochsBefore, file: file, line: line)
 			XCTAssertEqual(
-				session.receiveEpochs, receiveEpochsBefore, file: file, line: line)
+				session.recvGroup?.classical.context.epoch, recvClassicalBefore,
+				file: file,
+				line: line)
+			XCTAssertEqual(
+				session.recvGroup?.pq?.context.epoch, recvPQBefore, file: file,
+				line: line)
 		}
 	}
 
@@ -411,12 +419,14 @@ final class LifecycleE2ETests: XCTestCase {
 		// Group_A is a FULL pair from `initiate` (both halves founded at
 		// birth) — unlike Bob's Group_B, Alice's OWN send-PQ epoch is
 		// already 1 here, well before §A.3 ever starts.
-		XCTAssertEqual(a1.result.epochs.pqEpoch, 1)
+		XCTAssertEqual(alice.session.epochs.pqEpoch, 1)
+		_ = a1
 
 		let b2 = try bob.send(Data("b2".utf8), to: &alice, bootstrapRule: false)
 		XCTAssertEqual(bob.outbox.map(\.expectedKind), [.message])
 		XCTAssertNil(bob.session.pqPendingOutbound())
-		XCTAssertEqual(b2.result.epochs.pqEpoch, 0)
+		XCTAssertEqual(bob.session.epochs.pqEpoch, 0)
+		_ = b2
 		let b2Decrypted = try alice.deliverDecrypted(bob.nextBlob())
 		XCTAssertFalse(alice.session.isFullyEstablished)
 		XCTAssertFalse(bob.session.isFullyEstablished)
@@ -522,7 +532,8 @@ final class LifecycleE2ETests: XCTestCase {
 		// bind above.
 		let groupBPQEpochBeforeStep6 = bob.session.sendGroup?.pq?.context.epoch ?? 0
 		let b4 = try bob.send(Data("b4".utf8), to: &alice)
-		XCTAssertEqual(b4.result.epochs.pqEpoch, groupBPQEpochBeforeStep6)
+		XCTAssertEqual(bob.session.epochs.pqEpoch, groupBPQEpochBeforeStep6)
+		_ = b4
 		XCTAssertEqual(bob.outbox.map(\.expectedKind), [.message, .pqSideBand(.ratchetEK)])
 		try bob.restart()
 		guard case .initiating = bob.session.pqInflight else {
@@ -566,9 +577,6 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTAssertFalse(bob.session.myPQTurn)
 		XCTAssertEqual(
 			alice.session.recvGroup?.pq?.context.epoch, groupBPQEpochBeforeStep6 + 1)
-		XCTAssertEqual(
-			alice.session.receiveEpochs?.pqEpoch,
-			alice.session.recvGroup?.pq?.context.epoch)
 
 		// [7] §A.4 Alice-initiated: ratchets Group_A.pq (alice's own
 		// send-PQ, already at epoch 2 from the A.3 bind).
@@ -594,9 +602,6 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTAssertFalse(alice.session.myPQTurn)
 		XCTAssertEqual(
 			bob.session.recvGroup?.pq?.context.epoch, groupAPQEpochBeforeStep7 + 1)
-		XCTAssertEqual(
-			bob.session.receiveEpochs?.pqEpoch, bob.session.recvGroup?.pq?.context.epoch
-		)
 
 		// [8] §A.5 Bob-initiated, host-called.
 		XCTAssertNil(bob.session.pqInflight)
@@ -647,9 +652,6 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTAssertEqual(
 			bob.session.recvGroup?.pq?.context.epoch, groupAPQEpochBeforeStep8 + 1)
 		XCTAssertEqual(
-			bob.session.receiveEpochs?.pqEpoch, bob.session.recvGroup?.pq?.context.epoch
-		)
-		XCTAssertEqual(
 			bob.session.sendGroup?.pq?.context.epoch,
 			groupBPQEpochBeforeStep8Discharge + 1)
 
@@ -670,9 +672,6 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTAssertEqual(
 			alice.session.recvGroup?.pq?.context.epoch,
 			groupBPQEpochBeforeStep8Discharge + 1)
-		XCTAssertEqual(
-			alice.session.receiveEpochs?.pqEpoch,
-			alice.session.recvGroup?.pq?.context.epoch)
 
 		// [9] Fold ∘ A.4 composition: the turn-holder's idle `encrypt`
 		// self-opens an A.4 round on top of a fold.
@@ -738,9 +737,6 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTAssertFalse(alice.session.myPQTurn)
 		XCTAssertEqual(
 			bob.session.recvGroup?.pq?.context.epoch, groupAPQEpochBeforeStep9 + 1)
-		XCTAssertEqual(
-			bob.session.receiveEpochs?.pqEpoch, bob.session.recvGroup?.pq?.context.epoch
-		)
 		XCTAssertNil(bob.session.pendingSideBand)
 
 		// [10] Rotation ∘ A.4 composition.
@@ -804,9 +800,6 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTAssertFalse(bob.session.myPQTurn)
 		XCTAssertEqual(
 			alice.session.recvGroup?.pq?.context.epoch, groupBPQEpochBeforeStep10 + 1)
-		XCTAssertEqual(
-			alice.session.receiveEpochs?.pqEpoch,
-			alice.session.recvGroup?.pq?.context.epoch)
 
 		// [11] Post-rotation mechanical A.5: a mechanical A.5 still
 		// succeeds after a classical rotation — the PQ leaf presents the
@@ -847,9 +840,6 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTAssertEqual(
 			alice.session.recvGroup?.pq?.context.epoch, groupBPQEpochBeforeStep11 + 1)
 		XCTAssertEqual(
-			alice.session.receiveEpochs?.pqEpoch,
-			alice.session.recvGroup?.pq?.context.epoch)
-		XCTAssertEqual(
 			alice.session.sendGroup?.pq?.context.epoch,
 			groupAPQEpochBeforeStep11Discharge + 1)
 
@@ -862,9 +852,6 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTAssertEqual(
 			bob.session.recvGroup?.pq?.context.epoch,
 			groupAPQEpochBeforeStep11Discharge + 1)
-		XCTAssertEqual(
-			bob.session.receiveEpochs?.pqEpoch, bob.session.recvGroup?.pq?.context.epoch
-		)
 
 		// TRIPWIRE: still true after the round completes — no credential catch-up landed while it ran.
 		let aliceSendPQLeafAfterA5 = try TwoMLSSession.ownLeaf(

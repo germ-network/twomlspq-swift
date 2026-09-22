@@ -247,12 +247,6 @@ extension TwoMLSSession {
 		// A co-stapled side-band frame pads up to this (unsealed) length.
 		lastMessageFrameLen = frame.count
 
-		// The send group's epoch pair as of THIS call — post `protect` (any
-		// commit `prepareToEncrypt` made already landed), before
-		// `rewrapSideBand`/`maybeStageNextRound` (neither advances an
-		// epoch, but this is where the reference reads it, messaging.rs:1881-1894).
-		let sendEpochs = Self.groupEpochs(of: sendGroup)
-
 		// §A.4 self-drive: both best-effort (never throw out of `encrypt`) —
 		// `rewrapSideBand` re-mints a stale parked leg at the epoch this send
 		// just moved to; `maybeStageNextRound` then stages the next EK if it's
@@ -268,7 +262,7 @@ extension TwoMLSSession {
 		// Return cadence (slice 8a): classical-only mutation → `.core`.
 		advanceStateSeq()
 		let update = try stateUpdate(kind: .core)
-		return EncryptResult(frame: sealedFrame, epochs: sendEpochs, update: update)
+		return EncryptResult(frame: sealedFrame, update: update)
 	}
 
 	/// Slice 11 (protocol-flows.md:407-432): which pre-verified `0x0B` (envelope, welcome)
