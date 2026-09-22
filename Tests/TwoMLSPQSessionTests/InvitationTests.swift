@@ -31,7 +31,7 @@ final class InvitationTests: XCTestCase {
 		from initiator: Principal, into invitation: inout Invitation
 	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, welcome: Data, spawnToken: Data,
-		bootstrapKPCommitment: Data, archive: SecretArchive
+		bootstrapKPCommitment: Data, archive: SecretArchive, baseline: StateUpdate
 	) {
 		let theirCombinerKP = try XCTUnwrap(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
@@ -45,7 +45,7 @@ final class InvitationTests: XCTestCase {
 		return (
 			alice: initiated.session, bob: received.session, welcome: initiated.welcome,
 			spawnToken: spawnToken, bootstrapKPCommitment: commitment,
-			archive: received.archive
+			archive: received.archive, baseline: received.baseline
 		)
 	}
 
@@ -462,5 +462,112 @@ final class InvitationTests: XCTestCase {
 		XCTAssertThrowsError(try round.bob.forwarded(spawnToken: wrongToken)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .misroutedSpawnToken)
 		}
+	}
+
+	// MARK: - Acceptor baseline restorability
+
+	/// `receive`'s returned `baseline` is a genuine restorable checkpoint the
+	/// moment `receive` returns — before any further state-advancing call on
+	/// the spawned session, not just a decodable blob.
+	func testAcceptorBaselineAloneRestoresAWorkingSession() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let bobPrincipal = try makePrincipal("bob")
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+		let round = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
+
+		XCTAssertEqual(round.baseline.kind, .checkpoint)
+		XCTAssertEqual(round.baseline.stateSeq, round.bob.stateSeq)
+
+		var restoredBob = try TwoMLSSession.restore(
+			core: nil, checkpoint: round.baseline.archive,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var alice = round.alice
+
+		let restoredPrepared = try restoredBob.prepareToEncrypt()
+		XCTAssertEqual(restoredPrepared.dependsOnSeq, round.baseline.stateSeq)
+		let bobFrame = try restoredBob.encrypt(Data("bob-hello".utf8)).frame
+		let bobDecrypted = try alice.processIncomingDecrypted(bobFrame)
+		XCTAssertEqual(bobDecrypted.applicationMessage, Data("bob-hello".utf8))
+
+		_ = try alice.prepareToEncrypt()
+		let aliceFrame = try alice.encrypt(Data("alice-hello".utf8)).frame
+		let aliceDecrypted = try restoredBob.processIncomingDecrypted(aliceFrame)
+		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("alice-hello".utf8))
+	}
+
+	/// Baseline PLUS the born-dedicated `installEstablishmentEnvelope` `.core`
+	/// splice. `installEstablishmentEnvelope` returns its `.core` at
+	/// `baseline.stateSeq + 1`; `restore` (checkpoint older than core)
+	/// splices the checkpoint's PQ halves into the newer core, keeping the
+	/// rest of core. The acceptor joins Group_A as a full pair
+	/// (`APQGroup.joinFull`), so the baseline's `recvGroup.pq` is already
+	/// present — only `sendGroup.pq` is nil pre-A.3 — and a `.core` never
+	/// carries PQ trees at all, so the splice is what gives the restored
+	/// session back Group_A's PQ half. The restored session already has the
+	/// handoff installed and owes nothing.
+	func testBornDedicatedAcceptorBaselinePlusInstallSpliceRestoresAWorkingSession() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let bobPrincipal = try makePrincipal("bob")
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+		let theirCombinerKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirCombinerKP)
+		let dedicatedClientID = Data("bob-dedicated".utf8)
+		let received = try invitation.receive(
+			welcome: initiated.welcome,
+			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			spawnToken: freshSpawnToken(), newClientID: dedicatedClientID)
+		var bob = received.session
+		XCTAssertTrue(bob.owesEstablishmentEnvelope)
+
+		let envelope = Data("fake-signed-handoff".utf8)
+		let installUpdate = try bob.installEstablishmentEnvelope(envelope)
+		XCTAssertEqual(installUpdate.kind, .core)
+		XCTAssertEqual(installUpdate.stateSeq, received.baseline.stateSeq + 1)
+
+		var restoredBob = try TwoMLSSession.restore(
+			core: installUpdate.archive, checkpoint: received.baseline.archive,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertFalse(restoredBob.owesEstablishmentEnvelope)
+		XCTAssertEqual(restoredBob.currentStaple.first, Frames.establishmentHandoffTag)
+		// The splice, proven directly: Group_A's PQ half (spliced in from the
+		// checkpoint) is back, while Group_B's (never in a `.core`, and nil in
+		// the checkpoint too pre-A.3) stays nil.
+		XCTAssertNotNil(restoredBob.recvGroup?.pq)
+		XCTAssertNil(restoredBob.sendGroup?.pq)
+
+		// Nothing of the peer's to fold on this first prepare, so it never
+		// re-installs a staple: `dependsOnSeq` names the last stateSeq this
+		// splice actually reconciled to — the INSTALL update's own (splicing
+		// keeps the rest of core), not the earlier baseline's.
+		let prepared = try restoredBob.prepareToEncrypt()
+		XCTAssertEqual(prepared.dependsOnSeq, installUpdate.stateSeq)
+
+		let bobFrame = try restoredBob.encrypt(Data("bob-hello".utf8)).frame
+
+		var alice = initiated.session
+		guard case .pendingEstablishment(let pending) = try alice.processIncoming(bobFrame)
+		else {
+			return XCTFail("expected a pause on the un-approved 0x0B")
+		}
+		let (envelopeBytes, welcomeBytes) = try Frames.decodeEstablishmentHandoff(
+			restoredBob.currentStaple)
+		XCTAssertEqual(pending.envelope, envelopeBytes)
+
+		let envelopeDigest = try SessionTestSupport.classicalProvider.hash(envelopeBytes)
+		let welcomeDigest = try SessionTestSupport.classicalProvider.hash(welcomeBytes)
+		guard
+			case .decrypted(let decrypted) = try alice.processIncomingApproved(
+				bobFrame, approvedEnvelopeDigest: envelopeDigest,
+				approvedWelcomeDigest: welcomeDigest,
+				expectedCreator: dedicatedClientID)
+		else {
+			return XCTFail("expected .decrypted on the approved re-feed")
+		}
+		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
+		XCTAssertEqual(decrypted.queuedProposal.context, restoredBob.proposalContext())
 	}
 }
