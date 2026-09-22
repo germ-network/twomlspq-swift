@@ -830,8 +830,10 @@ final class LifecycleE2ETests: XCTestCase {
 		// driver, which works unchanged for either shape.
 		let openKind = try alice.drivePQRoundToCompletion(responder: &bob)
 
-		try XCTExpectFailure("no §A.5 credential catch-up after rotation") {
+		XCTExpectFailure("no self-driven §A.5 once the send-PQ leaf lags a rotation") {
 			XCTAssertEqual(openKind, .rekeyUpd)
+		}
+		try XCTExpectFailure("no §A.5 credential catch-up after rotation") {
 			let leaf = try TwoMLSSession.ownLeaf(
 				of: try XCTUnwrap(alice.session.sendGroup?.pq))
 			XCTAssertEqual(try basicIdentifier(leaf.credential), alice2ID)
