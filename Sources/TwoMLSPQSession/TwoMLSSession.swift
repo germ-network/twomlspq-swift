@@ -156,10 +156,23 @@ public struct DecryptResult: Sendable {
 	public let update: StateUpdate
 }
 
-/// `encrypt`'s result: the sealed frame plus this call's own `StateUpdate`
-/// (`.core` — `encrypt` never touches a PQ tree).
+/// One directional group pair's `{pqEpoch, classicalEpoch}` — mirrors the
+/// Rust reference's `ApqEpochs` (`lib.rs:517-519`). `pqEpoch` is `0` while
+/// that group's PQ half is deferred (pre-§A.3 Group_B) or the pair is absent
+/// entirely. Top-level and un-gated so the un-gated `EncryptResult` can hold
+/// it.
+public struct GroupEpochs: Sendable, Hashable {
+	public let pqEpoch: UInt64
+	public let classicalEpoch: UInt64
+}
+
+/// `encrypt`'s result: the sealed frame, the send group's epoch pair as of
+/// this call (mirrors the reference's `EncryptResult.epochs`, `lib.rs:582`),
+/// plus this call's own `StateUpdate` (`.core` — `encrypt` never touches a PQ
+/// tree).
 public struct EncryptResult: Sendable {
 	public let frame: Data
+	public let epochs: GroupEpochs
 	public let update: StateUpdate
 }
 
@@ -598,6 +611,28 @@ public struct TwoMLSSession: Sendable {
 	/// bootstrap's completion condition.
 	public var isFullyEstablished: Bool { sendGroup?.pq != nil && recvGroup?.pq != nil }
 	public var myPQTurn: Bool { pqTurnMine }
+
+	/// The send group's epoch pair — mirrors the reference's `epochs()`
+	/// (`mod.rs:2095-2105`); zeros while unestablished.
+	public var epochs: GroupEpochs { Self.groupEpochs(of: sendGroup) }
+	/// The receive group's epoch pair — `nil` until the recv group exists (a
+	/// host needs this to observe a bind landing, `applyBind` moving
+	/// `recvGroup.pq`, and to read state right after `restore`).
+	public var receiveEpochs: GroupEpochs? {
+		guard let recvGroup else { return nil }
+		return Self.groupEpochs(of: recvGroup)
+	}
+
+	/// One directional group pair's `{pqEpoch, classicalEpoch}` — the shared
+	/// computation `epochs`/`receiveEpochs` funnel through, and `encrypt`'s
+	/// own read. Zeros for a `nil` pair (mirrors the reference's
+	/// absent-group `epochs()`).
+	// internal: used by Messaging.encrypt
+	static func groupEpochs(of group: APQGroup?) -> GroupEpochs {
+		GroupEpochs(
+			pqEpoch: group?.pq?.context.epoch ?? 0,
+			classicalEpoch: group?.classical.context.epoch ?? 0)
+	}
 
 	/// My own classical-credential state, DERIVED from the Authentication
 	/// Service's `auth.mine` (never separately cached, so it cannot desync
