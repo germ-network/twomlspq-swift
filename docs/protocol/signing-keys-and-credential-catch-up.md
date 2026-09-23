@@ -1,0 +1,216 @@
+# Signing keys and the §A.5 credential catch-up
+
+Status: decided, not yet implemented (2026-09-22).
+
+This document covers how this engine handles leaf signing keys, and how it runs the §A.5 credential catch-up. It
+separates five things:
+
+1. what the TwoMLSPQ book specifies;
+2. where the book is silent, and what we decided;
+3. what we accept from a peer versus what we do ourselves;
+4. what we do only for compatibility with the deployed Rust engine;
+5. how a session chooses between the correct behavior and the deployed-compatible variant.
+
+**Sources.**
+- **The book:** TwoMLSPQ `book/src/`, at commit `81681cf`. It is the specification for this engine, and every "the book
+  says" below quotes it.
+- **RFC 9420:** a normative reference of the book.
+- **The deployed Rust engine:** TwoMLSPQ `rust/`, at the same commit. It is a *peer*, cited for interop facts and never as
+  an authority.
+
+**Terms.** A session has four MLS groups: send-classical, send-PQ, recv-classical, recv-PQ. A party's *send* group is
+the one it founded. Its *recv* group is its membership in the peer's send group. A *leaf move* is any change to a
+party's own leaf: an Update proposal that gets folded, or a commit with an update path.
+
+## 1. What the book specifies
+
+- **Who opens a round.** The session opens PQ rounds itself, never the host. On our turn it opens "an **A.5 re-key**
+  if our send-PQ leaf still lags the canonical (classically committed) identity … else an **A.4 ratchet**". A staged A.4
+  is not upgraded mid-flight. Sources: `protocol-flows.md:56`, `api-reference.md:231-235`.
+- **Which leaves an A.5 moves.** "The proposal replaces the *proposer's* leaf … the full commit replaces the
+  *committer's* leaf … the pathless ack signals receipt" (`protocol-flows.md:696-701`; also `:48-51` and
+  `session-lifecycle.md:78-90`).
+  - Consequence: a party that rotated moves its own **send-PQ** leaf only when it *responds* to an A.5 that the peer
+    opens. The A.5 it opens itself moves only its **recv-PQ** leaf.
+  - So if only one party rotates, its send-PQ leaf lags until the peer rotates too. Until then, each of its PQ turns
+    opens an A.5.
+- **Every frame carries a proposal, and it is the peer's ack.**
+  - The message frame is `[0x03][staple][proposal][app]` "with **no optional sections**" (`wire-format.md:187-188`).
+  - "The evidence is the peer's stapled proposal": the peer builds its `Upd(self)` in our send group, so an offer bound
+    to our current epoch proves it applied our commits through that epoch. "The peer re-proposes at the new epoch on
+    its next frame — so the license is re-earned exactly once per round trip" (`protocol-flows.md:88-93`).
+  - That license keeps a sender at most one commit ahead of its peer (`protocol-flows.md:78-81`).
+- **Proposed candidates stay live.** "A candidate that has been proposed on the wire is **never evicted** — the peer
+  may commit any of them" (`group-rules.md:119-121`). The receiver may drop an offer, because "the proposer re-sends
+  every round" (`group-rules.md:136`).
+- **Catch-up is canonical-only.** "a lagging leaf may only fast-forward to an already-canonical credential;
+  candidates are proposed and canonicalized exclusively in the classical ratchet" (`group-rules.md:147-150`).
+- **Successor rule.** "`valid_successor` implements same-id / authorized-step / catch-up" (`group-rules.md:152-153`).
+  A same-id leaf move is always a valid successor, whatever the signature key.
+- **The A.5 ack is pathless.** It is "a pathless partial commit on her own send group" (`protocol-flows.md:51`), so it
+  moves no leaf.
+- **Signature algorithm.** "both halves sign Ed25519 (the PQ suite is confidentiality-only)" (`protocol-flows.md:598-602`).
+- **Capability signaling.** The book already signals an optional extension through leaf capabilities: "Leaves
+  advertise the extension type, so a binding-carrying group can only ever contain capability-bearing leaves"
+  (`group-rules.md:77-78`, for the AppBinding extension).
+- **From RFC 9420:**
+  - Every commit-path leaf gets a fresh encryption key: "Set the encryption_key to the public key of a freshly sampled
+    key pair". A new signature key is optional: "The application MAY specify other changes to the leaf node, e.g.,
+    providing a new signature key" (§7.5).
+  - A LeafNode always carries its `signature_key` (§7.2), so replacing it on a move costs no extra bytes on the wire.
+  - Leaf keys "MUST be distinct from one another" within one ratchet tree (§16.7). That rule is per group; nothing in
+    the RFC relates the keys of two different groups.
+  - Post-compromise security comes from updating the leaf's encryption key (§16.6).
+
+## 2. Where the book is silent, and what we decided
+
+The book does not say whether the classical and PQ halves, or a party's two groups, may share signing keys. Its object
+model implies they do: a session "holds the client backing its groups (plus the successor client staged by a principal
+rotation)" (`concepts.md:45-48`). A restored session's archives also "carry the session's signing identity"
+(`api-reference.md:174-175`).
+
+The deployed engine follows that model:
+- Each client holds one classical and one PQ signing key, and uses them in all of its groups
+  (`rust/apq/src/client.rs:212-243`).
+- A classical rotation stages a whole successor client, so the PQ key changes in lockstep with the classical one. The
+  A.5 then moves the PQ leaf onto that successor's PQ key (`rust/two-mls-pq/src/session/pq_ops.rs:373-397`).
+- Signature keys change only together with a credential. The engine calls `set_new_signing_identity` only on a
+  credential handoff (`rust/two-mls-pq/src/session/messaging.rs:1023`, `pq_ops.rs:1127`), so the credential is its sync
+  point for key changes.
+
+We don't carry that coupling over. Decisions:
+
+- **D1 — no shared keys.** The APQ combiner's classical and PQ groups are independent, so they share no keys. Each of
+  the four groups has its own signing key. Nothing bundles "a principal's keys". A classical rotation never mints or
+  touches a PQ key. A leaf gets a new signing key only through an operation in its own group.
+  Sharing a key across groups works only if every group changes its key at the same moment, which needs a sync point
+  like the deployed engine's credential change. Letting each group move its key on its own is simpler, and D3 leaves
+  no sync point anyway.
+- **D2 — keys only.** The independence covers keys, not credentials. A PQ leaf's credential id still converges to the
+  classical canonical principal, through the book's A.5 (§1).
+- **D3 — key cadence: every leaf move.** Every own-leaf move, in any group, carries a freshly minted signature key for
+  that group. MLS allows this (§7.5 "MAY"), and it costs no wire bytes (§7.2), so we take every chance.
+  - A credential change is then just a leaf move that also carries a new credential id. Keys never wait for a
+    credential, so there is no sync point between groups.
+  - A key a leaf starts with (from an invitation KeyPackage, or carried in from a migrated archive) is replaced by the
+    same rule at that leaf's next move.
+  - *Proposed:* one Update offer per epoch of the peer's group.
+    - Frames within that epoch repeat the identical proposal, because the frame requires one and it is the ack (§1).
+      The proposal section stays mandatory: it is our new key, stapled onto every frame until the peer takes it.
+    - A new leaf node is minted only when that epoch moves (our offer was folded, or went stale), or to announce a
+      further credential change, which gets its own offer while earlier candidates stay live (§1).
+    - A leaf node is never re-sent into a later epoch, and none is minted per frame.
+    - The deployed engine mints a fresh Update on every frame instead, "a plain key refresh of the unchanged leaf"
+      (`rust/two-mls-pq/src/session/messaging.rs:884-889`).
+      - Neither the book nor the code says why. The book only says "every round stages one"
+        (`session-lifecycle.md:114-115`).
+      - The cost is that the sender keeps every one of those secrets until the epoch moves, because the peer may fold
+        any of them. Today's Swift engine does the same (`TwoMLSSession+Messaging.swift:203-207`).
+    - The deployed engine accepts a repeated offer:
+      - it validates each offer without keeping state and skips the work once the epoch is already licensed
+        (`messaging.rs:1625-1655`, `:599-640`: "safe to repeat");
+      - it stores the latest offer (`:1655`);
+      - approval is single-slot, latest-wins (`:2081-2118`), and the book says approval "never accumulates a second
+        Update" (`group-rules.md:131-134`).
+      This engine's receive path behaves the same (`TwoMLSSession+Messaging.swift:477`, `:551-568`;
+      `TwoMLSSession+ClassicalCommit.swift:21-32`).
+    - Hosts bind the per-round proposal hash into each message (`session-lifecycle.md:110`, `:132`), so consecutive
+      messages in one epoch carry the same hash. The host we checked signs it into a per-message proposal, and the
+      receiver checks that proposal against the same frame's digest. Nothing is keyed on the hash, so a repeat is fine.
+- **D4 — KeyPackage keys.** Every KeyPackage half gets a fresh signing key; there is no principal-wide signing key. We
+  read "principal" as the credential. The book's "a credential-scoped signing identity" (`concepts.md:14`) is the
+  lockstep model's wording.
+- **D5 — no extra trigger.** We don't add a trigger for the non-rotated peer to heal the rotated party's lagging
+  send-PQ leaf. That would depart from the book's trigger rule (§1), so it needs a book decision first. Until then the
+  convergence behavior is the book's.
+- **D6 — catch-up offers are approved.** The book says a born-dedicated acceptor's recv-group leaf "converges from the
+  invitation identity to the dedicated principal via its first committed Upd" (`group-rules.md:145-146`). But a peer
+  commits only an offer its host approved, and a host that approves only offers introducing a new client never approves
+  a catch-up. So:
+  - The engine marks a received offer that moves the proposer's leaf to a *different* credential id that is already
+    canonical. Such an offer authorizes no new credential.
+  - Hosts approve marked offers the same way as offers from a new client.
+  - Routine same-id refresh offers stay at the host's discretion ("the receiver may freely drop", `group-rules.md:136`).
+  - Against a deployed-engine peer whose host does not approve catch-ups, our leaf keeps its old credential, and its key
+    stays in custody.
+
+## 3. What we accept versus what we do
+
+"Accept" is how lenient we are toward a peer. "Do" is our own behavior. Where the two profiles of §5 differ, the row
+says so.
+
+| Behavior | Accepted from a peer | Done ourselves | Basis |
+|---|---|---|---|
+| One signing key shared across a party's groups or halves | yes: nothing compares a peer's keys across groups | never | RFC 9420 §16.7 is per group; D1 |
+| Same-id signing-key change on any group | yes | on every own-leaf move | book `group-rules.md:152-153`; D3 |
+| A peer's offer that catches its leaf up to an already-canonical id | approved and folded | offered; converges once the peer folds it | book `group-rules.md:145-146`; D6 |
+| PQ leaf moving to a new credential id | only to an id already canonical in the AS | only to our own current canonical id | book `group-rules.md:147-150` |
+| A PQ leaf's id and key changing together in one A.5 | yes | yes, with a key freshly minted in that group only | book §A.5; D1 |
+| A leaf move inside a pathless PQ bind or ack | no (malformed) | never | book `protocol-flows.md:51` |
+| Catch-up to an id that is authorized but not yet canonical | no, at respond and at apply | never | book `group-rules.md:147-150` |
+| An old key kept on a lagging send-PQ leaf (one-sided rotation, peer never opens an A.5) | yes | yes, whenever the book's trigger leaves that leaf unmoved | book §A.5 consequence (§1) |
+| Upd′ authenticated data | absent, or equal to the leaf's new id; any other value is rejected | deployed-compatible: C1; correct: never sent | C1 |
+
+## 4. What we do only for compatibility with the deployed Rust engine
+
+C1 is the only divergence. The deployed engine's other quirks need nothing special from us. For example, it shares a
+key across its groups, and nothing compares a peer's keys across groups, so we accept that as-is (§3).
+
+- **C1 — announce the handed-off id in the A.5 Upd′ authenticated data.**
+  - On send, the deployed engine writes the raw ClientId bytes into the Upd′'s authenticated data
+    (`pq_ops.rs:390-397`). The same id is also in the new leaf's credential.
+  - On receive, it uses the value as an extra canonical-history check, skipped when absent (`pq_ops.rs:1081-1103`).
+    It also returns the value to the host (`pq_ops.rs:977-982`), whose apps use it to trigger reconciliation.
+  - The leaf credential is what the tree and the AS validate, so the announced value adds nothing to correctness. The
+    book mentions it only in its header-encryption leak inventory (`header-encryption.md:55`). Its A.5 text says the
+    round is "announcing that identity" (`protocol-flows.md:56`) without saying where.
+  - In a deployed-compatible session we send the value only on an A.5 that changes the credential id, never on a
+    key-only one. On receive we treat it as a hint, in both profiles (§3).
+- Sessions migrated from the deployed engine carry its key layout. The implementation plan covers how they restore.
+
+## 5. Session profiles and KeyPackage signaling
+
+The behavior above comes in two profiles:
+
+- **Correct:** the book plus D1–D6, with nothing kept only for the deployed engine. We intend to run this everywhere
+  eventually.
+- **Deployed-compatible:** the correct behavior plus C1. It is *frozen*: it changes only to fix a
+  bug or to follow a change in the deployed engine. It is what a session runs whenever the peer might be the deployed
+  engine.
+
+| Item | Correct | Deployed-compatible |
+|---|---|---|
+| C1: announce the handed-off id | never sent; a present value is still cross-checked | sent on an A.5 that changes the id |
+| D3: a fresh key on every leaf move | yes | yes: the deployed engine's successor check passes a same-id change (`rust/apq/src/authentication.rs:166-168`) |
+| Migrated sessions | never correct | always this profile |
+
+**The profile is chosen per session, from the two KeyPackages.**
+- Each party's KeyPackage advertises the profiles it can start, as capability entries in its leaves: a TwoMLSPQ
+  extension type per profile. This is the same mechanism the book uses for the AppBinding extension (§1). The
+  deployed-compatible profile needs no entry; it is what a KeyPackage without one gets.
+- At establishment, each side holds the other's KeyPackage. The initiator has the acceptor's published one, and the
+  acceptor receives the initiator's. A session runs the correct profile only if both advertise it. Both sides compute
+  the same answer from signed KeyPackages, so no extra negotiation message is needed.
+- The chosen profile is recorded in the group, the same way the book records the AppBinding extension
+  (`group-rules.md:58-78`).
+  - It is a GroupContext extension written at creation into both classical halves of the initiator's group.
+  - The acceptor checks it against its own result from the two KeyPackages, and mirrors it onto its return group. The
+    initiator requires the return welcome to carry it back unchanged.
+  - PQ halves carry none. It is never rewritten: the book's GroupContextExtensions ban makes it immutable.
+  - Because the group carries it, every leaf must keep advertising it, as for AppBinding: "a binding-carrying group can
+    only ever contain capability-bearing leaves" (`group-rules.md:77-78`).
+- The profile is fixed for the session's life. It is not a runtime switch, and it never changes when a peer upgrades.
+  Sessions migrated from the deployed engine, and every session created before profiles exist, are deployed-compatible.
+- The deployed engine never advertises the correct profile, so any session with it stays deployed-compatible. Sessions
+  between two upgraded clients start in the correct profile without a flag day.
+
+**Rules that keep this sound.**
+- A client advertises a profile only once it implements that profile completely. For the correct profile, that means
+  after per-group keys have fully landed.
+- Once shipped, a profile is frozen too. A later wire-visible change to the correct behavior ships as a *new* profile
+  with its own capability entry, and a session uses the newest profile both KeyPackages advertise. The book allocates
+  the codepoints.
+- Before shipping, confirm that the deployed engine accepts a KeyPackage whose leaf capabilities list an extension type
+  it does not know. If it doesn't, the signal needs a different carrier.
+
+Downgrade protection is out of scope for now.
