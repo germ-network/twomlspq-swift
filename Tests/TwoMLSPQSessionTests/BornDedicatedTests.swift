@@ -241,9 +241,10 @@ final class BornDedicatedTests: XCTestCase {
 
 		// Bob's Upd′ proposes into `recvGroup.pq` (Group_A.pq) — still
 		// presenting the invitation identity (the PQ catch-up is Chunk 2,
-		// out of scope here). The PQ custody resolver must sign under the
-		// retained invitation key so Alice's `pqRekeyRespond` — which owns
-		// that group as her `sendGroup.pq` — verifies it.
+		// out of scope here). `leafKeys.recvPQ.current` still holds the
+		// retained invitation key, so Bob signs under it, and Alice's
+		// `pqRekeyRespond` — which owns that group as her `sendGroup.pq` —
+		// verifies it.
 		let rekeyBegin = try bob.pqRekeyBegin()
 		let rekeyRespond = try alice.pqRekeyRespond(rekeyBegin.frame)
 		XCTAssertNotNil(rekeyRespond.frame)

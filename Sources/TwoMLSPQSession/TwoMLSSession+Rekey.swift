@@ -68,6 +68,9 @@ extension TwoMLSSession {
 
 		let updBytes = try message.mlsEncoded()
 		let frame = Frames.encodePQRekeyUpd(updBytes)
+		// A future path that drops this parked Upd′ instead of letting
+		// `pqRekeyApply` fold it must also drop any `recvPQ.pending` entry
+		// staged for it — nothing does either today.
 		pqInflight = .rekeyInitiated(updMessage: updBytes)
 		pendingSideBand = frame
 		let sealed = try sealSideBand(frame)
@@ -209,6 +212,9 @@ extension TwoMLSSession {
 				sendPQ = advanced.group
 				try TwoPartyRules.ensureTwoParty(sendPQ)
 
+				// Only the group's epoch/tree moves here — the committer's
+				// own send-PQ leaf never changes in this path, so `leafKeys`
+				// is untouched.
 				send.pq = sendPQ
 				sendGroup = send
 				// The committer's own advance of `sendGroup.pq` (PR2) — a second,
@@ -332,6 +338,19 @@ extension TwoMLSSession {
 			recvPQ = transition.group
 			try TwoPartyRules.ensureTwoParty(recvPQ)
 
+			// Promote my own recv-PQ leaf's key if this
+			// Commit′ moved its presentation (a hand-built/migrated Upd′
+			// carrying a `newIdentity`; the routine self-driven proposal
+			// never does) — a same-key apply is `promoted`'s own no-op.
+			// recv-PQ retains no other pending entry across a rekey, so
+			// every remaining one is dropped regardless.
+			var updatedLeafKeys = leafKeys
+			let ownPQLeaf = try Self.ownLeaf(of: recvPQ)
+			let ownPQID = try basicIdentifier(ownPQLeaf.credential)
+			try updatedLeafKeys.recvPQ.promoted(
+				presenting: ownPQLeaf.signatureKey, id: ownPQID)
+			updatedLeafKeys.recvPQ.pending = [:]
+
 			// §13 M2: export `S` off the just-rekeyed group and stamp the
 			// watermark right after — mirrors `pqBootstrapJoin` (the export
 			// consumes this exact `(group, epoch, component)` leaf).
@@ -341,7 +360,20 @@ extension TwoMLSSession {
 			recv.pq = recvPQ
 			recvGroup = recv
 			lastCrossInjectedPQ = recvPQEpochAfterRekey
+			leafKeys = updatedLeafKeys
 
+			// (DEBUG only): a fault point AFTER the write-back above but
+			// before the next throwing call — proves a fault here leaves
+			// `recvGroup`/`leafKeys`/`lastCrossInjectedPQ` fully written
+			// back even though the classical bind is never discharged.
+			#if DEBUG
+				if TwoMLSSessionTestHooks.shouldFault(
+					"pqRekeyApply.afterWriteBackBeforeBind")
+				{
+					throw InjectedTestFault(
+						name: "pqRekeyApply.afterWriteBackBeforeBind")
+				}
+			#endif
 			try owePQBind(s: sExport.psk)
 			if needsPreRegister {
 				lastSendPQExported = sendPQEpoch

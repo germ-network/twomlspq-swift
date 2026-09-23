@@ -309,6 +309,15 @@ final class SessionMigrationTests: XCTestCase {
 		XCTAssertEqual(
 			mintedBody.recvLeafPrincipal?.pqSignatureKey,
 			nativeBody.recvLeafPrincipal?.pqSignatureKey)
+		// The temporary conversion must land on exactly the same four
+		// stored key sets (current + pending, by target) as the live path's
+		// own seeding/staging — this is the direct parity check for "the
+		// conversion crosses halves or ignores staged/parked proposals."
+		XCTAssertEqual(mintedBody.leafKeys, nativeBody.leafKeys)
+		XCTAssertEqual(
+			mintedBody.sendPQKeysFingerprint, nativeBody.sendPQKeysFingerprint)
+		XCTAssertEqual(
+			mintedBody.recvPQKeysFingerprint, nativeBody.recvPQKeysFingerprint)
 	}
 
 	// MARK: - AC 1: equivalence with the native path
@@ -331,6 +340,94 @@ final class SessionMigrationTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		try assertMintedMatchesNative(minted, native, kind: .core)
+	}
+
+	/// A mid-rotation session — an outstanding `rotationCandidate` plus its
+	/// still-staged classical Upd(self) in `stagedUpdates` — must convert
+	/// to matching `recvClassical`/`sendClassical` `pending` entries, not
+	/// silently drop them: the direct parity check for "the conversion...
+	/// ignores staged/parked proposals" (the classical half; PQ has no
+	/// resolvable-but-new-key migrated scenario here).
+	func testMintedMidRotationConvertsStagedUpdateAndLeafKeysMatch() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		let newID = Data("alice-v2".utf8)
+		_ = try alice.prepareToEncrypt(rotating: newID)
+		XCTAssertNotNil(alice.rotationCandidate)
+		XCTAssertFalse(alice.stagedUpdates.isEmpty)
+
+		let native = try alice.makeSessionArchive(kind: .checkpoint)
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: try migratedParts(alice),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
+
+		let mintedBody = try minted.decode(SessionArchive.self)
+		XCTAssertFalse(
+			mintedBody.leafKeys.recvClassical.pending.isEmpty,
+			"the staged rotating Upd(self) must convert into recvClassical.pending")
+		XCTAssertFalse(
+			mintedBody.leafKeys.sendClassical.pending.isEmpty,
+			"the outstanding candidate must convert into sendClassical.pending")
+	}
+
+	/// Isolates conversion item (c) — the staged-proposal scan — from item
+	/// (a) — the outstanding-candidate check — which would otherwise cover
+	/// for it: the parts here rename `rotationCandidate.clientID` from C to
+	/// a DISTINCT C′, keeping C's own key material, while the staged Upd
+	/// (encoded earlier, under C) still names C. Item (a) can only ever
+	/// produce `pending[C′]` now (the candidate's OWN reported id); only
+	/// item (c), decoding the staged Upd itself, can produce `pending[C]`.
+	/// Both must be present, with the SAME key. A build that comments out
+	/// item (c) entirely makes `pending[C]` vanish while `pending[C′]`
+	/// still exists — this is the test that catches it.
+	func testMintedConversionItemCPopulatesTheStagedTargetIndependentlyOfItemA() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		let c = Data("alice-c".utf8)
+		_ = try alice.prepareToEncrypt(rotating: c)
+		let candidate = try XCTUnwrap(alice.rotationCandidate)
+		XCTAssertFalse(alice.stagedUpdates.isEmpty)
+
+		var parts = try migratedParts(alice)
+		let cPrime = Data("alice-c-prime".utf8)
+		parts.rotationCandidate?.clientID = cPrime
+
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let mintedBody = try minted.decode(SessionArchive.self)
+
+		let fromItemC = try XCTUnwrap(
+			mintedBody.leafKeys.recvClassical.pending.first { $0.target == c })
+		let fromItemA = try XCTUnwrap(
+			mintedBody.leafKeys.recvClassical.pending.first { $0.target == cPrime })
+		XCTAssertEqual(fromItemC.key.signatureKey, candidate.signatureKey.data)
+		XCTAssertEqual(fromItemA.key.signatureKey, candidate.signatureKey.data)
+	}
+
+	/// The miss path: with NO outstanding candidate at all (and no
+	/// `recvLeafPrincipal`), the staged Upd(C) that item (c) would
+	/// otherwise convert can no longer resolve under any of
+	/// `lookupClassical`'s three arms — mint must fail closed rather than
+	/// silently drop the entry.
+	func testMintedConversionRejectsAStagedUpdateWithNoCandidateToResolveIt() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		let c = Data("alice-c".utf8)
+		_ = try alice.prepareToEncrypt(rotating: c)
+		XCTAssertFalse(alice.stagedUpdates.isEmpty)
+
+		var parts = try migratedParts(alice)
+		parts.rotationCandidate = nil
+
+		XCTAssertThrowsError(
+			try SessionMigration.mintArchive(
+				kind: .checkpoint, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
 	}
 
 	/// A mid-A.4 `.responding` mint: the held `S`/parked CT map, the body
@@ -362,6 +459,133 @@ final class SessionMigrationTests: XCTestCase {
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 		let decrypted = try restored.processIncomingDecrypted(boundFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
+	}
+
+	// MARK: - Mint parity across more of the rotation/A.3 lifecycle
+
+	/// Mint parity right after the peer folds a rotation offer: recv-
+	/// classical has converged (the candidate's key is now `current`), but
+	/// send-classical still lags (the outstanding candidate's key is still
+	/// only `pending`) — a DIFFERENT point in the lifecycle from the
+	/// mid-rotation (staged-but-unfolded) test above.
+	func testMintedRotationFoldedMatchesNative() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let newID = Data("alice-v2".utf8)
+		_ = try alice.prepareToEncrypt(rotating: newID)
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
+		let offerDecrypted = try bob.processIncomingDecrypted(offerFrame)
+		_ = try bob.queueProposal(digest: offerDecrypted.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
+		let foldDecrypted = try alice.processIncomingDecrypted(foldFrame)
+		XCTAssertTrue(foldDecrypted.ownCredentialCanonicalized)
+
+		let native = try alice.makeSessionArchive(kind: .checkpoint)
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: try migratedParts(alice),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
+	}
+
+	/// Mint parity once the rotation has FULLY converged — both leaves
+	/// present the new id, and the outstanding candidate's `pending`
+	/// entries are gone (promoted to `current` on both classical sets).
+	func testMintedRotationConvergedMatchesNative() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let newID = Data("alice-v2".utf8)
+		_ = try alice.prepareToEncrypt(rotating: newID)
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
+		let offerDecrypted = try bob.processIncomingDecrypted(offerFrame)
+		_ = try bob.queueProposal(digest: offerDecrypted.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
+		_ = try alice.processIncomingDecrypted(foldFrame)
+		_ = try alice.prepareToEncrypt()
+		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
+		let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpFrame)
+		XCTAssertEqual(catchUpDecrypted.newSender, newID)
+		XCTAssertEqual(alice.myPrincipalState, .sync(newID))
+
+		let native = try alice.makeSessionArchive(kind: .checkpoint)
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: try migratedParts(alice),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
+
+		let mintedBody = try minted.decode(SessionArchive.self)
+		XCTAssertTrue(
+			mintedBody.leafKeys.sendClassical.pending.isEmpty,
+			"a converged rotation leaves no outstanding send-classical pending entry")
+	}
+
+	/// Mint parity for the pre-A.3 initiator: fully established classically
+	/// — Group_A (`sendGroup`, the initiator's own founding pair) already
+	/// carries its PQ half, but Group_B (`recvGroup`, classical-only until
+	/// the §A.3 bootstrap) does not yet — `recvPQ` converts to its
+	/// identity-keyed reservation.
+	func testMintedPreA3InitiatorMatchesNative() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		XCTAssertNotNil(alice.sendGroup?.pq)
+		XCTAssertNil(alice.recvGroup?.pq)
+
+		let native = try alice.makeSessionArchive(kind: .checkpoint)
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: try migratedParts(alice),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
+
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: minted,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertNil(restored.recvGroup?.pq)
+	}
+
+	/// The mirror image on the acceptor: bob's `recvGroup` (Group_A) already
+	/// carries PQ (founded at invitation-accept time), but his `sendGroup`
+	/// (Group_B) is still classical-only pre-A.3 — `sendPQ` converts to its
+	/// identity-keyed reservation instead of `recvPQ`.
+	func testMintedPreA3AcceptorMatchesNative() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		XCTAssertNotNil(bob.recvGroup?.pq)
+		XCTAssertNil(bob.sendGroup?.pq)
+
+		let native = try bob.makeSessionArchive(kind: .checkpoint)
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: try migratedParts(bob),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
+
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: minted,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertNil(restored.sendGroup?.pq)
+	}
+
+	/// Mint parity for the A.3-stalled initiator: the founder has sent its
+	/// KP′ and is waiting on the peer's Welcome′ — `bootstrapKPSecret`
+	/// held, `pqInflight == .bootstrapInitiated`, `recvGroup.pq` still nil.
+	func testMintedA3StalledInitiatorMatchesNative() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		_ = try alice.pqBootstrapBegin()
+		XCTAssertNotNil(alice.bootstrapKPSecret)
+		guard case .bootstrapInitiated = alice.pqInflight else {
+			return XCTFail(
+				"expected alice to hold .bootstrapInitiated after pqBootstrapBegin")
+		}
+		XCTAssertNil(alice.recvGroup?.pq)
+
+		let native = try alice.makeSessionArchive(kind: .checkpoint)
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: try migratedParts(alice),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
 	}
 
 	// MARK: - AC 2: restore + use
@@ -739,17 +963,31 @@ final class SessionMigrationTests: XCTestCase {
 	/// installed and approved, and Alice isn't established until his first
 	/// frame — that full flow is BornDedicatedTests' territory; the custody
 	/// arms (and their negative, next test) are what this file must prove.
+	/// Also the conversion case where Group_A.pq (bob's `recvGroup.pq`) is a
+	/// full pair from construction — no A.3 bootstrap needed for THIS half
+	/// — so it already EXISTS at mint time, and its own leaf still presents
+	/// the INVITATION identity's PQ key (nothing catches PQ up to D in this
+	/// slice). `lookupPQ` must resolve it via `recvLeafPrincipal`'s PQ
+	/// slot, not `identity`'s (which is D) — `assertMintedMatchesNative`
+	/// below is the direct proof: it fails if that resolution is wrong.
 	func testMintedBornDedicatedAcceptorRestoresWithCustodyIntact() throws {
 		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
 		let bob = established.bob
 		XCTAssertTrue(bob.owesEstablishmentEnvelope)
-		XCTAssertNotNil(bob.recvLeafPrincipal)
-		XCTAssertNotEqual(bob.identity.clientID, bob.recvLeafPrincipal?.clientID)
+		let invitationCustody = try XCTUnwrap(bob.recvLeafPrincipal)
+		XCTAssertNotEqual(bob.identity.clientID, invitationCustody.clientID)
+		XCTAssertNotNil(
+			bob.recvGroup?.pq, "Group_A.pq already exists at mint time")
+		XCTAssertEqual(
+			bob.leafKeys.recvPQ.current?.signatureKey, invitationCustody.pqSignatureKey,
+			"recv-PQ still presents the invitation identity's key, not D's")
 
 		let minted = try SessionMigration.mintArchive(
 			kind: .checkpoint, parts: try migratedParts(bob),
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
+		let native = try bob.makeSessionArchive(kind: .checkpoint)
+		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
 		let restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -765,6 +1003,100 @@ final class SessionMigrationTests: XCTestCase {
 			bob.recvLeafPrincipal?.pqSignatureKey)
 		XCTAssertEqual(restored.identity.clientID, bob.identity.clientID)
 		XCTAssertTrue(restored.owesEstablishmentEnvelope)
+	}
+
+	/// A one-sided rotation. Alice's classical rotation has FULLY
+	/// converged to `newID` (both classical leaves present it, and the
+	/// live session keeps `rotationCandidate` set even post-convergence —
+	/// `GroupKeySet`'s own retention doesn't clear it), but her PQ leaves
+	/// never moved at all — `sendGroup.pq`'s own leaf still presents her
+	/// ORIGINAL PQ key. The migrated parts hand-build the deployed
+	/// mapper's shape for this: `identity` is a FRESH, unrelated N,
+	/// proving it is never consulted for a key nothing presents — every
+	/// classical lookup instead resolves via the (untouched) candidate,
+	/// exactly as the live session's own signing does. `recvLeafPrincipal`
+	/// carries the ORIGINAL id, N's classical pair as an inert filler
+	/// (never consulted — the candidate arm already covers classical), and
+	/// the OLD PQ pair, which IS consulted: `sendPQ.current` must resolve
+	/// to it, not to `identity`'s (N's, wrong) one — proved two ways: the
+	/// minted value directly, and the restored session's own choke point,
+	/// which independently re-derives the tree's actual presented key and
+	/// would fail closed if the conversion had gotten this wrong.
+	func testMintedOneSidedRotationResolvesSendPQToTheOriginalKey() throws {
+		// Both PQ halves already exist, idle, turn on bob — reusing this
+		// fixture (rather than hand-driving §A.3) starts past the PQ
+		// bootstrap/ratchet entirely, so the classical rotation driven below
+		// is the only PQ-adjacent thing this test needs to reason about.
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+
+		let oldPQSigningKey = alice.identity.pqSigningKey
+		let oldPQSignatureKey = alice.identity.pqSignatureKey
+		let originalID = alice.identity.clientID
+
+		let newID = Data("alice-v2".utf8)
+		_ = try alice.prepareToEncrypt(rotating: newID)
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
+		let offerDecrypted = try bob.processIncomingDecrypted(offerFrame)
+		_ = try bob.queueProposal(digest: offerDecrypted.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
+		_ = try alice.processIncomingDecrypted(foldFrame)
+		_ = try alice.prepareToEncrypt()
+		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
+		let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpFrame)
+		XCTAssertEqual(catchUpDecrypted.newSender, newID)
+		XCTAssertEqual(alice.myPrincipalState, .sync(newID))
+		XCTAssertNotNil(alice.rotationCandidate, "convergence doesn't clear the candidate")
+		XCTAssertEqual(
+			try TwoMLSSession.ownLeaf(of: alice.sendGroup!.pq!).signatureKey,
+			alice.identity.pqSignatureKey,
+			"send-PQ never moved off alice's original PQ key")
+
+		let freshN = try TwoMLSIdentity.generate(
+			clientID: Data("unrelated-n".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var parts = try migratedParts(alice)
+		parts.identity = MigratedSessionIdentity(
+			clientID: freshN.clientID, signingKey: freshN.signingKey.data,
+			signatureKey: freshN.signatureKey.data,
+			pqSigningKey: freshN.pqSigningKey.data,
+			pqSignatureKey: freshN.pqSignatureKey.data,
+			classicalLeafSecretKey: freshN.classicalLeafSecretKey.data,
+			classicalInitSecretKey: nil, pqLeafSecretKey: freshN.pqLeafSecretKey.data,
+			pqInitSecretKey: nil,
+			classicalKeyPackage: try freshN.keyPackage.classical.mlsEncoded(),
+			pqKeyPackage: try freshN.keyPackage.pq.mlsEncoded())
+		parts.recvLeafPrincipal = MigratedRecvLeafPrincipal(
+			clientID: originalID, signingKey: freshN.signingKey.data,
+			signatureKey: freshN.signatureKey.data,
+			pqSigningKey: oldPQSigningKey.data, pqSignatureKey: oldPQSignatureKey.data)
+
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let mintedBody = try minted.decode(SessionArchive.self)
+		XCTAssertEqual(
+			mintedBody.leafKeys.sendPQ?.current?.signatureKey, oldPQSignatureKey.data)
+		XCTAssertNotEqual(
+			mintedBody.leafKeys.sendPQ?.current?.signatureKey,
+			freshN.pqSignatureKey.data)
+
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: minted,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		// The choke point IS the live proof: it independently re-derives
+		// the tree's ACTUAL presented key and compares it against
+		// `leafKeys.sendPQ.current` — the exact slot `sendPQSigningKey()`
+		// (and so `owePQBind`) reads with no other logic in between. A
+		// pass here means any future `owePQBind` call is GUARANTEED to
+		// sign with the key the tree really presents.
+		try restored.assertLeafKeysPresented()
+		XCTAssertEqual(
+			restored.leafKeys.sendPQ.current?.signingKey.data, oldPQSigningKey.data,
+			"owePQBind reads exactly this slot, so this IS the old-key proof")
 	}
 
 	/// The negative arm: dropping `recvLeafPrincipal` from a born-dedicated

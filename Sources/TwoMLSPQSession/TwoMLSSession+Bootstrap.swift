@@ -86,21 +86,32 @@ extension TwoMLSSession {
 			throw TwoMLSError.malformedSideBandMessage
 		}
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
+		// Founding signs with the reservation already held in
+		// `leafKeys.sendPQ.current` — seeded at `receive` to the founder
+		// identity's own PQ pair (D's, once a dedicated principal exists),
+		// which is why this reads the stored slot rather than
+		// `identity.pqSigningKey` directly.
+		guard let sendPQReservation = leafKeys.sendPQ.current else {
+			throw TwoMLSError.credentialUnknown
+		}
 
 		// Slice 11: founding always presents `identity`'s OWN
 		// fresh PQ leaf — with `identity` = D that is Group_B.pq's own
-		// founder, so this is already correct without the resolver (which
-		// would resolve to the same key via its first arm); no existing
+		// founder, `leafKeys.sendPQ.current` already names D's own key, so
+		// this is correct without any further lookup; no existing
 		// group to read a "presented leaf" off yet.
 		let (pqGroup, welcome) = try APQGroup.foundPQHalf(
 			sendGroupClassical: send.classical,
 			ownPQLeaf: identity.keyPackage.pq.leafNode,
 			ownPQLeafSecret: identity.pqLeafSecretKey,
-			signingKey: identity.pqSigningKey,
+			signingKey: sendPQReservation.signingKey,
 			peerBootstrapKP: peerBootstrapKP, randomness: try .generate(pqProvider),
 			epochSecret: SecretBytes(randomByteCount: pqProvider.hashSize),
 			pqProvider: pqProvider,
 			codepoints: codepoints)
+		// `sendPQReservation` (already `leafKeys.sendPQ.current`, seeded at
+		// `receive`) signed the founding leaf above; this call founds the
+		// GROUP off it, so `leafKeys` itself is untouched.
 		send.pq = pqGroup
 		sendGroup = send
 		// Founds `sendGroup.pq` (PR2): capture its birth-epoch header key.
@@ -156,6 +167,9 @@ extension TwoMLSSession {
 			let sExport = try MLS.Combiner.ExportedPsk.export(
 				from: &pqGroup, pqProvider,
 				componentID: Self.crossPartyComponentID)
+			// Joining off KP′'s own secrets leaves `leafKeys.recvPQ`
+			// untouched — it was already reserved to KP′'s key at
+			// `receive`/founding.
 			recv.pq = pqGroup
 			recvGroup = recv
 			lastCrossInjectedPQ = recvPQEpochBeforeExport

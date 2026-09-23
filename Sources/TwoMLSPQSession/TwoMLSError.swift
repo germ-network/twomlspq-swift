@@ -238,17 +238,20 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 
 	// MARK: Classical principal rotation (slice 6)
 
-	/// The custody resolver (`classicalSigningKey(presenting:)`, or its PQ
-	/// analogue `pqSigningKey(presenting:)`, slice 11) found no principal —
-	/// founding identity, the single in-flight `rotationCandidate`, or the
-	/// retained `recvLeafPrincipal` — whose signature key matches what a
-	/// leaf currently presents (the classical resolver matches the classical
-	/// `signatureKey`, the PQ resolver the `pqSignatureKey`); fail-closed
-	/// rather than sign with the wrong key. Also thrown by `prepareToEncrypt(rotating:)` for an empty
-	/// candidate id, or for a `rotating` that names this session's OWN
-	/// recv-leaf CURRENT id: that "rotation" could never canonicalize
-	/// (`PartySequence.commit`'s own `current == id` early return is a
-	/// no-op), so admitting it would leave the offer `.pending` forever.
+	/// A group's own stored key set (`GroupKeySet` — `current` plus
+	/// `pending`, one per group) has no key for a leaf presentation this
+	/// session needs to sign with or promote: the live choke point
+	/// (`assertLeafKeysPresented`) finds a group whose leaf doesn't match
+	/// its `current`, one of the four per-group signing accessors finds no
+	/// `current` at all, or `GroupKeySet.promoted(presenting:id:)` is asked
+	/// to promote a presentation that isn't held at either `current` or
+	/// `pending[id]`. Fail-closed rather than sign with the wrong key, or
+	/// promote to one this session never staged. Also thrown by
+	/// `prepareToEncrypt(rotating:)` for an empty candidate id, or for a
+	/// `rotating` that names this session's OWN recv-leaf CURRENT id: that
+	/// "rotation" could never canonicalize (`PartySequence.commit`'s own
+	/// `current == id` early return is a no-op), so admitting it would
+	/// leave the offer `.pending` forever.
 	case credentialUnknown
 	/// `prepareToEncrypt(rotating:)` was asked to author a SECOND classical
 	/// rotation while the outstanding `rotationCandidate` is either still
@@ -265,7 +268,16 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// already-canonical id when a round is opened for it — but that is a
 	/// PQ-leaf move, not a second classical rotation's sync point: the
 	/// classical AS tracks no per-generation PQ state of its own to wait on.
-	/// Naming the SAME candidate again is idempotent, not this error.
+	/// Naming the SAME candidate again is idempotent, not this error: it
+	/// re-stages under the SAME key and unconditionally refreshes
+	/// `proposedAtRecvEpoch` to the CURRENT recv epoch, so a further
+	/// same-candidate attempt keeps throwing this error until the peer's
+	/// fold actually moves that epoch on. Also thrown directly by
+	/// `GroupKeySet.stage(_:for:)` whenever a target already holds a
+	/// `pending` entry and the newly offered key is a DIFFERENT one — a
+	/// key a proposal already on the wire may still name is never
+	/// silently overwritten, independent of the classical-rotation-cap
+	/// path above.
 	case rotationInFlight
 
 	// MARK: Session archive (slice 8a)
@@ -274,10 +286,18 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// field (`version`/`classicalSuite`/`pqSuite`/`kind`) didn't match what
 	/// was expected of it; a Core and Checkpoint pair disagreed on session
 	/// identity (client id, signature key, or either classical group id) or,
-	/// when the Core is newer, on the PQ-epoch manifest; or a decode-time
-	/// invariant (the pinned bootstrap commitment's 32-byte length) failed.
-	/// Fail-closed: `restore` never partially reconstructs a session off a
-	/// blob it cannot fully trust.
+	/// when the Core is newer, on the PQ-epoch manifest — either PQ epoch,
+	/// or either PQ key set's own fingerprint, which can diverge even when
+	/// the epoch alone still agrees (`PQEpochManifest`'s own doc explains
+	/// why); a decode-time invariant (the pinned bootstrap commitment's
+	/// 32-byte length) failed; or the restored `leafKeys` failed
+	/// `validateLeafKeys`'s semantic checks against the rest of the
+	/// restored state — an existing group's own leaf not presenting its
+	/// stored `current`, a reservation not matching `identity`, a
+	/// staged/pending/parked Update naming a key `leafKeys` doesn't hold,
+	/// or an outstanding rotation candidate / rule-4 catch-up target
+	/// missing its expected `pending` entry. Fail-closed: `restore` never
+	/// partially reconstructs a session off a blob it cannot fully trust.
 	case archiveInvalid
 
 	// MARK: Invitations (slice 8b)

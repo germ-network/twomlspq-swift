@@ -529,6 +529,12 @@ final class FoldTests: XCTestCase {
 				credential: .basic(identity: bob.identity.clientID),
 				signatureKey: freshSignatureKey))
 		bob.recvGroup = mirror
+		// This hand-built rotation bypasses `prepareToEncrypt`, which would
+		// normally stage the fresh key itself — stage it here so a later
+		// fold's `applyFoldCommit` can promote it (same id, new key).
+		try bob.leafKeys.recvClassical.stage(
+			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
+			for: bob.identity.clientID)
 		return try message.mlsEncoded()
 	}
 
@@ -541,6 +547,14 @@ final class FoldTests: XCTestCase {
 	/// id is unchanged) rather than rejecting any credential/signature-key
 	/// change outright the way slice 5 did.
 	func testQueueProposalAcceptsSameIDCredentialRotation() throws {
+		// `authorBobCredentialRotation` hand-builds a SAME-id, fresh-key
+		// rotation directly on bob's recv-classical leaf, bypassing
+		// `prepareToEncrypt(rotating:)` (and so `rotationCandidate`)
+		// entirely — the pre-existing resolver has no arm for a same-id
+		// key-only rotation outside the ring either, so this was never
+		// something it covered in the first place.
+		OracleCheck.allow([.recvClassical])
+		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let rotatingMessage = try authorBobCredentialRotation(bob: &bob)
 
@@ -573,6 +587,10 @@ final class FoldTests: XCTestCase {
 	/// `stagedUpdates` (`@testable` internal accessor) standing in for what
 	/// `prepareToEncrypt(rotating:)` would have appended.
 	func testFoldedCredentialRotationIsAcceptedAndAdvancesEpoch() throws {
+		// Same reason as `testQueueProposalAcceptsSameIDCredentialRotation`:
+		// `authorBobCredentialRotation` bypasses `rotationCandidate` entirely.
+		OracleCheck.allow([.recvClassical])
+		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let rotatingMessage = try authorBobCredentialRotation(bob: &bob)
 		bob.stagedUpdates.append(

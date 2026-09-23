@@ -445,6 +445,79 @@ final class SessionArchiveTests: XCTestCase {
 		}
 	}
 
+	/// The fingerprint half of `validateManifestAgreement` is a distinct
+	/// check from the epoch half above: two bodies can agree on
+	/// `recvPQEpoch` while still disagreeing on the PQ key set that epoch
+	/// names — the case the epoch comparison alone can't see (see
+	/// `PQEpochManifest`'s own doc). A Core newer than the Checkpoint, with
+	/// both PQ epochs equal but the Checkpoint's `recvPQKeysFingerprint`
+	/// forged different, must still be rejected.
+	func testCoreNewerWithEqualEpochsButDivergentPQFingerprintIsRejected() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let checkpointArchive = try alice.makeSessionArchive(kind: .checkpoint)
+
+		// A routine classical fold — PQ untouched, so the Core's manifest
+		// still literally agrees with the Checkpoint's until the forge below.
+		_ = try bob.prepareToEncrypt()
+		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
+		_ = try alice.processIncomingDecrypted(offerFrame)
+		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(offerFrame))
+		let (_, offerMessage) = try Frames.decodeProposalSection(offerProposalSection)
+		let offerDigest = try SessionTestSupport.classicalProvider.hash(offerMessage)
+		_ = try alice.queueProposal(digest: offerDigest)
+		_ = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("folded".utf8))
+
+		let coreArchive = try alice.makeSessionArchive(kind: .core)
+		let coreBody = try coreArchive.decode(SessionArchive.self)
+		var checkpointBody = try checkpointArchive.decode(SessionArchive.self)
+		XCTAssertEqual(coreBody.recvPQEpoch, checkpointBody.recvPQEpoch)
+		XCTAssertEqual(coreBody.sendPQEpoch, checkpointBody.sendPQEpoch)
+
+		checkpointBody.recvPQKeysFingerprint = GroupKeySetFingerprint(
+			current: Data("forged-fingerprint".utf8), pending: [])
+		XCTAssertNotEqual(
+			coreBody.recvPQKeysFingerprint, checkpointBody.recvPQKeysFingerprint)
+
+		XCTAssertThrowsError(
+			try TwoMLSSession.restore(
+				core: try SecretArchive(encoding: coreBody),
+				checkpoint: try sealAndOpen(
+					try SecretArchive(encoding: checkpointBody)),
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// A single Checkpoint — no Core at all, the common restart path, where
+	/// `validateManifestAgreement` (splice path only) never even runs — whose
+	/// top-level `recvPQKeysFingerprint` disagrees with its OWN archived
+	/// `leafKeys.recvPQ` set must still be rejected. Nothing upstream of
+	/// `buildSession` proves a Checkpoint's claimed fingerprint is truthful
+	/// against the PQ key material the SAME body carries; this is the direct
+	/// proof that `buildSession` itself now does.
+	func testCheckpointWithFingerprintDisagreeingWithItsOwnLeafKeysIsRejected() throws {
+		let alice = try RatchetTests.fullyEstablishedTurnOnBob().alice
+		let archive = try alice.makeSessionArchive(kind: .checkpoint)
+		var body = try archive.decode(SessionArchive.self)
+		let genuineFingerprint = body.recvPQKeysFingerprint
+		body.recvPQKeysFingerprint = GroupKeySetFingerprint(
+			current: Data("forged-solo-fingerprint".utf8), pending: [])
+		XCTAssertNotEqual(body.recvPQKeysFingerprint, genuineFingerprint)
+
+		XCTAssertThrowsError(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: try SecretArchive(encoding: body),
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
 	// MARK: - 6. fail-closed: cross-session mispair
 
 	func testCrossSessionMispairIsRejected() throws {
@@ -512,6 +585,91 @@ final class SessionArchiveTests: XCTestCase {
 		) { error in
 			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
+	}
+
+	// MARK: - leafKeys' PQ sets: Checkpoint-only, spliced like the trees
+
+	/// A Core body whose `leafKeys` wrongly carries a PQ set (a Core never
+	/// should — the PQ sets ride only in a Checkpoint, exactly like
+	/// `GroupEntry.pq` itself) is rejected at `validateHeader`, even though
+	/// every other field is a genuine, otherwise-valid Core.
+	func testCoreCarryingPQLeafKeySetsIsRejected() throws {
+		let (alice, _) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let checkpointArchive = try alice.makeSessionArchive(kind: .checkpoint)
+		let coreArchive = try alice.makeSessionArchive(kind: .core)
+
+		var coreBody = try coreArchive.decode(SessionArchive.self)
+		XCTAssertNil(coreBody.leafKeys.sendPQ)
+		coreBody.leafKeys.sendPQ = GroupKeySetArchive(alice.leafKeys.sendPQ)
+
+		XCTAssertThrowsError(
+			try TwoMLSSession.restore(
+				core: try SecretArchive(encoding: coreBody),
+				checkpoint: try sealAndOpen(checkpointArchive),
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// A Checkpoint body missing either PQ set is rejected — the mandatory
+	/// Checkpoint slot must always be able to supply both, since a Core
+	/// never can. `validateHeader` is what actually fires first for this
+	/// exact corruption, but it isn't the only guard that would: even
+	/// without it, `LeafKeysArchive.restore()`'s own `guard let sendPQ,
+	/// let recvPQ` inside `buildSession` independently catches the same
+	/// absence as a defense-in-depth backstop.
+	func testCheckpointMissingPQLeafKeySetsIsRejected() throws {
+		let alice = try RatchetTests.fullyEstablishedTurnOnBob().alice
+		let archive = try alice.makeSessionArchive(kind: .checkpoint)
+		var body = try archive.decode(SessionArchive.self)
+		XCTAssertNotNil(body.leafKeys.sendPQ)
+		body.leafKeys.sendPQ = nil
+
+		XCTAssertThrowsError(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: try SecretArchive(encoding: body),
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// A spliced restore (newer Core + older Checkpoint, PQ untouched
+	/// between the two) takes `leafKeys.sendPQ`/`recvPQ` from the
+	/// Checkpoint, since the Core never carries them at all.
+	func testSplicedRestoreTakesLeafKeysPQSetsFromCheckpoint() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let checkpointArchive = try alice.makeSessionArchive(kind: .checkpoint)
+
+		// A routine classical fold — PQ, and so `leafKeys.sendPQ`/`recvPQ`,
+		// untouched — exactly like the tree-splice test above.
+		_ = try bob.prepareToEncrypt()
+		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
+		_ = try alice.processIncomingDecrypted(offerFrame)
+		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(offerFrame))
+		let (_, offerMessage) = try Frames.decodeProposalSection(offerProposalSection)
+		let offerDigest = try SessionTestSupport.classicalProvider.hash(offerMessage)
+		_ = try alice.queueProposal(digest: offerDigest)
+		_ = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("folded".utf8))
+
+		let coreArchive = try alice.makeSessionArchive(kind: .core)
+		let restored = try TwoMLSSession.restore(
+			core: try sealAndOpen(coreArchive),
+			checkpoint: try sealAndOpen(checkpointArchive),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		XCTAssertEqual(
+			restored.leafKeys.sendPQ.current?.signatureKey,
+			alice.leafKeys.sendPQ.current?.signatureKey)
+		XCTAssertEqual(
+			restored.leafKeys.recvPQ.current?.signatureKey,
+			alice.leafKeys.recvPQ.current?.signatureKey)
 	}
 
 	// MARK: - Decode invariant: the pinned bootstrap commitment length
