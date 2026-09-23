@@ -1053,4 +1053,123 @@ final class SessionArchiveTests: XCTestCase {
 		_ = try restored.encrypt(Data("still-healthy".utf8))
 		XCTAssertEqual(restored.auth.mine.pinned, [bobID])
 	}
+
+	// MARK: - fail-closed: every group the recorded state implies
+
+	// Each stripped group takes its manifest fields with it, so the
+	// manifest-vs-rebuilt-groups check can't be what rejects the body.
+
+	private func checkpointBody(_ session: TwoMLSSession) throws -> SessionArchive {
+		try session.makeSessionArchive(kind: .checkpoint).decode(SessionArchive.self)
+	}
+
+	private func restoreCheckpoint(_ body: SessionArchive) throws -> TwoMLSSession {
+		try TwoMLSSession.restore(
+			core: nil, checkpoint: try SecretArchive(encoding: body),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+	}
+
+	private func assertRestoreRejects(
+		_ body: SessionArchive, file: StaticString = #filePath, line: UInt = #line
+	) {
+		XCTAssertThrowsError(try restoreCheckpoint(body), file: file, line: line) { error in
+			XCTAssertEqual(
+				error as? TwoMLSError, .archiveInvalid, file: file, line: line)
+		}
+	}
+
+	func testCheckpointWithOnlyRequiredFieldsIsRejected() throws {
+		let established = try SessionTestSupport.established()
+		for session in [established.alice, established.bob] {
+			let full = try checkpointBody(session)
+			assertRestoreRejects(
+				SessionArchive(
+					version: full.version, classicalSuite: full.classicalSuite,
+					pqSuite: full.pqSuite, kind: full.kind,
+					stateSeq: full.stateSeq,
+					identity: full.identity, auth: full.auth,
+					currentStaple: full.currentStaple,
+					initiated: full.initiated,
+					pqTurnMine: full.pqTurnMine,
+					stagedUpdates: full.stagedUpdates,
+					sendCrossPSKLedger: full.sendCrossPSKLedger,
+					leafKeys: full.leafKeys,
+					sendPQKeysFingerprint: full.sendPQKeysFingerprint,
+					recvPQKeysFingerprint: full.recvPQKeysFingerprint))
+		}
+	}
+
+	func testCheckpointMissingSendGroupIsRejected() throws {
+		let (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		for session in [alice, bob] {
+			var body = try checkpointBody(session)
+			body.sendGroup = nil
+			body.sendClassicalGroupID = nil
+			body.sendPQEpoch = nil
+			assertRestoreRejects(body)
+		}
+	}
+
+	/// The pre-join initiator is the one state without a recv group; it
+	/// records that by still carrying its classical init secret.
+	func testCheckpointMissingRecvGroupIsRejectedOutsidePreJoinInitiator() throws {
+		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
+		XCTAssertNil(alice.recvGroup)
+		var preJoin = try checkpointBody(alice)
+		XCTAssertNoThrow(try restoreCheckpoint(preJoin))
+		preJoin.identity.classicalInitSecretKey = nil
+		assertRestoreRejects(preJoin)
+
+		_ = try bob.prepareToEncrypt()
+		_ = try alice.processIncomingDecrypted(
+			try bob.encrypt(Data("bob-hello".utf8)).frame)
+		for session in [alice, bob] {
+			var body = try checkpointBody(session)
+			body.recvGroup = nil
+			body.recvClassicalGroupID = nil
+			body.recvPQEpoch = nil
+			assertRestoreRejects(body)
+		}
+	}
+
+	/// Group_B's PQ half is absent until §A.3 founds it (the responder's
+	/// send) or joins it (the initiator's recv); from then on the round
+	/// state or an export watermark names it.
+	func testCheckpointMissingGroupBPQHalfIsRejectedOnceA3ReachesIt() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		XCTAssertNil(bob.sendGroup?.pq)
+		XCTAssertNoThrow(try restoreCheckpoint(try checkpointBody(bob)))
+
+		_ = try bob.pqBootstrapRespond(try alice.pqBootstrapBegin().frame)
+		guard case .bootstrapResponded = bob.pqInflight else {
+			return XCTFail("expected bob to hold `.bootstrapResponded`")
+		}
+		var respondedBob = try checkpointBody(bob)
+		respondedBob.sendGroup?.pq = nil
+		respondedBob.sendPQEpoch = nil
+		assertRestoreRejects(respondedBob)
+
+		let (settledAlice, settledBob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		XCTAssertNotNil(settledBob.lastSendPQExported)
+		XCTAssertNotNil(settledAlice.lastCrossInjectedPQ)
+
+		var bobBody = try checkpointBody(settledBob)
+		bobBody.sendGroup?.pq = nil
+		bobBody.sendPQEpoch = nil
+		assertRestoreRejects(bobBody)
+
+		var aliceBody = try checkpointBody(settledAlice)
+		aliceBody.recvGroup?.pq = nil
+		aliceBody.recvPQEpoch = nil
+		assertRestoreRejects(aliceBody)
+	}
+
+	func testManifestNamingAGroupTheBodyLacksIsRejected() throws {
+		let alice = try SessionTestSupport.established().alice
+		var body = try checkpointBody(alice)
+		XCTAssertNil(body.recvGroup)
+		body.recvClassicalGroupID = Data("group-b".utf8)
+		assertRestoreRejects(body)
+	}
 }
