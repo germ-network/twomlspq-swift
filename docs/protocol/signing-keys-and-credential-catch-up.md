@@ -1,6 +1,6 @@
 # Signing keys and the §A.5 credential catch-up
 
-Status: decided, not yet implemented (2026-09-22).
+Status: decided; implementation in progress.
 
 This document covers how this engine handles leaf signing keys, and how it runs the §A.5 credential catch-up. It
 separates five things:
@@ -12,7 +12,7 @@ separates five things:
 5. how a session chooses between the correct behavior and the deployed-compatible variant.
 
 **Sources.**
-- **The book:** TwoMLSPQ `book/src/`, at commit `81681cf`. It is the specification for this engine, and every "the book
+- **The book:** TwoMLSPQ `book/src/`, at commit `69a9f0e`. It is the specification for this engine, and every "the book
   says" below quotes it.
 - **RFC 9420:** a normative reference of the book.
 - **The deployed Rust engine:** TwoMLSPQ `rust/`, at the same commit. It is a *peer*, cited for interop facts and never as
@@ -24,16 +24,22 @@ party's own leaf: an Update proposal that gets folded, or a commit with an updat
 
 ## 1. What the book specifies
 
-- **Who opens a round.** The session opens PQ rounds itself, never the host. On our turn it opens "an **A.5 re-key**
-  if our send-PQ leaf still lags the canonical (classically committed) identity … else an **A.4 ratchet**". A staged A.4
-  is not upgraded mid-flight. Sources: `protocol-flows.md:56`, `api-reference.md:231-235`.
-- **Which leaves an A.5 moves.** "The proposal replaces the *proposer's* leaf … the full commit replaces the
-  *committer's* leaf … the pathless ack signals receipt" (`protocol-flows.md:696-701`; also `:48-51` and
-  `session-lifecycle.md:78-90`).
-  - Consequence: a party that rotated moves its own **send-PQ** leaf only when it *responds* to an A.5 that the peer
-    opens. The A.5 it opens itself moves only its **recv-PQ** leaf.
-  - So if only one party rotates, its send-PQ leaf lags until the peer rotates too. Until then, each of its PQ turns
-    opens an A.5.
+- **Who opens a round.** The session opens PQ rounds itself, never the host. On our turn, when the side-band is idle
+  and not wedged, it opens "an **A.5 re-key** if either leaf in the PQ half of our receive group (the group our A.5
+  re-keys) lags, else an **A.4 ratchet**". "A leaf *lags* when it presents a credential id other than its owner's
+  *current* canonical … id; a same-id key refresh is not a lag." If the lagging leaf is ours, our `Upd'` announces our
+  identity; if it is the peer's, the peer's responder `Commit'` carries theirs — the reciprocal catch-up. A rotation
+  landing while an A.4 is staged, or while an A.5 `Upd'` is in flight, does not re-mint that round, and a responder
+  whose own rotation staple has not yet applied answers with a no-move `Commit'` — either way the leaf still lags and
+  the next turn's trigger opens the catch-up: a race costs one extra round, never a stall. Sources:
+  `protocol-flows.md:56`, `api-reference.md:237-241`, `session-lifecycle.md:49-55`.
+- **Which leaves an A.5 moves, and why a catch-up takes two rounds.** "The proposal replaces the *proposer's* leaf …
+  the full commit replaces the *committer's* leaf … the pathless ack signals receipt" (`protocol-flows.md:696-701`;
+  also `:48-51` and `session-lifecycle.md:81-97`).
+  - Consequence: after a rotation, the rotated party's own next A.5 moves its leaf in the PEER's send group (the
+    round it opens). Its leaf in its OWN send group still lags, so the peer's next turn opens the reciprocal A.5
+    there instead, with a same-id `Upd'` and the rotated party's responder `Commit'` carrying its credential onto
+    that leaf. "A credential catch-up therefore takes two rounds" (`protocol-flows.md:704-708`).
 - **Every frame carries a proposal, and it is the peer's ack.**
   - The message frame is `[0x03][staple][proposal][app]` "with **no optional sections**" (`wire-format.md:187-188`).
   - "The evidence is the peer's stapled proposal": the peer builds its `Upd(self)` in our send group, so an offer bound
@@ -43,10 +49,18 @@ party's own leaf: an Update proposal that gets folded, or a commit with an updat
 - **Proposed candidates stay live.** "A candidate that has been proposed on the wire is **never evicted** — the peer
   may commit any of them" (`group-rules.md:119-121`). The receiver may drop an offer, because "the proposer re-sends
   every round" (`group-rules.md:136`).
-- **Catch-up is canonical-only.** "a lagging leaf may only fast-forward to an already-canonical credential;
-  candidates are proposed and canonicalized exclusively in the classical ratchet" (`group-rules.md:147-150`).
-- **Successor rule.** "`valid_successor` implements same-id / authorized-step / catch-up" (`group-rules.md:152-153`).
+- **Catch-up is canonical-only, and a live leaf's credential is pinned past eviction (rule 4).** "a lagging leaf may
+  only fast-forward to an already-canonical credential; candidates are proposed and canonicalized exclusively in the
+  classical ratchet" (`group-rules.md:149-152`). "A credential that a live PQ leaf still presents stays admissible
+  past window eviction until that leaf catches up; the A.3 founding pins are one instance of this rule"
+  (`group-rules.md:152-154`).
+- **Successor rule.** "`valid_successor` implements same-id / authorized-step / catch-up" (`group-rules.md:160-161`).
   A same-id leaf move is always a valid successor, whatever the signature key.
+- **The join-key rule.** "Until a leaf moves, its owner signs in that group with the key the leaf presents. A group
+  joined from a KeyPackage (the A.3 KP′) is signed with that KeyPackage's key, even if the owner has rotated since
+  it was minted. Moving one group's leaf never retires a key that another group's leaf still presents"
+  (`group-rules.md:154-158`; the A.3 step itself, `protocol-flows.md:142`: "Alice joins via the Welcome — signing in
+  that group with KP′'s key, which her leaf there presents, until her own A.5 moves it").
 - **The A.5 ack is pathless.** It is "a pathless partial commit on her own send group" (`protocol-flows.md:51`), so it
   moves no leaf.
 - **Signature algorithm.** "both halves sign Ed25519 (the PQ suite is confidentiality-only)" (`protocol-flows.md:598-602`).
@@ -61,6 +75,24 @@ party's own leaf: an Update proposal that gets folded, or a commit with an updat
   - Leaf keys "MUST be distinct from one another" within one ratchet tree (§16.7). That rule is per group; nothing in
     the RFC relates the keys of two different groups.
   - Post-compromise security comes from updating the leaf's encryption key (§16.6).
+
+> **Shipped anomaly (deployed Rust engine).** Its trigger loop reads its own *send*-PQ leaf, not either leaf of its
+> receive group, and it never opens the reciprocal A.5 for the peer — so after a one-sided rotation, "its own round
+> can only move its receive-PQ leaf, so the trigger never clears itself," and the rotated party re-sends a same-id
+> A.5 on every later PQ turn. A conforming peer heals it: the deployed responder `Commit'` does carry its current
+> credential, so a conforming peer's reciprocal A.5 completes the catch-up. Against a deployed peer, a conforming
+> rotated party's own send-PQ leaf stays behind for the mirror-image reason — the deployed peer never opens the
+> reciprocal round — so that party must keep signing that group with the key its leaf presents; rule 4 already
+> covers this, so it needs no separate accommodation (`session-lifecycle.md:263-273`, anomaly #1). The deployed AS
+> also pins only the A.3 founding ids, not every id a live leaf still presents — a conforming validator still keeps
+> such a leaf admissible (rule 4), but a *deployed* validator refuses one left behind for longer than the history
+> window, and nothing heals that specific case (`session-lifecycle.md:286-290`, anomaly #4). Against a peer whose
+> host never sends side-band frames at all, later A.4/A.5 rounds "stay open, without error, until it upgrades" —
+> never a stall, just indefinitely deferred (`session-lifecycle.md:303-319`, anomaly #6).
+
+**Pending.** The trigger's "not wedged" gate (`protocol-flows.md:56`) has nothing to check yet: the book's wedge is
+the native `pq_side_band_wedged()` latch (`api-reference.md:304-307`), and this engine has no wedged state at all
+yet. Conformance here is a pending item, not yet testable.
 
 ## 2. Where the book is silent, and what we decided
 
@@ -103,28 +135,28 @@ We don't carry that coupling over. Decisions:
     - The deployed engine mints a fresh Update on every frame instead, "a plain key refresh of the unchanged leaf"
       (`rust/two-mls-pq/src/session/messaging.rs:884-889`).
       - Neither the book nor the code says why. The book only says "every round stages one"
-        (`session-lifecycle.md:114-115`).
+        (`session-lifecycle.md:121-122`).
       - The cost is that the sender keeps every one of those secrets until the epoch moves, because the peer may fold
-        any of them. Today's Swift engine does the same (`TwoMLSSession+Messaging.swift:203-207`).
+        any of them. Today's Swift engine does the same (`TwoMLSSession+Messaging.swift:235-237`).
     - The deployed engine accepts a repeated offer:
       - it validates each offer without keeping state and skips the work once the epoch is already licensed
         (`messaging.rs:1625-1655`, `:599-640`: "safe to repeat");
       - it stores the latest offer (`:1655`);
       - approval is single-slot, latest-wins (`:2081-2118`), and the book says approval "never accumulates a second
         Update" (`group-rules.md:131-134`).
-      This engine's receive path behaves the same (`TwoMLSSession+Messaging.swift:477`, `:551-568`;
+      This engine's receive path behaves the same (`TwoMLSSession+Messaging.swift:551-563`;
       `TwoMLSSession+ClassicalCommit.swift:21-32`).
-    - Hosts bind the per-round proposal hash into each message (`session-lifecycle.md:110`, `:132`), so consecutive
+    - Hosts bind the per-round proposal hash into each message (`session-lifecycle.md:117`, `:139`), so consecutive
       messages in one epoch carry the same hash. The host we checked signs it into a per-message proposal, and the
       receiver checks that proposal against the same frame's digest. Nothing is keyed on the hash, so a repeat is fine.
 - **D4 — KeyPackage keys.** Every KeyPackage half gets a fresh signing key; there is no principal-wide signing key. We
   read "principal" as the credential. The book's "a credential-scoped signing identity" (`concepts.md:14`) is the
   lockstep model's wording.
-- **D5 — no extra trigger.** We don't add a trigger for the non-rotated peer to heal the rotated party's lagging
-  send-PQ leaf. That would depart from the book's trigger rule (§1), so it needs a book decision first. Until then the
-  convergence behavior is the book's.
+- **D5 — superseded: the book now specifies the reciprocal A.5** (`protocol-flows.md:56`, `:704-708`;
+  `group-rules.md:143-158` rule 4). The non-rotated peer's own next turn opens the catch-up for the rotated party's
+  still-lagging leaf; there is no extra trigger left for us to add.
 - **D6 — catch-up offers are approved.** The book says a born-dedicated acceptor's recv-group leaf "converges from the
-  invitation identity to the dedicated principal via its first committed Upd" (`group-rules.md:145-146`). But a peer
+  invitation identity to the dedicated principal via its first committed Upd" (`group-rules.md:147-148`). But a peer
   commits only an offer its host approved, and a host that approves only offers introducing a new client never approves
   a catch-up. So:
   - The engine marks a received offer that moves the proposer's leaf to a *different* credential id that is already
@@ -142,19 +174,20 @@ says so.
 | Behavior | Accepted from a peer | Done ourselves | Basis |
 |---|---|---|---|
 | One signing key shared across a party's groups or halves | yes: nothing compares a peer's keys across groups | never | RFC 9420 §16.7 is per group; D1 |
-| Same-id signing-key change on any group | yes | on every own-leaf move | book `group-rules.md:152-153`; D3 |
-| A peer's offer that catches its leaf up to an already-canonical id | approved and folded | offered; converges once the peer folds it | book `group-rules.md:145-146`; D6 |
-| PQ leaf moving to a new credential id | only to an id already canonical in the AS | only to our own current canonical id | book `group-rules.md:147-150` |
+| Same-id signing-key change on any group | yes | on every own-leaf move | book `group-rules.md:160-161`; D3 |
+| A peer's offer that catches its leaf up to an already-canonical id | approved and folded | offered; converges once the peer folds it | book `group-rules.md:147-148`; D6 |
+| PQ leaf moving to a new credential id | only to an id already canonical in the AS | only to our own current canonical id | book `group-rules.md:149-152` |
 | A PQ leaf's id and key changing together in one A.5 | yes | yes, with a key freshly minted in that group only | book §A.5; D1 |
 | A leaf move inside a pathless PQ bind or ack | no (malformed) | never | book `protocol-flows.md:51` |
-| Catch-up to an id that is authorized but not yet canonical | no, at respond and at apply | never | book `group-rules.md:147-150` |
-| An old key kept on a lagging send-PQ leaf (one-sided rotation, peer never opens an A.5) | yes | yes, whenever the book's trigger leaves that leaf unmoved | book §A.5 consequence (§1) |
+| Catch-up to an id that is authorized but not yet canonical | no, at respond and at apply | never | book `group-rules.md:149-152` |
+| An old key kept on a lagging send-PQ leaf (one-sided rotation, peer never opens an A.5) | yes | yes, whenever the book's trigger leaves that leaf unmoved | book `group-rules.md:154-155`; `session-lifecycle.md:269-273` anomaly #1 |
+| Reciprocal A.5 opened before the peer's own A.5 has landed | never, ourselves — see C2 | never | C2 |
 | Upd′ authenticated data | absent, or equal to the leaf's new id; any other value is rejected | deployed-compatible: C1; correct: never sent | C1 |
 
 ## 4. What we do only for compatibility with the deployed Rust engine
 
-C1 is the only divergence. The deployed engine's other quirks need nothing special from us. For example, it shares a
-key across its groups, and nothing compares a peer's keys across groups, so we accept that as-is (§3).
+C1 and C2 are the only divergences. The deployed engine's other quirks need nothing special from us. For example, it
+shares a key across its groups, and nothing compares a peer's keys across groups, so we accept that as-is (§3).
 
 - **C1 — announce the handed-off id in the A.5 Upd′ authenticated data.**
   - On send, the deployed engine writes the raw ClientId bytes into the Upd′'s authenticated data
@@ -162,10 +195,30 @@ key across its groups, and nothing compares a peer's keys across groups, so we a
   - On receive, it uses the value as an extra canonical-history check, skipped when absent (`pq_ops.rs:1081-1103`).
     It also returns the value to the host (`pq_ops.rs:977-982`), whose apps use it to trigger reconciliation.
   - The leaf credential is what the tree and the AS validate, so the announced value adds nothing to correctness. The
-    book mentions it only in its header-encryption leak inventory (`header-encryption.md:55`). Its A.5 text says the
-    round is "announcing that identity" (`protocol-flows.md:56`) without saying where.
+    book mentions it only in its header-encryption leak inventory (`header-encryption.md:55`). Its A.5 text now
+    specifies where: "our `Upd'` announces our identity" (`protocol-flows.md:56`) — onto our own leaf in the peer's
+    send group, the round the rotated party itself opens.
   - In a deployed-compatible session we send the value only on an A.5 that changes the credential id, never on a
     key-only one. On receive we treat it as a hint, in both profiles (§3).
+- **C2 — defer the reciprocal A.5 until the peer's own A.5 has landed.**
+  - What it is: when the peer's leaf in OUR recv-PQ lags, we don't open the reciprocal A.5 the moment it does. We wait
+    until the peer's own A.5 has landed — its leaf in OUR send-PQ presents its current canonical id — before opening
+    the round that catches its leaf up. That round runs in the PEER's send-PQ group — our own recv-PQ, the group its
+    leaf lags in, never a group we founded (`protocol-flows.md:706`: "Bob's next turn opens the reciprocal A.5 on
+    [ASG-PQ]", Alice's send-PQ group). Our own catch-up (opening an A.5 when OUR OWN leaf lags) is not deferred by
+    this — C2 gates only the reciprocal round. A residual case this doesn't cover: against a deployed peer that
+    rotated before its own A.3 bind, that peer's answer to OUR A.5 — as responder, whichever A.5 it is — still
+    orphans its key (the book's anomaly #5 covers any A.5 the deployed party answers, not only a reciprocal one).
+  - Why: the deployed engine's A.3 join signs with its *current* PQ key rather than the KP′ key its leaf actually
+    presents there (contrary to rule 4). If that party rotates before its A.3 bind, its own A.5 `Upd'` in that group
+    is mis-signed and permanently rejected, and the presented KP′ key survives only as its own send-PQ group's
+    signer. When it later answers a peer's A.5, ITS OWN responder `Commit'` replaces that signer, orphaning the leaf
+    for good — no copy of the key remains anywhere. Deferring until the peer's own A.5 has genuinely landed avoids
+    ever building the reciprocal `Commit'` against a party still stuck in this state (`session-lifecycle.md:291-302`,
+    anomaly #5, "Unchecked join").
+  - Cost against a conforming peer: at most one extra round — the reciprocal round waits one turn longer than the
+    book's bare trigger rule would otherwise allow, exactly the same "race costs one extra round, never a stall"
+    shape as §1's other races.
 - Sessions migrated from the deployed engine carry its key layout. The implementation plan covers how they restore.
 
 ## 5. Session profiles and KeyPackage signaling
@@ -174,13 +227,14 @@ The behavior above comes in two profiles:
 
 - **Correct:** the book plus D1–D6, with nothing kept only for the deployed engine. We intend to run this everywhere
   eventually.
-- **Deployed-compatible:** the correct behavior plus C1. It is *frozen*: it changes only to fix a
+- **Deployed-compatible:** the correct behavior plus C1 and C2. It is *frozen*: it changes only to fix a
   bug or to follow a change in the deployed engine. It is what a session runs whenever the peer might be the deployed
   engine.
 
 | Item | Correct | Deployed-compatible |
 |---|---|---|
 | C1: announce the handed-off id | never sent; a present value is still cross-checked | sent on an A.5 that changes the id |
+| C2: defer the reciprocal A.5 | opens the moment the peer's leaf lags, per the book's bare trigger rule (§1) | defers until the peer's own A.5 has landed |
 | D3: a fresh key on every leaf move | yes | yes: the deployed engine's successor check passes a same-id change (`rust/apq/src/authentication.rs:166-168`) |
 | Migrated sessions | never correct | always this profile |
 

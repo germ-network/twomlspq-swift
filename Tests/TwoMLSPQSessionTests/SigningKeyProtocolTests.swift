@@ -631,8 +631,9 @@ final class SigningKeyProtocolTests: XCTestCase {
 		}
 
 		// A classical round, running independently of the stuck A.5, catches
-		// alice's AS up to `bobNewID` — the book's §A.5 trigger rule (D5):
-		// nothing here specially targets the stuck round.
+		// alice's AS up to `bobNewID` — the book's §A.5 trigger rule
+		// (TwoMLSPQ `69a9f0e`, `protocol-flows.md:56`): nothing here
+		// specially targets the stuck round.
 		_ = try bob.prepareToEncrypt(rotating: bobNewID)
 		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try alice.processIncomingDecrypted(offerFrame)
