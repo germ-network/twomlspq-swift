@@ -815,10 +815,12 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTAssertEqual(
 			alice.session.recvGroup?.pq?.context.epoch, groupBPQEpochBeforeStep10 + 1)
 
-		// [11] Post-rotation credential catch-up. The rotated party's
-		// send-PQ leaf still presents its pre-rotation credential right
-		// after the rotation lands — the catch-up runs at the NEXT PQ
-		// round, not at the rotation itself.
+		// [11] Post-rotation credential catch-up. Right after the rotation
+		// lands, alice's send-PQ leaf still presents her pre-rotation
+		// credential — per §1, a round she opens moves only her RECV-PQ
+		// leaf; her send-PQ leaf moves only when she responds to a
+		// peer-opened A.5, so it stays on `aliceOldID` through this whole
+		// step.
 		XCTAssertNil(alice.session.pqInflight)
 		XCTAssertNil(alice.session.owedBind)
 		XCTAssertTrue(alice.session.myPQTurn)
@@ -826,10 +828,13 @@ final class LifecycleE2ETests: XCTestCase {
 			of: try XCTUnwrap(alice.session.sendGroup?.pq))
 		XCTAssertEqual(
 			try basicIdentifier(aliceSendPQLeafBeforeCatchup.credential), aliceOldID)
+		let aliceRecvPQKeyBeforeCatchup = try TwoMLSSession.ownLeaf(
+			of: try XCTUnwrap(alice.session.recvGroup?.pq)
+		).signatureKey
 
-		// Book: the SESSION self-drives §A.5 — the rotated party's own next
-		// PQ round should open as a re-key, carrying the new credential onto
-		// the PQ leaves, with no host call. Drive whatever round actually
+		// Book: the SESSION self-drives §A.5 — alice's own next PQ round
+		// should open as a re-key, carrying the new credential onto her
+		// recv-PQ leaf, with no host call. Drive whatever round actually
 		// opens (an A.4 ratchet today) to completion with the generic
 		// driver, which works unchanged for either shape.
 		let openKind = try alice.drivePQRoundToCompletion(responder: &bob)
@@ -837,10 +842,51 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTExpectFailure("no self-driven §A.5 once the send-PQ leaf lags a rotation") {
 			XCTAssertEqual(openKind, .rekeyUpd)
 		}
-		try XCTExpectFailure("no §A.5 credential catch-up after rotation") {
-			let leaf = try TwoMLSSession.ownLeaf(
-				of: try XCTUnwrap(alice.session.sendGroup?.pq))
-			XCTAssertEqual(try basicIdentifier(leaf.credential), alice2ID)
+
+		// §1's one-round outcome: unaffected by whatever round actually
+		// opened above, alice's send-PQ own leaf still presents her
+		// PRE-rotation credential.
+		let aliceSendPQLeafAfterRound = try TwoMLSSession.ownLeaf(
+			of: try XCTUnwrap(alice.session.sendGroup?.pq))
+		XCTAssertEqual(
+			try basicIdentifier(aliceSendPQLeafAfterRound.credential), aliceOldID)
+
+		let aliceRecvPQLeaf = try TwoMLSSession.ownLeaf(
+			of: try XCTUnwrap(alice.session.recvGroup?.pq))
+		// A PQ key is never equal to a classical key, so these hold today
+		// regardless of D3's gap.
+		XCTAssertNotEqual(
+			aliceRecvPQLeaf.signatureKey,
+			try TwoMLSSession.ownLeaf(
+				of: try XCTUnwrap(alice.session.sendGroup?.classical)
+			).signatureKey)
+		XCTAssertNotEqual(
+			aliceRecvPQLeaf.signatureKey,
+			try TwoMLSSession.ownLeaf(
+				of: try XCTUnwrap(alice.session.recvGroup?.classical)
+			).signatureKey)
+
+		try XCTExpectFailure("§1/D3: no §A.5 credential catch-up after rotation") {
+			XCTAssertEqual(try basicIdentifier(aliceRecvPQLeaf.credential), alice2ID)
+
+			// Bob's own copy of the SAME group (Group_B.pq — his sendGroup,
+			// alice's recvGroup mirror): his view of alice's leaf must agree.
+			let bobsGroupBPQ = try XCTUnwrap(bob.session.sendGroup?.pq)
+			let aliceLeafEntry = try XCTUnwrap(
+				bobsGroupBPQ.tree.nonBlankLeaves().first {
+					$0.index != bobsGroupBPQ.myLeafIndex
+				})
+			let aliceLeafAtBob = try MLS.RFC9420.LeafNode(
+				mlsEncoded: aliceLeafEntry.record.encoded)
+			XCTAssertEqual(try basicIdentifier(aliceLeafAtBob.credential), alice2ID)
+
+			// D3: the catch-up mints a fresh key for THAT group only.
+			XCTAssertNotEqual(aliceRecvPQLeaf.signatureKey, aliceRecvPQKeyBeforeCatchup)
+			XCTAssertNotEqual(
+				aliceRecvPQLeaf.signatureKey,
+				try TwoMLSSession.ownLeaf(
+					of: try XCTUnwrap(alice.session.sendGroup?.pq)
+				).signatureKey)
 		}
 
 		// [12] Idle invariants: the non-turn side never has anything

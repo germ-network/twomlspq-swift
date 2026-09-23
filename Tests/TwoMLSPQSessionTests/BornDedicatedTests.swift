@@ -46,32 +46,8 @@ final class BornDedicatedTests: XCTestCase {
 		alice: TwoMLSSession, bob: TwoMLSSession, invitationClientID: Data,
 		dedicatedClientID: Data, envelope: Data
 	) {
-		var (alice, bob, _, invitationClientID, resolvedDedicatedClientID) =
-			try SessionTestSupport.establishedDedicated(
-				dedicatedClientID: dedicatedClientID)
-		let envelope = fakeEnvelope()
-		_ = try bob.installEstablishmentEnvelope(envelope)
-		let standalone = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(standalone))
-		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			XCTFail("expected a pause on the un-approved 0x0B")
-			throw TwoMLSError.notEstablished
-		}
-		let approval = try approvalTriple(
-			installedOn: bob, expectedCreator: resolvedDedicatedClientID)
-		guard
-			case .joined = try alice.processIncomingApproved(
-				opened.frame, approvedEnvelopeDigest: approval.envelopeDigest,
-				approvedWelcomeDigest: approval.welcomeDigest,
-				expectedCreator: approval.expectedCreator)
-		else {
-			XCTFail("expected .joined on the approved re-feed")
-			throw TwoMLSError.notEstablished
-		}
-		return (
-			alice: alice, bob: bob, invitationClientID: invitationClientID,
-			dedicatedClientID: resolvedDedicatedClientID, envelope: envelope
-		)
+		try SessionTestSupport.establishedDedicatedAndApproved(
+			dedicatedClientID: dedicatedClientID)
 	}
 
 	// MARK: - Accept 1: full round-trip

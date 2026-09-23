@@ -110,6 +110,46 @@ enum SessionTestSupport {
 		)
 	}
 
+	/// `establishedDedicated()` taken through the install/standalone/approve
+	/// dance: install the envelope, deliver the welcome standalone, and
+	/// approve it — landing both parties established (not yet
+	/// `isFullyEstablished`; no §A.3 bootstrap has run). Shared by
+	/// `BornDedicatedTests` and any other suite needing a born-dedicated
+	/// starting point.
+	static func establishedDedicatedAndApproved(
+		dedicatedClientID: Data = Data("bob-dedicated".utf8)
+	) throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession, invitationClientID: Data,
+		dedicatedClientID: Data, envelope: Data
+	) {
+		var (alice, bob, _, invitationClientID, resolvedDedicatedClientID) =
+			try establishedDedicated(dedicatedClientID: dedicatedClientID)
+		let envelope = Data("fake-signed-handoff".utf8)
+		_ = try bob.installEstablishmentEnvelope(envelope)
+		let standalone = try XCTUnwrap(try bob.standaloneWelcome())
+		let opened = try XCTUnwrap(try alice.openIncoming(standalone))
+		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
+			XCTFail("expected a pause on the un-approved 0x0B")
+			throw TwoMLSError.notEstablished
+		}
+		let (envelopeBytes, welcomeBytes) = try Frames.decodeEstablishmentHandoff(
+			bob.currentStaple)
+		guard
+			case .joined = try alice.processIncomingApproved(
+				opened.frame,
+				approvedEnvelopeDigest: try classicalProvider.hash(envelopeBytes),
+				approvedWelcomeDigest: try classicalProvider.hash(welcomeBytes),
+				expectedCreator: resolvedDedicatedClientID)
+		else {
+			XCTFail("expected .joined on the approved re-feed")
+			throw TwoMLSError.notEstablished
+		}
+		return (
+			alice: alice, bob: bob, invitationClientID: invitationClientID,
+			dedicatedClientID: resolvedDedicatedClientID, envelope: envelope
+		)
+	}
+
 	static func establishedAndExchanged(
 		alice aliceName: String = "alice", bob bobName: String = "bob"
 	) throws -> (alice: TwoMLSSession, bob: TwoMLSSession) {
