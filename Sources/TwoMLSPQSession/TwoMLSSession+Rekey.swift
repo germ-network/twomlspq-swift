@@ -342,14 +342,23 @@ extension TwoMLSSession {
 			// Commit′ moved its presentation (a hand-built/migrated Upd′
 			// carrying a `newIdentity`; the routine self-driven proposal
 			// never does) — a same-key apply is `promoted`'s own no-op.
-			// recv-PQ retains no other pending entry across a rekey, so
-			// every remaining one is dropped regardless.
+			// A.7 (step 3): retain `pending[mine.current]` when the recv-PQ
+			// leaf still lags it after this apply — the PQ half of rule 7,
+			// which a migrated/lagging session needs for a later self-drive
+			// to consume; every other pending entry is still dropped, same
+			// as before.
 			var updatedLeafKeys = leafKeys
 			let ownPQLeaf = try Self.ownLeaf(of: recvPQ)
 			let ownPQID = try basicIdentifier(ownPQLeaf.credential)
 			try updatedLeafKeys.recvPQ.promoted(
 				presenting: ownPQLeaf.signatureKey, id: ownPQID)
-			updatedLeafKeys.recvPQ.pending = [:]
+			if let mineCurrent = auth.mine.current, ownPQID != mineCurrent,
+				let catchUpKey = updatedLeafKeys.recvPQ.pending[mineCurrent]
+			{
+				updatedLeafKeys.recvPQ.pending = [mineCurrent: catchUpKey]
+			} else {
+				updatedLeafKeys.recvPQ.pending = [:]
+			}
 
 			// §13 M2: export `S` off the just-rekeyed group and stamp the
 			// watermark right after — mirrors `pqBootstrapJoin` (the export

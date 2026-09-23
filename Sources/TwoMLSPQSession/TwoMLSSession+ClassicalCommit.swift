@@ -207,25 +207,28 @@ extension TwoMLSSession {
 		}
 	}
 
-	/// The own-leaf catch-up (§3c, slice 6): does `send`'s own classical leaf lag the canonical
-	/// principal `candidate` already achieved on `recv`'s own leaf (the FIRST
-	/// leaf to canonicalize a rotation, per `applyFoldCommit`/`applyBind`)?
-	/// Both reads are tree-derived (never a cached claim), so this can never
-	/// disagree with what the stored key sets would sign with. Returns the
-	/// TARGET id, not the candidate record — the key itself always comes
-	/// from `leafKeys.sendClassical.pending`, never `rotationCandidate.
-	/// signingKey` directly — `nil` when there is no outstanding candidate,
-	/// either group is absent, or the send-leaf already presents the
-	/// canonical id.
+	/// The own-leaf catch-up (§3c, slice 6; generalized by A.7 — step 3): does
+	/// `send`'s own classical leaf "lag" — present an id other than
+	/// `mineCurrent` (`auth.mine.current`)? No candidate is needed to answer
+	/// that: `mine.current` only ever moves once SOME leaf has already
+	/// canonicalized the new id (`canonicalize`'s `mine.commit`, run when my
+	/// OWN recv-leaf's rotation is folded), so a send-leaf lag against it is
+	/// exactly "the recv leaf got there first" — the same condition the old
+	/// candidate-based check derived less directly, plus every migrated or
+	/// rule-7-supplied lag a candidate could never explain. The read is
+	/// tree-derived (never a cached claim), so this can never disagree with
+	/// what the stored key set would sign with. Returns the TARGET id, not a
+	/// candidate record — the key itself always comes from
+	/// `leafKeys.sendClassical.pending`, never `rotationCandidate.
+	/// signingKey` directly — `nil` when the group is absent, there is no
+	/// canonical principal yet, or the send-leaf already presents it.
 	private static func ownLeafCatchUpTarget(
-		send: APQGroup?, recv: APQGroup?, candidate: RotationCandidate?
+		send: APQGroup?, mineCurrent: Data?
 	) throws -> Data? {
-		guard let candidate, let send, let recv else { return nil }
+		guard let send, let mineCurrent else { return nil }
 		let sendOwnID = try basicIdentifier(Self.ownLeaf(of: send.classical).credential)
-		guard sendOwnID != candidate.clientID else { return nil }
-		let canonicalID = try basicIdentifier(Self.ownLeaf(of: recv.classical).credential)
-		guard canonicalID == candidate.clientID else { return nil }
-		return candidate.clientID
+		guard sendOwnID != mineCurrent else { return nil }
+		return mineCurrent
 	}
 
 	/// §3b/§11 MF6: a committing round on `sendGroup.classical` — folds the
@@ -280,7 +283,7 @@ extension TwoMLSSession {
 		let catchUpTargetID =
 			licensed
 			? try Self.ownLeafCatchUpTarget(
-				send: sendGroup, recv: recvGroup, candidate: rotationCandidate)
+				send: sendGroup, mineCurrent: auth.mine.current)
 			: nil
 		// The pending-key lookup runs only when there IS a catch-up target
 		// — never unconditionally — and is captured now, on `self.leafKeys`,
@@ -645,9 +648,8 @@ extension TwoMLSSession {
 			// actually moved.
 			let updatedLeafKeys = try Self.updateRecvClassicalKeys(
 				leafKeys, classical: recv.classical,
-				authCopy: authCopy, recvLeafPrincipal: recvLeafPrincipal,
-				identity: identity,
-				rotationCandidateID: rotationCandidate?.clientID)
+				authCopy: authCopy, rotationCandidateID: rotationCandidate?.clientID
+			)
 
 			recvGroup = recv
 			sendGroup = send
@@ -718,11 +720,14 @@ extension TwoMLSSession {
 	/// presents rather than depend on that AS-level event agreeing with it;
 	/// retention likewise runs regardless, since `stagedUpdates` goes stale
 	/// at every advance regardless of which leaf this particular commit
-	/// moved.
+	/// moved. Generalized by A.7 (step 3): the retained rule-4 target is
+	/// `authCopy.mine.current` itself whenever the post-apply leaf still
+	/// lags it — subsumes the born-dedicated-only case (`recvLeafPrincipal`/
+	/// `identity` are no longer needed here: kept as unread records on
+	/// `TwoMLSSession` until a later step retires them).
 	private static func updateRecvClassicalKeys(
 		_ leafKeys: LeafKeys, classical: MLS.RFC9420.Group,
-		authCopy: AuthCore, recvLeafPrincipal: RecvLeafPrincipal?, identity: TwoMLSIdentity,
-		rotationCandidateID: Data?
+		authCopy: AuthCore, rotationCandidateID: Data?
 	) throws -> LeafKeys {
 		var updated = leafKeys
 		let ownLeaf = try Self.ownLeaf(of: classical)
@@ -734,10 +739,10 @@ extension TwoMLSSession {
 					$0, mineHistory: authCopy.mine.history)
 			} ?? true
 		let ruleFourTarget: Data? = {
-			guard let recvLeafPrincipal, recvLeafPrincipal.clientID == ownID,
-				ownID != authCopy.mine.current
-			else { return nil }
-			return identity.clientID
+			guard let mineCurrent = authCopy.mine.current, ownID != mineCurrent else {
+				return nil
+			}
+			return mineCurrent
 		}()
 		updated.recvClassical.retainRecvClassical(
 			candidateID: rotationCandidateID,
@@ -980,9 +985,8 @@ extension TwoMLSSession {
 			// advances.
 			let updatedLeafKeys = try Self.updateRecvClassicalKeys(
 				leafKeys, classical: recv.classical,
-				authCopy: authCopy, recvLeafPrincipal: recvLeafPrincipal,
-				identity: identity,
-				rotationCandidateID: rotationCandidate?.clientID)
+				authCopy: authCopy, rotationCandidateID: rotationCandidate?.clientID
+			)
 
 			recvGroup = recv
 			sendGroup = send

@@ -64,27 +64,24 @@ extension TwoMLSSession {
 		// forever with no fold ever able to canonicalize it.
 		let myCurrentID = try basicIdentifier(Self.ownLeaf(of: recv.classical).credential)
 
-		// Slice 11 (group-rules.md rule 4): the recv-leaf catch-up — my own
-		// recv-leaf still lags my canonical principal (the born-dedicated
-		// acceptor's Group_A leaf presenting the invitation identity while
-		// `auth.mine.current` is already D) AND custody over the lagging
-		// key is still held. Explicit `rotating:` wins over this implicit
-		// arm (checked first, below) UNLESS it names D itself — closing the
-		// `rotating == auth.mine.current` hole (Messaging:65-99 would
-		// otherwise mint a 2nd D keypair and leak `authorize(D)` into
+		// Slice 11 / step 3 (group-rules.md rule 4, generalized —
+		// protocol-flows.md:56): the recv-leaf catch-up — my own recv-leaf
+		// still "lags" (presents an id other than `auth.mine.current`),
+		// whatever put it there: the born-dedicated acceptor's Group_A leaf
+		// presenting the invitation identity while `auth.mine.current` is
+		// already D, or a migrated session's leaf presenting a Rust-era id.
+		// The target key always lives at `recvClassical.pending[mine.
+		// current]` — rule 7 requires it to be there for any lagging own
+		// leaf, native or migrated alike. Explicit `rotating:` wins over
+		// this implicit arm (checked first, below) UNLESS it names
+		// `auth.mine.current` itself — closing the `rotating ==
+		// auth.mine.current` hole (Messaging:65-99 would otherwise mint a
+		// 2nd keypair and leak `authorize(mine.current)` into
 		// `authorizedNext` forever, since `PartySequence.commit`'s own
 		// `current == id` early return never canonicalizes a no-op).
-		if rotating == nil, let custody = recvLeafPrincipal,
-			myCurrentID != auth.mine.current,
-			custody.clientID == myCurrentID
+		if rotating == nil, let mineCurrent = auth.mine.current, myCurrentID != mineCurrent
 		{
-			// The framing key reads the stored slot directly (it still
-			// equals the invitation identity's key, same as `custody.
-			// signingKey`); the NEW leaf key is the rule-4 target already
-			// staged at `receive` — a miss here (impossible in a session
-			// this module ever builds, since `custody`/the target are
-			// seeded together) fails closed before any mutation.
-			guard let target = leafKeys.recvClassical.pending[identity.clientID] else {
+			guard let target = leafKeys.recvClassical.pending[mineCurrent] else {
 				throw TwoMLSError.credentialUnknown
 			}
 			let (catchUpMessage, _) = try recv.classical.proposeUpdate(
@@ -94,27 +91,22 @@ extension TwoMLSSession {
 					new: target.signingKey),
 				framing: .publicMessage,
 				newIdentity: MLS.RFC9420.NewSigningIdentity(
-					credential: .basic(identity: identity.clientID),
+					credential: .basic(identity: mineCurrent),
 					signatureKey: target.signatureKey))
 			message = catchUpMessage
-			proposing = identity.clientID
+			proposing = mineCurrent
 		} else if let rotating {
 			guard !rotating.isEmpty else { throw TwoMLSError.credentialUnknown }
 			guard rotating != myCurrentID else { throw TwoMLSError.credentialUnknown }
 
 			if rotating == auth.mine.current {
 				// Naming the identity already canonical isn't a NEW
-				// rotation — route it to the SAME catch-up this session
-				// would perform implicitly, if custody is still held; else
-				// there is nothing to catch up AND no legitimate rotation
-				// target here either.
-				guard let custody = recvLeafPrincipal,
-					custody.clientID == myCurrentID
-				else {
-					throw TwoMLSError.credentialUnknown
-				}
-				guard let target = leafKeys.recvClassical.pending[identity.clientID]
-				else {
+				// rotation — route it to the SAME generalized catch-up this
+				// session would perform implicitly (the arm above), keyed
+				// on `rotating` itself since it already equals `mine.current`;
+				// else there is nothing to catch up AND no legitimate
+				// rotation target here either.
+				guard let target = leafKeys.recvClassical.pending[rotating] else {
 					throw TwoMLSError.credentialUnknown
 				}
 				let (catchUpMessage, _) = try recv.classical.proposeUpdate(
@@ -125,10 +117,10 @@ extension TwoMLSSession {
 						new: target.signingKey),
 					framing: .publicMessage,
 					newIdentity: MLS.RFC9420.NewSigningIdentity(
-						credential: .basic(identity: identity.clientID),
+						credential: .basic(identity: rotating),
 						signatureKey: target.signatureKey))
 				message = catchUpMessage
-				proposing = identity.clientID
+				proposing = rotating
 			} else {
 				let candidate: RotationCandidate
 				let candidateKey: LeafKey
@@ -189,21 +181,32 @@ extension TwoMLSSession {
 						signingKey: signingKey, signatureKey: signatureKey)
 					// Stage the fresh key into BOTH classical sets — recv-
 					// classical via `stage` (idempotent-safe, though a fresh
-					// mint can never collide with a live target here), send-
-					// classical by outright replacement, since F2's
+					// mint can never collide with a live target here);
+					// send-classical replaces every OTHER entry, since F2's
 					// one-generation cap means at most one candidate is ever
-					// outstanding for the whole party. A candidate this
-					// replaces leaves its own dead `pending[C_old]` entry
-					// behind on recv-classical ONLY — send-classical's whole
-					// `pending` is replaced wholesale below, so it never
-					// accumulates one. Either way it's harmless: no signing
-					// site ever reads a target that isn't the current
-					// `rotating`.
+					// outstanding for the whole party, but (A.7, generalized
+					// catch-up) it KEEPS `pending[mine.current]` when the
+					// send leaf itself still lags — without this, a
+					// migrated session whose send-classical leaf lags after
+					// a rotation Rust won, and which then rotates again
+					// natively, would lose its catch-up key and brick. A
+					// candidate this replaces leaves its own dead
+					// `pending[C_old]` entry behind on recv-classical ONLY —
+					// harmless: no signing site ever reads a target that
+					// isn't the current `rotating` or the retained
+					// catch-up.
 					try stagedLeafKeys.recvClassical.stage(
 						candidateKey, for: rotating)
-					stagedLeafKeys.sendClassical.pending = [
-						rotating: candidateKey
-					]
+					var sendPending: [Data: LeafKey] = [:]
+					if let mineCurrent = auth.mine.current,
+						let catchUpKey = stagedLeafKeys.sendClassical
+							.pending[
+								mineCurrent]
+					{
+						sendPending[mineCurrent] = catchUpKey
+					}
+					sendPending[rotating] = candidateKey
+					stagedLeafKeys.sendClassical.pending = sendPending
 				}
 				mintedLeafKeys = stagedLeafKeys
 

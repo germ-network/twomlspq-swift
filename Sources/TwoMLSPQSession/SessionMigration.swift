@@ -1000,16 +1000,40 @@ public enum SessionMigration {
 			throw TwoMLSError.archiveInvalid
 		}
 
+		// A.7 (step 3, generalized catch-up): "lags" means the leaf presents
+		// an id other than `mineCurrent`. This conversion can only supply a
+		// rule-7 `pending[mineCurrent]` entry when it actually holds a key
+		// for `mineCurrent` — the rotation candidate's, when outstanding, or
+		// `identity`'s own, when `identity.clientID == mineCurrent` (the
+		// born-dedicated D case, or any non-rotated session). A lag this
+		// conversion cannot explain either way fails `validateLeafKeys`'s
+		// check 7 at mint, same as before — an inherent limit of this
+		// temporary owner-keyed conversion, not a new gap.
+		let mineCurrent = parts.auth.mine.history.last
+
 		let sendOwnLeaf = try TwoMLSSession.ownLeaf(of: sendClassical)
+		let sendOwnID = try basicIdentifier(sendOwnLeaf.credential)
 		var sendClassicalSet = GroupKeySet(
 			current: try lookupClassical(sendOwnLeaf.signatureKey.data))
+		var sendHasCandidateEntry = false
 		if let candidate = parts.rotationCandidate {
-			let sendPresentsCandidate =
-				try basicIdentifier(sendOwnLeaf.credential) == candidate.clientID
+			let sendPresentsCandidate = sendOwnID == candidate.clientID
 			if !sendPresentsCandidate {
 				sendClassicalSet.pending[candidate.clientID] = try lookupClassical(
 					candidate.signatureKey)
+				sendHasCandidateEntry = true
 			}
+		}
+		// (b′) rule 4, generalized: a lagging SEND leaf under the identity's
+		// own canonical principal, when the candidate arm above doesn't
+		// already cover it — new relative to the pre-A.7 conversion, which
+		// never gave the send side a rule-4 arm at all.
+		if let mineCurrent, parts.identity.clientID == mineCurrent,
+			sendOwnID != mineCurrent,
+			!sendHasCandidateEntry
+		{
+			sendClassicalSet.pending[mineCurrent] = try lookupClassical(
+				parts.identity.signatureKey)
 		}
 
 		var recvClassicalSet: GroupKeySet
@@ -1028,11 +1052,14 @@ public enum SessionMigration {
 				recvClassicalSet.pending[candidate.clientID] = try lookupClassical(
 					candidate.signatureKey)
 			}
-			// (b) rule 4: the born-dedicated catch-up target.
-			if let recvLeaf = parts.recvLeafPrincipal, recvLeaf.clientID == recvOwnID,
-				recvOwnID != parts.auth.mine.history.last
+			// (b) rule 4, generalized (A.7): a lagging RECV leaf under the
+			// identity's own canonical principal — subsumes the
+			// born-dedicated-only case (`recvLeafPrincipal` stays an unread
+			// record until step 5).
+			if let mineCurrent, parts.identity.clientID == mineCurrent,
+				recvOwnID != mineCurrent
 			{
-				recvClassicalSet.pending[parts.identity.clientID] =
+				recvClassicalSet.pending[mineCurrent] =
 					try lookupClassical(
 						parts.identity.signatureKey)
 			}
