@@ -475,7 +475,7 @@ extension TwoMLSSession {
 		// `sha256` for the deployed classical suite, matching the book's fixed
 		// sha256 for `proposal_hash`.
 		let digest = try classicalProvider.hash(proposalMessage)
-		stampLicenseIfOffered(proposalMessage)
+		let isCatchUp = stampLicenseIfOffered(proposalMessage)
 		// §11 MF8: replace whatever offer was previously surfaced,
 		// unconditionally — single-occupancy, latest-wins, exactly like the
 		// approved tally it feeds.
@@ -492,7 +492,8 @@ extension TwoMLSSession {
 			newSender: stapleResult.newSender,
 			ownCredentialCanonicalized: stapleResult.ownCredentialCanonicalized,
 			queuedProposal: QueuedProposal(
-				digest: digest, proposing: proposing, context: context),
+				digest: digest, proposing: proposing, context: context,
+				isCatchUp: isCatchUp),
 			update: update)
 	}
 
@@ -554,13 +555,26 @@ extension TwoMLSSession {
 	/// id) — not a forgery vector today, since the Update is itself
 	/// signature- and membership-tag-authenticated; only relevant once
 	/// `proposing` names something other than "my one peer."
-	private mutating func stampLicenseIfOffered(_ proposalMessage: Data) {
+	///
+	/// Also computes D6's catch-up flag (protocol doc §2): whether this SAME
+	/// offer moves the sender's leaf to a DIFFERENT credential id equal to
+	/// the peer's CURRENT canonical principal (`auth.theirs.current`) —
+	/// reusing this verification rather than a second parse. Matches what
+	/// `queueProposal` itself would accept for a rotation
+	/// (`validSuccessorOfCurrent`, +ClassicalCommit.swift): landing exactly on
+	/// the head. `false` on any verification failure, a non-`.update`
+	/// proposal, a same-id offer, a move to a merely-authorized (not yet
+	/// canonical) candidate, or a move to any canonical id that is NOT the
+	/// current head — a rollback to an older-but-still-remembered credential
+	/// is never a catch-up. Never throws — matches this method's own
+	/// no-throw-after-a-mutation contract (`peerAppliedSendEpoch` above).
+	private mutating func stampLicenseIfOffered(_ proposalMessage: Data) -> Bool {
 		withDeployedWireConventions {
 			guard let message = try? MLS.RFC9420.Message(mlsEncoded: proposalMessage),
 				case .publicMessage(let updatePub) = message,
 				let send = sendGroup
 			else {
-				return
+				return false
 			}
 			guard
 				let verified = try? send.classical.verifying(
@@ -568,9 +582,20 @@ extension TwoMLSSession {
 				case .member(let senderLeaf) = verified.sender,
 				senderLeaf != send.classical.myLeafIndex
 			else {
-				return
+				return false
 			}
 			peerAppliedSendEpoch = send.classical.context.epoch
+
+			guard case .update(let leafNode) = verified.proposal,
+				case .basic(let newID) = leafNode.credential,
+				let currentRecord = send.classical.tree.leaf(at: senderLeaf),
+				let currentLeaf = try? MLS.RFC9420.LeafNode(
+					mlsEncoded: currentRecord.encoded),
+				case .basic(let oldID) = currentLeaf.credential
+			else {
+				return false
+			}
+			return oldID != newID && newID == auth.theirs.current
 		}
 	}
 

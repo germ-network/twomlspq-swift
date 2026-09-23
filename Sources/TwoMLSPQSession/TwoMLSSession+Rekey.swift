@@ -4,7 +4,7 @@ import MLSCodec
 import MLSCombiner
 import MLSProfileRFC9420
 
-// MARK: - §A.5 PQ re-key (mechanical — no credential rotation; Chunk 2)
+// MARK: - §A.5 PQ re-key
 
 /// Host tag routing for every side-band frame this module parks or expects:
 /// `0x03` `processIncoming` (app message); `0x13`/`0x15` bootstrap
@@ -21,12 +21,21 @@ import MLSProfileRFC9420
 /// group it actually owns — `sendGroup.pq` (`pqRekeyRespond`); the
 /// initiator applies that Commit′, exports `S` off the freshly-rekeyed
 /// group, and owes the classical bind (`pqRekeyApply`, reusing `owePQBind`).
-/// This mechanical form carries no credential/signature-key rotation — every
-/// leaf keeps its identity (`.updated`, never `.credentialReplaced`), NOW
-/// ENFORCED rather than merely asserted (`pqRekeyRespond`'s presentation
-/// check + `validateRekeyCommitEffects`, which refuse a `.credentialReplaced`
-/// because the PQ arms run no AS adjudication); that handoff is Chunk 2
-/// (§15).
+/// The proposed leaf may present the SAME id and key (`.updated`, a plain
+/// encryption-key-only refresh — `pqRekeyBegin`'s routine, non-rotating
+/// case) or a changed presentation — the SAME id under a freshly-minted
+/// signature key, or a move to an already-canonical credential id — which
+/// swift-mls always reports as `.credentialReplaced` (its effect fires on
+/// EITHER the id or the presented signing key changing), never `.updated`,
+/// regardless of whether the id itself moved (group-rules rule 4 /
+/// `valid_successor`'s same-id arm — protocol doc §1/§3/D6):
+/// `pqRekeyRespond`'s id-based gate (`validatePQLeafMove`,
+/// `CredentialAuthentication.swift`) checks this before the commit is even
+/// built, `validateRekeyCommitEffects` validates the resulting shape, and
+/// both `pqRekeyRespond`/`pqRekeyApply` re-adjudicate the actually-applied
+/// effects as a backstop before any write-back. These checks run id-based
+/// against the classical `AuthCore` (D2) — the PQ arms track no canonical
+/// sequence of their own.
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
 	/// The initiator (whoever holds `pqTurnMine`) begins an §A.5 round:
@@ -75,9 +84,14 @@ extension TwoMLSSession {
 	/// true` commit there — optionally carrying a fresh cross-party `0xFF02`
 	/// PSK exported off `recvGroup.pq` (the initiator's own send-PQ mirror,
 	/// event-driven off `lastCrossInjectedPQ`, §13) — and parks the
-	/// result as a `0x1D` side-band frame. Every export/write-back is
-	/// deferred to the success point after the commit lands (§13 M3): a
-	/// throw above that discards the local `recv`/`send` copies untouched.
+	/// result as a `0x1D` side-band frame. The proposer's leaf may keep its id
+	/// (any signature-key change) or catch up to an already-canonical one
+	/// (`validatePQLeafMove` against `auth.theirs`); the C1 announced id, when
+	/// present, is cross-checked against the proposed leaf's id. Every check
+	/// runs before any mutation, so a rejected round leaves `self` untouched.
+	/// Every export/write-back is deferred to the success point after the
+	/// commit lands (§13 M3): a throw above that discards the local
+	/// `recv`/`send` copies untouched.
 	public mutating func pqRekeyRespond(_ inbound: Data) throws -> SideBandResult {
 		guard !pqTurnMine, pqInflight == nil, owedBind == nil else {
 			throw TwoMLSError.sessionNotReady
@@ -117,21 +131,35 @@ extension TwoMLSSession {
 			// NO binding (rule 8, group-rules.md:71-72), so the
 			// "binding-carrying group" predicate `sendPQ` would be gated on
 			// is always false.
-			// Belt: the mechanical re-key carries no credential/signature-key
-			// rotation — read the sender's CURRENT occupant off the live tree
-			// and require the proposed leaf's credential AND signature key to
-			// equal it (mirrors `validateOfferedUpdate`'s `presentationChanged`
-			// computation on the classical side), so an unadjudicated
-			// presentation change is rejected before a commit is spent. The
-			// PQ arms run no AS adjudication; `validateRekeyCommitEffects`
-			// backstops the same invariant at apply.
+			// Id-based AS gate (protocol doc §1/§3/D6, group-rules rule 4): the
+			// sender's PQ leaf may keep its id (any signature-key change) or
+			// move to an already-canonical one — `validatePQLeafMove` against
+			// `auth.theirs`, read off the sender's CURRENT occupant on the live
+			// tree; any failure (a non-canonical id, or an unsupported
+			// credential) is this call's respond error.
 			guard
 				let currentRecord = sendPQ.tree.leaf(at: senderLeaf),
 				let currentLeaf = try? MLS.RFC9420.LeafNode(
-					mlsEncoded: currentRecord.encoded),
-				leafNode.credential == currentLeaf.credential,
-				leafNode.signatureKey == currentLeaf.signatureKey
+					mlsEncoded: currentRecord.encoded)
 			else {
+				throw TwoMLSError.rekeyProposalRejected
+			}
+			let proposerOldID: Data
+			let proposerNewID: Data
+			do {
+				proposerOldID = try basicIdentifier(currentLeaf.credential)
+				proposerNewID = try basicIdentifier(leafNode.credential)
+				try validatePQLeafMove(
+					oldID: proposerOldID, newID: proposerNewID, in: auth.theirs)
+			} catch {
+				throw TwoMLSError.rekeyProposalRejected
+			}
+			// C1 (protocol doc §4): the deployed engine announces the
+			// handed-off id in the Upd′'s authenticated data — kept only for
+			// compatibility; the leaf credential above is authoritative. A
+			// present value that disagrees with it is rejected; absent is fine.
+			let announcedID = updPub.content.authenticatedData
+			guard announcedID.isEmpty || announcedID == proposerNewID else {
 				throw TwoMLSError.rekeyProposalRejected
 			}
 
@@ -169,6 +197,14 @@ extension TwoMLSSession {
 				let commitBytes = try sent.message.mlsEncoded()
 				let pending = sent.takePending()
 				try TwoPartyRules.validateRekeyCommitEffects(pending.effects)
+				// Backstop (defense in depth): adjudicate every
+				// `.credentialReplaced` this Commit′ ACTUALLY carries, on LOCAL
+				// copies, before any write-back — the proposer's leaf against
+				// `theirs`, and this session's own (committer's) leaf against
+				// `mine`. Today our own leaf never changes here; see
+				// `adjudicatePQRekeyEffects`.
+				try Self.adjudicatePQRekeyEffects(
+					pending.effects, myLeaf: sendPQ.myLeafIndex, auth: auth)
 				let advanced = try pending.apply(onto: adopted)
 				sendPQ = advanced.group
 				try TwoPartyRules.ensureTwoParty(sendPQ)
@@ -191,7 +227,9 @@ extension TwoMLSSession {
 				// Return cadence (slice 8a): committed `sendGroup.pq` → `.checkpoint`.
 				advanceStateSeq()
 				return SideBandResult(
-					frame: sealed, update: try stateUpdate(kind: .checkpoint))
+					frame: sealed, update: try stateUpdate(kind: .checkpoint),
+					rotatedCredential: proposerOldID == proposerNewID
+						? nil : proposerNewID)
 			}
 		}
 	}
@@ -203,9 +241,17 @@ extension TwoMLSSession {
 	/// throwaway copy of `sendGroup.pq` (§13 M3 — never written back, so a
 	/// retry after a later failure re-derives the same value rather than
 	/// risking `componentSecretConsumed` on the real group), validates the
-	/// mechanical rekey effects, applies the Commit′ to `recvGroup.pq`,
-	/// exports `S` off the freshly-rekeyed group, and owes the classical
-	/// bind (`owePQBind(s:)`, slice 3 reuse).
+	/// mechanical rekey effects, adjudicates every `.credentialReplaced` the
+	/// Commit′ actually carries (`adjudicatePQRekeyEffects` — the committer
+	/// against `theirs`, our own proposed leaf against `mine`), applies the
+	/// Commit′ to `recvGroup.pq`, exports `S` off the freshly-rekeyed group,
+	/// and owes the classical bind (`owePQBind(s:)`, slice 3 reuse). The
+	/// adjudication failure modes: `.invalidSuccession` for a non-canonical
+	/// id; a shape failure stays `.invalidRekeyEffects`; a non-`.basic`
+	/// credential surfaces as `.unsupportedCredential`, unmapped — chosen
+	/// over remapping it, since it is already its own distinct, meaningful
+	/// error. Any of these leaves `pqInflight` untouched, so an honest
+	/// re-sent Commit′ still applies.
 	public mutating func pqRekeyApply(_ inbound: Data) throws -> StateUpdate {
 		guard pendingProposal == nil, owedBind == nil else {
 			throw TwoMLSError.sessionNotReady
@@ -280,6 +326,8 @@ extension TwoMLSSession {
 				throw TwoMLSError.decryptionFailed
 			}
 			try TwoPartyRules.validateRekeyCommitEffects(pending.effects)
+			try Self.adjudicatePQRekeyEffects(
+				pending.effects, myLeaf: recvPQ.myLeafIndex, auth: auth)
 			let transition = try pending.apply(onto: recvPQ)
 			recvPQ = transition.group
 			try TwoPartyRules.ensureTwoParty(recvPQ)
@@ -305,6 +353,35 @@ extension TwoMLSSession {
 			// (and this call committed `recvGroup.pq`) → `.checkpoint`.
 			advanceStateSeq()
 			return try stateUpdate(kind: .checkpoint)
+		}
+	}
+
+	/// The §A.5 rekey Commit′'s own PQ-side leaf-move adjudication, shared by
+	/// `pqRekeyRespond`'s backstop and `pqRekeyApply`'s own check — the
+	/// id-based counterpart to `TwoMLSSession+ClassicalCommit.swift`'s
+	/// `canonicalize` (`AuthCore.adjudicate`'s classical-side seam), since the
+	/// PQ arms run no AS adjudication of their own. `myLeaf` names which
+	/// leaf, in the SAME PQ group `effects` was computed against, is this
+	/// session's own — a moved leaf other than `myLeaf` is adjudicated
+	/// against `auth.theirs`, a moved `myLeaf` against `auth.mine`. Pure:
+	/// never mutates `auth`, and never calls `commit` (`validatePQLeafMove`
+	/// doesn't either) — this is a check, not a canonicalization; the PQ AS
+	/// has no persisted sequence of its own to advance.
+	private static func adjudicatePQRekeyEffects(
+		_ effects: MLS.RFC9420.CommitEffects, myLeaf: MLS.LeafIndex, auth: AuthCore
+	) throws {
+		for event in effects.events {
+			guard case .credentialReplaced(let leaf, let old, let new) = event else {
+				continue
+			}
+			// A non-`.basic` credential throws `.unsupportedCredential` here,
+			// unmapped — this protocol layer's leaves never advertise
+			// anything else, and it is already its own distinct error.
+			let oldID = try basicIdentifier(old.credential)
+			let newID = try basicIdentifier(new.credential)
+			try validatePQLeafMove(
+				oldID: oldID, newID: newID,
+				in: leaf == myLeaf ? auth.mine : auth.theirs)
 		}
 	}
 }

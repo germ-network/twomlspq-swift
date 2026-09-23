@@ -114,6 +114,16 @@ public struct QueuedProposal: Sendable {
 	public let digest: Data
 	public let proposing: Data
 	public let context: Data
+	/// D6 (protocol doc §2): whether this offer's Update moves the proposer's
+	/// leaf in OUR send group (`sendGroup.classical`) to a DIFFERENT
+	/// credential id equal to the peer's CURRENT canonical principal
+	/// (`theirPrincipalState`'s synced id) — a lagging leaf catching up,
+	/// never a new authorization and never a rollback. `false` for a same-id
+	/// refresh, a move to a candidate that is merely authorized (not yet
+	/// canonical), a move to any canonical-but-not-current id, or any
+	/// verification failure. A host may approve a flagged offer like a
+	/// new-client offer (`queueProposal`); it authorizes no new credential.
+	public let isCatchUp: Bool
 }
 
 /// The result of `processIncoming`: the decrypted application payload, its
@@ -209,6 +219,23 @@ public enum IncomingResult: Sendable {
 public struct SideBandResult: Sendable {
 	public let frame: Data
 	public let update: StateUpdate
+	/// The peer leaf's NEW Basic credential id, when this call's Commit′
+	/// moved it to a different id — `pqRekeyRespond` sets this whenever the
+	/// folded peer Upd′ changed the sender leaf's id; every other side-band
+	/// call (`pqBootstrapBegin`/`Respond`, `pqRatchetRespond`, `pqRekeyBegin`)
+	/// leaves it `nil`, same as a same-id rekey. A hint for hosts; session
+	/// state (`theirPrincipalState`) is the truth.
+	public let rotatedCredential: Data?
+
+	// Explicit, not the synthesized memberwise init: every existing
+	// construction site (`pqBootstrapBegin`/`Respond`, `pqRatchetRespond`,
+	// `pqRekeyBegin`) stays source-compatible via this default, while
+	// `pqRekeyRespond` alone passes a non-nil value.
+	init(frame: Data, update: StateUpdate, rotatedCredential: Data? = nil) {
+		self.frame = frame
+		self.update = update
+		self.rotatedCredential = rotatedCredential
+	}
 }
 
 /// One party's classical-credential state, as this session currently tracks

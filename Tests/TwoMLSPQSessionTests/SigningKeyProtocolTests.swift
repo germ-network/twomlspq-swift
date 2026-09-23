@@ -7,10 +7,10 @@ import XCTest
 @testable import TwoMLSPQSession
 
 /// Holds the engine to `docs/protocol/signing-keys-and-credential-catch-up.md`
-/// (D1, D3, §1, §3). Where the engine already conforms, the assertion is a
-/// plain regression guard; where it does not yet, the assertion is wrapped
-/// in `XCTExpectFailure` so the run stays green today and turns red once
-/// that gap closes.
+/// (D1, D3, §1, §3, §4 C1, D6). Where the engine already conforms, the
+/// assertion is a plain regression guard; where it does not yet, the
+/// assertion is wrapped in `XCTExpectFailure` so the run stays green today
+/// and turns red once that gap closes.
 @available(iOS 26, macOS 26, *)
 final class SigningKeyProtocolTests: XCTestCase {
 
@@ -91,9 +91,51 @@ final class SigningKeyProtocolTests: XCTestCase {
 		return (Frames.encodePQRekeyUpd(bytes), bytes)
 	}
 
+	/// `handBuildPQLeafMoveUpd`, but re-framed with `authenticatedData` — the
+	/// §4 C1 announced id. The leaf's own self-signature (`LeafNodeTBS`) never
+	/// covers `authenticatedData` (RFC 9420 §7.2), so the genuinely
+	/// ring-signed leaf `proposeUpdate` already produced carries over
+	/// unchanged; only the enclosing envelope needs a fresh signature over the
+	/// new authenticated data — built from public swift-mls framing
+	/// (`FramedContent` + `protectPublic`), since 0.1.3's `proposeUpdate` has
+	/// no `authenticatedData:` parameter of its own.
+	private func handBuildPQLeafMoveUpdWithAD(
+		proposer: inout TwoMLSSession, newID: Data, authenticatedData: Data
+	) throws -> (frame: Data, bytes: Data) {
+		var mirror = try XCTUnwrap(proposer.recvGroup)
+		let currentSigningKey = try proposer.recvPQSigningKey()
+		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (rawMessage, _) = try mirror.pq!.proposeUpdate(
+			SessionTestSupport.pqProvider,
+			sign: MLS.RFC9420.signingClosure(
+				SessionTestSupport.pqProvider,
+				current: currentSigningKey, new: freshSigningKey),
+			framing: .publicMessage,
+			newIdentity: MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: newID), signatureKey: freshSignatureKey
+			))
+		guard case .publicMessage(let rawPub) = rawMessage else {
+			XCTFail("expected a publicMessage-framed Upd′")
+			throw TwoMLSError.malformedSideBandMessage
+		}
+		let reframed = MLS.RFC9420.FramedContent(
+			groupID: rawPub.content.groupID, epoch: rawPub.content.epoch,
+			sender: rawPub.content.sender, authenticatedData: authenticatedData,
+			content: rawPub.content.content)
+		let sealed = try MLS.RFC9420.protectPublic(
+			SessionTestSupport.pqProvider, content: reframed,
+			groupContext: mirror.pq!.context, confirmationTag: nil,
+			signingKey: currentSigningKey, membershipKey: mirror.pq!.epoch.membershipKey
+		)
+		proposer.recvGroup = mirror
+		let bytes = try MLS.RFC9420.Message.publicMessage(sealed).mlsEncoded()
+		return (Frames.encodePQRekeyUpd(bytes), bytes)
+	}
+
 	/// Hand-builds the Commit′ that folds `updBytes` (already known to be a
 	/// `publicMessage` Upd′) into `committer`'s send-PQ, mirroring
-	/// `pqRekeyRespond`'s construction minus its presentation guard. Omits
+	/// `pqRekeyRespond`'s construction minus its id-based gate
+	/// (`validatePQLeafMove`) and the C1 announced-id cross-check. Omits
 	/// the `0xFF02` cross-party PSK `pqRekeyRespond` conditionally injects —
 	/// fine here, since the book allows but never requires it (§1).
 	private func handBuildPQRekeyCommit(
@@ -116,6 +158,85 @@ final class SigningKeyProtocolTests: XCTestCase {
 			randomness: try .generate(SessionTestSupport.pqProvider), includePath: true,
 			framing: .publicMessage)
 		return Frames.encodePQRekeyCommit(try transition.takeOutput().message.mlsEncoded())
+	}
+
+	/// `handBuildPQRekeyCommit`, but the COMMITTER's own leaf ALSO carries a
+	/// `newIdentity` — the live path against a deployed-engine peer, whose
+	/// committer moves its own leaf as part of discharging the round (the
+	/// classical ring's `newIdentity:`-on-`committing` pattern, mirroring
+	/// `RotationTests`'s own-leaf-catch-up construction, here on the PQ
+	/// group). `.framedContent` stays on the committer's CURRENT key (the
+	/// enclosing commit still verifies against the pre-commit sender leaf);
+	/// `.leafNode`/`.groupInfo` route to the fresh key `committerNewID`
+	/// installs.
+	private func handBuildPQRekeyCommitWithCommitterMove(
+		committer: TwoMLSSession, updBytes: Data, committerNewID: Data
+	) throws -> Data {
+		guard
+			case .publicMessage(let updPub) = try MLS.RFC9420.Message(
+				mlsEncoded: updBytes)
+		else {
+			XCTFail("expected a publicMessage-framed Upd′")
+			throw TwoMLSError.malformedSideBandMessage
+		}
+		let sendPQ = try XCTUnwrap(committer.sendGroup?.pq)
+		let verified = try sendPQ.verifying(SessionTestSupport.pqProvider, proposal: updPub)
+		var proposalStore = MLS.RFC9420.ProposalStore()
+		let ref = try proposalStore.insert(verified, SessionTestSupport.pqProvider)
+		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let transition = try sendPQ.committing(
+			SessionTestSupport.pqProvider, proposals: [.reference(ref)],
+			proposalStore: proposalStore,
+			sign: MLS.RFC9420.signingClosure(
+				SessionTestSupport.pqProvider,
+				current: try committer.sendPQSigningKey(), new: freshSigningKey),
+			randomness: try .generate(SessionTestSupport.pqProvider), includePath: true,
+			framing: .publicMessage,
+			newIdentity: MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: committerNewID),
+				signatureKey: freshSignatureKey))
+		return Frames.encodePQRekeyCommit(try transition.takeOutput().message.mlsEncoded())
+	}
+
+	/// Hand-builds a rotating `Upd(self)` from `proposer`'s CURRENT leaf
+	/// (genuinely ring-signed, mirroring `RotationTests.authorRotatingUpd`)
+	/// naming `newID`, and delivers it to `receiver` inside a full message
+	/// frame carrying a throwaway app payload — the classical-side analogue
+	/// of `handBuildPQLeafMoveUpd`. Needed because D6 is computed on
+	/// RECEIPT, before any `queueProposal` approval — `receiver.auth.theirs`
+	/// must already reflect whatever canonical state the test wants BEFORE
+	/// this call.
+	private func deliverHandBuiltClassicalOffer(
+		proposer: inout TwoMLSSession, receiver: inout TwoMLSSession, newID: Data
+	) throws -> DecryptResult {
+		var mirror = try XCTUnwrap(proposer.recvGroup)
+		let currentSigningKey = try proposer.recvClassicalSigningKey()
+		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (message, _) = try mirror.classical.proposeUpdate(
+			SessionTestSupport.classicalProvider,
+			sign: MLS.RFC9420.signingClosure(
+				SessionTestSupport.classicalProvider,
+				current: currentSigningKey, new: freshSigningKey),
+			framing: .publicMessage,
+			newIdentity: MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: newID), signatureKey: freshSignatureKey
+			))
+		proposer.recvGroup = mirror
+		let proposalBytes = try message.mlsEncoded()
+
+		var send = try XCTUnwrap(proposer.sendGroup)
+		let appPM = try send.classical.protect(
+			SessionTestSupport.classicalProvider,
+			applicationData: Data("hand-built-offer".utf8), authenticatedData: Data(),
+			signingKey: try proposer.sendClassicalSigningKey())
+		let appBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
+
+		let frame = Frames.encodeMessageFrame(
+			staple: proposer.currentStaple,
+			proposal: Frames.encodeProposalSection(
+				proposing: newID, message: proposalBytes),
+			app: appBytes)
+		return try receiver.processIncomingDecrypted(frame)
 	}
 
 	// MARK: - D1: own-leaf keys pairwise distinct
@@ -322,9 +443,7 @@ final class SigningKeyProtocolTests: XCTestCase {
 		let round = try handBuildPQLeafMoveUpd(
 			proposer: &bob, newID: bob.identity.clientID)
 
-		try XCTExpectFailure("§3: a same-id, key-only PQ leaf move must be accepted") {
-			XCTAssertNoThrow(try alice.pqRekeyRespond(round.frame))
-		}
+		XCTAssertNoThrow(try alice.pqRekeyRespond(round.frame))
 	}
 
 	// MARK: - §3: PQ leaf catch-up to an already-canonical id
@@ -349,22 +468,19 @@ final class SigningKeyProtocolTests: XCTestCase {
 		XCTAssertEqual(alice.theirPrincipalState, .sync(bobNewID))
 
 		let round = try handBuildPQLeafMoveUpd(proposer: &bob, newID: bobNewID)
-		// Built from alice's PRE-respond state, so a successful respond
-		// below (once fixed) — which moves her sendGroup.pq epoch — can't
-		// invalidate it.
+		// A value-type COPY of alice, taken AFTER canonicalization above
+		// (bobNewID is already canonical in it) but BEFORE her real
+		// `pqRekeyRespond` call below — so that call's own epoch advance on
+		// the REAL alice can't invalidate this already-built commit.
 		let commitFrame = try handBuildPQRekeyCommit(
 			committer: alice, updBytes: round.bytes)
 
-		try XCTExpectFailure("§3: catch-up to an already-canonical id must be accepted") {
-			XCTAssertNoThrow(try alice.pqRekeyRespond(round.frame))
-		}
+		XCTAssertNoThrow(try alice.pqRekeyRespond(round.frame))
 
 		bob.pqInflight = .rekeyInitiated(updMessage: round.bytes)
 		bob.pendingSideBand = round.frame
-		try XCTExpectFailure("§3: pqRekeyApply succeeds and departs .rekeyInitiated") {
-			XCTAssertNoThrow(try bob.pqRekeyApply(commitFrame))
-			XCTAssertNil(bob.pqInflight)
-		}
+		XCTAssertNoThrow(try bob.pqRekeyApply(commitFrame))
+		XCTAssertNil(bob.pqInflight)
 	}
 
 	// MARK: - §3: rejected PQ leaf moves
@@ -372,10 +488,12 @@ final class SigningKeyProtocolTests: XCTestCase {
 	/// §3: a move to a NEW id is refused unless that id is already
 	/// canonical; a same-id move is exempt (see the same-id test above). An
 	/// authorized-but-not-yet-canonical candidate and an id neither party
-	/// has ever offered are each refused, at both `pqRekeyRespond` and
-	/// `pqRekeyApply`, leaving state untouched. (A genuine rollback needs a
-	/// PQ leaf already on a newer id, which today's API cannot produce —
-	/// the PQ leaf never legitimately moves — so it is not exercised here.)
+	/// has ever offered are each refused, at both `pqRekeyRespond`
+	/// (`.rekeyProposalRejected`) and `pqRekeyApply` (`.invalidSuccession`),
+	/// leaving state untouched. (A genuine rollback needs a PQ leaf already on
+	/// a newer canonical id, constructible now via a full catch-up round but
+	/// not exercised here — `validSuccessor`'s own rollback ordering is
+	/// covered at the AS level by `CredentialAuthenticationTests`.)
 	func testSection3RejectsNonCanonicalPQLeafMoves() throws {
 		// (a) authorized (approved via `queueProposal`) but not yet folded
 		// — not canonical.
@@ -401,9 +519,13 @@ final class SigningKeyProtocolTests: XCTestCase {
 
 	/// Hand-builds `proposer`'s own Upd′ naming `newID` and asserts §3's
 	/// move is refused at BOTH gates: `committer.pqRekeyRespond`
-	/// (`.rekeyProposalRejected`) and, independently, `proposer.pqRekeyApply`
-	/// of a separately hand-built Commit′ (`.invalidRekeyEffects`) — each
-	/// leaving its side's state untouched.
+	/// (`.rekeyProposalRejected`, the id-based belt before any commit is
+	/// spent) and, independently, `proposer.pqRekeyApply` of a separately
+	/// hand-built Commit′ that bypasses that belt (`.invalidSuccession`, the
+	/// apply-side backstop adjudicating `proposer`'s OWN leaf — from
+	/// `proposer`'s perspective applying, the folded leaf is `mine` — against
+	/// `auth.mine`) — each leaving its side's state untouched, and
+	/// `proposer.pqInflight` staying `.rekeyInitiated`.
 	private func assertPQLeafMoveRejectedAtRespondAndApply(
 		proposer: inout TwoMLSSession, committer: inout TwoMLSSession, newID: Data,
 		file: StaticString = #filePath, line: UInt = #line
@@ -437,7 +559,7 @@ final class SigningKeyProtocolTests: XCTestCase {
 			try proposer.pqRekeyApply(commitFrame), file: file, line: line
 		) { error in
 			XCTAssertEqual(
-				error as? TwoMLSError, .invalidRekeyEffects, file: file, line: line)
+				error as? TwoMLSError, .invalidSuccession, file: file, line: line)
 		}
 		guard case .rekeyInitiated = proposer.pqInflight else {
 			XCTFail(
@@ -464,6 +586,27 @@ final class SigningKeyProtocolTests: XCTestCase {
 		XCTAssertTrue(bob.myPQTurn)
 		let bobNewID = Data("bob-stuck-heal".utf8)
 
+		// Built BEFORE alice's AS has canonicalized `bobNewID` — bob's stuck
+		// re-sends genuinely fail at first (§1: the frame is re-sent
+		// unchanged every round while unresolved).
+		let round = try handBuildPQLeafMoveUpd(proposer: &bob, newID: bobNewID)
+		bob.pqInflight = .rekeyInitiated(updMessage: round.bytes)
+		bob.pendingSideBand = round.frame
+
+		for _ in 0..<3 {
+			let sendPQEpochBefore = alice.sendGroup?.pq?.context.epoch
+			let stateSeqBefore = alice.stateSeq
+			XCTAssertThrowsError(try alice.pqRekeyRespond(round.frame)) { error in
+				XCTAssertEqual(error as? TwoMLSError, .rekeyProposalRejected)
+			}
+			XCTAssertNil(alice.pqInflight)
+			XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
+			XCTAssertEqual(alice.stateSeq, stateSeqBefore)
+		}
+
+		// A classical round, running independently of the stuck A.5, catches
+		// alice's AS up to `bobNewID` — the book's §A.5 trigger rule (D5):
+		// nothing here specially targets the stuck round.
 		_ = try bob.prepareToEncrypt(rotating: bobNewID)
 		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try alice.processIncomingDecrypted(offerFrame)
@@ -474,36 +617,316 @@ final class SigningKeyProtocolTests: XCTestCase {
 		_ = try bob.processIncomingDecrypted(foldFrame)
 		XCTAssertEqual(alice.theirPrincipalState, .sync(bobNewID))
 
-		let round = try handBuildPQLeafMoveUpd(proposer: &bob, newID: bobNewID)
+		// The SAME, still-unchanged stuck Upd′ frame — re-sent once more,
+		// exactly as the book's re-send convention has it — now heals.
 		bob.pqInflight = .rekeyInitiated(updMessage: round.bytes)
 		bob.pendingSideBand = round.frame
+		let response = try alice.pqRekeyRespond(round.frame)
+		XCTAssertEqual(response.rotatedCredential, bobNewID)
 
-		var response: SideBandResult?
-		for _ in 0..<3 {
-			let sendPQEpochBefore = alice.sendGroup?.pq?.context.epoch
-			let stateSeqBefore = alice.stateSeq
-			do {
-				response = try alice.pqRekeyRespond(round.frame)
-			} catch {
-				XCTAssertEqual(error as? TwoMLSError, .rekeyProposalRejected)
-				XCTAssertNil(alice.pqInflight)
-				XCTAssertEqual(
-					alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
-				XCTAssertEqual(alice.stateSeq, stateSeqBefore)
+		XCTAssertNoThrow(try bob.pqRekeyApply(response.frame))
+		XCTAssertNil(bob.pqInflight)
+	}
+
+	// MARK: - `SideBandResult.rotatedCredential`
+
+	/// `rotatedCredential` is nil on a same-id, key-only accepted Upd′, and
+	/// equal to the new id on an id-changing one.
+	func testRotatedCredentialReportsIDChangeOnlyOnAnAcceptedRekey() throws {
+		var (aliceSameID, bobSameID) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let sameIDRound = try handBuildPQLeafMoveUpd(
+			proposer: &bobSameID, newID: bobSameID.identity.clientID)
+		let sameIDResponse = try aliceSameID.pqRekeyRespond(sameIDRound.frame)
+		XCTAssertNil(sameIDResponse.rotatedCredential)
+
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let bobNewID = Data("bob-rotated-credential".utf8)
+		_ = try bob.prepareToEncrypt(rotating: bobNewID)
+		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
+		let decryptedOffer = try alice.processIncomingDecrypted(offerFrame)
+		_ = try alice.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		let foldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
+		_ = try bob.processIncomingDecrypted(foldFrame)
+
+		let round = try handBuildPQLeafMoveUpd(proposer: &bob, newID: bobNewID)
+		let response = try alice.pqRekeyRespond(round.frame)
+		XCTAssertEqual(response.rotatedCredential, bobNewID)
+	}
+
+	/// `rotatedCredential` is nil on every OTHER side-band call.
+	func testRotatedCredentialIsNilForOtherSideBandCalls() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let begin = try alice.pqBootstrapBegin()
+		XCTAssertNil(begin.rotatedCredential)
+		let respond = try bob.pqBootstrapRespond(begin.frame)
+		XCTAssertNil(respond.rotatedCredential)
+		_ = try alice.pqBootstrapJoin(respond.frame)
+
+		var (_, turnBob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let rekeyBegin = try turnBob.pqRekeyBegin()
+		XCTAssertNil(rekeyBegin.rotatedCredential)
+
+		// A fresh pair, so bob's self-staged EK (below) isn't racing the
+		// `.rekeyInitiated` this same session just parked above.
+		var (ratchetAlice, ratchetBob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		_ = try ratchetBob.prepareToEncrypt()
+		_ = try ratchetBob.encrypt(Data("m".utf8))
+		let ekFrame = try XCTUnwrap(ratchetBob.pqPendingOutbound())
+		let ratchetRespond = try ratchetAlice.pqRatchetRespond(ekFrame)
+		XCTAssertNil(ratchetRespond.rotatedCredential)
+	}
+
+	// MARK: - §4 C1: announced id cross-check
+
+	/// §4 C1: an announced id (Upd′'s authenticated data) equal to the
+	/// proposed leaf's Basic id is accepted, exactly like the absent-AD case.
+	func testSection4AnnouncedIDMatchingLeafIsAccepted() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		XCTAssertTrue(bob.myPQTurn)
+		let bobNewID = Data("bob-announced-match".utf8)
+
+		_ = try bob.prepareToEncrypt(rotating: bobNewID)
+		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
+		let decryptedOffer = try alice.processIncomingDecrypted(offerFrame)
+		_ = try alice.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		let foldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
+		_ = try bob.processIncomingDecrypted(foldFrame)
+
+		let round = try handBuildPQLeafMoveUpdWithAD(
+			proposer: &bob, newID: bobNewID, authenticatedData: bobNewID)
+
+		let response = try alice.pqRekeyRespond(round.frame)
+		XCTAssertEqual(response.rotatedCredential, bobNewID)
+	}
+
+	/// §4 C1: an announced id that disagrees with the proposed leaf's Basic
+	/// id is rejected — `.rekeyProposalRejected`, state unchanged — even
+	/// though the id itself is already canonical: the leaf credential is
+	/// authoritative, but a present, WRONG hint is never silently accepted.
+	func testSection4AnnouncedIDMismatchIsRejected() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		XCTAssertTrue(bob.myPQTurn)
+		let bobNewID = Data("bob-announced-mismatch".utf8)
+
+		_ = try bob.prepareToEncrypt(rotating: bobNewID)
+		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
+		let decryptedOffer = try alice.processIncomingDecrypted(offerFrame)
+		_ = try alice.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		let foldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
+		_ = try bob.processIncomingDecrypted(foldFrame)
+
+		let round = try handBuildPQLeafMoveUpdWithAD(
+			proposer: &bob, newID: bobNewID,
+			authenticatedData: Data("not-the-leaf-id".utf8))
+
+		let sendPQEpochBefore = alice.sendGroup?.pq?.context.epoch
+		let stateSeqBefore = alice.stateSeq
+		XCTAssertThrowsError(try alice.pqRekeyRespond(round.frame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .rekeyProposalRejected)
+		}
+		XCTAssertNil(alice.pqInflight)
+		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
+		XCTAssertEqual(alice.stateSeq, stateSeqBefore)
+	}
+
+	// MARK: - Committer-leaf move at apply (the live deployed-engine path)
+
+	/// The COMMITTER's own leaf moving in the Commit′ — the live path
+	/// against a deployed-engine peer, whose committer moves its own leaf as
+	/// part of discharging the round (contrast
+	/// `assertPQLeafMoveRejectedAtRespondAndApply`'s PROPOSER-leaf case,
+	/// which is `mine` from the applying party's perspective). From bob's
+	/// (the applier's) perspective the committer, alice, is the peer —
+	/// `theirs` — so a non-canonical move is `.invalidSuccession`,
+	/// `pqInflight` stays `.rekeyInitiated`, and an honest re-sent Commit′
+	/// still applies; a move to an already-canonical id is accepted.
+	func testSection3CommitterLeafMoveAtApply() throws {
+		// (a) non-canonical: refused, state untouched, an honest re-sent
+		// Commit′ still applies.
+		do {
+			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+			let begin = try bob.pqRekeyBegin()
+			guard case .rekeyInitiated(let updMessage) = bob.pqInflight else {
+				XCTFail("expected bob to hold .rekeyInitiated after pqRekeyBegin")
+				return
 			}
-		}
 
-		XCTExpectFailure(
-			"§3: a stuck A.5 re-send must eventually be accepted once the id is canonical"
-		) {
-			XCTAssertNotNil(response)
-		}
+			let nonCanonicalID = Data("alice-committer-non-canonical".utf8)
+			let badCommitFrame = try handBuildPQRekeyCommitWithCommitterMove(
+				committer: alice, updBytes: updMessage,
+				committerNewID: nonCanonicalID)
 
-		// The responder's own Commit′ — Test 6 covers the apply-effects
-		// gate against a hand-built one on its own.
-		if let response {
-			XCTAssertNoThrow(try bob.pqRekeyApply(response.frame))
+			let recvPQEpochBefore = bob.recvGroup?.pq?.context.epoch
+			XCTAssertThrowsError(try bob.pqRekeyApply(badCommitFrame)) { error in
+				XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+			}
+			guard case .rekeyInitiated = bob.pqInflight else {
+				XCTFail("expected bob to still hold .rekeyInitiated")
+				return
+			}
+			XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, recvPQEpochBefore)
+
+			// The honest Commit′ — via the real `pqRekeyRespond`, on alice's
+			// UNTOUCHED sendGroup.pq (the hand-built commit above was built
+			// from a local copy and never applied to it) — still applies.
+			let honestCommitFrame = try alice.pqRekeyRespond(begin.frame).frame
+			XCTAssertNoThrow(try bob.pqRekeyApply(honestCommitFrame))
 			XCTAssertNil(bob.pqInflight)
 		}
+
+		// (b) canonical: the committer's own leaf may ALSO catch up to an
+		// already-canonical id.
+		do {
+			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+			let aliceNewID = Data("alice-committer-canonical".utf8)
+
+			// Park bob's own Upd′ FIRST: bob holds the PQ turn, so a
+			// classical fold while `pqInflight == nil` would auto-self-drive
+			// a NEW PQ round (`encrypt`'s `maybeStageNextRound`) and clobber
+			// it before we ever get to hand-build anything.
+			_ = try bob.pqRekeyBegin()
+			guard case .rekeyInitiated(let updMessage) = bob.pqInflight else {
+				XCTFail("expected bob to hold .rekeyInitiated after pqRekeyBegin")
+				return
+			}
+
+			// Canonicalize `aliceNewID` at bob's AS, via an ordinary
+			// classical rotation — exactly like the proposer catch-up tests
+			// do for the peer's id.
+			_ = try alice.prepareToEncrypt(rotating: aliceNewID)
+			let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
+			let decryptedOffer = try bob.processIncomingDecrypted(offerFrame)
+			_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+			let foldPrepared = try bob.prepareToEncrypt()
+			XCTAssertTrue(foldPrepared.didCommit)
+			let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
+			_ = try alice.processIncomingDecrypted(foldFrame)
+			XCTAssertEqual(bob.theirPrincipalState, .sync(aliceNewID))
+
+			let commitFrame = try handBuildPQRekeyCommitWithCommitterMove(
+				committer: alice, updBytes: updMessage, committerNewID: aliceNewID)
+
+			XCTAssertNoThrow(try bob.pqRekeyApply(commitFrame))
+			XCTAssertNil(bob.pqInflight)
+		}
+	}
+
+	// MARK: - D6: the catch-up flag
+
+	/// D6: a born-dedicated acceptor's recv-classical catch-up offer (sender
+	/// == proposing == the dedicated principal D) arrives at the initiator
+	/// with `isCatchUp == true` — the invitation-id → D convergence is
+	/// already seeded as canonical in the initiator's `auth.theirs` at
+	/// Group_B's join (`establishedDedicatedAndApproved`), so this recv-leaf
+	/// catch-up (`prepareToEncrypt`'s implicit arm, group-rules rule 4) is a
+	/// textbook D6 flag.
+	func testD6BornDedicatedCatchUpOfferIsFlagged() throws {
+		let established = try SessionTestSupport.establishedDedicatedAndApproved()
+		var alice = established.alice
+		var bob = established.bob
+
+		_ = try bob.prepareToEncrypt()
+		let frame = try bob.encrypt(Data("catchup".utf8)).frame
+		let decrypted = try alice.processIncomingDecrypted(frame)
+		XCTAssertEqual(decrypted.queuedProposal.proposing, established.dedicatedClientID)
+		XCTAssertTrue(decrypted.queuedProposal.isCatchUp)
+	}
+
+	/// D6: a routine same-id refresh offer is never flagged.
+	func testD6RoutineSameIDOfferIsNotFlagged() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		_ = try alice.prepareToEncrypt()
+		let frame = try alice.encrypt(Data("hi".utf8)).frame
+		let decrypted = try bob.processIncomingDecrypted(frame)
+		XCTAssertFalse(decrypted.queuedProposal.isCatchUp)
+	}
+
+	/// D6: a rotation to a candidate that is only AUTHORIZED (approved via
+	/// `queueProposal`) but not yet canonical (not yet folded) is never
+	/// flagged — the flag checks `auth.theirs.current`, never
+	/// `authorizedNext`.
+	func testD6RotationToOnlyAuthorizedCandidateIsNotFlagged() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let candidateID = Data("bob-only-authorized".utf8)
+
+		_ = try bob.prepareToEncrypt(rotating: candidateID)
+		let firstOffer = try bob.encrypt(Data("offer".utf8)).frame
+		let firstDecrypted = try alice.processIncomingDecrypted(firstOffer)
+		XCTAssertFalse(firstDecrypted.queuedProposal.isCatchUp)
+		_ = try alice.queueProposal(digest: firstDecrypted.queuedProposal.digest)
+
+		// Re-offered, now that `candidateID` is authorized (but still not
+		// canonical) at alice — still not flagged.
+		_ = try bob.prepareToEncrypt(rotating: candidateID)
+		let secondOffer = try bob.encrypt(Data("offer-again".utf8)).frame
+		let secondDecrypted = try alice.processIncomingDecrypted(secondOffer)
+		XCTAssertFalse(secondDecrypted.queuedProposal.isCatchUp)
+	}
+
+	/// D6: a ROLLBACK offer — a leaf currently on the canonical HEAD (`cID`)
+	/// offering to move back to an OLDER, still-remembered canonical id
+	/// (`bID`) — is never flagged: the narrowed rule requires landing on the
+	/// CURRENT head, not merely a historically-known id. `bob`'s founding
+	/// identity IS `cID` here (so the leaf genuinely, currently presents it),
+	/// and `bID` is spliced into `alice.auth.theirs.history` directly
+	/// (`@testable`) ahead of it — a lagging PQ round bypassing this cap
+	/// entirely is out of scope for this unit-level check.
+	func testD6RollbackOfferIsNotFlagged() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged(bob: "bob-c")
+		let cID = bob.identity.clientID
+		let bID = Data("bob-b".utf8)
+		alice.auth.theirs.history = [bID, cID]
+		XCTAssertEqual(alice.theirPrincipalState, .sync(cID))
+
+		let decrypted = try deliverHandBuiltClassicalOffer(
+			proposer: &bob, receiver: &alice, newID: bID)
+		XCTAssertFalse(decrypted.queuedProposal.isCatchUp)
+	}
+
+	/// D6: an offer landing on ANY non-head canonical id — not just the
+	/// immediately-preceding one — is never flagged either.
+	func testD6NonHeadCanonicalIDIsNotFlagged() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged(bob: "bob-c")
+		let cID = bob.identity.clientID
+		let aID = Data("bob-a".utf8)
+		let bID = Data("bob-b".utf8)
+		alice.auth.theirs.history = [aID, bID, cID]
+
+		let decrypted = try deliverHandBuiltClassicalOffer(
+			proposer: &bob, receiver: &alice, newID: aID)
+		XCTAssertFalse(decrypted.queuedProposal.isCatchUp)
+	}
+
+	/// D6: a host approving a flagged catch-up offer through `queueProposal`
+	/// folds it cleanly, exactly like a new-client offer — the born-dedicated
+	/// acceptor's recv-classical leaf converges to D.
+	func testD6ApprovingFlaggedCatchUpOfferConverges() throws {
+		let established = try SessionTestSupport.establishedDedicatedAndApproved()
+		var alice = established.alice
+		var bob = established.bob
+
+		_ = try bob.prepareToEncrypt()
+		let offerFrame = try bob.encrypt(Data("catchup".utf8)).frame
+		let decrypted = try alice.processIncomingDecrypted(offerFrame)
+		XCTAssertTrue(decrypted.queuedProposal.isCatchUp)
+
+		_ = try alice.queueProposal(digest: decrypted.queuedProposal.digest)
+		let folded = try alice.prepareToEncrypt()
+		XCTAssertTrue(folded.didCommit)
+		XCTAssertEqual(folded.committedRemoteClientID, established.dedicatedClientID)
+		let foldFrame = try alice.encrypt(Data("folded".utf8)).frame
+		_ = try bob.processIncomingDecrypted(foldFrame)
+
+		XCTAssertEqual(alice.theirPrincipalState, .sync(established.dedicatedClientID))
+		let bobRecvLeafID = try basicIdentifier(
+			TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.recvGroup?.classical))
+				.credential)
+		XCTAssertEqual(bobRecvLeafID, established.dedicatedClientID)
 	}
 }

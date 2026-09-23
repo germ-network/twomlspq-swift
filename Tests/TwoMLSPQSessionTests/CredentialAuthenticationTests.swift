@@ -343,6 +343,68 @@ final class CredentialAuthenticationTests: XCTestCase {
 		XCTAssertFalse(sequence.validSuccessor(pred: id("c2"), succ: id("c0")))
 	}
 
+	// MARK: - validatePQLeafMove (§A.5 PQ leaf-move gate)
+
+	/// `validatePQLeafMove`'s own cases, isolated from any PQ/session
+	/// machinery: `c0 → c1 → c2` committed, `cand` merely authorized (not
+	/// yet canonical), `ancient` pinned (evicted-but-held). Each pair below
+	/// is chosen to fail if either half of "same-id, OR (canonical AND a
+	/// valid successor)" is dropped.
+	func testValidatePQLeafMove() throws {
+		var sequence = PartySequence.seeded(id("c0"))
+		try sequence.commit(id("c1"))
+		try sequence.commit(id("c2"))
+		sequence.authorize(id("cand"))
+		sequence.pin(id("ancient"))
+
+		// Same-id, even on a merely-PINNED (evicted) id — the early return
+		// must admit this without ever consulting `history`. Mutation:
+		// deleting the `oldID == newID` early return makes this throw
+		// (`ancient` is absent from `history`).
+		XCTAssertNoThrow(
+			try validatePQLeafMove(
+				oldID: id("ancient"), newID: id("ancient"), in: sequence))
+		// An ordinary catch-up within `history`.
+		XCTAssertNoThrow(
+			try validatePQLeafMove(oldID: id("c0"), newID: id("c2"), in: sequence))
+		// A catch-up from a pinned (evicted) predecessor.
+		XCTAssertNoThrow(
+			try validatePQLeafMove(oldID: id("ancient"), newID: id("c1"), in: sequence))
+
+		// A rollback WITHIN history (`c2` → `c0`) and a move from an unknown
+		// predecessor: `newID` is already canonical either way, so only the
+		// `validSuccessor` conjunct catches them. Mutation: dropping
+		// `validSuccessor` (keeping only `history.contains`) makes both
+		// wrongly pass.
+		XCTAssertThrowsError(
+			try validatePQLeafMove(oldID: id("c2"), newID: id("c0"), in: sequence)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		}
+		XCTAssertThrowsError(
+			try validatePQLeafMove(oldID: id("unknown"), newID: id("c2"), in: sequence)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		}
+
+		// A move to a merely-AUTHORIZED (not yet canonical) candidate is
+		// exactly what `validSuccessor` alone would accept (its own
+		// authorization shortcut), but a PQ leaf may only fast-forward to an
+		// ALREADY-canonical id. Mutation: dropping the `history.contains`
+		// conjunct (keeping only `validSuccessor`) makes this wrongly pass.
+		XCTAssertThrowsError(
+			try validatePQLeafMove(oldID: id("c0"), newID: id("cand"), in: sequence)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		}
+		// An id neither committed nor authorized.
+		XCTAssertThrowsError(
+			try validatePQLeafMove(oldID: id("c0"), newID: id("nobody"), in: sequence)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		}
+	}
+
 	// MARK: - Integration (ungated): a real rotation through `adjudicate`
 
 	/// Hand-rolls a 2-member classical MLS group (no `TwoMLSSession`/
