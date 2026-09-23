@@ -468,6 +468,11 @@ final class SigningKeyProtocolTests: XCTestCase {
 	/// proposer's PQ leaf to an id already canonical at the peer must be
 	/// accepted, and the resulting round must complete.
 	func testSection3PQLeafCatchUpToAnAlreadyCanonicalID() throws {
+		// The PQ resolver has no rotation-candidate arm (a PQ leaf move is
+		// not a rotation), so the hand-built catch-up target below can never
+		// resolve there by construction.
+		OracleCheck.allow([.recvPQ])
+		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		XCTAssertTrue(bob.myPQTurn)
 		let bobNewID = Data("bob-canonical-catchup".utf8)
@@ -598,6 +603,11 @@ final class SigningKeyProtocolTests: XCTestCase {
 	/// (§4 C1); swift-mls's `proposeUpdate` always frames it empty, so this
 	/// hand-built frame carries none either.
 	func testSection3HealsAStuckDeployedEngineStyleRekey() throws {
+		// Same reason as `testSection3PQLeafCatchUpToAnAlreadyCanonicalID`:
+		// the hand-built stuck-heal target has no rotation-candidate arm to
+		// resolve through.
+		OracleCheck.allow([.recvPQ])
+		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		XCTAssertTrue(bob.myPQTurn)
 		let bobNewID = Data("bob-stuck-heal".utf8)

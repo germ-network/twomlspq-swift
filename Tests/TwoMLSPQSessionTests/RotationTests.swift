@@ -195,11 +195,11 @@ final class RotationTests: XCTestCase {
 	/// all — `prepareToEncrypt(rotating: sameID)` rejects a same-id target
 	/// outright (`Messaging.swift`, `guard rotating != myCurrentID`), and
 	/// even a raw same-id rotating `Upd` staged through the module couldn't
-	/// be FOLDED then SIGNED FROM afterward: neither custody resolver
-	/// (`classicalSigningKey(presenting:)`/`pqSigningKey(presenting:)`) has
-	/// an arm for "my own just-rotated key under an unchanged id" — only
-	/// `identity`'s own pair, `rotationCandidate`, and `recvLeafPrincipal`
-	/// are known principals, none of which fits a bare same-id key swap.
+	/// be FOLDED then SIGNED FROM afterward: nothing in this module ever
+	/// stages a bare same-id key swap into the stored `leafKeys` (only an
+	/// explicit rotation candidate or the rule-4 catch-up target ever
+	/// populate `pending`), so the stored key set would hold no entry to
+	/// sign from either.
 	func testClassicalReceiveToleratesPeerSigningKeyRotationUnderSameCredential() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
@@ -402,8 +402,9 @@ final class RotationTests: XCTestCase {
 	/// without the `auth.mine.history` guard this would silently drop the
 	/// very key both leaves now present. Every later `encrypt`/
 	/// `prepareToEncrypt` would then throw `.credentialUnknown` forever
-	/// (the custody resolver can no longer find a principal matching what
-	/// the tree presents) — unrecoverable. The fix instead throws
+	/// (the stored `leafKeys` slot the dropped candidate would have named
+	/// is gone, so the live choke point can no longer find a match for
+	/// what the tree presents) — unrecoverable. The fix instead throws
 	/// `.rotationInFlight`, and the session stays fully usable afterward.
 	func testSecondRotationAfterFullConvergenceIsRotationInFlightAndSessionNotBricked() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
