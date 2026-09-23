@@ -107,7 +107,11 @@ enum TwoPartyRules {
 	/// membership or credential change, and no path-leaf refresh (pathless).
 	/// PSK proposals leave no `CommitEffect`, so this is silent on the
 	/// injected external PSK; the resumption-ban §12.2 clause is unenforceable
-	/// from this seam (resumption ids never reach `CommitEffects`).
+	/// from this seam (resumption ids never reach `CommitEffects`). STAYS
+	/// strict — unlike `validateRekeyCommitEffects` below — because a bind is
+	/// pathless: no leaf ever moves in a pathless commit, so any
+	/// `.credentialReplaced` here is malformed regardless of AS legality,
+	/// never a legitimate catch-up.
 	static func validateBindPQEffects(_ effects: MLS.RFC9420.CommitEffects) throws {
 		var sawEpochAdvanced = false
 		var sawAppDataUpdate = false
@@ -206,31 +210,25 @@ enum TwoPartyRules {
 
 	/// The §A.5 mechanical rekey Commit's (`pqRekeyRespond`, an `includePath:
 	/// true` commit folding exactly one peer Update) applied `CommitEffects`
-	/// must be exactly `[epochAdvanced, updated(proposer), updated(committer)]`
-	/// — two DISTINCT `.updated` leaves, one of them the committer's own
-	/// path-refresh (`epochAdvanced`'s `committer`). No membership or
-	/// credential change — NOW ENFORCED rather than merely documented: a
-	/// `.credentialReplaced` event is refused outright, not counted as an
-	/// ordinary moved leaf. A mechanical re-key passes no `newIdentity` (the
-	/// committer's own leaf is always `.updated`), so an honest round can
-	/// never trip this — and swift-mls emits `.credentialReplaced` only when
-	/// the presentation actually changed (old != new), so this rejects exactly
-	/// the unadjudicated credential replacement, not a key-only refresh. The
-	/// PQ arms run no Authentication Service adjudication (the AS lives on the
-	/// classical half), so a presentation change must be refused rather than
-	/// silently applied; when the PQ catch-up (Chunk 2) lands, replace this
-	/// with `auth.adjudicate(effects)` on both PQ arms (`session-lifecycle.md`,
-	/// `group-rules.md`). Mirrors `validateBindPQEffects`/
+	/// must be exactly `[epochAdvanced, moved(proposer), moved(committer)]` —
+	/// two DISTINCT moved leaves, one of them the committer's own path-refresh
+	/// (`epochAdvanced`'s `committer`) — where a moved leaf is `.updated` XOR
+	/// `.credentialReplaced`. A leaf move now legitimately carries a PQ id
+	/// change (the proposer catching up to an already-canonical credential, or
+	/// a same-id signature-key change — group-rules rule 4 / `valid_successor`'s
+	/// same-id arm, protocol doc §1/§3/D6), so `.credentialReplaced` is no
+	/// longer refused outright here; this validates SHAPE only. The succession
+	/// itself — same-id, or landing on an id already canonical — is the
+	/// session call sites' own job (`pqRekeyRespond`/`pqRekeyApply`, via
+	/// id-based `validatePQLeafMove`, `CredentialAuthentication.swift`): the PQ
+	/// arms still run no `AuthCore.adjudicate` (the AS lives on the classical
+	/// half), so `validatePQLeafMove` is its PQ-side counterpart rather than a
+	/// blanket refusal. Mirrors `validateBindPQEffects`/
 	/// `validateBindClassicalEffects` — and, per §11 MF2, is the exact same
 	/// shape the classical fold-only commit validates, just over the PQ
 	/// group. A thin `validateTwoPartyUpdateCommit` wrapper preserving this
 	/// call site's own error identity.
 	static func validateRekeyCommitEffects(_ effects: MLS.RFC9420.CommitEffects) throws {
-		for event in effects.events {
-			if case .credentialReplaced = event {
-				throw TwoMLSError.invalidRekeyEffects
-			}
-		}
 		try validateTwoPartyUpdateCommit(
 			effects, foldedPeerUpdate: true, allowAppDataUpdate: false,
 			orThrow: .invalidRekeyEffects)

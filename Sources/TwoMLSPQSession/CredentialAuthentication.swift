@@ -157,6 +157,25 @@ struct PartySequence: Sendable, Equatable, Codable {
 	}
 }
 
+/// §A.5 mechanical rekey / catch-up (protocol doc §1/§3): may a PQ leaf
+/// currently presenting `oldID` move to `newID`, per `seq`? group-rules rule
+/// 4 — "a lagging leaf may only fast-forward to an already-canonical
+/// credential" — plus the same-id arm of `valid_successor`
+/// (`group-rules.md:152-153`): a same-id move (any signature-key change) is
+/// always accepted; an id-changing move must land on an id already canonical
+/// in `seq.history` AND a valid successor of `oldID`. Pure: never mutates
+/// `seq`, never calls `commit` — this is a check, not a canonicalization. Not
+/// D6's own gate (that flag lives in `TwoMLSSession+Messaging.swift` and
+/// never calls this) — this is `pqRekeyRespond`/`pqRekeyApply`'s own PQ-side
+/// id check, run against the classical `AuthCore` (D2) since the PQ arms
+/// track no canonical sequence of their own.
+func validatePQLeafMove(oldID: Data, newID: Data, in seq: PartySequence) throws {
+	if oldID == newID { return }
+	guard seq.history.contains(newID), seq.validSuccessor(pred: oldID, succ: newID) else {
+		throw TwoMLSError.invalidSuccession
+	}
+}
+
 /// The session-canonical 2-party AS state (TwoMLS design): both parties'
 /// sequences. 2-party `mine`/`theirs` is correct here (unlike a general
 /// swift-mls seam would be) — this is the Germ P2P layer, and

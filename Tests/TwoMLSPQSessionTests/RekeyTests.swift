@@ -311,23 +311,26 @@ final class RekeyTests: XCTestCase {
 		}
 	}
 
-	// MARK: - PQ credential replacement is refused (no AS on the PQ arms)
+	// MARK: - PQ credential replacement to a non-canonical id is refused
 
-	/// A `0x1B` Upd′ that replaces the proposer's PQ-leaf credential is refused
-	/// by the committer's `pqRekeyRespond` — `.rekeyProposalRejected` — before
-	/// any commit is spent: the mechanical re-key carries no credential/
-	/// signature-key rotation (`+Rekey.swift` doc), and the PQ arms run no
-	/// Authentication Service adjudication, so an unadjudicated presentation
-	/// change must not silently desync the PQ roster from the tracked
-	/// identity. The committer's group is untouched, and a subsequent honest
-	/// mechanical round still completes.
+	/// A `0x1B` Upd′ that replaces the proposer's PQ-leaf credential with an id
+	/// NEITHER party has ever offered is refused by the committer's
+	/// `pqRekeyRespond` — `.rekeyProposalRejected` — before any commit is
+	/// spent: id-based catch-up is accepted (§1/§3/D6, `+Rekey.swift` doc), but
+	/// only onto a credential already canonical in `auth.theirs`
+	/// (`validatePQLeafMove`, `CredentialAuthentication.swift`); the PQ arms
+	/// still run no persisted `AuthCore.adjudicate` of their own, so an id this
+	/// AS has never seen must not silently desync the PQ roster from the
+	/// tracked identity. The committer's group is untouched, and a subsequent
+	/// honest mechanical round still completes.
 	func testRekeyRejectsAnUnapprovedCredentialReplacementAtRespond() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 
 		// Author a rotating Upd′ on Bob's recv-PQ mirror by hand: fresh
 		// signature keypair + `mallory-never-approved`, ring-signed exactly
-		// like `prepareToEncrypt(rotating:)`, so only the presentation check —
-		// never a signature failure — is what has to catch it.
+		// like `prepareToEncrypt(rotating:)`, so only the id-based gate
+		// (`validatePQLeafMove`) — never a signature failure — is what has
+		// to catch it.
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		var mirror = try XCTUnwrap(bob.recvGroup)
 		let (rotatingUpd, _) = try mirror.pq!.proposeUpdate(
@@ -352,9 +355,10 @@ final class RekeyTests: XCTestCase {
 		XCTAssertNil(alice.pendingSideBand)
 		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
 
-		// The peer's PQ leaf credential is untouched (still bob's founding id)
-		// and `auth.theirs` was never consulted — an honest round below proves
-		// it stays that way.
+		// The peer's PQ leaf credential is untouched (still bob's founding
+		// id): `auth.theirs` WAS consulted — `mallory-never-approved` isn't
+		// canonical there, which is exactly why the move was refused — and
+		// an honest round below proves the roster still converges cleanly.
 		let sendPQ = try XCTUnwrap(alice.sendGroup?.pq)
 		let peerEntry = try XCTUnwrap(
 			sendPQ.tree.nonBlankLeaves().first { $0.index != sendPQ.myLeafIndex })

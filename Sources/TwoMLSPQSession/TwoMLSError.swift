@@ -151,17 +151,24 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 
 	/// A `0x1B` Upd′ did not verify as a peer `.update` proposal
 	/// (`pqRekeyRespond`) — a different proposal type, a commit smuggled
-	/// behind the tag, or one framed by this session's own leaf.
+	/// behind the tag, or one framed by this session's own leaf. Also the
+	/// respond-side id gate's own failures, all before any commit is spent:
+	/// the proposed leaf's id is not already-canonical (or is a rollback)
+	/// per `validatePQLeafMove`; either leaf's credential is not `.basic`;
+	/// or a present C1 announced id (the Upd′'s authenticated data)
+	/// disagrees with the proposed leaf's id.
 	case rekeyProposalRejected
 	/// `pqRekeyApply`'s applied `CommitEffects` were not the mechanical rekey
-	/// Commit's exact allow-listed shape — `[epochAdvanced, updated(proposer),
-	/// updated(committer)]` with the two leaves distinct — an unexpected
-	/// Add/Remove/credential replacement/membership removal/`AppDataUpdate`
-	/// rode the Commit′. A `.credentialReplaced` is part of this rejection
-	/// (enforced by `validateRekeyCommitEffects`): the PQ arms run no AS
-	/// adjudication, so an unadjudicated presentation change is refused
-	/// outright. When the PQ catch-up (Chunk 2) lands, replace the throw with
-	/// `auth.adjudicate` on both PQ arms and admit a `.credentialReplaced`.
+	/// Commit's exact allow-listed shape — `[epochAdvanced, moved(proposer),
+	/// moved(committer)]`, two DISTINCT moved leaves (each `.updated` XOR
+	/// `.credentialReplaced`) — an unexpected Add/Remove/membership
+	/// removal/`AppDataUpdate` rode the Commit′ (`validateRekeyCommitEffects`,
+	/// shape only). A `.credentialReplaced` moving a leaf to a non-canonical
+	/// id is a DIFFERENT error — `.invalidSuccession`, from the id-based
+	/// backstop (`adjudicatePQRekeyEffects`/`validatePQLeafMove`,
+	/// `CredentialAuthentication.swift`) — since the PQ arms still run no
+	/// `AuthCore.adjudicate` of their own; that backstop checks the id
+	/// against the classical `AuthCore` (D2) instead.
 	case invalidRekeyEffects
 
 	// MARK: §5 classical FOLD (slice 5, no credential rotation)
@@ -203,7 +210,13 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// defense-in-depth adoption screen: a joined creator id that is already
 	/// one of MY OWN known ids (`auth.mine.knownIDs`) is never adopted, even
 	/// if a host blunder handed it back as the dedicated principal — a
-	/// same-id "succession" onto myself can never be legitimate.
+	/// same-id "succession" onto myself can never be legitimate. Also thrown
+	/// by the §A.5 PQ rekey's id-based counterpart
+	/// (`validatePQLeafMove`/`adjudicatePQRekeyEffects`, +Rekey.swift): a PQ
+	/// leaf move to a non-canonical id, caught at `pqRekeyApply` (or, as a
+	/// backstop, at `pqRekeyRespond` after the Commit′ is built) — the PQ arms
+	/// have no persisted sequence of their own, so this checks the id against
+	/// the classical `AuthCore` (D2) rather than calling `AuthCore.adjudicate`.
 	case invalidSuccession
 	/// The peer's presented identity does not match the party actually bound
 	/// at establishment: at `receive`, the caller-supplied
@@ -244,11 +257,15 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// (`recvGroup.classical`'s epoch has moved past the epoch the
 	/// outstanding candidate's `Upd` was staged at) only ever lets a DEAD
 	/// candidate — one that never canonicalized (absent from
-	/// `auth.mine.history`) — be replaced; once a rotation HAS
-	/// canonicalized, a second one must wait for a later slice's PQ
-	/// catch-up rather than silently dropping the converged candidate's
-	/// key (which both classical leaves may already present). Naming the
-	/// SAME candidate again is idempotent, not this error.
+	/// `auth.mine.history`) — be replaced; once a rotation HAS canonicalized,
+	/// a second one must still wait, rather than silently dropping the
+	/// converged candidate's key (which both classical leaves may already
+	/// present). The §A.5 id-based catch-up this module now accepts
+	/// (`validatePQLeafMove`) lets a lagging RECV-PQ leaf fast-forward to an
+	/// already-canonical id when a round is opened for it — but that is a
+	/// PQ-leaf move, not a second classical rotation's sync point: the
+	/// classical AS tracks no per-generation PQ state of its own to wait on.
+	/// Naming the SAME candidate again is idempotent, not this error.
 	case rotationInFlight
 
 	// MARK: Session archive (slice 8a)
