@@ -87,6 +87,12 @@ final class SigningKeyProtocolTests: XCTestCase {
 				credential: .basic(identity: newID), signatureKey: freshSignatureKey
 			))
 		proposer.recvGroup = mirror
+		// This hand-built Upd′ bypasses `pqRekeyBegin`, which never mints a
+		// rotating key itself today — stage the fresh key so
+		// `pqRekeyApply`'s promotion can find it when this move lands.
+		try proposer.leafKeys.recvPQ.stage(
+			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
+			for: newID)
 		let bytes = try message.mlsEncoded()
 		return (Frames.encodePQRekeyUpd(bytes), bytes)
 	}
@@ -128,6 +134,11 @@ final class SigningKeyProtocolTests: XCTestCase {
 			signingKey: currentSigningKey, membershipKey: mirror.pq!.epoch.membershipKey
 		)
 		proposer.recvGroup = mirror
+		// Same reasoning as `handBuildPQLeafMoveUpd` — stage the fresh key
+		// so `pqRekeyApply`'s promotion can find it.
+		try proposer.leafKeys.recvPQ.stage(
+			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
+			for: newID)
 		let bytes = try MLS.RFC9420.Message.publicMessage(sealed).mlsEncoded()
 		return (Frames.encodePQRekeyUpd(bytes), bytes)
 	}
@@ -222,6 +233,11 @@ final class SigningKeyProtocolTests: XCTestCase {
 				credential: .basic(identity: newID), signatureKey: freshSignatureKey
 			))
 		proposer.recvGroup = mirror
+		// Stage the fresh key even though this offer is never folded back
+		// onto `proposer` within this test.
+		try proposer.leafKeys.recvClassical.stage(
+			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
+			for: newID)
 		let proposalBytes = try message.mlsEncoded()
 
 		var send = try XCTUnwrap(proposer.sendGroup)

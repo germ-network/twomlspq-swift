@@ -26,11 +26,13 @@ extension TwoMLSSession {
 	///    blobs.
 	/// 4. `checkpoint.stateSeq >= core.stateSeq` → take the Checkpoint
 	///    outright (`>=` skips a redundant splice on the tie a fresh
-	///    baseline produces); else splice the Checkpoint's PQ halves into
+	///    baseline produces); else splice the Checkpoint's PQ halves (trees
+	///    AND `leafKeys.sendPQ`/`recvPQ`, which a Core never carries) into
 	///    the (newer) Core, keeping the rest of the Core.
-	/// 5. splicing only: the Core and Checkpoint PQ-epoch manifests must
-	///    already agree, else the Core is stale relative to a PQ round the
-	///    Checkpoint alone witnessed.
+	/// 5. splicing only: the Core and Checkpoint PQ-epoch manifests —
+	///    epochs and key-set fingerprints alike — must already agree, else
+	///    the Core is stale relative to a PQ round the Checkpoint alone
+	///    witnessed.
 	/// 6. rebuild every group from its snapshot (combiner PSK stores start
 	///    empty — a live `apq_psk`/cross-party PSK is already folded into
 	///    the epoch secrets that referenced it; `sendCrossPSKLedger`, itself
@@ -100,6 +102,20 @@ extension TwoMLSSession {
 		else {
 			throw TwoMLSError.archiveInvalid
 		}
+		// `leafKeys`' own PQ sets are kind-gated the same way `GroupEntry.pq`
+		// is: present on a Checkpoint, absent on a Core. A body that gets
+		// this backwards — a Checkpoint missing them, or a Core carrying
+		// them — is malformed regardless of what `kind` itself claims.
+		switch expectedKind {
+		case .checkpoint:
+			guard body.leafKeys.sendPQ != nil, body.leafKeys.recvPQ != nil else {
+				throw TwoMLSError.archiveInvalid
+			}
+		case .core:
+			guard body.leafKeys.sendPQ == nil, body.leafKeys.recvPQ == nil else {
+				throw TwoMLSError.archiveInvalid
+			}
+		}
 	}
 
 	// MARK: - Step 3: session-identity fail-closed
@@ -147,12 +163,19 @@ extension TwoMLSSession {
 	/// `!=` on `Optional<UInt64>` already rejects a `Some` -> `nil` PQ-half
 	/// regression on the Core relative to the Checkpoint (any mismatch
 	/// between a present and an absent epoch compares unequal), so that
-	/// case needs no separate clause.
+	/// case needs no separate clause. The fingerprint comparison catches
+	/// what the epoch alone would miss: a PQ key-set change that didn't
+	/// also move the epoch (`GroupKeySetFingerprint`'s own doc explains
+	/// why that's possible) — without it, a stale Core could pass the
+	/// epoch check and still splice in a Checkpoint whose PQ trees disagree
+	/// with what the Core itself last claimed.
 	private static func validateManifestAgreement(
 		core: SessionArchive, checkpoint: SessionArchive
 	) throws {
 		guard core.sendPQEpoch == checkpoint.sendPQEpoch,
-			core.recvPQEpoch == checkpoint.recvPQEpoch
+			core.recvPQEpoch == checkpoint.recvPQEpoch,
+			core.sendPQKeysFingerprint == checkpoint.sendPQKeysFingerprint,
+			core.recvPQKeysFingerprint == checkpoint.recvPQKeysFingerprint
 		else {
 			throw TwoMLSError.archiveInvalid
 		}
@@ -160,10 +183,11 @@ extension TwoMLSSession {
 
 	// MARK: - Step 4: splice
 
-	/// The Core's own PQ-facing fields (both `GroupEntry.pq`s, and the
-	/// manifest they mirror) are never populated to begin with — `Core`
-	/// omits PQ trees regardless of kind — so this always pulls a real
-	/// splice from the Checkpoint, never a no-op.
+	/// The Core's own PQ-facing fields (both `GroupEntry.pq`s, `leafKeys`'
+	/// `sendPQ`/`recvPQ`, and the manifest they mirror) are never populated
+	/// to begin with — a Core omits PQ trees and PQ key sets alike,
+	/// regardless of kind — so this always pulls a real splice from the
+	/// Checkpoint, never a no-op.
 	private static func splicingPQ(from checkpoint: SessionArchive, into core: SessionArchive)
 		-> SessionArchive
 	{
@@ -172,6 +196,8 @@ extension TwoMLSSession {
 		spliced.recvGroup?.pq = checkpoint.recvGroup?.pq
 		spliced.sendPQEpoch = checkpoint.sendPQEpoch
 		spliced.recvPQEpoch = checkpoint.recvPQEpoch
+		spliced.leafKeys.sendPQ = checkpoint.leafKeys.sendPQ
+		spliced.leafKeys.recvPQ = checkpoint.leafKeys.recvPQ
 		return spliced
 	}
 
@@ -271,30 +297,52 @@ extension TwoMLSSession {
 		try verifyManifestMatchesRebuiltGroups(
 			body, sendGroup: sendGroup, recvGroup: recvGroup)
 
+		let identity = try body.identity.restore()
+		let bootstrapKPSecret = try body.bootstrapKPSecret?.restore()
+		let pqInflight = try body.pqInflight?.restore()
+		let rotationCandidate = try body.rotationCandidate?.restore()
+		let recvLeafPrincipal = try body.recvLeafPrincipal?.restore()
+		// `LeafKeysArchive.restore()` runs the archive-level checks (every
+		// key derives; every pending target non-empty/unique, and — since
+		// the splice above already ran — the PQ sets are present);
+		// `validateLeafKeys` then runs the semantic ones against the
+		// just-rebuilt groups and the rest of this same decoded state.
+		let leafKeys = try body.leafKeys.restore()
+		try verifyManifestFingerprintsMatchRestoredLeafKeys(body, leafKeys: leafKeys)
+		try validateLeafKeys(
+			leafKeys, sendGroup: sendGroup, recvGroup: recvGroup, identity: identity,
+			bootstrapKPSecret: bootstrapKPSecret,
+			stagedUpdates: body.stagedUpdates.map { $0.asTuple },
+			pendingProposal: body.pendingProposal?.asTuple,
+			pqInflight: pqInflight, rotationCandidate: rotationCandidate,
+			recvLeafPrincipal: recvLeafPrincipal, auth: body.auth,
+			classicalProvider: classicalProvider, pqProvider: pqProvider)
+
 		// `.deployed` is hard-coded, never archived: the port only ever
 		// constructs a session under the deployed codepoints
 		// (`makeSessionArchive` asserts as much at encode).
 		var session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: .deployed, identity: try body.identity.restore(),
+			codepoints: .deployed, identity: identity,
 			auth: body.auth,
 			sendGroup: sendGroup, recvGroup: recvGroup,
 			currentStaple: body.currentStaple,
 			pendingProposal: body.pendingProposal?.asTuple,
 			joinedWelcomeDigest: body.joinedWelcomeDigest, initiated: body.initiated,
-			bootstrapKPSecret: try body.bootstrapKPSecret?.restore(),
+			bootstrapKPSecret: bootstrapKPSecret,
 			expectedBootstrapKPCommitment: body.expectedBootstrapKPCommitment,
 			initialTheirKP: try body.initialTheirKP?.restore(),
 			pqTurnMine: body.pqTurnMine, owedBind: body.owedBind,
-			pqInflight: try body.pqInflight?.restore(),
+			pqInflight: pqInflight,
 			pendingSideBand: body.pendingSideBand,
 			peerAppliedSendEpoch: body.peerAppliedSendEpoch,
 			lastCrossInjected: body.lastCrossInjected,
 			lastCrossInjectedPQ: body.lastCrossInjectedPQ,
 			lastSendPQExported: body.lastSendPQExported,
 			spawnToken: body.spawnToken,
-			recvLeafPrincipal: try body.recvLeafPrincipal?.restore(),
-			owesEstablishmentEnvelope: body.owesEstablishmentEnvelope ?? false)
+			recvLeafPrincipal: recvLeafPrincipal,
+			owesEstablishmentEnvelope: body.owesEstablishmentEnvelope ?? false,
+			leafKeys: leafKeys)
 
 		session.offeredProposal = body.offeredProposal?.asTuple
 		session.queuedProposal = body.queuedProposal?.asTuple
@@ -359,7 +407,9 @@ extension TwoMLSSession {
 		// means a `.core` minted right after restore (before anything has
 		// moved) is never spuriously upgraded.
 		session.lastCheckpointedManifest = PQEpochManifest(
-			sendPQEpoch: body.sendPQEpoch, recvPQEpoch: body.recvPQEpoch)
+			sendPQEpoch: body.sendPQEpoch, recvPQEpoch: body.recvPQEpoch,
+			sendPQKeys: leafKeys.sendPQ.fingerprint,
+			recvPQKeys: leafKeys.recvPQ.fingerprint)
 		return session
 	}
 
@@ -375,6 +425,33 @@ extension TwoMLSSession {
 	) throws {
 		guard body.sendPQEpoch == sendGroup?.pq?.context.epoch,
 			body.recvPQEpoch == recvGroup?.pq?.context.epoch
+		else {
+			throw TwoMLSError.archiveInvalid
+		}
+	}
+
+	/// The epoch check above proves the winning body's manifest didn't lie
+	/// about the PQ TREE state; this is its fingerprint-side companion —
+	/// proving it didn't lie about the PQ KEY-SET state either, by
+	/// cross-checking `sendPQKeysFingerprint`/`recvPQKeysFingerprint`
+	/// against the fingerprint the just-restored `leafKeys` PQ sets
+	/// actually carry. `validateManifestAgreement` (splice path only)
+	/// merely proves a Core and Checkpoint AGREE with EACH OTHER's claimed
+	/// fingerprint, and a Checkpoint-alone restore never runs it at all —
+	/// neither path proves a claimed fingerprint is truthful against the PQ
+	/// key material the body itself carries. `leafKeys.sendPQ`/`recvPQ` are
+	/// always the winning body's own restored PQ sets by this point
+	/// (`winner` is either the Checkpoint outright, or a Core spliced with
+	/// the Checkpoint's PQ halves — `splicingPQ` carries `leafKeys.sendPQ`/
+	/// `recvPQ` across but leaves the fingerprint fields as the Core's own
+	/// claim, already proven to agree with the Checkpoint's by
+	/// `validateManifestAgreement`), so this one check closes the gap
+	/// uniformly for both paths.
+	private static func verifyManifestFingerprintsMatchRestoredLeafKeys(
+		_ body: SessionArchive, leafKeys: LeafKeys
+	) throws {
+		guard body.sendPQKeysFingerprint == leafKeys.sendPQ.fingerprint,
+			body.recvPQKeysFingerprint == leafKeys.recvPQ.fingerprint
 		else {
 			throw TwoMLSError.archiveInvalid
 		}

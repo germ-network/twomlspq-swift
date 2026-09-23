@@ -21,15 +21,68 @@ public struct StateUpdate: Sendable {
 	public let archive: SecretArchive
 }
 
+/// One `pending` entry of a `GroupKeySetFingerprint` — the target credential
+/// id plus its signature key, rides as an array (sorted by target at
+/// construction) rather than a `Dictionary`, exactly like
+/// `GroupKeySetArchive`'s own `pending`, so the encoded bytes are stable
+/// across runs instead of following `Dictionary`'s unspecified iteration
+/// order.
+struct PendingFingerprintEntry: Equatable, Sendable, Codable {
+	let target: Data
+	let signatureKey: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case target = 0
+		case signatureKey = 1
+	}
+}
+
+/// A `GroupKeySet`'s public shape only — its own leaf's current signature
+/// key, plus every pending target's signature key. Equatable, Sendable and
+/// Codable, none of which `GroupKeySet` itself needs to be, since the
+/// secrets never ride in this type. What `PQEpochManifest` compares to catch
+/// a PQ key-set change the epoch alone would miss, and (archived, on
+/// `SessionArchive`) what `validateManifestAgreement` cross-checks a Core's
+/// claimed PQ key state against a paired Checkpoint's.
+struct GroupKeySetFingerprint: Equatable, Sendable, Codable {
+	let current: Data?
+	let pending: [PendingFingerprintEntry]
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case current = 0
+		case pending = 1
+	}
+}
+
+extension GroupKeySet {
+	var fingerprint: GroupKeySetFingerprint {
+		GroupKeySetFingerprint(
+			current: current?.signatureKey.data,
+			pending: pending.sorted { $0.key.lexicographicallyPrecedes($1.key) }
+				.map {
+					PendingFingerprintEntry(
+						target: $0.key,
+						signatureKey: $0.value.signatureKey.data)
+				})
+	}
+}
+
 /// Both PQ trees' epoch, exactly the manifest fields `SessionArchive` itself
-/// carries (`sendPQEpoch`/`recvPQEpoch`) — the cheap, tree-hash-free signal
-/// both `processIncoming`'s per-call kind derivation and the sticky
-/// checkpoint invariant below compare against. A `nil` half compares unequal
-/// to any `Some`, so founding OR losing a half counts as a move exactly like
-/// an epoch bump does.
+/// carries (`sendPQEpoch`/`recvPQEpoch`), plus each PQ key set's own
+/// fingerprint — the cheap, tree-hash-free signal both `processIncoming`'s
+/// per-call kind derivation and the sticky checkpoint invariant below
+/// compare against. A `nil` half compares unequal to any `Some`, so founding
+/// OR losing a half counts as a move exactly like an epoch bump does; the
+/// fingerprint catches a PQ key-set change an epoch bump alone would not —
+/// `pqRekeyApply`'s promotion can move a key without necessarily moving
+/// `recvPQEpoch` in a way this manifest would otherwise notice on its own
+/// (the epoch DOES move on every rekey today, but the fingerprint is the
+/// invariant's actual guarantee, not an accident of today's call sites).
 struct PQEpochManifest: Equatable {
 	let sendPQEpoch: UInt64?
 	let recvPQEpoch: UInt64?
+	let sendPQKeys: GroupKeySetFingerprint
+	let recvPQKeys: GroupKeySetFingerprint
 }
 
 @available(iOS 26, macOS 26, *)
@@ -37,7 +90,9 @@ extension TwoMLSSession {
 	var pqEpochManifest: PQEpochManifest {
 		PQEpochManifest(
 			sendPQEpoch: sendGroup?.pq?.context.epoch,
-			recvPQEpoch: recvGroup?.pq?.context.epoch)
+			recvPQEpoch: recvGroup?.pq?.context.epoch,
+			sendPQKeys: leafKeys.sendPQ.fingerprint,
+			recvPQKeys: leafKeys.recvPQ.fingerprint)
 	}
 
 	/// Bumps `stateSeq` for a fresh state-advancing call. Checked add: past
@@ -82,14 +137,24 @@ extension TwoMLSSession {
 	/// round's PQ exporter-component consumption — which never moves an
 	/// epoch — does not spuriously upgrade it.
 	mutating func stateUpdate(kind: BlobKind) throws -> StateUpdate {
+		// The live choke point runs FIRST — fail-closed, `.credentialUnknown`,
+		// before the kind is even decided — then the sticky kind upgrade,
+		// then the encode, and only once that has succeeded is the checkpoint
+		// manifest stamped. A violation here mints nothing and stamps
+		// nothing.
+		try assertLeafKeysPresented()
 		var kind = kind
 		if kind == .core, pqEpochManifest != lastCheckpointedManifest {
 			kind = .checkpoint
 		}
+		let archive = try makeSessionArchive(kind: kind)
 		if kind == .checkpoint {
 			lastCheckpointedManifest = pqEpochManifest
 		}
-		return StateUpdate(
-			kind: kind, stateSeq: stateSeq, archive: try makeSessionArchive(kind: kind))
+		let update = StateUpdate(kind: kind, stateSeq: stateSeq, archive: archive)
+		#if DEBUG
+			TwoMLSSessionTestHooks.notifyStateUpdate(self)
+		#endif
+		return update
 	}
 }

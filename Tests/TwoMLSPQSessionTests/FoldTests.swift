@@ -529,6 +529,12 @@ final class FoldTests: XCTestCase {
 				credential: .basic(identity: bob.identity.clientID),
 				signatureKey: freshSignatureKey))
 		bob.recvGroup = mirror
+		// This hand-built rotation bypasses `prepareToEncrypt`, which would
+		// normally stage the fresh key itself — stage it here so a later
+		// fold's `applyFoldCommit` can promote it (same id, new key).
+		try bob.leafKeys.recvClassical.stage(
+			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
+			for: bob.identity.clientID)
 		return try message.mlsEncoded()
 	}
 

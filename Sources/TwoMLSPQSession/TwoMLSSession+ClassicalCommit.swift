@@ -211,18 +211,21 @@ extension TwoMLSSession {
 	/// principal `candidate` already achieved on `recv`'s own leaf (the FIRST
 	/// leaf to canonicalize a rotation, per `applyFoldCommit`/`applyBind`)?
 	/// Both reads are tree-derived (never a cached claim), so this can never
-	/// disagree with what the resolvers would sign with. `nil` when there is
-	/// no outstanding candidate, either group is absent, or the send-leaf
-	/// already presents the canonical id.
+	/// disagree with what the stored key sets would sign with. Returns the
+	/// TARGET id, not the candidate record — the key itself always comes
+	/// from `leafKeys.sendClassical.pending`, never `rotationCandidate.
+	/// signingKey` directly — `nil` when there is no outstanding candidate,
+	/// either group is absent, or the send-leaf already presents the
+	/// canonical id.
 	private static func ownLeafCatchUpTarget(
 		send: APQGroup?, recv: APQGroup?, candidate: RotationCandidate?
-	) throws -> RotationCandidate? {
+	) throws -> Data? {
 		guard let candidate, let send, let recv else { return nil }
 		let sendOwnID = try basicIdentifier(Self.ownLeaf(of: send.classical).credential)
 		guard sendOwnID != candidate.clientID else { return nil }
 		let canonicalID = try basicIdentifier(Self.ownLeaf(of: recv.classical).credential)
 		guard canonicalID == candidate.clientID else { return nil }
-		return candidate
+		return candidate.clientID
 	}
 
 	/// §3b/§11 MF6: a committing round on `sendGroup.classical` — folds the
@@ -274,12 +277,21 @@ extension TwoMLSSession {
 		// and the peer's next inbound frame re-stamps the license
 		// (`stampLicenseIfOffered`), so the very next `prepareToEncrypt`
 		// performs it.
-		let catchUpCandidate =
+		let catchUpTargetID =
 			licensed
 			? try Self.ownLeafCatchUpTarget(
 				send: sendGroup, recv: recvGroup, candidate: rotationCandidate)
 			: nil
-		guard folded != nil || willDischargeBind || catchUpCandidate != nil else {
+		// The pending-key lookup runs only when there IS a catch-up target
+		// — never unconditionally — and is captured now, on `self.leafKeys`,
+		// before anything in this round mutates state.
+		let catchUpKey: LeafKey? = try catchUpTargetID.map { target in
+			guard let key = leafKeys.sendClassical.pending[target] else {
+				throw TwoMLSError.credentialUnknown
+			}
+			return key
+		}
+		guard folded != nil || willDischargeBind || catchUpTargetID != nil else {
 			return (false, nil)
 		}
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
@@ -411,13 +423,13 @@ extension TwoMLSSession {
 			// resolved current key suffices (identical to CP0/CP1).
 			let sign: MLS.RFC9420.SigningClosure
 			let newIdentity: MLS.RFC9420.NewSigningIdentity?
-			if let catchUpCandidate {
+			if let catchUpTargetID, let catchUpKey {
 				sign = MLS.RFC9420.signingClosure(
 					classicalProvider, current: try sendClassicalSigningKey(),
-					new: catchUpCandidate.signingKey)
+					new: catchUpKey.signingKey)
 				newIdentity = MLS.RFC9420.NewSigningIdentity(
-					credential: .basic(identity: catchUpCandidate.clientID),
-					signatureKey: catchUpCandidate.signatureKey)
+					credential: .basic(identity: catchUpTargetID),
+					signatureKey: catchUpKey.signatureKey)
 			} else {
 				sign = MLS.RFC9420.signingClosure(
 					classicalProvider, try sendClassicalSigningKey())
@@ -453,6 +465,16 @@ extension TwoMLSSession {
 				// construction bug on the send side just as fast.
 				try TwoPartyRules.ensureTwoParty(send.classical)
 
+				// The catch-up's target key is now what `send.classical`'s
+				// own leaf presents — promote it, on a local copy, right
+				// after the apply that actually moved it.
+				var updatedLeafKeys = leafKeys
+				if let catchUpTargetID, let catchUpKey {
+					try updatedLeafKeys.sendClassical.promoted(
+						presenting: catchUpKey.signatureKey,
+						id: catchUpTargetID)
+				}
+
 				// MF4: also remember the newly-landed epoch, so a crossed peer
 				// commit referencing it still resolves even if this session
 				// commits again before that peer commit arrives.
@@ -461,10 +483,38 @@ extension TwoMLSSession {
 				try rememberSendAttachmentComponent(
 					classical: &send.classical, ledger: &attachmentLedger)
 
+				// (DEBUG only): a fault point right at this round's
+				// write-back — proves every local copy above (`send`,
+				// `ledger`, `attachmentLedger`, `authCopy`, `updatedLeafKeys`)
+				// is still write-back-only-on-success: a fault here must
+				// leave every one of `self`'s corresponding fields untouched.
+				#if DEBUG
+					if TwoMLSSessionTestHooks.shouldFault(
+						"committingRound.beforeWriteBack")
+					{
+						throw InjectedTestFault(
+							name: "committingRound.beforeWriteBack")
+					}
+				#endif
 				sendGroup = send
 				sendCrossPSKLedger = ledger
 				sendAttachmentLedger = attachmentLedger
 				auth = authCopy
+				leafKeys = updatedLeafKeys
+				// (DEBUG only): a fault point AFTER the write-back above but
+				// before the next throwing call — proves a fault here leaves
+				// `self` fully write-back-complete (unlike the point above,
+				// which proves the OPPOSITE: nothing wrote back at all).
+				#if DEBUG
+					if TwoMLSSessionTestHooks.shouldFault(
+						"committingRound.afterWriteBackBeforeRendezvous")
+					{
+						throw InjectedTestFault(
+							name:
+								"committingRound.afterWriteBackBeforeRendezvous"
+						)
+					}
+				#endif
 				// Classical epoch just advanced (a bare fold, or a fold+bind
 				// discharge sharing this same commit) — capture its rendezvous
 				// address before this round's caller (`prepareToEncrypt`) mints
@@ -589,6 +639,15 @@ extension TwoMLSSession {
 			// of `recv`, `send`, or `auth`.
 			let (authCopy, newSender, ownCanonicalized) = try Self.canonicalize(
 				effects, myLeaf: myLeaf, from: auth)
+			// Promote + retain, on the post-`canonicalize` local `authCopy`
+			// (never `self.auth`, which only writes back below) — every own
+			// proposal goes stale at this exact advance, whichever leaf
+			// actually moved.
+			let updatedLeafKeys = try Self.updateRecvClassicalKeys(
+				leafKeys, classical: recv.classical,
+				authCopy: authCopy, recvLeafPrincipal: recvLeafPrincipal,
+				identity: identity,
+				rotationCandidateID: rotationCandidate?.clientID)
 
 			recvGroup = recv
 			sendGroup = send
@@ -597,14 +656,15 @@ extension TwoMLSSession {
 			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
 			auth = authCopy
+			leafKeys = updatedLeafKeys
 			// Slice 11 (group-rules.md rule 4): `recvLeafPrincipal` is NOT retired here even
 			// when `ownCanonicalized` reports the CLASSICAL leaf converged —
-			// the PQ custody resolver (`pqSigningKey`) still needs its retained
-			// PQ pair for `recvGroup.pq`'s leaf, which keeps presenting
-			// the invitation identity until a later slice's PQ catch-up
-			// ("Chunk 2", out of scope here). A stale-but-unused custody
-			// entry is harmless (mirrors `rotationCandidate`'s own "a stale
-			// candidate is harmless" reasoning).
+			// `leafKeys.recvPQ.current` still holds the retained invitation
+			// PQ pair for `recvGroup.pq`'s leaf, which keeps presenting the
+			// invitation identity until a later slice's PQ catch-up ("Chunk
+			// 2", out of scope here). A stale-but-unused custody entry is
+			// harmless (mirrors `rotationCandidate`'s own "a stale candidate
+			// is harmless" reasoning).
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)
@@ -642,6 +702,48 @@ extension TwoMLSSession {
 			}
 		}
 		return (updated, newSender, ownCredentialCanonicalized)
+	}
+
+	/// recv-classical's post-apply promote + retention, shared by
+	/// `applyFoldCommit`/`applyBind`'s own success points — the only two
+	/// sites `recvGroup.classical`'s epoch actually advances, so this is
+	/// exactly when every own proposal (and so every dead `pending[t]`
+	/// entry) goes stale. `authCopy` is `canonicalize`'s OWN return value,
+	/// never `self.auth`, which is written back only alongside this same
+	/// call's own success point. Both promote and retain run
+	/// unconditionally: `promoted` is itself idempotent (a no-op when the
+	/// presented key is already `current`), so calling it on every apply —
+	/// not only when `canonicalize` reports OUR OWN leaf moved
+	/// (`ownCanonicalized`) — makes `leafKeys` track what the tree actually
+	/// presents rather than depend on that AS-level event agreeing with it;
+	/// retention likewise runs regardless, since `stagedUpdates` goes stale
+	/// at every advance regardless of which leaf this particular commit
+	/// moved.
+	private static func updateRecvClassicalKeys(
+		_ leafKeys: LeafKeys, classical: MLS.RFC9420.Group,
+		authCopy: AuthCore, recvLeafPrincipal: RecvLeafPrincipal?, identity: TwoMLSIdentity,
+		rotationCandidateID: Data?
+	) throws -> LeafKeys {
+		var updated = leafKeys
+		let ownLeaf = try Self.ownLeaf(of: classical)
+		let ownID = try basicIdentifier(ownLeaf.credential)
+		try updated.recvClassical.promoted(presenting: ownLeaf.signatureKey, id: ownID)
+		let candidateCanonicalized =
+			rotationCandidateID.map {
+				!isRotationCandidateOutstanding(
+					$0, mineHistory: authCopy.mine.history)
+			} ?? true
+		let ruleFourTarget: Data? = {
+			guard let recvLeafPrincipal, recvLeafPrincipal.clientID == ownID,
+				ownID != authCopy.mine.current
+			else { return nil }
+			return identity.clientID
+		}()
+		updated.recvClassical.retainRecvClassical(
+			candidateID: rotationCandidateID,
+			candidateCanonicalized: candidateCanonicalized,
+			ruleFourTarget: ruleFourTarget)
+		return updated
 	}
 
 	/// §4c/§11 #2/#5, Bob: apply Alice's `0x05` bind staple (a fold may ride
@@ -873,6 +975,14 @@ extension TwoMLSSession {
 			// written back only alongside `recv`/`send` below.
 			let (authCopy, newSender, ownCanonicalized) = try Self.canonicalize(
 				classicalEffects, myLeaf: myLeaf, from: auth)
+			// Same promote + retain as `applyFoldCommit` — this is the
+			// OTHER (and only other) site `recvGroup.classical`'s epoch
+			// advances.
+			let updatedLeafKeys = try Self.updateRecvClassicalKeys(
+				leafKeys, classical: recv.classical,
+				authCopy: authCopy, recvLeafPrincipal: recvLeafPrincipal,
+				identity: identity,
+				rotationCandidateID: rotationCandidate?.clientID)
 
 			recvGroup = recv
 			sendGroup = send
@@ -887,6 +997,7 @@ extension TwoMLSSession {
 				lastSendPQExported = pendingSendPQExportedStamp
 			}
 			auth = authCopy
+			leafKeys = updatedLeafKeys
 			// Slice 11 (group-rules.md rule 4): `recvLeafPrincipal` is retained here too — see
 			// `applyFoldCommit`'s own comment on why classical convergence
 			// alone must not clear it.

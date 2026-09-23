@@ -555,14 +555,18 @@ public enum SessionMigration {
 	///   it before any session archive can exist; the classical one only
 	///   for a pre-establishment initiator, and REQUIRED there), a group
 	///   half whose snapshot doesn't restore, a group's own leaf presenting
-	///   a signing key no custody arm
-	///   (`identity`/`rotationCandidate`/`recvLeafPrincipal`) resolves, a
-	///   `KeyPackage` part that doesn't MLS-decode or whose secrets don't
+	///   a signing key the converted `leafKeys` set doesn't hold at
+	///   `current`, a `KeyPackage` part that doesn't MLS-decode or whose secrets don't
 	///   derive to it (the identity pair AND KP′/`initialTheirKP`), a
 	///   topology violation (`recvGroup` absent without `initiated`; the
 	///   standard pair missing its PQ snapshot), a decode-invariant breach
-	///   (the 32-byte rules), or any structural inconsistency the trial
-	///   restore rejects.
+	///   (the 32-byte rules), `validateLeafKeys`'s own checks failing
+	///   against the converted parts (an own current-epoch
+	///   staged/pending/parked Update naming a key the converted
+	///   `leafKeys` doesn't hold, a reservation not matching `identity`,
+	///   or an outstanding rotation candidate / rule-4 catch-up target
+	///   incoherent with its expected `pending` entry), or any other
+	///   structural inconsistency the trial restore rejects.
 	public static func mintArchive(
 		kind: BlobKind,
 		parts: MigratedSession,
@@ -624,10 +628,10 @@ public enum SessionMigration {
 
 		// Both halves restore up front (the manifest derives from the LIVE
 		// restored groups, never from the parts), then every half's own leaf
-		// must resolve under a custody arm — the same disjunction
-		// `classicalSigningKey(presenting:)`/`pqSigningKey(presenting:)`
-		// enforce at every send site, so a custody mis-mapping fails at mint
-		// instead of as `.credentialUnknown` on the first post-restore send.
+		// must match what the converted `leafKeys` holds at `current` — the
+		// same check `assertLeafKeysPresented()` enforces at every live
+		// state update, so a mis-mapping fails at mint instead of as
+		// `.credentialUnknown` on the first post-restore send.
 		let sendClassical = try restoredGroup(
 			parts.sendGroup.classical, classicalProvider)
 		let sendPQ = try parts.sendGroup.pq.map {
@@ -639,19 +643,13 @@ public enum SessionMigration {
 		let recvPQ = try parts.recvGroup?.pq.map {
 			try restoredGroup($0, pqProvider)
 		}
-		try checkClassicalCustody(sendClassical, parts: parts)
-		try checkPQCustody(sendPQ, parts: parts)
-		if let recvClassical {
-			try checkClassicalCustody(recvClassical, parts: parts)
-		}
-		try checkPQCustody(recvPQ, parts: parts)
 
 		// The two optional custody records derive-check kind-independently —
 		// a core-kind mint gets no trial restore (which would run these via
-		// the archive types' own `restore()`s), and the custody arms above
-		// compare PUBLICS only, so an underved candidate/principal key would
-		// otherwise pass here and fail only when its archive wins a later
-		// reconcile.
+		// the archive types' own `restore()`s), and `convertDeployedKeys`
+		// below only ever copies these secrets, never re-derives them —
+		// so an underived candidate/principal key must fail HERE rather
+		// than silently riding into the converted `leafKeys`.
 		if let candidate = parts.rotationCandidate,
 			try InvitationMigration.derivedEd25519Public(from: candidate.signingKey)
 				!= candidate.signatureKey
@@ -674,7 +672,9 @@ public enum SessionMigration {
 		// decode/derive cross-checks as the identity's pair — the
 		// "MLSMessage-FRAMED KeyPackage" fold included — so a mis-mapped
 		// bootstrap secret fails at mint instead of opaquely at the §A.3
-		// welcome open (or never, for a core-kind mint).
+		// welcome open (or never, for a core-kind mint). Hoisted above the
+		// `leafKeys` conversion below, which needs KP′'s already-checked
+		// leaf key for the pre-A.3 initiator's recv-PQ reservation.
 		let bootstrapKPSecret = try parts.bootstrapKPSecret.map { secret in
 			try Self.checkBootstrapKPSecret(secret)
 		}
@@ -686,6 +686,72 @@ public enum SessionMigration {
 				throw TwoMLSError.archiveInvalid
 			}
 		}
+
+		// The temporary one-time conversion from today's owner-keyed parts
+		// to per-group `leafKeys` — replaces `checkClassicalCustody`/
+		// `checkPQCustody`, which this subsumes (a lookup miss within a
+		// half is the exact same `.archiveInvalid` the old custody check
+		// threw). Deleted once the migration input carries per-group keys
+		// of its own.
+		let leafKeys = try convertDeployedKeys(
+			parts: parts, sendClassical: sendClassical, sendPQ: sendPQ,
+			recvClassical: recvClassical, recvPQ: recvPQ,
+			bootstrapKPSecret: bootstrapKPSecret,
+			classicalProvider: classicalProvider, pqProvider: pqProvider)
+		// Today this mostly re-checks `convertDeployedKeys`'s own conversion;
+		// it becomes load-bearing against genuinely adversarial input once
+		// the migration input carries per-group keys of its own.
+		try TwoMLSSession.validateLeafKeys(
+			leafKeys,
+			sendGroup: APQGroup(
+				classical: sendClassical, pq: sendPQ,
+				pskStore: MLS.Combiner.PSKStore(),
+				codepoints: .deployed),
+			recvGroup: recvClassical.map {
+				APQGroup(
+					classical: $0, pq: recvPQ,
+					pskStore: MLS.Combiner.PSKStore(),
+					codepoints: .deployed)
+			},
+			identity: try identityArchive.restore(),
+			bootstrapKPSecret: try bootstrapKPSecret.map {
+				(
+					leafSecretKey: try MLS.HpkeSecretKey($0.leafSecretKey),
+					initSecretKey: try MLS.HpkeSecretKey($0.initSecretKey),
+					keyPackage: try MLS.RFC9420.KeyPackage(
+						mlsEncoded: $0.keyPackage)
+				)
+			},
+			stagedUpdates: parts.stagedUpdates.map { ($0.digest, $0.message) },
+			pendingProposal: parts.pendingProposal.map {
+				($0.proposing, $0.message, $0.hash)
+			},
+			pqInflight: try parts.pqInflight.map(Self.nativePQInflight),
+			rotationCandidate: try parts.rotationCandidate.map {
+				RotationCandidate(
+					clientID: $0.clientID,
+					signingKey: try MLS.SignatureSecretKey($0.signingKey),
+					signatureKey: MLS.SignaturePublicKey($0.signatureKey),
+					proposedAtRecvEpoch: $0.proposedAtRecvEpoch)
+			},
+			recvLeafPrincipal: try parts.recvLeafPrincipal.map {
+				RecvLeafPrincipal(
+					clientID: $0.clientID,
+					signingKey: try MLS.SignatureSecretKey($0.signingKey),
+					signatureKey: MLS.SignaturePublicKey($0.signatureKey),
+					pqSigningKey: try MLS.SignatureSecretKey($0.pqSigningKey),
+					pqSignatureKey: MLS.SignaturePublicKey($0.pqSignatureKey))
+			},
+			auth: AuthCore(
+				mine: PartySequence(
+					history: parts.auth.mine.history,
+					authorizedNext: parts.auth.mine.authorizedNext,
+					pinned: parts.auth.mine.pinned),
+				theirs: PartySequence(
+					history: parts.auth.theirs.history,
+					authorizedNext: parts.auth.theirs.authorizedNext,
+					pinned: parts.auth.theirs.pinned)),
+			classicalProvider: classicalProvider, pqProvider: pqProvider)
 
 		let body = SessionArchive(
 			version: sessionArchiveVersion,
@@ -787,7 +853,10 @@ public enum SessionMigration {
 					signatureKey: $0.signatureKey,
 					pqSigningKey: $0.pqSigningKey,
 					pqSignatureKey: $0.pqSignatureKey)
-			})
+			},
+			leafKeys: LeafKeysArchive(leafKeys, kind: kind),
+			sendPQKeysFingerprint: leafKeys.sendPQ.fingerprint,
+			recvPQKeysFingerprint: leafKeys.recvPQ.fingerprint)
 		// Decode invariants (the 32-byte rules on the commitment, the three
 		// windows and both attachment ledgers) run kind-independently — same
 		// reasoning as the derive-checks above; the checkpoint's trial
@@ -869,38 +938,188 @@ public enum SessionMigration {
 		return secret
 	}
 
-	/// The classical custody arm of `classicalSigningKey(presenting:)`
-	/// (TwoMLSSession.swift), applied to a restored half's own leaf: the
-	/// presented key must resolve to the founding identity, the in-flight
-	/// rotation candidate, or the retained recv-leaf custody — else every
-	/// send/commit path after restore throws `.credentialUnknown`.
-	private static func checkClassicalCustody(
-		_ group: MLS.RFC9420.Group, parts: MigratedSession
-	) throws {
-		let presented = try TwoMLSSession.ownLeaf(of: group).signatureKey.data
-		guard
-			presented == parts.identity.signatureKey
-				|| parts.rotationCandidate?.signatureKey == presented
-				|| parts.recvLeafPrincipal?.signatureKey == presented
-		else {
+	/// The temporary one-time conversion from today's owner-keyed migrated
+	/// parts to per-group `leafKeys` — deleted once the migration input
+	/// carries per-group keys of its own. Every
+	/// lookup miss (a leaf presenting a key none of a half's slots holds) is
+	/// `.archiveInvalid` — the exact failure `checkClassicalCustody`/
+	/// `checkPQCustody` used to throw for the same condition.
+	private static func convertDeployedKeys(
+		parts: MigratedSession,
+		sendClassical: MLS.RFC9420.Group, sendPQ: MLS.RFC9420.Group?,
+		recvClassical: MLS.RFC9420.Group?, recvPQ: MLS.RFC9420.Group?,
+		bootstrapKPSecret: MigratedBootstrapKPSecret?,
+		classicalProvider: any MLS.CipherSuiteProvider,
+		pqProvider: any MLS.CipherSuiteProvider
+	) throws -> LeafKeys {
+		// Classical slots: identity, the candidate?, the retained recv-leaf
+		// custody's classical pair?.
+		func lookupClassical(_ signatureKey: Data) throws -> LeafKey {
+			if signatureKey == parts.identity.signatureKey {
+				return LeafKey(
+					signingKey: try MLS.SignatureSecretKey(
+						parts.identity.signingKey),
+					signatureKey: MLS.SignaturePublicKey(signatureKey))
+			}
+			if let candidate = parts.rotationCandidate,
+				candidate.signatureKey == signatureKey
+			{
+				return LeafKey(
+					signingKey: try MLS.SignatureSecretKey(
+						candidate.signingKey),
+					signatureKey: MLS.SignaturePublicKey(signatureKey))
+			}
+			if let recvLeaf = parts.recvLeafPrincipal,
+				recvLeaf.signatureKey == signatureKey
+			{
+				return LeafKey(
+					signingKey: try MLS.SignatureSecretKey(recvLeaf.signingKey),
+					signatureKey: MLS.SignaturePublicKey(signatureKey))
+			}
 			throw TwoMLSError.archiveInvalid
 		}
+		// PQ slots: identity's own PQ pair, the retained recv-leaf
+		// custody's PQ pair? — no candidate arm (rotation only ever touches
+		// classical leaves) and no classical arm (D1, independent per-half
+		// keys).
+		func lookupPQ(_ signatureKey: Data) throws -> LeafKey {
+			if signatureKey == parts.identity.pqSignatureKey {
+				return LeafKey(
+					signingKey: try MLS.SignatureSecretKey(
+						parts.identity.pqSigningKey),
+					signatureKey: MLS.SignaturePublicKey(signatureKey))
+			}
+			if let recvLeaf = parts.recvLeafPrincipal,
+				recvLeaf.pqSignatureKey == signatureKey
+			{
+				return LeafKey(
+					signingKey: try MLS.SignatureSecretKey(
+						recvLeaf.pqSigningKey),
+					signatureKey: MLS.SignaturePublicKey(signatureKey))
+			}
+			throw TwoMLSError.archiveInvalid
+		}
+
+		let sendOwnLeaf = try TwoMLSSession.ownLeaf(of: sendClassical)
+		var sendClassicalSet = GroupKeySet(
+			current: try lookupClassical(sendOwnLeaf.signatureKey.data))
+		if let candidate = parts.rotationCandidate {
+			let sendPresentsCandidate =
+				try basicIdentifier(sendOwnLeaf.credential) == candidate.clientID
+			if !sendPresentsCandidate {
+				sendClassicalSet.pending[candidate.clientID] = try lookupClassical(
+					candidate.signatureKey)
+			}
+		}
+
+		var recvClassicalSet: GroupKeySet
+		if let recvClassical {
+			let recvOwnLeaf = try TwoMLSSession.ownLeaf(of: recvClassical)
+			let recvOwnID = try basicIdentifier(recvOwnLeaf.credential)
+			recvClassicalSet = GroupKeySet(
+				current: try lookupClassical(recvOwnLeaf.signatureKey.data))
+			// (a) the candidate, while it is still outstanding (the SAME
+			// predicate check 6 and post-apply retention use — canonical-
+			// ness via `auth.mine.history`, not a tree-presentation guess).
+			if let candidate = parts.rotationCandidate,
+				isRotationCandidateOutstanding(
+					candidate.clientID, mineHistory: parts.auth.mine.history)
+			{
+				recvClassicalSet.pending[candidate.clientID] = try lookupClassical(
+					candidate.signatureKey)
+			}
+			// (b) rule 4: the born-dedicated catch-up target.
+			if let recvLeaf = parts.recvLeafPrincipal, recvLeaf.clientID == recvOwnID,
+				recvOwnID != parts.auth.mine.history.last
+			{
+				recvClassicalSet.pending[parts.identity.clientID] =
+					try lookupClassical(
+						parts.identity.signatureKey)
+			}
+			// (c) every current-epoch own staged/pending Update naming a
+			// leaf key that isn't `current` yet.
+			var ownProposals = parts.stagedUpdates.map { $0.message }
+			if let pendingProposal = parts.pendingProposal {
+				ownProposals.append(pendingProposal.message)
+			}
+			for message in ownProposals {
+				guard
+					let target = try? TwoMLSSession.decodedUpdateTarget(
+						message, against: recvClassical,
+						provider: classicalProvider)
+				else { continue }
+				guard target.signatureKey != recvClassicalSet.current?.signatureKey,
+					recvClassicalSet.pending[target.id] == nil
+				else { continue }
+				recvClassicalSet.pending[target.id] = try lookupClassical(
+					target.signatureKey.data)
+			}
+		} else {
+			// The pre-join initiator's reservation.
+			recvClassicalSet = GroupKeySet(
+				current: try lookupClassical(parts.identity.signatureKey))
+		}
+
+		let sendPQSet: GroupKeySet
+		if let sendPQ {
+			sendPQSet = GroupKeySet(
+				current: try lookupPQ(
+					try TwoMLSSession.ownLeaf(of: sendPQ).signatureKey.data)
+			)
+		} else {
+			// The pre-A.3 acceptor's reservation.
+			sendPQSet = GroupKeySet(
+				current: try lookupPQ(parts.identity.pqSignatureKey))
+		}
+
+		var recvPQSet: GroupKeySet
+		if let recvPQ {
+			let recvPQOwnLeaf = try TwoMLSSession.ownLeaf(of: recvPQ)
+			recvPQSet = GroupKeySet(
+				current: try lookupPQ(recvPQOwnLeaf.signatureKey.data))
+			if case .rekeyInitiated(let updMessage) = parts.pqInflight,
+				let target = try? TwoMLSSession.decodedUpdateTarget(
+					updMessage, against: recvPQ, provider: pqProvider),
+				target.signatureKey != recvPQSet.current?.signatureKey
+			{
+				recvPQSet.pending[target.id] = try lookupPQ(
+					target.signatureKey.data)
+			}
+		} else if let bootstrapKPSecret {
+			// The pre-A.3 initiator's reservation: KP′'s leaf key, looked up
+			// in the PQ slots (it is signed under the founder identity's
+			// own PQ key, D1's per-half-but-shared-within-a-half model).
+			let kpLeaf = try MLS.RFC9420.KeyPackage(
+				mlsEncoded: bootstrapKPSecret.keyPackage
+			)
+			.leafNode
+			recvPQSet = GroupKeySet(current: try lookupPQ(kpLeaf.signatureKey.data))
+		} else {
+			recvPQSet = GroupKeySet(
+				current: try lookupPQ(parts.identity.pqSignatureKey))
+		}
+
+		return LeafKeys(
+			sendClassical: sendClassicalSet, recvClassical: recvClassicalSet,
+			sendPQ: sendPQSet, recvPQ: recvPQSet)
 	}
 
-	/// The PQ custody arm of `pqSigningKey(presenting:)`: no rotation
-	/// candidate (rotation only ever touches classical leaves) and no
-	/// classical arm (per-half keys, D1) — `identity`'s own PQ pair or the
-	/// retained recv-leaf custody's.
-	private static func checkPQCustody(
-		_ group: MLS.RFC9420.Group?, parts: MigratedSession
-	) throws {
-		guard let group else { return }
-		let presented = try TwoMLSSession.ownLeaf(of: group).signatureKey.data
-		guard
-			presented == parts.identity.pqSignatureKey
-				|| parts.recvLeafPrincipal?.pqSignatureKey == presented
-		else {
-			throw TwoMLSError.archiveInvalid
+	/// `MigratedPQInflight` → native `PQInflight` — the payload shapes are
+	/// identical; this only exists because `validateLeafKeys` takes the
+	/// native type (it is shared with the live restore path).
+	@available(iOS 26, macOS 26, *)
+	private static func nativePQInflight(_ migrated: MigratedPQInflight) throws -> PQInflight {
+		switch migrated {
+		case .bootstrapInitiated: return .bootstrapInitiated
+		case .bootstrapResponded: return .bootstrapResponded
+		case .initiating(let secretKey, let ek):
+			return .initiating(
+				PQEphemeral(secretKey: try MLS.HpkeSecretKey(secretKey), ek: ek))
+		case .responding(let secret, let wireCT):
+			return .responding(secret: secret, wireCT: wireCT)
+		case .rekeyInitiated(let updMessage):
+			return .rekeyInitiated(updMessage: updMessage)
+		case .rekeyResponded: return .rekeyResponded
 		}
 	}
 }

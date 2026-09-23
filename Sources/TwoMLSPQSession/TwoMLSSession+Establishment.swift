@@ -80,15 +80,26 @@ extension TwoMLSSession {
 		let auth = AuthCore(
 			mine: .seeded(identity.clientID), theirs: .seeded(theirClassicalID))
 
+		// Every leaf this identity occupies or will occupy — Group_A's
+		// founded classical+PQ leaves, and Group_B's classical leaf (once
+		// joined) plus KP′'s reservation — presents the SAME per-half key,
+		// minted once here so founding and the stored `leafKeys` below read
+		// the identical local value rather than re-deriving it from
+		// `identity` twice.
+		let classicalKey = LeafKey(
+			signingKey: identity.signingKey, signatureKey: identity.signatureKey)
+		let pqKey = LeafKey(
+			signingKey: identity.pqSigningKey, signatureKey: identity.pqSignatureKey)
+
 		let classicalHalf = try halfCreation(
 			identity: identity, half: identity.keyPackage.classical,
 			leafSecretKey: identity.classicalLeafSecretKey,
-			signingKey: identity.signingKey,
+			signingKey: classicalKey.signingKey,
 			peerKeyPackage: their.classical,
 			provider: classicalProvider)
 		let pqHalf = try halfCreation(
 			identity: identity, half: identity.keyPackage.pq,
-			leafSecretKey: identity.pqLeafSecretKey, signingKey: identity.pqSigningKey,
+			leafSecretKey: identity.pqLeafSecretKey, signingKey: pqKey.signingKey,
 			peerKeyPackage: their.pq,
 			provider: pqProvider)
 
@@ -115,6 +126,13 @@ extension TwoMLSSession {
 		// clears it in turn once THAT join completes.
 		let establishedIdentity = identity.clearingInitSecrets(classical: false, pq: true)
 
+		// The same two pairs minted above seed all four sets.
+		let leafKeys = LeafKeys(
+			sendClassical: GroupKeySet(current: classicalKey),
+			recvClassical: GroupKeySet(current: classicalKey),
+			sendPQ: GroupKeySet(current: pqKey),
+			recvPQ: GroupKeySet(current: pqKey))
+
 		var session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: codepoints, identity: establishedIdentity, auth: auth,
@@ -126,7 +144,7 @@ extension TwoMLSSession {
 				leafSecretKey: bootstrap.leafSecretKey,
 				initSecretKey: bootstrap.initSecretKey,
 				keyPackage: bootstrap.keyPackage
-			), initialTheirKP: their, pqTurnMine: true)
+			), initialTheirKP: their, pqTurnMine: true, leafKeys: leafKeys)
 		// The send group (Group_A) exists from construction: capture its
 		// birth epoch's rendezvous address before minting the baseline
 		// archive (routing works from birth, book session-lifecycle.md).
@@ -296,6 +314,12 @@ extension TwoMLSSession {
 			dedicated = nil
 		}
 		let founderIdentity = dedicated ?? identity
+		// Minted once here so founding and the stored `leafKeys` below read
+		// the identical local value, rather than re-deriving it from
+		// `founderIdentity` twice.
+		let sendClassicalKey = LeafKey(
+			signingKey: founderIdentity.signingKey,
+			signatureKey: founderIdentity.signatureKey)
 
 		let crossPSK = try MLS.Combiner.ExportedPsk.export(
 			from: &groupA.classical, classicalProvider,
@@ -304,7 +328,7 @@ extension TwoMLSSession {
 		let founderHalf = try halfCreation(
 			identity: founderIdentity, half: founderIdentity.keyPackage.classical,
 			leafSecretKey: founderIdentity.classicalLeafSecretKey,
-			signingKey: founderIdentity.signingKey,
+			signingKey: sendClassicalKey.signingKey,
 			peerKeyPackage: theirClassicalKeyPackage, provider: classicalProvider)
 		// Pre-allocated: Group_B's PQ half is not founded in slice 1 (A.3), but
 		// its `APQInfo` still names the eventual group id (a draft-02 PARTIAL).
@@ -353,6 +377,40 @@ extension TwoMLSSession {
 			recvLeafPrincipal = nil
 		}
 
+		// Send-classical/send-PQ present the FOUNDER identity (D when
+		// dedicated, else the invitation identity) from the moment Group_B
+		// is founded; recv-PQ always joins under the ORIGINAL invitation
+		// identity's already-signed PQ leaf (Group_A was joined above with
+		// `identity.classicalJoinCredentials`/`pqJoinCredentials`, before
+		// any dedicated principal exists). recv-classical is the one
+		// split: the degenerate topology joins under `identity` directly (no
+		// dedicated principal, nothing to catch up), while the born-dedicated
+		// topology's recv-classical leaf still presents the INVITATION
+		// identity, with D's key staged as the rule-4 target
+		// (group-rules.md rule 4) — written here, at the exact moment D is
+		// minted, matching the live `recvLeafPrincipal` custody this mirrors.
+		let sendPQKey = LeafKey(
+			signingKey: founderIdentity.pqSigningKey,
+			signatureKey: founderIdentity.pqSignatureKey)
+		let recvPQKey = LeafKey(
+			signingKey: identity.pqSigningKey, signatureKey: identity.pqSignatureKey)
+		let recvClassical: GroupKeySet
+		if let newClientID, dedicated != nil {
+			let invitationClassicalKey = LeafKey(
+				signingKey: identity.signingKey, signatureKey: identity.signatureKey
+			)
+			recvClassical = GroupKeySet(
+				current: invitationClassicalKey,
+				pending: [newClientID: sendClassicalKey])
+		} else {
+			recvClassical = GroupKeySet(current: sendClassicalKey)
+		}
+		let leafKeys = LeafKeys(
+			sendClassical: GroupKeySet(current: sendClassicalKey),
+			recvClassical: recvClassical,
+			sendPQ: GroupKeySet(current: sendPQKey),
+			recvPQ: GroupKeySet(current: recvPQKey))
+
 		var session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: codepoints, identity: sessionIdentity, auth: auth,
@@ -366,7 +424,7 @@ extension TwoMLSSession {
 			// seeds there too.
 			lastCrossInjected: 1, spawnToken: spawnToken,
 			recvLeafPrincipal: recvLeafPrincipal,
-			owesEstablishmentEnvelope: dedicated != nil)
+			owesEstablishmentEnvelope: dedicated != nil, leafKeys: leafKeys)
 		// The send group (Group_B) exists from construction: capture its
 		// birth epoch's rendezvous address before minting the baseline
 		// archive (routing works from birth, book session-lifecycle.md).

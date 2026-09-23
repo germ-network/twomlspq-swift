@@ -258,11 +258,12 @@ public enum PrincipalState: Sendable, Equatable {
 }
 
 /// A minted classical successor, held while a rotation is in flight (a
-/// single candidate at a time) — the second entry in the custody
-/// keyring alongside the founding `identity`. Its `.basic(clientID)` +
-/// `signatureKey` is what `NewSigningIdentity` carries when authoring the
-/// rotation or catching up the lagging leaf; `signingKey` is the ring's
-/// `.leafNode`/`.groupInfo` half.
+/// single candidate at a time) — bookkeeping only: the actual signing key
+/// this candidate names lives in `leafKeys.sendClassical.pending`/
+/// `recvClassical.pending`, seeded from the SAME mint (`prepareToEncrypt
+/// (rotating:)`). Its `.basic(clientID)` + `signatureKey` is what
+/// `NewSigningIdentity` carries when authoring the rotation or catching up
+/// the lagging leaf.
 struct RotationCandidate: Sendable {
 	let clientID: Data
 	let signingKey: MLS.SignatureSecretKey
@@ -272,7 +273,12 @@ struct RotationCandidate: Sendable {
 	/// compares this against that group's LIVE epoch: once it has moved on,
 	/// the peer can no longer fold this now-stale proposal, so a fresh
 	/// rotation may replace this candidate even though it has not yet
-	/// canonicalized.
+	/// canonicalized. An idempotent RE-STAGE of this SAME candidate (naming
+	/// the same `clientID` again) refreshes this field to the CURRENT
+	/// epoch unconditionally, rather than leaving it at its original stage
+	/// point — otherwise a second re-stage within that same epoch would
+	/// wrongly qualify for the wedge relaxation and silently strand this
+	/// candidate's own key.
 	let proposedAtRecvEpoch: UInt64
 }
 
@@ -553,9 +559,10 @@ public struct TwoMLSSession: Sendable {
 	/// The classical successor minted by our own `prepareToEncrypt(rotating:)`
 	/// (F2: a single in-flight candidate) — `nil` until we author a rotation.
 	/// Retained for the life of the session once set (F4's minimal cut: the
-	/// custody resolver below reads the tree, so a stale candidate is
-	/// harmless — a real custodian would retire it once no leaf presents it,
-	/// which needs the PQ catch-up of a later slice).
+	/// choke point (`assertLeafKeysPresented`) and every signing site read
+	/// the stored key sets, never this record's own key, so a stale
+	/// candidate is harmless — a real custodian would retire it once no
+	/// leaf presents it, which needs the PQ catch-up of a later slice).
 	var rotationCandidate: RotationCandidate? = nil
 
 	// MARK: Born-dedicated principal + contract-26 handoff (slice 11)
@@ -568,9 +575,9 @@ public struct TwoMLSSession: Sendable {
 	/// cleared when the CLASSICAL recv-leaf catch-up (group-rules.md rule 4) converges —
 	/// `recvGroup.pq`'s leaf keeps presenting the invitation identity
 	/// independently, until a later slice's PQ catch-up ("Chunk 2", out of
-	/// scope here) converges it too; the PQ custody resolver
-	/// (`pqSigningKey`) needs the retained PQ pair until then (the classical
-	/// pair backs `classicalSigningKey` until rule-4 convergence). A stale
+	/// scope here) converges it too; `leafKeys.recvPQ.current` needs the
+	/// retained PQ pair until then (`leafKeys.recvClassical.current` moves
+	/// to the classical pair at rule-4 convergence). A stale
 	/// entry once both converge would be harmless (mirrors
 	/// `rotationCandidate`'s own reasoning), but nothing in this slice ever
 	/// proves that condition, so retirement is left to that later slice.
@@ -588,6 +595,15 @@ public struct TwoMLSSession: Sendable {
 	/// is set, so Bob can never emit a frame under the bare, unauthenticated
 	/// `0x01` staple before the signed contract-26 handoff wraps it.
 	var owesEstablishmentEnvelope: Bool = false
+
+	// MARK: Signing keys stored by role
+
+	/// The four groups' own stored signing-key sets — the ONLY source of a
+	/// group's signing secrets (`LeafKeys.swift`). `identity`/
+	/// `rotationCandidate`/`recvLeafPrincipal` stay for seeding, persistence,
+	/// the migration mint, and the test oracle only; no signing site reads
+	/// them directly any more.
+	var leafKeys: LeafKeys
 
 	// MARK: Return cadence (slice 8a)
 
@@ -619,7 +635,10 @@ public struct TwoMLSSession: Sendable {
 	/// Core. Seeded at the establishment baseline (every baseline mints a
 	/// `.checkpoint`) and by `restore` from the reconciled blob's own
 	/// manifest.
-	var lastCheckpointedManifest = PQEpochManifest(sendPQEpoch: nil, recvPQEpoch: nil)
+	var lastCheckpointedManifest = PQEpochManifest(
+		sendPQEpoch: nil, recvPQEpoch: nil,
+		sendPQKeys: GroupKeySetFingerprint(current: nil, pending: []),
+		recvPQKeys: GroupKeySetFingerprint(current: nil, pending: []))
 
 	/// The app-state binding this session was created with (`initiate`'s or
 	/// `receive`'s `appBinding`), read from the send group's classical
@@ -684,52 +703,6 @@ public struct TwoMLSSession: Sendable {
 		return .sync(current)
 	}
 
-	/// Custody resolution: resolve the signing secret for whichever principal
-	/// currently presents `signatureKey` on some classical leaf — the
-	/// founding identity or the single in-flight `rotationCandidate`. Keyed
-	/// on `signatureKey`, not the `.basic` id (what a peer's `verifying`/
-	/// `unprotect` actually checks against), so a same-id/new-key rotation is
-	/// unambiguous. Fail-closed: unreachable in the trusting 2-party model
-	/// this module implements — every classical leaf presents either the
-	/// founding key or the outstanding candidate's.
-	private func classicalSigningKey(presenting signatureKey: MLS.SignaturePublicKey) throws
-		-> MLS.SignatureSecretKey
-	{
-		if signatureKey == identity.signatureKey { return identity.signingKey }
-		if let candidate = rotationCandidate, candidate.signatureKey == signatureKey {
-			return candidate.signingKey
-		}
-		// Slice 11: the third custody arm — the born-dedicated
-		// acceptor's recv-leaf (Group_A) still presents the invitation
-		// identity until the recv-leaf catch-up (group-rules.md rule 4) converges it to D.
-		if let recvLeafPrincipal, recvLeafPrincipal.signatureKey == signatureKey {
-			return recvLeafPrincipal.signingKey
-		}
-		throw TwoMLSError.credentialUnknown
-	}
-
-	/// The PQ custody analogue of `classicalSigningKey(presenting:)` (slice
-	/// 11) — no `rotationCandidate` arm: a PQ leaf never presents a classical
-	/// rotation candidate (rotation only ever touches classical leaves), and
-	/// (D1) no classical arm either: under independent per-half signing keys
-	/// no PQ leaf ever presents the CLASSICAL `identity.signatureKey` — an
-	/// arm that tolerated it would silently accept a PQ `KeyPackage` signed
-	/// under the wrong half's key. Resolves `identity`'s OWN PQ pair first
-	/// (correct for Group_B.pq, born under `identity` — with `identity` = D
-	/// after a dedicated-principal handoff, this is D's own PQ pair), else
-	/// the retained invitation custody's PQ pair (`recvLeafPrincipal`),
-	/// which is what Group_A.pq's leaf keeps presenting until a later
-	/// slice's PQ catch-up ("Chunk 2") converges it to D's.
-	private func pqSigningKey(presenting signatureKey: MLS.SignaturePublicKey) throws
-		-> MLS.SignatureSecretKey
-	{
-		if signatureKey == identity.pqSignatureKey { return identity.pqSigningKey }
-		if let recvLeafPrincipal, recvLeafPrincipal.pqSignatureKey == signatureKey {
-			return recvLeafPrincipal.pqSigningKey
-		}
-		throw TwoMLSError.credentialUnknown
-	}
-
 	/// A classical group's own occupied leaf, read straight off its tree —
 	/// the one read every custody/rotation site needs (my own leaf's
 	/// CURRENTLY presented credential/key), never a cached claim.
@@ -741,39 +714,53 @@ public struct TwoMLSSession: Sendable {
 	}
 
 	/// Resolve `sendGroup.classical`'s own leaf's CURRENT signing key — every
-	/// classical send-group-leaf site's key (F4 custody): `encrypt`'s
-	/// `protect`, `committingRound`'s `committing`, and the three §A.4
-	/// ratchet legs' `protect` (`+Ratchet.swift`).
+	/// classical send-group-leaf site's key: `encrypt`'s `protect`,
+	/// `committingRound`'s `committing`, and the three §A.4 ratchet legs'
+	/// `protect` (`+Ratchet.swift`). Reads `leafKeys.sendClassical`'s slot
+	/// directly — no leaf decode, no identity/candidate resolution.
 	func sendClassicalSigningKey() throws -> MLS.SignatureSecretKey {
-		guard let send = sendGroup else { throw TwoMLSError.notEstablished }
-		return try classicalSigningKey(
-			presenting: Self.ownLeaf(of: send.classical).signatureKey)
+		guard sendGroup != nil else { throw TwoMLSError.notEstablished }
+		guard let current = leafKeys.sendClassical.current else {
+			throw TwoMLSError.credentialUnknown
+		}
+		return current.signingKey
 	}
 
 	/// Resolve `recvGroup.classical`'s own leaf's CURRENT signing key —
-	/// `prepareToEncrypt`'s `proposeUpdate` (F4 custody).
+	/// `prepareToEncrypt`'s `proposeUpdate`. Reads `leafKeys.recvClassical`'s
+	/// slot directly.
 	func recvClassicalSigningKey() throws -> MLS.SignatureSecretKey {
-		guard let recv = recvGroup else { throw TwoMLSError.notEstablished }
-		return try classicalSigningKey(
-			presenting: Self.ownLeaf(of: recv.classical).signatureKey)
+		guard recvGroup != nil else { throw TwoMLSError.notEstablished }
+		guard let current = leafKeys.recvClassical.current else {
+			throw TwoMLSError.credentialUnknown
+		}
+		return current.signingKey
 	}
 
 	/// Resolve `sendGroup.pq`'s own leaf's CURRENT signing key (slice 11)
-	/// — `owePQBind`'s commit and `pqRekeyRespond`'s commit.
+	/// — `owePQBind`'s commit and `pqRekeyRespond`'s commit. Reads
+	/// `leafKeys.sendPQ`'s slot directly.
 	func sendPQSigningKey() throws -> MLS.SignatureSecretKey {
-		guard let send = sendGroup, let sendPQ = send.pq else {
+		guard let send = sendGroup, send.pq != nil else {
 			throw TwoMLSError.notEstablished
 		}
-		return try pqSigningKey(presenting: Self.ownLeaf(of: sendPQ).signatureKey)
+		guard let current = leafKeys.sendPQ.current else {
+			throw TwoMLSError.credentialUnknown
+		}
+		return current.signingKey
 	}
 
 	/// Resolve `recvGroup.pq`'s own leaf's CURRENT signing key (slice 11)
-	/// — `pqRekeyBegin`'s `proposeUpdate`.
+	/// — `pqRekeyBegin`'s `proposeUpdate`. Reads `leafKeys.recvPQ`'s slot
+	/// directly.
 	func recvPQSigningKey() throws -> MLS.SignatureSecretKey {
-		guard let recv = recvGroup, let recvPQ = recv.pq else {
+		guard let recv = recvGroup, recv.pq != nil else {
 			throw TwoMLSError.notEstablished
 		}
-		return try pqSigningKey(presenting: Self.ownLeaf(of: recvPQ).signatureKey)
+		guard let current = leafKeys.recvPQ.current else {
+			throw TwoMLSError.credentialUnknown
+		}
+		return current.signingKey
 	}
 
 	init(
@@ -805,7 +792,8 @@ public struct TwoMLSSession: Sendable {
 		lastSendPQExported: UInt64? = nil,
 		spawnToken: Data? = nil,
 		recvLeafPrincipal: RecvLeafPrincipal? = nil,
-		owesEstablishmentEnvelope: Bool = false
+		owesEstablishmentEnvelope: Bool = false,
+		leafKeys: LeafKeys
 	) {
 		self.classicalProvider = classicalProvider
 		self.pqProvider = pqProvider
@@ -832,5 +820,6 @@ public struct TwoMLSSession: Sendable {
 		self.spawnToken = spawnToken
 		self.recvLeafPrincipal = recvLeafPrincipal
 		self.owesEstablishmentEnvelope = owesEstablishmentEnvelope
+		self.leafKeys = leafKeys
 	}
 }

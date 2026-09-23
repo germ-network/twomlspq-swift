@@ -647,6 +647,129 @@ extension RecvLeafPrincipalArchive {
 	}
 }
 
+/// `LeafKey`, archived — one signing keypair.
+struct LeafKeyArchive: Codable, Sendable, Equatable {
+	@SecretField var signingKey: SecretBytes
+	var signatureKey: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case signingKey = 0
+		case signatureKey = 1
+	}
+}
+
+extension LeafKeyArchive {
+	init(_ key: LeafKey) {
+		self.init(signingKey: key.signingKey.data, signatureKey: key.signatureKey.data)
+	}
+
+	/// Derive-checks the secret against its claimed public — the same
+	/// check `RotationCandidateArchive.restore` runs for its own key: every
+	/// key in the archive, not just the identity's, must derive.
+	func restore() throws -> LeafKey {
+		let derived = try derivedSignaturePublicKey(from: signingKey)
+		guard derived.data == signatureKey else { throw TwoMLSError.archiveInvalid }
+		return LeafKey(
+			signingKey: try MLS.SignatureSecretKey(signingKey), signatureKey: derived)
+	}
+}
+
+/// One `pending` entry, archived — the target credential id plus its staged
+/// key.
+struct PendingLeafKeyArchive: Codable, Sendable, Equatable {
+	var target: Data
+	var key: LeafKeyArchive
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case target = 0
+		case key = 1
+	}
+}
+
+/// `GroupKeySet`, archived — `pending` rides as an array (sorted by target
+/// at encode, for a stable byte shape), not a `Dictionary`, so decode can
+/// reject a duplicate or empty target explicitly rather than silently
+/// de-duplicating the way a keyed container would.
+struct GroupKeySetArchive: Codable, Sendable, Equatable {
+	var current: LeafKeyArchive?
+	var pending: [PendingLeafKeyArchive]
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case current = 0
+		case pending = 1
+	}
+}
+
+extension GroupKeySetArchive {
+	init(_ set: GroupKeySet) {
+		self.init(
+			current: set.current.map(LeafKeyArchive.init),
+			pending: set.pending.sorted { $0.key.lexicographicallyPrecedes($1.key) }
+				.map {
+					PendingLeafKeyArchive(
+						target: $0.key, key: LeafKeyArchive($0.value))
+				}
+		)
+	}
+
+	func restore() throws -> GroupKeySet {
+		var restoredPending: [Data: LeafKey] = [:]
+		for entry in pending {
+			guard !entry.target.isEmpty, restoredPending[entry.target] == nil else {
+				throw TwoMLSError.archiveInvalid
+			}
+			restoredPending[entry.target] = try entry.key.restore()
+		}
+		return GroupKeySet(current: try current?.restore(), pending: restoredPending)
+	}
+}
+
+/// `LeafKeys`, archived — required (archive key 41): v1 never shipped, so
+/// there is no legacy read path and no optional fallback for the classical
+/// sets. The PQ sets ride only in a Checkpoint — a Core omits them, exactly
+/// like `GroupEntry.pq` itself — so `sendPQ`/`recvPQ` are `nil` there; the
+/// two manifest-only fingerprint fields on `SessionArchive` itself carry the
+/// cheap, kind-independent signal `validateManifestAgreement` needs to
+/// cross-check a Core's claimed PQ key state without the trees.
+struct LeafKeysArchive: Codable, Sendable, Equatable {
+	var sendClassical: GroupKeySetArchive
+	var recvClassical: GroupKeySetArchive
+	var sendPQ: GroupKeySetArchive?
+	var recvPQ: GroupKeySetArchive?
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case sendClassical = 0
+		case recvClassical = 1
+		case sendPQ = 2
+		case recvPQ = 3
+	}
+}
+
+extension LeafKeysArchive {
+	/// `kind` selects whether the PQ sets ride along: `.checkpoint` carries
+	/// both, `.core` carries neither — mirroring `GroupEntry`'s own
+	/// kind-gated PQ omission.
+	init(_ keys: LeafKeys, kind: BlobKind) {
+		self.init(
+			sendClassical: GroupKeySetArchive(keys.sendClassical),
+			recvClassical: GroupKeySetArchive(keys.recvClassical),
+			sendPQ: kind == .checkpoint ? GroupKeySetArchive(keys.sendPQ) : nil,
+			recvPQ: kind == .checkpoint ? GroupKeySetArchive(keys.recvPQ) : nil)
+	}
+
+	/// Called only on the body `restore` actually builds a session from —
+	/// by that point (`validateHeader` plus, on the splice path,
+	/// `splicingPQ`) the PQ sets are always present, so their absence here
+	/// means the caller skipped that validation, not a normal Core shape.
+	func restore() throws -> LeafKeys {
+		guard let sendPQ, let recvPQ else { throw TwoMLSError.archiveInvalid }
+		return LeafKeys(
+			sendClassical: try sendClassical.restore(),
+			recvClassical: try recvClassical.restore(), sendPQ: try sendPQ.restore(),
+			recvPQ: try recvPQ.restore())
+	}
+}
+
 // MARK: - The session archive body
 
 /// The `SessionArchive` wire body — one `Codable` struct for both Core and
@@ -727,6 +850,19 @@ struct SessionArchive: Codable, Sendable {
 	/// every non-dedicated session: the recv-leaf catch-up custody, so a
 	/// restored Bob mid-catch-up still holds it.
 	var recvLeafPrincipal: RecvLeafPrincipalArchive?
+	/// REQUIRED, unlike every other field added since v1: this format never
+	/// shipped before this field existed, so there is no legacy archive to
+	/// tolerate its absence for, and no fallback reconstruction path. A
+	/// missing key 41 is a `DecodingError`, which `restore`/`decode` fold to
+	/// `.archiveInvalid` like any other malformed archive. Its own PQ sets
+	/// are kind-gated (present on a Checkpoint, absent on a Core); the two
+	/// fields below are not, and are just as required — they ride on every
+	/// kind, mirroring `sendPQEpoch`/`recvPQEpoch`'s own always-present
+	/// manifest shape, so a Core's claimed PQ key state can be checked
+	/// without its trees.
+	var leafKeys: LeafKeysArchive
+	var sendPQKeysFingerprint: GroupKeySetFingerprint
+	var recvPQKeysFingerprint: GroupKeySetFingerprint
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case version = 0
@@ -770,6 +906,9 @@ struct SessionArchive: Codable, Sendable {
 		case recvAttachmentLedger = 38
 		case owesEstablishmentEnvelope = 39
 		case recvLeafPrincipal = 40
+		case leafKeys = 41
+		case sendPQKeysFingerprint = 42
+		case recvPQKeysFingerprint = 43
 	}
 }
 
@@ -811,6 +950,16 @@ extension TwoMLSSession {
 	/// zeroizing `SecretArchive` — the app seals it with its own key before
 	/// writing it out; this library never holds a sealing key.
 	func makeSessionArchive(kind: BlobKind) throws -> SecretArchive {
+		// (DEBUG only): a fault point genuinely INSIDE encode, not merely
+		// near the caller's own call site, so it fires exactly at the
+		// boundary between `stateUpdate(kind:)`'s stamp and this call's own
+		// encode — a fault armed only nearby would miss any reordering
+		// between the two.
+		#if DEBUG
+			if TwoMLSSessionTestHooks.shouldFault("stateUpdate.beforeEncode") {
+				throw InjectedTestFault(name: "stateUpdate.beforeEncode")
+			}
+		#endif
 		// The port is `.deployed`-only (no caller ever constructs a session
 		// under different codepoints); `restore` hard-codes `.deployed`
 		// rather than archiving this field, on that same assumption.
@@ -862,7 +1011,10 @@ extension TwoMLSSession {
 			recvAttachmentLedger: ArchiveIntegerKeyedMap(
 				recvAttachmentLedger.mapValues { SecretField(wrappedValue: $0) }),
 			owesEstablishmentEnvelope: owesEstablishmentEnvelope,
-			recvLeafPrincipal: recvLeafPrincipal.map(RecvLeafPrincipalArchive.init))
+			recvLeafPrincipal: recvLeafPrincipal.map(RecvLeafPrincipalArchive.init),
+			leafKeys: LeafKeysArchive(leafKeys, kind: kind),
+			sendPQKeysFingerprint: leafKeys.sendPQ.fingerprint,
+			recvPQKeysFingerprint: leafKeys.recvPQ.fingerprint)
 		return try SecretArchive(encoding: body)
 	}
 }
