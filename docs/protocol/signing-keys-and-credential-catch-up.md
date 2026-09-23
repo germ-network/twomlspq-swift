@@ -123,6 +123,16 @@ We don't carry that coupling over. Decisions:
 - **D5 — no extra trigger.** We don't add a trigger for the non-rotated peer to heal the rotated party's lagging
   send-PQ leaf. That would depart from the book's trigger rule (§1), so it needs a book decision first. Until then the
   convergence behavior is the book's.
+- **D6 — catch-up offers are approved.** The book says a born-dedicated acceptor's recv-group leaf "converges from the
+  invitation identity to the dedicated principal via its first committed Upd" (`group-rules.md:145-146`). But a peer
+  commits only an offer its host approved, and a host that approves only offers introducing a new client never approves
+  a catch-up. So:
+  - The engine marks a received offer that moves the proposer's leaf to a *different* credential id that is already
+    canonical. Such an offer authorizes no new credential.
+  - Hosts approve marked offers the same way as offers from a new client.
+  - Routine same-id refresh offers stay at the host's discretion ("the receiver may freely drop", `group-rules.md:136`).
+  - Against a deployed-engine peer whose host does not approve catch-ups, our leaf keeps its old credential, and its key
+    stays in custody.
 
 ## 3. What we accept versus what we do
 
@@ -133,6 +143,7 @@ says so.
 |---|---|---|---|
 | One signing key shared across a party's groups or halves | yes: nothing compares a peer's keys across groups | never | RFC 9420 §16.7 is per group; D1 |
 | Same-id signing-key change on any group | yes | on every own-leaf move | book `group-rules.md:152-153`; D3 |
+| A peer's offer that catches its leaf up to an already-canonical id | approved and folded | offered; converges once the peer folds it | book `group-rules.md:145-146`; D6 |
 | PQ leaf moving to a new credential id | only to an id already canonical in the AS | only to our own current canonical id | book `group-rules.md:147-150` |
 | A PQ leaf's id and key changing together in one A.5 | yes | yes, with a key freshly minted in that group only | book §A.5; D1 |
 | A leaf move inside a pathless PQ bind or ack | no (malformed) | never | book `protocol-flows.md:51` |
@@ -161,7 +172,7 @@ key across its groups, and nothing compares a peer's keys across groups, so we a
 
 The behavior above comes in two profiles:
 
-- **Correct:** the book plus D1–D5, with nothing kept only for the deployed engine. We intend to run this everywhere
+- **Correct:** the book plus D1–D6, with nothing kept only for the deployed engine. We intend to run this everywhere
   eventually.
 - **Deployed-compatible:** the correct behavior plus C1. It is *frozen*: it changes only to fix a
   bug or to follow a change in the deployed engine. It is what a session runs whenever the peer might be the deployed
