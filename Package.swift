@@ -20,15 +20,14 @@ let package = Package(
 		.library(name: "TwoMLSPQSession", targets: ["TwoMLSPQSession"]),
 	],
 	dependencies: [
-		// Temporary revision pin to the swift-mls swift-crypto-5 branch tip
-		// (germ-network/swift-mls#103), which carries the swift-crypto 5 move
-		// this package rides; replace with the released version once it cuts.
 		// `MLSCrypto` is the CipherSuiteProvider seam this package's ML-KEM-768
 		// provider conforms to; `AppBinding` (0xF0A2) rides into Group_A's
 		// classical half via `CombinerGroup.establish(classicalExtraExtensions:)`.
+		// 0.1.5: self-Update proposals carry authenticated data, and a
+		// migration-only SPI restores a member's own outstanding Update.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			from: "0.1.3"
+			from: "0.1.5"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		// 0.5.0 is its swift-crypto-5 release.
