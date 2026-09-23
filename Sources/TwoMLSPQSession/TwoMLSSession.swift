@@ -107,10 +107,13 @@ struct OwedBind: Sendable, Codable {
 
 /// The peer's staged proposal, carried uninterpreted alongside a
 /// `DecryptResult` — `digest` is `sha256` of the proposal bytes, `proposing`
-/// is the sender's `ClientId`.
+/// is the sender's `ClientId`, `context` is a digest of this session's
+/// SEND-group classical group id — the sender's receive group — so it
+/// equals the sender's `proposalContext()`.
 public struct QueuedProposal: Sendable {
 	public let digest: Data
 	public let proposing: Data
+	public let context: Data
 }
 
 /// The result of `processIncoming`: the decrypted application payload, its
@@ -619,6 +622,18 @@ public struct TwoMLSSession: Sendable {
 		GroupEpochs(
 			pqEpoch: group?.pq?.context.epoch ?? 0,
 			classicalEpoch: group?.classical.context.epoch ?? 0)
+	}
+
+	/// The context digest a host binds a proposal to — a digest of this
+	/// session's own RECEIVE-group classical group id — mirroring the
+	/// reference implementation's `proposal_context()`; raw suite-hash bytes
+	/// (sha256 for the deployed classical suite). Equals the peer's
+	/// `QueuedProposal.context` for every frame this session sends. `nil`
+	/// while `recvGroup` doesn't exist yet, same non-throwing shape as
+	/// `Invitation.processedWelcomeGroupID`.
+	public func proposalContext() -> Data? {
+		guard let recv = recvGroup else { return nil }
+		return try? classicalProvider.hash(recv.classical.context.groupID)
 	}
 
 	/// My own classical-credential state, DERIVED from the Authentication

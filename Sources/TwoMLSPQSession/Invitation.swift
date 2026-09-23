@@ -13,8 +13,12 @@ import SecretBytes
 // invitation service many welcomes with no live client. Return-based, no
 // sink (book concepts.md's push-based persistence, adapted here the same
 // way `TwoMLSSession`'s own state-advancing methods are): `receive` mutates
-// `self` and returns the resulting session alongside the updated archive
-// for the app to seal and save.
+// `self` and returns the resulting session, its baseline checkpoint, and the
+// updated invitation archive for the app to seal and save. Persist the
+// baseline BEFORE (or atomically with) the invitation archive, and before
+// transmitting any frame from the session: it is the acceptor's first
+// restorable checkpoint, and an archive-only save followed by a crash loses
+// the session (a redelivered welcome only reads back as `.duplicateWelcome`).
 
 /// One published combiner key package's receiving capability. Holds the
 /// captured KP private material plus signing identity as one
@@ -94,7 +98,18 @@ public struct Invitation: Sendable {
 	///    `.appBindingMismatch`) claims nothing: this method's own table
 	///    writes below all happen on a copy, only after this call returns.
 	/// 7. commit: insert all four tables, single-use consume, bump
-	///    `stateSeq`, return the spawned session plus the updated archive.
+	///    `stateSeq`, return the spawned session, its baseline `.checkpoint`
+	///    `StateUpdate` (`TwoMLSSession.receive`'s own
+	///    `EstablishResult.baseline`, passed through verbatim — the
+	///    acceptor's first restorable checkpoint, exactly
+	///    `TwoMLSSession.initiate`'s `baseline` counterpart), and the
+	///    updated invitation archive. Persist the baseline BEFORE (or
+	///    atomically with) the archive, and before transmitting any frame
+	///    from the session: the first frame's durability rests on it — a
+	///    plain acceptor's first `prepareToEncrypt().dependsOnSeq` is
+	///    `baseline.stateSeq`, and a born-dedicated acceptor's first frame
+	///    depends on the `installEstablishmentEnvelope` `.core`, which
+	///    restores only spliced onto this baseline.
 	///
 	/// `expectedAppBinding` is a TRAILING optional (see
 	/// `TwoMLSSession.receive`) — the app-state binding the welcome must
@@ -108,7 +123,7 @@ public struct Invitation: Sendable {
 		spawnToken: Data,
 		expectedAppBinding: Data? = nil,
 		newClientID: Data? = nil
-	) throws -> (session: TwoMLSSession, archive: SecretArchive) {
+	) throws -> (session: TwoMLSSession, archive: SecretArchive, baseline: StateUpdate) {
 		guard bootstrapKPCommitment.count == 32 else {
 			throw TwoMLSError.bootstrapKPMismatch
 		}
@@ -151,7 +166,7 @@ public struct Invitation: Sendable {
 		next.advanceStateSeq()
 		let archive = try next.makeInvitationArchive()
 		self = next
-		return (session: result.session, archive: archive)
+		return (session: result.session, archive: archive, baseline: result.baseline)
 	}
 
 	// MARK: - Routing helpers (read-only, no state change)

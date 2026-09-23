@@ -458,7 +458,12 @@ extension TwoMLSSession {
 		appPM: MLS.RFC9420.PrivateMessage, proposalSection: Data,
 		stapleResult: StapleApplyResult, pqManifestBefore: PQEpochManifest
 	) throws -> DecryptResult {
-		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
+		guard var recv = recvGroup, let send = sendGroup else {
+			throw TwoMLSError.notEstablished
+		}
+		// Hashed before `recvGroup` is written back, so it adds no throw after
+		// this helper's own mutation.
+		let context = try classicalProvider.hash(send.classical.context.groupID)
 		let unprotected = try recv.classical.unprotect(classicalProvider, message: appPM)
 		recvGroup = recv
 
@@ -486,7 +491,8 @@ extension TwoMLSSession {
 			didApplyRemoteCommit: stapleResult.applied,
 			newSender: stapleResult.newSender,
 			ownCredentialCanonicalized: stapleResult.ownCredentialCanonicalized,
-			queuedProposal: QueuedProposal(digest: digest, proposing: proposing),
+			queuedProposal: QueuedProposal(
+				digest: digest, proposing: proposing, context: context),
 			update: update)
 	}
 

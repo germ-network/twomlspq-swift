@@ -405,20 +405,18 @@ final class LifecycleE2ETests: XCTestCase {
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
 			spawnToken: spawnToken, newClientID: dedicatedClientID)
 		var bob = Host(receivedResult.session)
+		bob.persist(receivedResult.baseline)
 
 		// Book: every state-advancing call returns something persistable, so
 		// the acceptor already holds a restorable checkpoint right after
 		// `receive`.
-		try XCTExpectFailure("acceptor receive surfaces no session checkpoint") {
-			XCTAssertNotNil(bob.latestCheckpoint)
-			if let checkpoint = bob.latestCheckpoint {
-				XCTAssertNoThrow(
-					try TwoMLSSession.restore(
-						core: nil, checkpoint: checkpoint,
-						classicalProvider: SessionTestSupport
-							.classicalProvider,
-						pqProvider: SessionTestSupport.pqProvider))
-			}
+		XCTAssertNotNil(bob.latestCheckpoint)
+		if let checkpoint = bob.latestCheckpoint {
+			XCTAssertNoThrow(
+				try TwoMLSSession.restore(
+					core: nil, checkpoint: checkpoint,
+					classicalProvider: SessionTestSupport.classicalProvider,
+					pqProvider: SessionTestSupport.pqProvider))
 		}
 
 		XCTAssertTrue(bob.session.owesEstablishmentEnvelope)
@@ -544,9 +542,15 @@ final class LifecycleE2ETests: XCTestCase {
 		let staleKP = try XCTUnwrap(bob.session.openIncoming(a3KPBlob.bytes)?.frame)
 		_ = try bob.deliver(a3KPBlob)  // 0x13 -> welcome #1 queued, held
 
-		// `pqBootstrapRespond` founds `sendGroup.pq` — Bob's very first
-		// checkpoint. Restart him here and prove the round still completes.
-		XCTAssertNotNil(bob.latestCheckpoint)
+		// `pqBootstrapRespond` founds `sendGroup.pq` — the first checkpoint
+		// carrying it, not Bob's very first (that's the acceptor baseline
+		// from `receive`, persisted above). Restart him here and prove the
+		// round still completes off THIS newer checkpoint.
+		let bobRespondCheckpoint = try XCTUnwrap(bob.latestCheckpoint)
+		let bobRespondCheckpointBody = try bobRespondCheckpoint.decode(SessionArchive.self)
+		XCTAssertGreaterThan(
+			bobRespondCheckpointBody.stateSeq, receivedResult.baseline.stateSeq)
+		XCTAssertNotNil(bobRespondCheckpointBody.sendPQEpoch)
 		try bob.restart()
 		XCTAssertTrue(bob.session.isFullyEstablished)
 
