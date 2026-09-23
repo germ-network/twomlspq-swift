@@ -1,0 +1,89 @@
+name: CI (Android)
+
+# This package ships to Android through a downstream consumer. This job
+# cross-compiles it with the Swift SDK for Android on a Linux host so that
+# Android-only build breaks surface here rather than downstream — including a
+# release-mode (-c release) compiler crash that reproduces only when
+# targeting Android; see the unoptimized transition-handoff funnel in
+# Sources/TwoMLSPQSession/TransitionHandoff.swift for the workaround the
+# release build below keeps honest.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android cross-compile (${{ matrix.triple }})
+    # Bare runner, not a swift:* container: the setup script installs the
+    # open-source host toolchain pinned to exactly the Swift SDK's version,
+    # so both pins live in one place.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        triple:
+          - aarch64-unknown-linux-android28
+          - x86_64-unknown-linux-android28
+    env:
+      SWIFT_VERSION: "6.4.0"
+      SWIFT_SDK_NAME: swift-6.4.0-RELEASE_android
+      SWIFT_SDK_CHECKSUM: 21fb555122a3d801ad943d48df7ebffdd8824de61c25c180bb792d3edaee0b43
+      # NDK_VERSION must stay in sync with the literal "30.0.16248370" in
+      # ANDROID_NDK_HOME/ANDROID_NDK_ROOT below — a job-level env: block can't
+      # reference its own sibling entries.
+      NDK_VERSION: "30.0.16248370"
+      SWIFT_HOST: ${{ github.workspace }}/.ci-swift-host
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/.ci-android-sdk
+      ANDROID_HOME: ${{ github.workspace }}/.ci-android-sdk
+      ANDROID_NDK_HOME: ${{ github.workspace }}/.ci-android-sdk/ndk/30.0.16248370
+      # ubuntu-latest exports ANDROID_NDK_ROOT into /usr/local/lib/android,
+      # which "Free disk space" below deletes. Swift Build's Android support
+      # reads ANDROID_NDK_ROOT before ANDROID_NDK_HOME, so a dangling value
+      # here fails the build with a misleading "No Android NDK is installed"
+      # error — both spellings must point at the NDK installed below.
+      ANDROID_NDK_ROOT: ${{ github.workspace }}/.ci-android-sdk/ndk/30.0.16248370
+    steps:
+      - uses: actions/checkout@v4
+
+      # ubuntu-latest preinstalls several GB of toolchains this job doesn't
+      # use (.NET, Haskell, an older Android SDK); the Swift host toolchain +
+      # NDK + Swift SDK below need room of their own.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost \
+            /usr/local/lib/android "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      # The exact SwiftPM install directory on Linux isn't nailed down here,
+      # so this caches every plausible candidate; actions/cache silently
+      # skips paths that don't exist rather than failing.
+      - name: Cache Android NDK + Swift Android SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ANDROID_SDK_ROOT }}
+            ~/.swiftpm
+            ~/.local/share/swiftpm
+            ~/Library/org.swift.swiftpm
+          key: android-toolchain-${{ env.NDK_VERSION }}-${{ env.SWIFT_SDK_NAME }}
+
+      - name: Install Android toolchain (Swift host + NDK + Swift SDK)
+        run: ./Scripts/setup-swift-android-toolchain-linux.sh
+
+      - name: Build (debug)
+        run: swift build --disable-sandbox --swift-sdk "$SWIFT_SDK_NAME" --triple "${{ matrix.triple }}" -c debug
+
+      - name: Build (release)
+        run: swift build --disable-sandbox --swift-sdk "$SWIFT_SDK_NAME" --triple "${{ matrix.triple }}" -c release
+
+      # Compiles the test targets; there's no Android emulator here to run them.
+      - name: Build tests (debug)
+        run: swift build --disable-sandbox --swift-sdk "$SWIFT_SDK_NAME" --triple "${{ matrix.triple }}" -c debug --build-tests
