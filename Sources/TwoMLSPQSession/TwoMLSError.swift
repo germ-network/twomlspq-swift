@@ -68,9 +68,12 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// `receive`, or an incoming commitment was not the required 32 bytes.
 	case bootstrapKPMismatch
 	/// `pqBootstrapRespond` was called again after `sendGroup.pq` was already
-	/// founded, and no retained `0x15` was available to idempotently
-	/// re-return — a re-delivered `0x13` must never found a second
-	/// Group_B.pq.
+	/// founded, and its own §A.3 round was no longer open (`pqInflight` had
+	/// moved past `.bootstrapResponded`, or was never that round to begin
+	/// with) — it re-serves the retained `0x15` only while that round is
+	/// still outstanding; a re-delivered `0x13` must never found a second
+	/// Group_B.pq, and once the round has closed nothing is re-emitted for
+	/// any inbound bytes at all.
 	case duplicateSideBand
 	/// `verifyDeferredPQMirrorInfo` found the joined PQ half's mirror
 	/// `APQInfo` inconsistent with Group_B's classical half — a wrong

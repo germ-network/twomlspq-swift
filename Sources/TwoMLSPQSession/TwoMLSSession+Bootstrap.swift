@@ -45,13 +45,15 @@ extension TwoMLSSession {
 	/// The responder (Bob) receives KP′, checks it against the commitment
 	/// pinned at `receive`, founds Group_B.pq (`APQGroup.foundPQHalf`) with
 	/// KP′ as the sole Add, and returns the resulting Welcome′ as a `0x15`
-	/// side-band frame. Bob is `isFullyEstablished` once this returns.
-	/// Idempotent once `sendGroup.pq` is founded: re-returns the retained
-	/// `0x15` rather than founding a second Group_B.pq off a re-delivered
-	/// `0x13` (a re-delivery with no retained frame to re-serve —
-	/// `pendingSideBand` rides the session archive (slice 8a), so it
-	/// survives a restore; a raw in-memory restart with no restore is the
-	/// case with nothing to re-serve — is `.duplicateSideBand`).
+	/// side-band frame. Bob is `isFullyEstablished` once this returns. The
+	/// inbound frame is validated (tag, decode, commitment) before anything
+	/// about this session's own state is consulted, so nothing is ever
+	/// re-emitted for garbage or a mismatched KP′. Once `sendGroup.pq` is
+	/// founded, this re-serves the retained `0x15` only while its own §A.3
+	/// round is still open (`pqInflight == .bootstrapResponded`) — the
+	/// re-serve carries no group-level move, so it returns `.core`.
+	/// Afterward, or for a round that was never this one, it answers
+	/// `.duplicateSideBand` with no state change.
 	///
 	/// Seam: this does not check KP′'s leaf credential names the already-
 	/// established peer (Rust's AS `validate_member`; no AS exists until a
@@ -81,21 +83,28 @@ extension TwoMLSSession {
 		try ensureEstablishmentDelegated()
 		// Entry (PR2): the peer's `0x13` arrives header-sealed.
 		let frame = openOrRaw(inbound)
-		if sendGroup?.pq != nil {
-			guard let pending = pendingSideBand else {
-				throw TwoMLSError.duplicateSideBand
-			}
-			let sealed = try sealSideBand(pending)
-			advanceStateSeq()
-			return SideBandResult(
-				frame: sealed, update: try stateUpdate(kind: .checkpoint))
-		}
+		// Validate the frame itself FIRST — tag, decode, then the commitment
+		// check — before anything about this session's own state is even
+		// consulted, so garbage or a mismatched KP′ never earns a re-serve.
 		let kpBytes = try Frames.decodePQBootstrapKP(frame)
 		guard
 			let expected = expectedBootstrapKPCommitment,
 			try classicalProvider.hash(kpBytes) == expected
 		else {
 			throw TwoMLSError.bootstrapKPMismatch
+		}
+		if sendGroup?.pq != nil {
+			// Re-serve only while THIS round is still open — once it has
+			// closed (or was never this round), nothing is re-emitted for a
+			// validated-but-stale KP′ either.
+			guard case .bootstrapResponded = pqInflight, let pending = pendingSideBand
+			else {
+				throw TwoMLSError.duplicateSideBand
+			}
+			let sealed = try sealSideBand(pending)
+			advanceStateSeq()
+			return SideBandResult(
+				frame: sealed, update: try stateUpdate(kind: .core))
 		}
 		guard
 			case .keyPackage(let peerBootstrapKP) = try MLS.RFC9420.Message(

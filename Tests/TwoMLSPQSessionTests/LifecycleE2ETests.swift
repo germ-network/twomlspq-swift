@@ -633,12 +633,11 @@ final class LifecycleE2ETests: XCTestCase {
 
 		// Book: a stale KP′ after the round closed is refused. Bob has since
 		// moved on to A.4 (his parked leg is now the EK), so replaying the
-		// long-stale a3 0x13 on a copy of his session should be refused.
+		// long-stale a3 0x13 on a copy of his session is refused, never
+		// answered with the EK.
 		var probe = bob.session
-		try XCTExpectFailure("stale bootstrap KP re-serves the parked frame") {
-			XCTAssertThrowsError(try probe.pqBootstrapRespond(staleKP)) { error in
-				XCTAssertEqual(error as? TwoMLSError, .duplicateSideBand)
-			}
+		XCTAssertThrowsError(try probe.pqBootstrapRespond(staleKP)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .duplicateSideBand)
 		}
 
 		_ = try alice.deliverDecrypted(bob.nextBlob())
