@@ -8,120 +8,141 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// §A.9: scale at N = 102,400 offers. A manual/pre-merge gate, NEVER CI —
-/// env-gated (`TWOMLSPQ_SCALE_TEST=1`) and run in DEBUG (S-4: the release
-/// test build fails today for reasons unrelated to this step, out of
-/// scope here). Run with:
+/// Scale at N = 102,400 offers. A manual/pre-merge gate, NEVER CI —
+/// env-gated (`TWOMLSPQ_SCALE_TEST=1`) and run in DEBUG. Run with:
 ///
 ///   TWOMLSPQ_SCALE_TEST=1 swift test --filter OwnOfferWindowScaleTests
 ///
 /// `TWOMLSPQ_SCALE_TEST_N` optionally overrides the offer count (default
 /// `MigratedOwnOfferWindow.maximumOfferCount`, 102,400) — every offer needs
-/// a genuinely group-verifying leaf signature (`proposeUpdate` against a
-/// live two-party group), so a full run's GENERATION phase is slow; that
-/// phase is excluded from every budget below, exactly as A.9 specifies,
-/// but a smaller N is useful for a quick local sanity check before the one
-/// full run this gate actually requires.
+/// a genuinely group-verifying leaf signature, so a full run's GENERATION
+/// phase is slow; that phase is excluded from every budget below, but a
+/// smaller N is useful for a quick local sanity check before the one full
+/// run this gate actually requires.
 ///
-/// FIRST-RUN CALIBRATION (2026-09-23, this machine, DEBUG): N=200 → mint
-/// 0.043 s; N=20,000 → mint 14.9 s; N=102,400 → mint 377.8 s (generation
-/// 35.5 s, excluded; blob ≈ 23.4 MB). The mint time scales roughly as N^2,
-/// not the O(N) §A.9 expects — 75x over the plan's original 5 s guess.
-/// `mintBudgetSeconds` below is calibrated to TODAY's observed number (a
-/// regression gate against further slowdown), not a claim that this is
-/// healthy: the quadratic growth needs the owner's own investigation
-/// before the next calibration. Working hypothesis, unconfirmed: this
-/// test's own GENERATION methodology (102,400 real `proposeUpdate` calls
-/// against the SAME live group) may leave that group's own
-/// `pendingUpdate` cache far larger than any group `mintOwnOfferWindow`
-/// would see in production (there, the group is freshly restored from a
-/// snapshot, never live-called that many times) — i.e. this may be a test
-/// artifact rather than a production defect, but that is NOT verified.
+/// PRODUCTION-SHAPED: every offer is built via `SessionTestSupport.
+/// knownSecretOwnOffer` — a self-signed `LeafNode` whose fresh HPKE pair the
+/// test KNOWS and supplies as the offer's own `leafSecret`, and which is
+/// NEVER written back into `bob.recvGroup` (so the group's `pendingUpdate`
+/// never grows with N). `parts` is built from that untouched group BEFORE
+/// the timed mint region.
+///
+/// ROOT CAUSE of an earlier version of this harness's quadratic mint
+/// (measured 2026-09-23, DEBUG, this machine): that harness called
+/// `proposeUpdate` N times on one LIVE group and wrote it back
+/// (`bob.recvGroup = mirror`), so the group's own snapshot carried N
+/// `pendingUpdate` entries — swift-mls's `insertMigratedOwnUpdate` prefers
+/// a group-held pair over the caller-supplied `leafSecret`, so every one of
+/// that harness's (fake) supplied secrets was masked and never actually
+/// exercised. Restoring that N-entry snapshot is where the time went:
+/// `IntegerKeyedMap.init(from:)` (swift-mls `SnapshotCoding.swift`) is
+/// `allKeys × decode(forKey:)`, and each `decode(forKey:)` is itself a
+/// LINEAR scan over swift-secret-bytes's `ArchiveKeyedDecodingContainer.
+/// node(for:)` (`ArchiveDecoder.swift`) — an O(N) decode called N times,
+/// i.e. O(N²) overall. That quadratic lives in swift-secret-bytes; this
+/// harness works around it by never producing the bloated snapshot in the
+/// first place, which is also what production's own restored-from-a-real-
+/// snapshot path does (nothing in production ever holds N pending
+/// `Update`s on one live group either).
+///
+/// MEASURED at N=102,400 (2026-09-23, DEBUG, this machine, on the
+/// production-shaped harness): mint 2.58 s (generation 50.6 s, excluded;
+/// blob ≈ 22.4 MB) — back to roughly linear. `mintBudgetSeconds` below is
+/// set to just over 2x that observed number — a DEBUG regression gate, not
+/// a release-equivalent claim.
 @available(iOS 26, macOS 26, *)
 final class OwnOfferWindowScaleTests: XCTestCase {
 	func testMintLoadAndApplyAtScale() throws {
 		guard ProcessInfo.processInfo.environment["TWOMLSPQ_SCALE_TEST"] == "1" else {
-			throw XCTSkip("set TWOMLSPQ_SCALE_TEST=1 to run the §A.9 scale gate")
+			throw XCTSkip("set TWOMLSPQ_SCALE_TEST=1 to run the scale gate")
 		}
 		let n =
 			ProcessInfo.processInfo.environment["TWOMLSPQ_SCALE_TEST_N"].flatMap(
 				Int.init)
 			?? MigratedOwnOfferWindow.maximumOfferCount
+		try Self.runProductionShapedMint(n: n, mintBudgetSeconds: 6.0, printTimings: true)
+	}
 
-		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
-		var mirror = try XCTUnwrap(bob.recvGroup)
+	/// The same production-shaped path at a small, non-gated N — always
+	/// runs in CI, so the caller-supplied-`leafSecret` branch stays
+	/// exercised even when the full scale gate doesn't run. No timing
+	/// budget: N=200 is too small and noisy for a stable regression
+	/// signal — only the gated full-N run above asserts one.
+	func testMintSuppliedSecretPathAtProductionShapedSmallScale() throws {
+		try Self.runProductionShapedMint(
+			n: 200, mintBudgetSeconds: nil, printTimings: false)
+	}
 
-		// Generation excluded from every budget below (A.9).
+	@discardableResult
+	private static func runProductionShapedMint(
+		n: Int, mintBudgetSeconds: Double?, printTimings: Bool
+	) throws -> MintedOwnOfferWindow {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+
+		// Generation excluded from every budget below. Each offer is
+		// self-signed and independently verifiable, but NEVER written back
+		// into `bob.recvGroup` — production-shaped (no pendingUpdate growth).
 		let generationStart = Date()
 		var offers: [MigratedOwnOffer] = []
 		offers.reserveCapacity(n)
+		var epoch: UInt64 = 0
+		var groupID = Data()
+		var senderLeafIndex: UInt32 = 0
 		for _ in 0..<n {
-			let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-			let (message, _) = try mirror.classical.proposeUpdate(
-				SessionTestSupport.classicalProvider,
-				sign: MLS.RFC9420.signingClosure(
-					SessionTestSupport.classicalProvider,
-					current: try bob.recvClassicalSigningKey(), new: signingKey),
-				framing: .publicMessage,
-				newIdentity: MLS.RFC9420.NewSigningIdentity(
-					credential: .basic(identity: bob.identity.clientID),
-					signatureKey: signatureKey))
-			guard case .publicMessage(let updatePub) = message else {
-				XCTFail("expected a publicMessage-framed Update")
-				return
-			}
-			guard case .proposal(let bareProposal) = updatePub.content.content else {
-				XCTFail("expected a proposal-carrying PublicMessage")
-				return
-			}
-			let ref = SessionTestSupport.classicalProvider.randomBytes(32)
+			let built = try SessionTestSupport.knownSecretOwnOffer(in: bob)
 			offers.append(
 				MigratedOwnOffer(
-					ref: ref, proposal: try bareProposal.mlsEncoded(),
-					leafSecret: SecretBytes(randomByteCount: 32)))
+					ref: built.ref, proposal: built.bareProposal,
+					leafSecret: built.leafSecret))
+			epoch = built.epoch
+			groupID = built.groupID
+			senderLeafIndex = built.senderLeafIndex
 		}
-		bob.recvGroup = mirror
 		let generationSeconds = Date().timeIntervalSince(generationStart)
 
 		let window = MigratedOwnOfferWindow(
-			epoch: mirror.classical.context.epoch,
-			groupID: mirror.classical.context.groupID,
-			senderLeafIndex: mirror.classical.myLeafIndex.value, offers: offers)
+			epoch: epoch, groupID: groupID, senderLeafIndex: senderLeafIndex,
+			offers: offers)
+		// `parts` is built from bob's UNTOUCHED recv group, before the
+		// timed region — exactly what a migrator would read off a
+		// genuinely-restored session, never a group that just lived
+		// through N own-Update proposals.
+		let parts = try migratedParts(bob)
 
-		// "Each mint call ≤ 5 s."
+		// "Each mint call <= budget."
 		let mintStart = Date()
 		let minted = try SessionMigration.mintOwnOfferWindow(
-			window, parts: try Self.migratedParts(bob),
+			window, parts: parts,
 			classicalProvider: SessionTestSupport.classicalProvider)
 		let mintSeconds = Date().timeIntervalSince(mintStart)
 
-		// "Blob size ≤ 40 MB" — the columnar payload's own byte count
+		// "Blob size <= 40 MB" — the columnar payload's own byte count
 		// (refs + length-prefixes + proposals + secrets); the sealed
 		// `SecretArchive`'s own CBOR framing adds a small, roughly
 		// constant overhead on top, not measured here.
 		let approximateBlobSize =
 			offers.reduce(0) { $0 + $1.proposal.count } + offers.count * (32 + 4 + 32)
 
-		// Calibrated to the 2026-09-23 first run at full N (see the type's
-		// own doc) — a regression gate against further slowdown, not a
-		// claim that today's baseline is healthy.
-		let mintBudgetSeconds = 420.0
+		if printTimings {
+			let budgetDescription =
+				mintBudgetSeconds.map { "<= \($0) s, calibrated 2026-09-23" }
+				?? "none"
+			print(
+				"""
+				[scale] N=\(n)
+				  generation: \(generationSeconds) s (excluded from budget)
+				  mint: \(mintSeconds) s (budget: \(budgetDescription))
+				  blob (approx, columnar payload only): \(approximateBlobSize) bytes (budget: <= 40 MB)
+				""")
+		}
 
-		print(
-			"""
-			[A.9 scale] N=\(n)
-			  generation: \(generationSeconds) s (excluded from budget)
-			  mint: \(mintSeconds) s (budget: <= \(mintBudgetSeconds) s, calibrated 2026-09-23)
-			  blob (approx, columnar payload only): \(approximateBlobSize) bytes (budget: <= 40 MB)
-			""")
-
-		XCTAssertLessThanOrEqual(
-			mintSeconds, mintBudgetSeconds, "mint call exceeded its budget")
+		if let mintBudgetSeconds {
+			XCTAssertLessThanOrEqual(
+				mintSeconds, mintBudgetSeconds, "mint call exceeded its budget")
+		}
 		XCTAssertLessThanOrEqual(
 			approximateBlobSize, 40 * 1024 * 1024, "blob size exceeded its budget")
-
-		_ = alice
-		_ = minted
+		return minted
 	}
 
 	private static func migratedParts(_ session: TwoMLSSession) throws -> MigratedSession {
