@@ -473,10 +473,10 @@ final class DeployedStateTests: XCTestCase {
 		XCTAssertEqual(bob.leafKeys.recvPQ.pending.count, pendingBefore.count)
 	}
 
-	/// D1: with no recv-PQ key, the trigger falls through to a plain A.4
-	/// even while the recv-PQ leaf genuinely lags — `stageRekey` would throw
-	/// (it signs there), and the auto-driver must never even attempt an A.5
-	/// it cannot complete, or every future turn would silently stall.
+	/// With no recv-PQ key, the trigger falls through to a plain A.4 even
+	/// while the recv-PQ leaf genuinely lags — `stageRekey` would throw (it
+	/// signs there), and the auto-driver must never even attempt an A.5 it
+	/// cannot complete, or every future turn would silently stall.
 	func testRecvPQWithoutCustodyKeepsRatchetingWhileItsLeafLags() throws {
 		var (_, bob) = try establishedWithBobsRecvPQLagging()
 		_ = try bob.prepareToEncrypt()
