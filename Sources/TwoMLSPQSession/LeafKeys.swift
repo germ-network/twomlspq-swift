@@ -468,6 +468,22 @@ extension TwoMLSSession {
 		}
 	}
 
+	/// Decode `message`'s own leaf credential id, WITHOUT verifying it —
+	/// used only to find a reusable in-epoch offer among `stagedUpdates`.
+	/// Every entry there was already verified once, when this session
+	/// itself proposed it (`proposeUpdate`); this is a byte-shape parse
+	/// only, never a trust decision.
+	static func offerTarget(_ message: Data) -> Data? {
+		guard
+			let decoded = try? withDeployedWireConventions({
+				try MLS.RFC9420.Message(mlsEncoded: message)
+			}),
+			case .publicMessage(let pub) = decoded,
+			case .proposal(.update(let leafNode)) = pub.content.content
+		else { return nil }
+		return try? basicIdentifier(leafNode.credential)
+	}
+
 	/// Decode `message` as a `PublicMessage` `.update` proposal that verifies
 	/// against `group` (mirrors `rebuildStagedProposalStore`'s decode
 	/// shape), and return the id/key it names. Any failure — wrong shape,

@@ -31,9 +31,9 @@ final class FoldTests: XCTestCase {
 	@discardableResult
 	private func surfaceOffer(
 		from proposer: inout TwoMLSSession, to approver: inout TwoMLSSession,
-		app: Data = Data("offer".utf8)
+		app: Data = Data("offer".utf8), rotating: Data? = nil
 	) throws -> (digest: Data, proposing: Data, message: Data) {
-		_ = try proposer.prepareToEncrypt()
+		_ = try proposer.prepareToEncrypt(rotating: rotating)
 		let frame = try proposer.encrypt(app).frame
 		_ = try approver.processIncomingDecrypted(frame)
 		// PR2: `frame` is header-sealed on exit; `approver` is the one whose
@@ -737,19 +737,68 @@ final class FoldTests: XCTestCase {
 
 	// MARK: - §11 MF8: single-occupancy, latest-wins
 
-	/// A second offer, surfaced before the first is approved, replaces it
-	/// outright: `processIncoming` unconditionally overwrites
-	/// `offeredProposal` on every inbound frame (§11 MF8), so the earlier
-	/// digest is no longer approvable — only the latest one is.
+	/// A second, DIFFERENT-target offer, surfaced before the first is
+	/// approved, replaces it outright: `processIncoming` unconditionally
+	/// overwrites `offeredProposal` on every inbound frame (§11 MF8), so the
+	/// earlier digest is no longer approvable — only the latest one is. A
+	/// same-target repeat would be a reuse, not a genuinely later offer, so
+	/// the second leg here is a rotation.
 	func testLaterOfferReplacesEarlierUnapprovedOfferSingleOccupancyLatestWins() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let bobRotated = Data("bob-rotated".utf8)
 		let offer1 = try surfaceOffer(from: &bob, to: &alice, app: Data("first".utf8))
-		let offer2 = try surfaceOffer(from: &bob, to: &alice, app: Data("second".utf8))
+		let offer2 = try surfaceOffer(
+			from: &bob, to: &alice, app: Data("second".utf8), rotating: bobRotated)
 		XCTAssertNotEqual(offer1.digest, offer2.digest)
 
 		XCTAssertThrowsError(try alice.queueProposal(digest: offer1.digest)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .proposalRejected)
 		}
 		XCTAssertNoThrow(try alice.queueProposal(digest: offer2.digest))
+	}
+
+	/// A host-relied invariant: the SAME target's offer repeats byte-for-
+	/// byte across frames within one epoch (the per-epoch reuse rule), and
+	/// approving the copy that arrives on a SECOND, later frame is
+	/// idempotent — the same `queuedProposal` digest, and no duplicate
+	/// authorization recorded for the offered id. Uses a ROTATING offer
+	/// (an id change), not a routine one: `validateOfferedUpdate` only
+	/// calls `auth.theirs.authorize` at all when the offered id is new to
+	/// the sequence, so a routine same-id offer would trivially pass this
+	/// assertion without ever exercising the authorize call this test
+	/// means to pin. Kills: a second approval of the identical digest
+	/// appending a second `authorizedNext` entry, or otherwise not being a
+	/// clean no-op.
+	func testReapprovingARepeatedIdenticalOfferOnANewFrameIsIdempotent() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let bobRotated = Data("bob-rotated-reapproved".utf8)
+
+		// The first frame: surfaced, then approved.
+		let offer1 = try surfaceOffer(
+			from: &bob, to: &alice, app: Data("first".utf8), rotating: bobRotated)
+		_ = try alice.queueProposal(digest: offer1.digest)
+		let queuedAfterFirst = try XCTUnwrap(alice.queuedProposal)
+		let authorizedCountAfterFirst = alice.auth.theirs.authorizedNext.count
+		XCTAssertTrue(alice.auth.theirs.authorizedNext.contains(bobRotated))
+
+		// A SECOND, later frame repeating the identical offer bytes (the
+		// per-epoch reuse rule) — surfaced again (re-populating
+		// `offeredProposal`), then re-approved.
+		let offer2 = try surfaceOffer(
+			from: &bob, to: &alice, app: Data("second".utf8), rotating: bobRotated)
+		XCTAssertEqual(offer1.digest, offer2.digest, "reused within the same epoch")
+		_ = try alice.queueProposal(digest: offer2.digest)
+		let queuedAfterSecond = try XCTUnwrap(alice.queuedProposal)
+
+		XCTAssertEqual(queuedAfterFirst.digest, queuedAfterSecond.digest)
+		XCTAssertEqual(queuedAfterFirst.proposing, queuedAfterSecond.proposing)
+		XCTAssertEqual(queuedAfterFirst.message, queuedAfterSecond.message)
+		XCTAssertEqual(
+			alice.auth.theirs.authorizedNext.count, authorizedCountAfterFirst,
+			"re-approving the identical offer must not authorize it twice")
+
+		// And the fold still proceeds normally off the re-approved offer.
+		let prepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(prepared.didCommit)
 	}
 }

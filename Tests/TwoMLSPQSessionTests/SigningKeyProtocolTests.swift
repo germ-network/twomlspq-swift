@@ -2,6 +2,7 @@ import Foundation
 import MLSCodec
 import MLSCrypto
 import MLSProfileRFC9420
+import SecretBytes
 import XCTest
 
 @testable import TwoMLSPQSession
@@ -402,22 +403,17 @@ final class SigningKeyProtocolTests: XCTestCase {
 		XCTAssertEqual(bobKeysBefore.recvPQ, bobKeysAfter.recvPQ)
 	}
 
-	// MARK: - D3: one proposed Update offer per peer epoch
+	// MARK: - D3: one Update offer per peer epoch
 
-	/// D3 (proposed): frames within one epoch of the peer's group must
-	/// repeat the identical Update offer.
+	/// D3: frames within one epoch of the peer's group repeat the
+	/// identical Update offer.
 	func testD3OnePrepareToEncryptOfferPerPeerEpoch() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		let firstPrepared = try alice.prepareToEncrypt()
 		_ = try alice.encrypt(Data("first".utf8))
 		let secondPrepared = try alice.prepareToEncrypt()
-		XCTExpectFailure(
-			"D3: proposed — one Update offer per peer epoch, repeated across frames"
-		) {
-			XCTAssertEqual(
-				firstPrepared.proposalMessage, secondPrepared.proposalMessage)
-		}
+		XCTAssertEqual(firstPrepared.proposalMessage, secondPrepared.proposalMessage)
 
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decrypted = try bob.processIncomingDecrypted(offerFrame)
@@ -431,6 +427,96 @@ final class SigningKeyProtocolTests: XCTestCase {
 		// legitimately differs — true today and under D3 alike.
 		let thirdPrepared = try alice.prepareToEncrypt()
 		XCTAssertNotEqual(secondPrepared.proposalMessage, thirdPrepared.proposalMessage)
+	}
+
+	/// 100 frames within one epoch, no peer commit: every offer repeats the
+	/// first one's exact bytes, `stagedUpdates` stays at one entry, and the
+	/// sealed Core archive stays essentially flat (only a `stateSeq` counter
+	/// widening by a couple of bytes, not per-frame growth). Kills: minting
+	/// a fresh offer (or appending a new `stagedUpdates` entry) on every
+	/// `prepareToEncrypt` call instead of reusing the one already staged
+	/// this epoch — that mutation grows the archive by roughly the offer's
+	/// own size on every one of the 99 extra frames, not by a few bytes
+	/// total.
+	func testFramesWithinOneEpochRepeatTheIdenticalOffer() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		let testKey = SecretBytes(randomByteCount: 32)
+		let testAAD = Data("signing-key-protocol-tests".utf8)
+
+		let first = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("0".utf8))
+		let firstCoreSize = try alice.makeSessionArchive(kind: .core)
+			.seal(with: testKey, aad: testAAD).count
+
+		for frame in 1..<100 {
+			let prepared = try alice.prepareToEncrypt()
+			XCTAssertEqual(prepared.proposalMessage, first.proposalMessage)
+			_ = try alice.encrypt(Data("\(frame)".utf8))
+		}
+
+		XCTAssertEqual(alice.stagedUpdates.count, 1)
+		let lastCoreSize = try alice.makeSessionArchive(kind: .core)
+			.seal(with: testKey, aad: testAAD).count
+		XCTAssertLessThan(lastCoreSize - firstCoreSize, 16)
+	}
+
+	/// A rotation candidate gets its own offer, distinct from — and
+	/// coexisting with — the routine offer; a plain frame after it still
+	/// repeats the ROUTINE offer, not the candidate's. Kills: latest-wins
+	/// reuse (one slot for the whole epoch instead of per target);
+	/// re-minting a repeated rotation offer.
+	func testRotationGetsItsOwnOfferAndPlainFramesKeepTheRoutineOffer() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let aliceRotated = Data("alice-rotated-in-epoch".utf8)
+
+		let routineFirst = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("r0".utf8))
+		let rotationFirst = try alice.prepareToEncrypt(rotating: aliceRotated)
+		_ = try alice.encrypt(Data("c0".utf8))
+		XCTAssertNotEqual(routineFirst.proposalMessage, rotationFirst.proposalMessage)
+
+		let routineAgain = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("r1".utf8))
+		XCTAssertEqual(routineAgain.proposalMessage, routineFirst.proposalMessage)
+
+		let rotationAgain = try alice.prepareToEncrypt(rotating: aliceRotated)
+		let rotationFrame = try alice.encrypt(Data("c1".utf8)).frame
+		XCTAssertEqual(rotationAgain.proposalMessage, rotationFirst.proposalMessage)
+
+		// Only the candidate stages a `pending` entry today — a routine
+		// offer stays a same-key refresh until fresh routine keys land.
+		XCTAssertEqual(alice.stagedUpdates.count, 2)
+		XCTAssertEqual(Set(alice.leafKeys.recvClassical.pending.keys), [aliceRotated])
+
+		// The peer folds the candidate's (already-sent) offer; it
+		// promotes, and the candidate's `pending` entry is pruned.
+		_ = try bob.processIncomingDecrypted(rotationFrame)
+		_ = try bob.queueProposal(digest: rotationAgain.proposalHash)
+		let foldPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
+		_ = try alice.processIncomingDecrypted(foldFrame)
+		XCTAssertNil(alice.leafKeys.recvClassical.pending[aliceRotated])
+	}
+
+	/// A restore mid-epoch (after prepare + encrypt but before the peer's
+	/// fold) still repeats the identical offer bytes on the next prepare —
+	/// the reuse cache is `stagedUpdates`/`pendingProposal`, both durable
+	/// archive fields, not transient, unpersisted call-local state. Kills:
+	/// reuse keyed on something that does not survive a restore.
+	func testRestoreMidEpochRepeatsTheSameOffer() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		let prepared = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("offer".utf8))
+
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: try alice.makeSessionArchive(kind: .checkpoint),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		var restoredMutable = restored
+		let restoredPrepared = try restoredMutable.prepareToEncrypt()
+		XCTAssertEqual(restoredPrepared.proposalMessage, prepared.proposalMessage)
 	}
 
 	// MARK: - §3: same-id, key-only PQ Upd′

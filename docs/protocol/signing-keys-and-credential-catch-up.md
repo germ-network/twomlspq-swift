@@ -129,7 +129,7 @@ We don't carry that coupling over. Decisions:
     credential, so there is no sync point between groups.
   - A key a leaf starts with (from an invitation KeyPackage, or carried in from a migrated archive) is replaced by the
     same rule at that leaf's next move.
-  - *Proposed:* one Update offer per epoch of the peer's group.
+  - One Update offer per epoch of the peer's group.
     - Frames within that epoch repeat the identical proposal, because the frame requires one and it is the ack (§1).
       The proposal section stays mandatory: it is our new key, stapled onto every frame until the peer takes it.
     - A new leaf node is minted only when that epoch moves (our offer was folded, or went stale), or to announce a
@@ -140,7 +140,8 @@ We don't carry that coupling over. Decisions:
       - Neither the book nor the code says why. The book only says "every round stages one"
         (`session-lifecycle.md:121-122`).
       - The cost is that the sender keeps every one of those secrets until the epoch moves, because the peer may fold
-        any of them. Today's Swift engine does the same (`TwoMLSSession+Messaging.swift:235-237`).
+        any of them. This engine instead reuses the same offer bytes for the epoch's own target
+        (`TwoMLSSession+Messaging.swift`'s `prepareToEncrypt`), so it never grows that per-frame cost.
     - The deployed engine accepts a repeated offer:
       - it validates each offer without keeping state and skips the work once the epoch is already licensed
         (`messaging.rs:1625-1655`, `:599-640`: "safe to repeat");
