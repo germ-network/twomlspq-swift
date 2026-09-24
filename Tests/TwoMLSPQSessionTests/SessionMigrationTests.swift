@@ -2754,6 +2754,181 @@ extension SessionMigrationTests {
 		XCTAssertEqual(finalTag, Frames.pqEKTag)
 		XCTAssertFalse(restoredBob.pqSideBandWedged)
 	}
+
+	// MARK: - The one-way lag drop (mint-time admissibility)
+
+	/// A parked `Upd′` that verifies but whose target has already left
+	/// `mine.history` — the mint-time admissibility drop: a rollback
+	/// to any credential no longer in history is refused by the same
+	/// successor rule everywhere else, and a parked target is no
+	/// exception. Kills: a missing admissibility check.
+	func testParkedUpdWhoseTargetLeftOurHistoryIsDroppedAtImport() throws {
+		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let target = Data("bob-evicted-target".utf8)
+
+		// A genuinely-signed Upd′ targeting `target`, built off a scratch
+		// copy so `bob`'s own state is untouched.
+		var mirror = try XCTUnwrap(bob.recvGroup)
+		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (message, _) = try mirror.pq!.proposeUpdate(
+			SessionTestSupport.pqProvider,
+			sign: MLS.RFC9420.signingClosure(
+				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),
+				new: freshSigningKey),
+			framing: .publicMessage,
+			newIdentity: MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: target),
+				signatureKey: freshSignatureKey))
+		let updBytes = try message.mlsEncoded()
+
+		var parts = try migratedParts(bob, suppliedLeafKeys: true)
+		parts.pqInflight = .rekeyInitiated(updMessage: updBytes)
+		parts.pendingSideBand = Frames.encodePQRekeyUpd(updBytes)
+		// `target` was never part of bob's own canonical history — the
+		// round is stale, and no live leaf lags anything else, so no
+		// further catch-up entry is needed.
+		var lk = migratedLeafKeys(from: bob.leafKeys)
+		lk.recvPQ = MigratedGroupKeys(
+			current: lk.recvPQ.current,
+			pending: [
+				MigratedPendingLeafKey(
+					target: target,
+					key: MigratedLeafKey(
+						signingKey: freshSigningKey.data,
+						signatureKey: freshSignatureKey.data))
+			])
+		parts.leafKeys = lk
+
+		let restored = try restoreMinted(parts)
+		XCTAssertNil(restored.pqInflight, "the target has left history — dropped at mint")
+		XCTAssertNil(restored.pendingSideBand)
+		XCTAssertNil(
+			restored.leafKeys.recvPQ.pending[target],
+			"not the rule-7 key — target isn't mine.current")
+	}
+
+	/// The control: a parked `Upd′` targeting an id that predates
+	/// `mine.current` but is STILL within the history window is kept, not
+	/// dropped — the admissibility check must not drop every non-current
+	/// target, only an evicted one. (The same-id refresh case is a
+	/// separate arm — see the pinned/evicted test below.)
+	func testParkedUpdToAHistoryIDIsKeptAtImport() throws {
+		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let target = Data("bob-history-target".utf8)
+
+		var mirror = try XCTUnwrap(bob.recvGroup)
+		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (message, _) = try mirror.pq!.proposeUpdate(
+			SessionTestSupport.pqProvider,
+			sign: MLS.RFC9420.signingClosure(
+				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),
+				new: freshSigningKey),
+			framing: .publicMessage,
+			newIdentity: MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: target),
+				signatureKey: freshSignatureKey))
+		let updBytes = try message.mlsEncoded()
+
+		var parts = try migratedParts(bob, suppliedLeafKeys: true)
+		parts.pqInflight = .rekeyInitiated(updMessage: updBytes)
+		parts.pendingSideBand = Frames.encodePQRekeyUpd(updBytes)
+		// `target` predates `mine.current` but is still within the history
+		// window — admissible, if stale, unlike the evicted case above.
+		parts.auth.mine.history.insert(target, at: 0)
+		var lk = migratedLeafKeys(from: bob.leafKeys)
+		lk.recvPQ = MigratedGroupKeys(
+			current: lk.recvPQ.current,
+			pending: [
+				MigratedPendingLeafKey(
+					target: target,
+					key: MigratedLeafKey(
+						signingKey: freshSigningKey.data,
+						signatureKey: freshSignatureKey.data))
+			])
+		parts.leafKeys = lk
+
+		let restored = try restoreMinted(parts)
+		guard case .rekeyInitiated(let kept) = restored.pqInflight else {
+			return XCTFail("a target still within history must be kept")
+		}
+		XCTAssertEqual(kept, updBytes)
+		XCTAssertNotNil(restored.pendingSideBand)
+	}
+
+	/// A parked SAME-ID `Upd′` — a key refresh, not a move: its target
+	/// equals the recv-PQ leaf's own currently-presented credential — must
+	/// be kept even once that id has left `mine.history` (a full rotation
+	/// cycle evicted it) and is pinned. The `target == presentedRecvPQID`
+	/// admissibility arm is not a history lookup: a pinned id is never a
+	/// valid *successor*, but this Upd′ never claims to be one. Kills:
+	/// `admissible = mine.history.contains(target)` alone (dropping the
+	/// same-id arm), which would wrongly drop this refresh.
+	func testParkedSameIDUpdWhoseTargetIsEvictedAndPinnedIsKeptAtImport() throws {
+		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let presentedID = bob.identity.clientID
+
+		// A same-id key refresh: the Upd′ credential equals the leaf's own
+		// presented id, not a move to a new one.
+		var mirror = try XCTUnwrap(bob.recvGroup)
+		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (message, _) = try mirror.pq!.proposeUpdate(
+			SessionTestSupport.pqProvider,
+			sign: MLS.RFC9420.signingClosure(
+				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),
+				new: freshSigningKey),
+			framing: .publicMessage,
+			newIdentity: MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: presentedID),
+				signatureKey: freshSignatureKey))
+		let updBytes = try message.mlsEncoded()
+
+		var parts = try migratedParts(bob, suppliedLeafKeys: true)
+		parts.pqInflight = .rekeyInitiated(updMessage: updBytes)
+		parts.pendingSideBand = Frames.encodePQRekeyUpd(updBytes)
+		// The leaf's own id has since left the history window — a further
+		// classical rotation landed, elsewhere, moving `mine.current` on —
+		// and, evicted, `presentedID` is pinned: exactly the state a
+		// rollback would be refused in, but this Upd′ isn't one.
+		let laterCurrent = Data("bob-vN".utf8)
+		parts.auth.mine.history.removeAll { $0 == presentedID }
+		parts.auth.mine.history.append(laterCurrent)
+		parts.auth.mine.pinned.append(presentedID)
+		// Every other own leaf now lags the new `mine.current` (none of
+		// them moved with the classical rotation), so check 7 requires a
+		// `pending[laterCurrent]` catch-up placeholder in each — unrelated
+		// to the same-id arm this test targets, but required for the parts
+		// to mint at all.
+		let (laterSigningKey, laterSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let laterKey = MigratedLeafKey(
+			signingKey: laterSigningKey.data, signatureKey: laterSignatureKey.data)
+		var lk = migratedLeafKeys(from: bob.leafKeys)
+		lk.recvClassical = MigratedGroupKeys(
+			current: lk.recvClassical.current,
+			pending: [MigratedPendingLeafKey(target: laterCurrent, key: laterKey)])
+		lk.recvPQ = MigratedGroupKeys(
+			current: lk.recvPQ.current,
+			pending: [
+				MigratedPendingLeafKey(
+					target: presentedID,
+					key: MigratedLeafKey(
+						signingKey: freshSigningKey.data,
+						signatureKey: freshSignatureKey.data)),
+				MigratedPendingLeafKey(target: laterCurrent, key: laterKey),
+			])
+		lk.sendPQ = MigratedGroupKeys(
+			current: lk.sendPQ.current,
+			pending: [MigratedPendingLeafKey(target: laterCurrent, key: laterKey)])
+		parts.leafKeys = lk
+
+		let restored = try restoreMinted(parts)
+		guard case .rekeyInitiated(let kept) = restored.pqInflight else {
+			return XCTFail(
+				"a same-id refresh must be kept even once its id is evicted and pinned"
+			)
+		}
+		XCTAssertEqual(kept, updBytes)
+		XCTAssertNotNil(restored.pendingSideBand)
+	}
 }
 
 @available(iOS 26, macOS 26, *)

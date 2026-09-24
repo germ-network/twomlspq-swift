@@ -273,6 +273,13 @@ shares a key across its groups, and nothing compares a peer's keys across groups
     leaf actually presents — the catch-up A.5 when the recv-PQ leaf still lags (as in the deployed shape that
     produces this), else a plain A.4 (book anomaly 5's own resolution, `session-lifecycle.md` at `69a9f0e`: "drops
     its mis-signed parked `Upd'` and re-proposes under the carried key").
+  - **Dropping a parked re-key proposal whose target has left history.** The mint also drops a parked `Upd'` that
+    DOES verify but whose target credential has already left `mine.history` — a rollback to any credential no
+    longer canonical is refused by the same successor rule everywhere else, and a stale parked target is no
+    exception. This is a mint-time admissibility check only: it never re-evaluates a live session's own already-
+    accepted state at a later classical commit, so a parked target that leaves history WHILE the session is running
+    natively (unreachable today — a native session rotates at most once) is a known residual, not something this
+    check reaches.
 
 ## 5. Session profiles and KeyPackage signaling
 
