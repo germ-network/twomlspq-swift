@@ -96,6 +96,37 @@ extension TwoMLSSession {
 			else {
 				throw TwoMLSError.proposalRejected
 			}
+			guard let currentRecord = send.classical.tree.leaf(at: senderLeaf) else {
+				throw TwoMLSError.proposalRejected
+			}
+			let currentLeaf = try MLS.RFC9420.LeafNode(
+				mlsEncoded: currentRecord.encoded)
+			// The enclosing `verifying(proposal:)` above authenticates only
+			// the FRAMING — the sender's CURRENT leaf's signature over the
+			// proposal — never the EMBEDDED replacement leaf's own RFC 9420 section 7.3
+			// validity (`LeafNode.verifySignature` covers its own
+			// signature; `validatePolicy` covers capabilities/credential-
+			// type mutual support/`required_capabilities`). Both run here,
+			// before this approval can ever authorize anything, against
+			// EVERY current member — including the sender's own current
+			// leaf — mirroring the roster a real commit validates against
+			// (`currentMemberRoster`).
+			do {
+				try leafNode.verifySignature(
+					classicalProvider,
+					placement: .inGroup(
+						groupID: send.classical.context.groupID,
+						leafIndex: senderLeaf))
+				let roster = try Self.currentMemberRoster(of: send.classical)
+				try leafNode.validatePolicy(
+					.updateProposal(replacing: currentLeaf),
+					groupRequirements: send.classical.context.extensions
+						.requiredCapabilities(),
+					memberCredentialTypes: roster.credentialTypes,
+					memberCapabilities: roster.byLeaf.values)
+			} catch {
+				throw TwoMLSError.proposalRejected
+			}
 			try TwoPartyRules.ensureAdvertisesAPQCapabilities(
 				leafNode, codepoints: codepoints)
 			// Rule 8 tail (group-rules.md:77-78): "Leaves advertise the
@@ -108,11 +139,6 @@ extension TwoMLSSession {
 			if try AppBinding.read(fromExtensionsOf: send.classical.context) != nil {
 				try ensureAppBindingCreatorLeafAdvert(leafNode)
 			}
-			guard let currentRecord = send.classical.tree.leaf(at: senderLeaf) else {
-				throw TwoMLSError.proposalRejected
-			}
-			let currentLeaf = try MLS.RFC9420.LeafNode(
-				mlsEncoded: currentRecord.encoded)
 			guard case .basic(let offeredID) = leafNode.credential,
 				offeredID == offered.proposing
 			else {
@@ -327,7 +353,28 @@ extension TwoMLSSession {
 	internal mutating func committingRound() throws -> (
 		didCommit: Bool, committedRemoteClientID: Data?
 	) {
+		// Take the slot before anything else runs — approval
+		// and authorization are one unit (`PartySequence.revoke`'s own
+		// doc); a commit this round fails to build must not leave the
+		// approval sitting untouched, silently retriable forever with no
+		// compensating withdrawal. Any throw from here on, not only from
+		// `committing` itself, withdraws a still-outstanding (not yet
+		// canonical) authorization for the folded offer's id.
 		let folded = queuedProposal
+		queuedProposal = nil
+		do {
+			return try committingRoundBody(folded: folded)
+		} catch {
+			if let folded, !auth.theirs.history.contains(folded.proposing) {
+				auth.theirs.revoke(folded.proposing)
+			}
+			throw error
+		}
+	}
+
+	private mutating func committingRoundBody(
+		folded: (digest: Data, proposing: Data, message: Data)?
+	) throws -> (didCommit: Bool, committedRemoteClientID: Data?) {
 		let owed = owedBind
 		let licensed: Bool
 		if let peerApplied = peerAppliedSendEpoch, let send = sendGroup {
@@ -605,11 +652,11 @@ extension TwoMLSSession {
 					currentStaple = Frames.encodeMlsMessageStaple(commitBytes)
 				}
 				// Either way this round is now fully spent: the fold it carried
-				// (if any) is consumed, and any still-unapproved offer is bound
-				// to the epoch this commit just left behind (§11 MF8's "the peer
-				// re-proposes at the new epoch once it sees this commit's
-				// staple").
-				queuedProposal = nil
+				// (if any) is consumed — `queuedProposal` is already nil,
+				// taken at `committingRound`'s own entry — and any still-
+				// unapproved offer is bound to the epoch this commit just
+				// left behind (§11 MF8's "the peer re-proposes at the new
+				// epoch once it sees this commit's staple").
 				offeredProposal = nil
 				return (true, committedRemoteClientID)
 			}
@@ -768,6 +815,26 @@ extension TwoMLSSession {
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)
 		}
+	}
+
+	/// The full-leaf-validation roster `validateOfferedUpdate` needs
+	/// (`LeafNode.validatePolicy`'s `memberCredentialTypes`/
+	/// `memberCapabilities`): every non-blank leaf of `group`, INCLUDING
+	/// the sender's own current one — mirrors swift-mls's own (internal,
+	/// so re-derived here) `currentMemberRoster()`, the same roster a real
+	/// commit validates against.
+	private static func currentMemberRoster(of group: MLS.RFC9420.Group) throws -> (
+		byLeaf: [MLS.LeafIndex: MLS.RFC9420.Capabilities],
+		credentialTypes: Set<MLS.RFC9420.CredentialType>
+	) {
+		var byLeaf: [MLS.LeafIndex: MLS.RFC9420.Capabilities] = [:]
+		var credentialTypes: Set<MLS.RFC9420.CredentialType> = []
+		for entry in group.tree.nonBlankLeaves() {
+			let leaf = try MLS.RFC9420.LeafNode(mlsEncoded: entry.record.encoded)
+			byLeaf[entry.index] = leaf.capabilities
+			credentialTypes.insert(leaf.credential.credentialType)
+		}
+		return (byLeaf, credentialTypes)
 	}
 
 	/// Slice 6: fold every `.credentialReplaced` effect an already-adjudicated

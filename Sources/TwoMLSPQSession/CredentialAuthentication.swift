@@ -107,6 +107,23 @@ struct PartySequence: Sendable, Equatable, Codable {
 		if !authorizedNext.contains(id) { authorizedNext.append(id) }
 	}
 
+	/// Withdraw a still-outstanding (not yet canonical) authorization —
+	/// approval and authorization are one unit (book `group-rules.md:127-133`
+	/// rule 2: "the app's approval is the authorization ... so a rejected
+	/// approval is a no-op"): when the
+	/// commit that would have folded an approved offer fails to build,
+	/// the approval must not sit silently re-triable forever with no
+	/// compensating withdrawal. A no-op if `id` isn't currently
+	/// authorized. Callers only ever revoke an id NOT already in
+	/// `history` — removing a canonical id here would be wrong, but
+	/// `commit` itself already clears `authorizedNext` on canonicalizing,
+	/// so this never needs to check that itself. The peer re-offers every
+	/// frame regardless, so losing an authorization this way costs at
+	/// most one extra round.
+	mutating func revoke(_ id: Data) {
+		authorizedNext.removeAll { $0 == id }
+	}
+
 	/// Hold `id` admissible past window eviction (idempotent): widens
 	/// `knownIDs` and lets an evicted `id` still serve as a successor
 	/// `pred`, but it is never itself a valid `succ` (see `validSuccessor`),

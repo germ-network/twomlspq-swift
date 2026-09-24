@@ -167,7 +167,6 @@ final class LeafCapabilityGateTests: XCTestCase {
 		let (alice, bob, _, _, _, _) = try SessionTestSupport.established(
 			alice: "cap-gate-alice-\(missing)", bob: "cap-gate-bob-\(missing)")
 		var received = bob
-		_ = try alice
 		_ = try received.prepareToEncrypt()
 
 		let committerSend = try XCTUnwrap(received.sendGroup).classical
@@ -187,25 +186,20 @@ final class LeafCapabilityGateTests: XCTestCase {
 			throw TwoMLSError.unsupportedCredential
 		}
 
-		// Basic credentials carry no proof — sign under a fresh key that
-		// merely CLAIMS Alice's id, matching `forgedUncapableUpdate`'s own
-		// reasoning; the enclosing `FramedContent` below is what actually
-		// carries Alice's REAL current signing key.
-		let (rogueSigningKey, _) = try TwoMLSIdentity.mintSignatureKeypair()
+		// The leaf's own `signatureKey` is unchanged from Alice's REAL
+		// leaf, so its `LeafNodeTBS` signature must come from her REAL
+		// signing key too (`LeafNode.verifySignature` checks self-
+		// consistency against the leaf's own embedded key) — only the
+		// CAPABILITIES are rogue here. This is a plain non-rotating
+		// Update (same id, same signature key), so this session's own
+		// stored key set already holds it.
+		let aliceSigningKey = try alice.sendClassicalSigningKey()
 		rogueLeaf.signature = try MLS.signWithLabel(
-			provider, privateKey: rogueSigningKey, label: "LeafNodeTBS",
+			provider, privateKey: aliceSigningKey, label: "LeafNodeTBS",
 			content: try rogueLeaf.toBeSigned(
 				placement: .inGroup(
 					groupID: committerSend.context.groupID,
 					leafIndex: aliceLeafIndex)))
-
-		// The real Alice session's current send-classical signing key —
-		// what actually authenticates the enclosing proposal's framing.
-		var realAlice = try SessionTestSupport.established(
-			alice: "cap-gate-alice-\(missing)", bob: "cap-gate-bob-\(missing)"
-		).alice
-		_ = realAlice
-		let aliceSigningKey = try alice.sendClassicalSigningKey()
 
 		let content = MLS.RFC9420.FramedContent(
 			groupID: committerSend.context.groupID, epoch: committerSend.context.epoch,
@@ -259,7 +253,13 @@ final class LeafCapabilityGateTests: XCTestCase {
 			XCTAssertThrowsError(try committer.prepareToEncrypt()) { error in
 				XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)
 			}
-			XCTAssertNotNil(committer.queuedProposal, "no partial fold landed")
+			// The queued fold is DROPPED, not left silently re-triable — the
+			// commit that would have folded it never landed. (This fold is
+			// a plain same-id refresh, never authorized to begin with —
+			// the revoke-on-failure behavior itself is
+			// `testInjectedInvalidQueuedProposalIsWithdrawnOnFailureAndRecovers`'s
+			// own job.)
+			XCTAssertNil(committer.queuedProposal)
 		}
 	}
 

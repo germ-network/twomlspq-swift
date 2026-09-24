@@ -176,11 +176,15 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// `queueProposal` found no matching/valid offer: no `offeredProposal` was
 	/// outstanding, the supplied digest did not match it, the offered message
 	/// did not verify as a peer `.update` proposal (`.member` sender, not this
-	/// session's own leaf), its leaf's credential/signature key differed from
-	/// the current one (slice 5 rejects any `.credentialReplaced` fold —
-	/// rotation is a later slice), or its verified leaf's `.basic` identity
-	/// did not match the frame's unauthenticated `proposing` claim (§11 MF5).
-	/// A digest mismatch is this error too, never a silent no-op.
+	/// session's own leaf), or its verified leaf's `.basic` identity did not
+	/// match the frame's unauthenticated `proposing` claim (§11 MF5). Also
+	/// thrown by `validateOfferedUpdate`'s own leaf checks, run against every
+	/// current member (mirroring the roster a real commit validates against):
+	/// the embedded replacement leaf's own RFC 9420 section 7.3 signature
+	/// (`LeafNode.verifySignature`) and policy (`LeafNode.validatePolicy` —
+	/// capabilities, credential-type mutual support, `required_capabilities`,
+	/// an unchanged encryption key). A digest mismatch is this error too,
+	/// never a silent no-op.
 	case proposalRejected
 	/// A fold-carrying commit's applied `CommitEffects` were not its exact
 	/// allow-listed shape — bare fold `[epochAdvanced, updated(proposer),
