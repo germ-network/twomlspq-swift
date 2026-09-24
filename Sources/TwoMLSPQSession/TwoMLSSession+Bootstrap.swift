@@ -85,6 +85,8 @@ extension TwoMLSSession {
 		else {
 			throw TwoMLSError.malformedSideBandMessage
 		}
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			peerBootstrapKP.leafNode, codepoints: codepoints)
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
 		// Founding signs with the reservation already held in
 		// `leafKeys.sendPQ.current` — seeded at `receive` to the founder
@@ -170,6 +172,8 @@ extension TwoMLSSession {
 		// the classical halves only — every PQ-half join re-checks that no
 		// copy was smuggled in, even one Bob (an honest founder) never writes.
 		try verifyPQHalfUnbound(pqGroup)
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			Self.joinedCreatorLeaf(of: pqGroup), codepoints: codepoints)
 		bootstrapKPSecret = nil
 
 		try withDeployedWireConventions {

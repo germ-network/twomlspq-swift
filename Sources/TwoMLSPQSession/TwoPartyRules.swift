@@ -1,5 +1,6 @@
 import Foundation
 import MLSCodec
+import MLSCombiner
 import MLSProfileRFC9420
 
 /// Session-layer 2-party enforcement. The profile has no `MlsRules`-style
@@ -15,6 +16,25 @@ enum TwoPartyRules {
 	static func ensureTwoParty(_ group: MLS.RFC9420.Group) throws {
 		let count = group.tree.nonBlankLeaves().count
 		guard count == 2 else { throw TwoMLSError.notTwoParty(count: count) }
+	}
+
+	/// Book `wire-format.md`: "Every occupied leaf must advertise the
+	/// `APQInfo` extension (`0xF0A1`) and the `AppDataUpdate` proposal
+	/// (`0x0008`) types; a leaf that cannot support them is rejected rather
+	/// than silently degraded." Own leaves this module mints always
+	/// advertise both (`TwoMLSIdentity.leafCapabilities`) — this is the
+	/// ingress gate for a PEER leaf, at every send-group and recv-group site
+	/// a peer leaf enters or is found as creator, checked before any state
+	/// changes.
+	static func ensureAdvertisesAPQCapabilities(
+		_ leaf: MLS.RFC9420.LeafNode, codepoints: MLS.Combiner.Codepoints
+	) throws {
+		guard leaf.capabilities.extensions.contains(codepoints.apqInfoExtensionType),
+			leaf.capabilities.proposals.contains(
+				MLS.RFC9420.ProposalType(.appDataUpdate))
+		else {
+			throw TwoMLSError.leafCapabilityUnadvertised
+		}
 	}
 
 	/// A creation commit (roster 1 → 2) may carry exactly one `Add`, no

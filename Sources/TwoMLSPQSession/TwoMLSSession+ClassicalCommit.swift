@@ -96,6 +96,8 @@ extension TwoMLSSession {
 			else {
 				throw TwoMLSError.proposalRejected
 			}
+			try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+				leafNode, codepoints: codepoints)
 			// Rule 8 tail (group-rules.md:77-78): "Leaves advertise the
 			// extension type, so a binding-carrying group can only ever
 			// contain capability-bearing leaves." The peer's offered Update
@@ -399,6 +401,8 @@ extension TwoMLSSession {
 				else {
 					throw TwoMLSError.invalidFoldEffects
 				}
+				try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+					leafNode, codepoints: codepoints)
 				// Rule 8 tail (group-rules.md:77-78), same gate as
 				// `validateOfferedUpdate`'s: re-checked here (defense in
 				// depth, not redundant — `queueProposal`'s validation and

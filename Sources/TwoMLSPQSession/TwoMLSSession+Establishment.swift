@@ -77,6 +77,10 @@ extension TwoMLSSession {
 		guard try basicIdentifier(their.pq.leafNode.credential) == theirClassicalID else {
 			throw TwoMLSError.remoteIdentityMismatch
 		}
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			their.classical.leafNode, codepoints: codepoints)
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			their.pq.leafNode, codepoints: codepoints)
 		let auth = AuthCore(
 			mine: .seeded(identity.clientID), theirs: .seeded(theirClassicalID))
 
@@ -259,6 +263,12 @@ extension TwoMLSSession {
 		if let pq = groupA.pq {
 			try TwoPartyRules.ensureTwoParty(pq)
 		}
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			Self.joinedCreatorLeaf(of: groupA.classical), codepoints: codepoints)
+		if let pq = groupA.pq {
+			try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+				Self.joinedCreatorLeaf(of: pq), codepoints: codepoints)
+		}
 
 		// Slice-2 seam CLOSED: the AS seeds `theirs` from the creator leaf this
 		// join actually landed — read straight off the joined tree, not a claim
@@ -272,6 +282,8 @@ extension TwoMLSSession {
 		let peerID = try basicIdentifier(peerLeaf.credential)
 		guard try basicIdentifier(theirClassicalKeyPackage.leafNode.credential) == peerID
 		else { throw TwoMLSError.remoteIdentityMismatch }
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			theirClassicalKeyPackage.leafNode, codepoints: codepoints)
 		// Defense-in-depth: a dedicated id equal to the remote/initiator's own
 		// id can never be legitimate (it would found Group_B under an identity
 		// the peer already occupies in Group_A) — reject before minting.

@@ -360,6 +360,17 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// old-capability key package cannot be added to (or trusted as creator
 	/// of) a binding-carrying group.
 	case appBindingLeafUnadvertised
+	/// A peer leaf entering, or found as creator of, one of this session's
+	/// groups does not advertise the `APQInfo` extension type (`0xF0A1`) in
+	/// `Capabilities.extensions` and the `AppDataUpdate` proposal type
+	/// (`0x0008`) in `Capabilities.proposals` (book `wire-format.md`: "Every
+	/// occupied leaf must advertise the `APQInfo` extension... and the
+	/// `AppDataUpdate` proposal... a leaf that cannot support them is
+	/// rejected rather than silently degraded"). Rejected before any state
+	/// changes; the peer is non-conforming. Also thrown by the migration
+	/// mint for any occupied leaf of the four restored trees (or either half
+	/// of a retained `initialTheirKP`) that fails the same check.
+	case leafCapabilityUnadvertised
 
 	// MARK: Attachment CEK export (value-engine parity)
 

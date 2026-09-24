@@ -736,11 +736,36 @@ public enum SessionMigration {
 		}
 		if let initial = parts.initialTheirKP {
 			do {
-				_ = try MLS.RFC9420.KeyPackage(mlsEncoded: initial.classical)
-				_ = try MLS.RFC9420.KeyPackage(mlsEncoded: initial.pq)
-			} catch is MLS.CodecError {
+				let theirClassicalKP = try MLS.RFC9420.KeyPackage(
+					mlsEncoded: initial.classical)
+				let theirPQKP = try MLS.RFC9420.KeyPackage(mlsEncoded: initial.pq)
+				try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+					theirClassicalKP.leafNode, codepoints: .deployed)
+				try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+					theirPQKP.leafNode, codepoints: .deployed)
+			} catch {
 				throw TwoMLSError.archiveInvalid
 			}
+		}
+
+		// Book wire-format.md: every occupied leaf of every restored tree
+		// must advertise the APQInfo extension and the AppDataUpdate
+		// proposal — a capability-less leaf is refused at mint, mirroring
+		// the same gate the live engine enforces on every peer-leaf ingress
+		// site.
+		do {
+			for group in [sendClassical, sendPQ, recvClassical, recvPQ].compactMap({
+				$0
+			}) {
+				for entry in group.tree.nonBlankLeaves() {
+					let leaf = try MLS.RFC9420.LeafNode(
+						mlsEncoded: entry.record.encoded)
+					try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+						leaf, codepoints: .deployed)
+				}
+			}
+		} catch {
+			throw TwoMLSError.archiveInvalid
 		}
 
 		// Rule 1 (precedence): a supplied `parts.leafKeys` is authoritative;

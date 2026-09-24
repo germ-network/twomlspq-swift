@@ -138,6 +138,11 @@ extension TwoMLSSession {
 			else {
 				throw TwoMLSError.rekeyProposalRejected
 			}
+			// Outside the id-check do/catch below: a capability-less leaf
+			// throws its own distinct `.leafCapabilityUnadvertised`, never
+			// folded into `.rekeyProposalRejected`.
+			try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+				leafNode, codepoints: codepoints)
 			// No AppBinding leaf-advert gate here (contrast
 			// `validateOfferedUpdate`'s classical-side one): PQ halves carry
 			// NO binding (rule 8, group-rules.md:71-72), so the

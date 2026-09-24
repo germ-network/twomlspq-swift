@@ -187,6 +187,7 @@ says so.
 | Reciprocal A.5 opened before the peer's own A.5 has landed | never, ourselves — see C2 | never | C2 |
 | Upd′ authenticated data | absent, or equal to the leaf's new id; any other value is rejected | deployed-compatible: C1; correct: never sent | C1 |
 | An own leaf (any group, any cause — a rotation, a born-dedicated acceptor's recv leaf, or a migrated session's stored key set) presenting an id other than the current canonical principal | n/a (own-leaf only) | catches up via that group's own `pending[current canonical id]`, once such a key is held | book `group-rules.md:143-158` rule 4 |
+| A peer leaf that does not advertise `APQInfo` (`0xF0A1`) and `AppDataUpdate` (`0x0008`) | rejected (`leafCapabilityUnadvertised`) at offer approval and fold, at establishment and A.3 founding and joins, at A.5 respond, and at the migration mint. Known gap: not yet checked on the path leaf of a peer's commit applied to a receive group | our leaves always advertise both | book `wire-format.md:302-304` |
 | A PQ leaf presenting a credential evicted from the history window | accepted as a move's predecessor while any live PQ leaf still presents it; pinned while presented, retired once no live PQ leaf presents it any longer; a migrated session's pins are derived at the mint (§4) rather than carried over from the deployed engine's own pins | same | book `group-rules.md:152-154` rule 4 |
 
 ## 4. What we do only for compatibility with the deployed Rust engine

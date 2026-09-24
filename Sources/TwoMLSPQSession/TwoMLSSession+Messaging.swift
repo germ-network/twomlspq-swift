@@ -786,6 +786,8 @@ extension TwoMLSSession {
 		try verifyAppBinding(groupB.classical, expected: ownAppBinding)
 		try verifyPQHalfUnbound(groupB.pq)
 		let creatorLeaf = try Self.joinedCreatorLeaf(of: groupB.classical)
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			creatorLeaf, codepoints: codepoints)
 		if ownAppBinding != nil {
 			try ensureAppBindingCreatorLeafAdvert(creatorLeaf)
 		}
