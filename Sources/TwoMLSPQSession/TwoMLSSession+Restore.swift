@@ -33,11 +33,12 @@ extension TwoMLSSession {
 	///    epochs and key-set fingerprints alike — must already agree, else
 	///    the Core is stale relative to a PQ round the Checkpoint alone
 	///    witnessed.
-	/// 6. rebuild every group from its snapshot (combiner PSK stores start
-	///    empty — a live `apq_psk`/cross-party PSK is already folded into
-	///    the epoch secrets that referenced it; `sendCrossPSKLedger`, itself
-	///    restored below, is what the live commit paths re-inject from, same
-	///    as they always do).
+	/// 6. require every group the winner's recorded state implies
+	///    (`validateGroupPresence`), then rebuild every group from its
+	///    snapshot (combiner PSK stores start empty — a live
+	///    `apq_psk`/cross-party PSK is already folded into the epoch secrets
+	///    that referenced it; `sendCrossPSKLedger`, itself restored below, is
+	///    what the live commit paths re-inject from, same as they always do).
 	/// 7. re-verify each rebuilt pair's static `APQInfo` identity fields
 	///    (partner group ids, mode, suite pair) — NOT the epoch-attestation
 	///    fields `CombinerGroup.verifyPair()`/`APQGroup.verify*Deferred*`
@@ -73,6 +74,7 @@ extension TwoMLSSession {
 		}
 
 		try validateDecodeInvariants(winner)
+		try validateGroupPresence(winner)
 		return try buildSession(
 			from: winner, classicalProvider: classicalProvider, pqProvider: pqProvider)
 	}
@@ -290,6 +292,46 @@ extension TwoMLSSession {
 		let covered =
 			Set(sequence.history).union(sequence.pinned).union(sequence.authorizedNext)
 		guard presented.isSubset(of: covered) else {
+			throw TwoMLSError.archiveInvalid
+		}
+	}
+
+	// MARK: - Step 6: group presence
+
+	/// Group_A (the initiator's send, the responder's recv) is a full pair
+	/// from construction. Group_B's classical half is the responder's send
+	/// from construction but the initiator's recv only from its join, and its
+	/// PQ half exists only once §A.3 founds (responder) or joins (initiator)
+	/// it. So exactly two absences are legitimate:
+	///  - a pre-join initiator's recv group — the one state whose archive
+	///    still carries the classical init secret (`IdentityArchive`), and
+	///    which cannot have begun §A.3;
+	///  - Group_B's PQ half before §A.3 reaches that side — required once
+	///    any field names it: an export watermark, an owed bind (a commit on
+	///    the send PQ half), or an inflight round that runs on it.
+	/// PQ presence reads the manifest, which a Core carries too;
+	/// `verifyManifestMatchesRebuiltGroups` ties it to the rebuilt groups.
+	private static func validateGroupPresence(_ body: SessionArchive) throws {
+		let preJoin = body.initiated && body.identity.classicalInitSecretKey != nil
+		var needsRecvGroup = !preJoin
+		var needsSendPQ =
+			body.initiated || body.owedBind != nil || body.lastSendPQExported != nil
+		var needsRecvPQ = !body.initiated || body.lastCrossInjectedPQ != nil
+		switch body.pqInflight {
+		case .bootstrapInitiated:
+			needsRecvGroup = true
+		case .bootstrapResponded, .initiating, .rekeyResponded:
+			needsSendPQ = true
+		case .responding, .rekeyInitiated:
+			needsRecvPQ = true
+		case nil:
+			break
+		}
+		guard body.sendGroup != nil,
+			!needsRecvGroup || body.recvGroup != nil,
+			!needsSendPQ || body.sendPQEpoch != nil,
+			!needsRecvPQ || body.recvPQEpoch != nil
+		else {
 			throw TwoMLSError.archiveInvalid
 		}
 	}
@@ -534,12 +576,15 @@ extension TwoMLSSession {
 	/// through a bug upstream of `restore` or a tampered-but-otherwise-valid
 	/// archive) can't silently steer the reconcile decision without ever
 	/// being caught. `Optional<UInt64>` equality covers "claims a half that
-	/// isn't there" and "omits a half that is" alike.
+	/// isn't there" and "omits a half that is" alike. The classical group
+	/// ids step 3 compares get the same cross-check.
 	private static func verifyManifestMatchesRebuiltGroups(
 		_ body: SessionArchive, sendGroup: APQGroup?, recvGroup: APQGroup?
 	) throws {
 		guard body.sendPQEpoch == sendGroup?.pq?.context.epoch,
-			body.recvPQEpoch == recvGroup?.pq?.context.epoch
+			body.recvPQEpoch == recvGroup?.pq?.context.epoch,
+			body.sendClassicalGroupID == sendGroup?.classical.context.groupID,
+			body.recvClassicalGroupID == recvGroup?.classical.context.groupID
 		else {
 			throw TwoMLSError.archiveInvalid
 		}
@@ -572,17 +617,18 @@ extension TwoMLSSession {
 		}
 	}
 
-	/// Group_A's shape: a `CombinerGroup`-established full pair. A Core-kind
-	/// entry (or a pre-splice Core half) never carries `pq` — by the time
-	/// this runs, reconcile has already spliced it in from the Checkpoint,
-	/// so its absence here is a genuine corruption, not a normal Core
-	/// omission.
+	/// Group_A's shape: a `CombinerGroup`-established full pair, present on
+	/// both sides from construction. A Core-kind entry (or a pre-splice Core
+	/// half) never carries `pq` — by the time this runs, reconcile has
+	/// already spliced it in from the Checkpoint, so its absence here is a
+	/// genuine corruption, not a normal Core omission.
 	private static func restoreStandardPair(
 		_ entry: GroupEntry?, classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider
-	) throws -> APQGroup? {
-		guard let entry else { return nil }
-		guard let pqSnapshot = entry.pq else { throw TwoMLSError.archiveInvalid }
+	) throws -> APQGroup {
+		guard let entry, let pqSnapshot = entry.pq else {
+			throw TwoMLSError.archiveInvalid
+		}
 		let classical = try MLS.RFC9420.Group.restore(
 			from: entry.classical, classicalProvider)
 		let pq = try MLS.RFC9420.Group.restore(from: pqSnapshot, pqProvider)
@@ -593,7 +639,8 @@ extension TwoMLSSession {
 	}
 
 	/// Group_B's shape: classical-only until the §A.3 bootstrap founds its
-	/// PQ half out of band (never via `CombinerGroup`).
+	/// PQ half out of band (never via `CombinerGroup`). `nil` only for a
+	/// pre-join initiator's recv group (`validateGroupPresence`).
 	private static func restoreDeferredPair(
 		_ entry: GroupEntry?, classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider
