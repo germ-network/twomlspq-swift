@@ -10,20 +10,15 @@ import SecretBytes
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
 	/// Alice's side of establishment, layered over the identity-based
-	/// primitive below: mint a fresh Group_A leaf bundle under `principal`'s
-	/// per-half signing keys (book concepts.md's credential-scoped signer —
-	/// the classical leaf signs under the classical key, the PQ leaf under the
-	/// PQ key) and delegate.
+	/// primitive below: mint a fresh `TwoMLSIdentity` under `principal` (book
+	/// concepts.md's credential-scoped signer) and delegate.
 	public static func initiate(
 		principal: Principal,
 		their: CombinerKeyPackage,
 		appBinding: Data? = nil
 	) throws -> EstablishResult {
 		let identity = try TwoMLSIdentity.generate(
-			clientID: principal.clientID, signingKey: principal.signingKey,
-			signatureKey: principal.signatureKey,
-			pqSigningKey: principal.pqSigningKey,
-			pqSignatureKey: principal.pqSignatureKey,
+			clientID: principal.clientID,
 			classicalProvider: principal.classicalProvider,
 			pqProvider: principal.pqProvider)
 		return try initiate(
@@ -140,11 +135,21 @@ extension TwoMLSSession {
 			t: try welcome.tWelcome.mlsEncoded(), pq: try welcome.pqWelcome.mlsEncoded()
 		)
 
-		// Mint the §A.3 bootstrap KeyPackage KP′ now: a fresh leaf+init
-		// keypair distinct from `identity.keyPackage.pq` (Alice's leaf IN
-		// Group_A) — what Bob Adds into the new Group_B.pq. Its commitment
-		// `H(KP′)` hashes the MLSMessage-wrapped bytes (§11 #7).
-		let bootstrap = try identity.freshPQKeyPackage(pqProvider: pqProvider)
+		// KP′ IS `identity`'s own PQ half now (Group_A's PQ leaf is the
+		// fresh `founding.pq` leaf above, never `identity.keyPackage.pq`) —
+		// its commitment `H(KP′)` hashes the MLSMessage-wrapped bytes (§11
+		// #7). Captured before `clearingInitSecrets` below drops the
+		// session-identity copy of the PQ init secret; `bootstrapKPSecret`
+		// keeps its own, independent copy, still live for `pqBootstrapJoin`
+		// to spend later.
+		guard let bootstrapInitSecretKey = identity.pqInitSecretKey else {
+			throw TwoMLSError.sessionNotReady
+		}
+		let bootstrap = (
+			leafSecretKey: identity.pqLeafSecretKey,
+			initSecretKey: bootstrapInitSecretKey,
+			keyPackage: identity.keyPackage.pq
+		)
 
 		// `identity.pqInitSecretKey` founded (not joined) `groupA`'s PQ half
 		// above, and is never read again by the initiator — clear it before

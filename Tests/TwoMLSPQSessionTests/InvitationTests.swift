@@ -620,4 +620,68 @@ final class InvitationTests: XCTestCase {
 		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
 		XCTAssertEqual(decrypted.queuedProposal.context, restoredBob.proposalContext())
 	}
+
+	// MARK: - D1: a Principal holds no key of its own
+
+	/// A `Principal` mints no key of its own: every `TwoMLSIdentity` it
+	/// produces gets its own fresh pair per half. Two invitations from ONE
+	/// principal carry four pairwise-distinct KP-half keys (and each
+	/// invitation's own classical half is distinct from its own PQ half);
+	/// two `initiate(principal:)` sessions from that same principal share no
+	/// own-leaf key either.
+	func testInvitationsFromOnePrincipalShareNoKey() throws {
+		let principal = try makePrincipal("carol")
+
+		let (firstInvitation, _) = try principal.generateInvitation(lastResort: false)
+		let (secondInvitation, _) = try principal.generateInvitation(lastResort: false)
+		let firstKP = try XCTUnwrap(firstInvitation.combinerKeyPackage)
+		let secondKP = try XCTUnwrap(secondInvitation.combinerKeyPackage)
+
+		let keys = [
+			firstKP.classical.leafNode.signatureKey.data,
+			firstKP.pq.leafNode.signatureKey.data,
+			secondKP.classical.leafNode.signatureKey.data,
+			secondKP.pq.leafNode.signatureKey.data,
+		]
+		XCTAssertEqual(Set(keys).count, keys.count)
+
+		let bobPrincipal = try makePrincipal("bob-for-carol")
+		var (bobInvitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		let firstSession = try TwoMLSSession.initiate(
+			principal: principal, their: try XCTUnwrap(bobInvitation.combinerKeyPackage)
+		)
+		_ = try bobInvitation.receive(
+			welcome: firstSession.welcome,
+			theirClassicalKeyPackage: firstSession.session.identity.keyPackage
+				.classical,
+			bootstrapKPCommitment: try firstSession.session.bootstrapKPCommitment(),
+			spawnToken: freshSpawnToken())
+
+		var (bobInvitation2, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		let secondSession = try TwoMLSSession.initiate(
+			principal: principal,
+			their: try XCTUnwrap(bobInvitation2.combinerKeyPackage))
+		_ = try bobInvitation2.receive(
+			welcome: secondSession.welcome,
+			theirClassicalKeyPackage: secondSession.session.identity.keyPackage
+				.classical,
+			bootstrapKPCommitment: try secondSession.session.bootstrapKPCommitment(),
+			spawnToken: freshSpawnToken())
+
+		let firstOwnKeys = [
+			try XCTUnwrap(firstSession.session.leafKeys.sendClassical.current)
+				.signatureKey
+				.data,
+			try XCTUnwrap(firstSession.session.leafKeys.sendPQ.current).signatureKey
+				.data,
+		]
+		let secondOwnKeys = [
+			try XCTUnwrap(secondSession.session.leafKeys.sendClassical.current)
+				.signatureKey
+				.data,
+			try XCTUnwrap(secondSession.session.leafKeys.sendPQ.current).signatureKey
+				.data,
+		]
+		XCTAssertTrue(Set(firstOwnKeys).isDisjoint(with: Set(secondOwnKeys)))
+	}
 }

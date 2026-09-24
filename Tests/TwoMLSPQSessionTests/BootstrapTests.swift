@@ -813,4 +813,51 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.processIncomingDecrypted(frame)
 	}
+
+	// MARK: - D1: KP′ is the identity's own PQ half
+
+	/// KP′ is `identity.keyPackage.pq` itself, not a separately minted KP —
+	/// survives restore, and once Alice joins Group_B.pq off it at §A.3,
+	/// recv-PQ presents exactly that key.
+	func testKPPrimeIsTheIdentityPQHalf() throws {
+		let aliceIdentity = try SessionTestSupport.identity("kpprime-alice")
+		let bobIdentity = try SessionTestSupport.identity("kpprime-bob")
+		let initiated = try TwoMLSSession.initiate(
+			identity: aliceIdentity, their: bobIdentity.keyPackage,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		let bootstrapKP = try XCTUnwrap(initiated.session.bootstrapKPSecret?.keyPackage)
+		XCTAssertEqual(bootstrapKP, aliceIdentity.keyPackage.pq)
+
+		let checkpoint = try initiated.session.makeSessionArchive(kind: .checkpoint)
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: checkpoint,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertEqual(restored.bootstrapKPSecret?.keyPackage, aliceIdentity.keyPackage.pq)
+
+		var alice = initiated.session
+		let received = try TwoMLSSession.receive(
+			identity: bobIdentity, welcome: initiated.welcome,
+			theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var bob = received.session
+		_ = try bob.prepareToEncrypt()
+		let hello = try bob.encrypt(Data("hello".utf8)).frame
+		_ = try alice.processIncomingDecrypted(hello)
+
+		let kpFrame = try alice.pqBootstrapBegin().frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
+
+		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.recvGroup?.pq))
+		XCTAssertEqual(
+			recvPQLeaf.signatureKey, aliceIdentity.keyPackage.pq.leafNode.signatureKey)
+		XCTAssertEqual(
+			alice.leafKeys.recvPQ.current?.signatureKey,
+			aliceIdentity.keyPackage.pq.leafNode.signatureKey)
+	}
 }

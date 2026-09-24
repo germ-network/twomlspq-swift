@@ -25,14 +25,19 @@ typealias FoundingLeaf = (
 	leafNode: MLS.RFC9420.LeafNode, leafSecretKey: MLS.HpkeSecretKey, key: LeafKey
 )
 
-/// A party's principal: TWO independent Ed25519 signing keypairs — one per
-/// half (`signingKey`/`signatureKey` for the classical leaf,
-/// `pqSigningKey`/`pqSignatureKey` for the PQ leaf; `0xFDEA` forwards
-/// signing to the same Ed25519 primitive, it is confidentiality-only, but
-/// the two halves never share a key) — plus a per-half HPKE leaf/init
-/// keypair, and the two already-signed `KeyPackage`s built from them.
-/// Mirrors a deployed Rust `CombinerClient`, which likewise mints and holds
-/// two independent signing pairs per principal.
+/// One combiner KeyPackage's private material: TWO independent Ed25519
+/// signing keypairs, one per half (`signingKey`/`signatureKey` for the
+/// classical half, `pqSigningKey`/`pqSignatureKey` for the PQ half; `0xFDEA`
+/// forwards signing to the same Ed25519 primitive, it is
+/// confidentiality-only, but the two halves never share a key) — plus a
+/// per-half HPKE leaf/init keypair, and the two already-signed `KeyPackage`s
+/// built from them. Each key is minted fresh for THIS bundle and lands only
+/// in the one group that half joins: the classical half's key seeds
+/// recv-classical (its return KP), the PQ half's seeds recv-PQ (as KP′) —
+/// no group is FOUNDED on either (`TwoMLSIdentity.mintFoundingLeaf` mints
+/// those separately). `Principal` holds no signing key of its own: every
+/// `TwoMLSIdentity` it mints gets its own two fresh per-half keys, mirroring
+/// a deployed Rust `CombinerClient`'s own per-`KeyPackage` signing pairs.
 ///
 /// The two init secrets are join-only: each is read exactly once, to join
 /// the group its own `KeyPackage` was added to (never to found one — that
@@ -49,6 +54,12 @@ typealias FoundingLeaf = (
 /// still live (not yet spent by any join), and it IS archived with them
 /// (`includeInitSecrets: true`) — they are exactly what lets a restored
 /// invitation `receive` a welcome at all.
+///
+/// KP′ is `keyPackage.pq` itself, not a separate mint: `initiate` reads
+/// `pqLeafSecretKey`/`pqInitSecretKey` straight off this bundle into
+/// `bootstrapKPSecret`, so — until the §A.3 join spends it —
+/// `bootstrapKPSecret.leafSecretKey` and `pqLeafSecretKey` are the SAME
+/// secret (harmless: both name the one leaf KP′ actually is).
 @available(iOS 26, macOS 26, *)
 public struct TwoMLSIdentity: Sendable {
 	public let clientID: Data
@@ -206,12 +217,11 @@ public struct TwoMLSIdentity: Sendable {
 
 	/// Mint a fresh combiner key-package bundle — fresh leaf/init HPKE
 	/// secrets, fresh classical+PQ `KeyPackage`s — signed under two ALREADY
-	/// existing, independent per-half signing identities (classical KP under
-	/// `signingKey`/`signatureKey`, PQ KP under `pqSigningKey`/
-	/// `pqSignatureKey`). This is the shape `Principal` needs (book
-	/// concepts.md: "credential-scoped signer"): every KP or session leaf it
-	/// mints shares its two per-half keys, rather than each getting its own.
-	public static func generate(
+	/// existing, independent per-half signing identities. Factored out of
+	/// the public keyless `generate` below, which is the only caller: every
+	/// `TwoMLSIdentity` this module mints gets its own two fresh per-half
+	/// keys, never a caller-supplied pair.
+	private static func generate(
 		clientID: Data,
 		signingKey: MLS.SignatureSecretKey,
 		signatureKey: MLS.SignaturePublicKey,
@@ -254,10 +264,10 @@ public struct TwoMLSIdentity: Sendable {
 
 	/// Generate a fresh, standalone principal identity: two fresh, independent
 	/// signing keypairs (classical + PQ) plus the signing-key-scoped
-	/// `generate` above's fresh KP bundle. Used directly by tests/internals
-	/// that need no enclosing `Principal`; `Principal` itself always goes
-	/// through the overload above, so every KP/leaf it mints shares its two
-	/// per-half keys.
+	/// `generate` above's fresh KP bundle. This is the only mint path:
+	/// `Principal.generate`/`generateInvitation` call it directly, so every
+	/// `TwoMLSIdentity` — every KP/leaf it mints — gets its own two fresh
+	/// per-half keys, shared with no other bundle.
 	public static func generate(
 		clientID: Data,
 		classicalProvider: any MLS.CipherSuiteProvider,
@@ -269,24 +279,5 @@ public struct TwoMLSIdentity: Sendable {
 			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
 			pqSigningKey: pqSigningKey, pqSignatureKey: pqSignatureKey,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
-	}
-
-	/// Mint a fresh PQ `KeyPackage` KP′ — a brand-new leaf+init HPKE keypair
-	/// (suite `0xFDEA`), signed with `self.pqSigningKey`/`pqSignatureKey` and
-	/// `leafCapabilities` — distinct from `keyPackage.pq` (this identity's own
-	/// leaf IN Group_A). KP′ is what the peer Adds into the new Group_B.pq at
-	/// §A.3 bootstrap.
-	public func freshPQKeyPackage(pqProvider: any MLS.CipherSuiteProvider) throws -> (
-		keyPackage: MLS.RFC9420.KeyPackage, leafSecretKey: MLS.HpkeSecretKey,
-		initSecretKey: MLS.HpkeSecretKey
-	) {
-		let (leafSecretKey, leafPublicKey) = try pqProvider.hpkeGenerateKeyPair()
-		let (initSecretKey, initPublicKey) = try pqProvider.hpkeGenerateKeyPair()
-		let keyPackage = try Self.signedKeyPackage(
-			cipherSuite: MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID),
-			provider: pqProvider, clientID: clientID, signingKey: pqSigningKey,
-			signatureKey: pqSignatureKey, leafPublicKey: leafPublicKey,
-			initPublicKey: initPublicKey)
-		return (keyPackage, leafSecretKey, initSecretKey)
 	}
 }
