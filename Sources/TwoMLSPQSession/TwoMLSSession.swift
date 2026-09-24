@@ -54,12 +54,13 @@ public struct PrepareResult: Sendable {
 }
 
 /// Which side-band round is outstanding on this session, if any — the §A.3
-/// bootstrap (`pqBootstrapBegin`/`pqBootstrapRespond`, cleared by
-/// `pqBootstrapJoin`/`applyBind`), the §A.4 ratchet (`stageRatchet`/
-/// `pqRatchetRespond`, cleared by `pqRatchetBind`/`applyBind`), or the §A.5
-/// mechanical re-key (`pqRekeyBegin`/`pqRekeyRespond`, cleared by
-/// `pqRekeyApply`/`applyBind`). Payloaded, so it is no longer `Equatable`-
-/// `=='able — sites that used to compare against a bare case now pattern-match.
+/// bootstrap (registered at `initiate` for every initiator, or on the first
+/// `pqBootstrapRespond` for the acceptor; cleared by `pqBootstrapJoin`/
+/// `applyBind`), the §A.4 ratchet (`stageRatchet`/`pqRatchetRespond`,
+/// cleared by `pqRatchetBind`/`applyBind`), or the §A.5 mechanical re-key
+/// (`pqRekeyBegin`/`pqRekeyRespond`, cleared by `pqRekeyApply`/`applyBind`).
+/// Payloaded, so it is no longer `Equatable`- `=='able — sites that used to
+/// compare against a bare case now pattern-match.
 enum PQInflight: Sendable {
 	case bootstrapInitiated
 	case bootstrapResponded
