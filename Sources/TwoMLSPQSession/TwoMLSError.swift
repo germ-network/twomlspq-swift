@@ -206,7 +206,9 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	case unknownIdentity
 	/// A credential succession failed the Authentication Service's successor
 	/// check (RFC 9420 §5.3.1): the new identifier is not a valid successor
-	/// to the old one under either party's sequence. Fail-closed. No
+	/// to the old one under the moved leaf's OWN party's sequence — `mine`
+	/// for the committer's own leaf, `theirs` for the peer's, never checked
+	/// against the other party's. Fail-closed. No
 	/// `.externalSender` case here: the profile already rejects every
 	/// external sender with `unsupportedSender` before a credential ever
 	/// reaches this AS (this protocol is strictly 2-party and P2P, with no
@@ -226,9 +228,15 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// at establishment: at `receive`, the caller-supplied
 	/// `theirClassicalKeyPackage` names a different party than the creator leaf
 	/// the Welcome actually joined; at `initiate`, the peer's classical and PQ
-	/// `KeyPackage` halves present different identities. Rust's
-	/// `RemoteIdentityMismatch`. Distinct from `.unknownIdentity` (the AS's
-	/// membership-admission check) — this is the establishment identity binding.
+	/// `KeyPackage` halves present different identities. Also thrown when the
+	/// named peer is this device's OWN identity — Germ AS policy (two
+	/// distinct principals), not RFC 9420- or book-mandated: `initiate`
+	/// rejects "their" naming the initiator's own id before any group is
+	/// built; `receive` rejects a joined Group_A creator whose credential
+	/// names the receiving identity's own id, read off the joined tree
+	/// itself, not a claim. Rust's `RemoteIdentityMismatch`. Distinct from
+	/// `.unknownIdentity` (the AS's membership-admission check) — this is
+	/// the establishment identity binding.
 	case remoteIdentityMismatch
 	/// `commit` was asked to canonicalize a credential already retired for the
 	/// party — still in its `history` (but not the current head) or `pinned` — a

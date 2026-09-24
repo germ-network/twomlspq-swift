@@ -758,9 +758,10 @@ extension TwoMLSSession {
 				orThrow: .invalidFoldEffects)
 			// AS consult point 3 (slice 6): every `.credentialReplaced` effect
 			// this commit carries — my own leaf catching up, and/or the
-			// peer's own-leaf catch-up — validated BEFORE the group advances.
-			try auth.adjudicate(effects)
+			// peer's own-leaf catch-up — validated BEFORE the group advances,
+			// each against ITS OWN party (`adjudicate`'s `myLeaf`).
 			let myLeaf = recv.classical.myLeafIndex
+			try auth.adjudicate(effects, myLeaf: myLeaf)
 			let advanced = try pending.apply(onto: recv.classical)
 			recv.classical = advanced.group
 			try TwoPartyRules.ensureTwoParty(recv.classical)
@@ -1153,9 +1154,10 @@ extension TwoMLSSession {
 				classicalEffects, foldedPeerUpdate: foldedPeerUpdate)
 			// AS consult point 3 (slice 6): the PQ half never carries a
 			// `.credentialReplaced` (`validateBindPQEffects` stays strict),
-			// so only the classical half's effects need adjudicating.
-			try auth.adjudicate(classicalEffects)
+			// so only the classical half's effects need adjudicating, each
+			// against ITS OWN party (`adjudicate`'s `myLeaf`).
 			let myLeaf = recv.classical.myLeafIndex
+			try auth.adjudicate(classicalEffects, myLeaf: myLeaf)
 			let tTransition = try tPending.apply(onto: recv.classical)
 			recv.classical = tTransition.group
 			// CAPTURE-ON-ENTRY (+Attachment.swift): ledger the recv group's

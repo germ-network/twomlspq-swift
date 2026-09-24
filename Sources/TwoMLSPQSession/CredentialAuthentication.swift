@@ -273,11 +273,6 @@ struct AuthCore: Sendable, Equatable, Codable {
 		mine.knownIDs.contains(id) || theirs.knownIDs.contains(id)
 	}
 
-	func validSuccessor(pred: Data, succ: Data) -> Bool {
-		pred == succ || mine.validSuccessor(pred: pred, succ: succ)
-			|| theirs.validSuccessor(pred: pred, succ: succ)
-	}
-
 	/// This `AuthCore` with both sequences' `pinned` recomputed to the
 	/// normal form (`PartySequence.pins(forPresented:)`) for the given
 	/// live-PQ-presented sets — `TwoMLSSession.pqPinnedAuth()`'s pure
@@ -316,15 +311,19 @@ struct AuthCore: Sendable, Equatable, Codable {
 	/// RFC 9420 §5.3.1: "the AS MUST also verify that the set of presented
 	/// identifiers in the new credential is valid as a successor to the set
 	/// of presented identifiers in the old credential, according to the
-	/// application's policy." `validSuccessor` above is that policy (TwoMLS
-	/// design, not RFC-defined). Fail-closed: an unsupported credential
-	/// throws rather than passing.
+	/// application's policy." Checked against `party` — the SPECIFIC
+	/// sequence whose leaf this replacement effect names (`adjudicate`'s own
+	/// `myLeaf` split), never both sequences OR'd together: a replacement on
+	/// one party's leaf must be judged against that party's OWN history/
+	/// authorization, not the other party's. Fail-closed: an unsupported
+	/// credential throws rather than passing.
 	func validateSuccession(
-		old: MLS.RFC9420.CredentialPresentation, new: MLS.RFC9420.CredentialPresentation
+		old: MLS.RFC9420.CredentialPresentation, new: MLS.RFC9420.CredentialPresentation,
+		party: PartySequence
 	) throws {
 		let oldID = try basicIdentifier(old.credential)
 		let newID = try basicIdentifier(new.credential)
-		guard validSuccessor(pred: oldID, succ: newID) else {
+		guard party.validSuccessor(pred: oldID, succ: newID) else {
 			throw TwoMLSError.invalidSuccession
 		}
 	}
@@ -375,13 +374,14 @@ struct AuthCore: Sendable, Equatable, Codable {
 	/// every external sender with `unsupportedSender` before any credential
 	/// reaches this AS (this protocol is strictly 2-party and P2P — there is
 	/// no external-sender path to begin with).
-	func adjudicate(_ effects: MLS.RFC9420.CommitEffects) throws {
+	func adjudicate(_ effects: MLS.RFC9420.CommitEffects, myLeaf: MLS.LeafIndex) throws {
 		for event in effects.events {
 			switch event {
 			case .added(_, let presentation):
 				try validateMember(presentation)
-			case .credentialReplaced(_, let old, let new):
-				try validateSuccession(old: old, new: new)
+			case .credentialReplaced(let leaf, let old, let new):
+				try validateSuccession(
+					old: old, new: new, party: leaf == myLeaf ? mine : theirs)
 			case .epochAdvanced, .updated, .removed, .membershipRemoved, .appDataUpdate,
 				.customProposal:
 				break
