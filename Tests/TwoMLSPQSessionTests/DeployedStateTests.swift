@@ -179,31 +179,28 @@ final class DeployedStateTests: XCTestCase {
 		let round = try foldedButUnframedOwnOfferRound(proposer: &bob, approver: &alice)
 		let targetRef = round.ref
 
-		// Build decoys against bob's own (still pre-round) recv group until
-		// one sorts AFTER the target ref — so [decoy, target] is
-		// deliberately NOT already in ascending order, and only the real
-		// sort (not the array's own order) can make resolution work.
-		var decoyRef = Data()
-		var decoyProposal = Data()
-		var decoySecret = SecretBytes(randomByteCount: 32)
-		for _ in 0..<16 {
-			let candidate = try SessionTestSupport.knownSecretOwnOffer(in: bob)
-			decoyRef = candidate.ref
-			decoyProposal = candidate.bareProposal
-			decoySecret = candidate.leafSecret
-			if targetRef.lexicographicallyPrecedes(decoyRef) { break }
-		}
-		XCTAssertTrue(
-			targetRef.lexicographicallyPrecedes(decoyRef),
-			"a decoy ref sorting after the target should converge quickly")
-
-		let offers = [
-			MigratedOwnOffer(
-				ref: decoyRef, proposal: decoyProposal, leafSecret: decoySecret),
-			MigratedOwnOffer(
-				ref: targetRef, proposal: round.bareProposal,
-				leafSecret: SecretBytes(randomByteCount: 32)),
-		]
+		// Build a single decoy against bob's own (still pre-round) recv
+		// group, then place [decoy, target] in whichever order is the
+		// REVERSE of their actual ref sort — so the input array is
+		// deliberately NOT already in ascending order (by construction,
+		// not by chance: ref comparison isn't a fair coin, so looping for a
+		// decoy that happens to sort a particular way is flaky), and only
+		// the real sort (not the array's own order) can make resolution
+		// work.
+		let decoy = try SessionTestSupport.knownSecretOwnOffer(in: bob)
+		let decoyOffer = MigratedOwnOffer(
+			ref: decoy.ref, proposal: decoy.bareProposal, leafSecret: decoy.leafSecret)
+		let targetOffer = MigratedOwnOffer(
+			ref: targetRef, proposal: round.bareProposal,
+			leafSecret: SecretBytes(randomByteCount: 32))
+		let offers =
+			targetRef.lexicographicallyPrecedes(decoy.ref)
+			? [decoyOffer, targetOffer]
+			: [targetOffer, decoyOffer]
+		XCTAssertNotEqual(
+			offers.map(\.ref),
+			offers.map(\.ref).sorted(by: { $0.lexicographicallyPrecedes($1) }),
+			"input order must deliberately not already be ascending by ref")
 		let sorted = try OwnOfferWindow.canonicalOrder(offers)
 		let id = OwnOfferWindow.id(
 			epoch: round.epoch, groupID: round.groupID,
