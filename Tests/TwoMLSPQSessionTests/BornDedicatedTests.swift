@@ -279,6 +279,165 @@ final class BornDedicatedTests: XCTestCase {
 		XCTAssertFalse(alice.auth.theirs.pinned.contains(invitationClientID))
 	}
 
+	// MARK: - Accept 7 (self-driven): the own-arm gate
+
+	/// `fullyEstablishedDedicated()`, licensed and bootstrapped exactly as
+	/// `testBornDedicatedAcceptorRecvPQCatchesUpToDedicatedID` does, up to
+	/// the point bob holds the PQ turn with his recv-PQ leaf still
+	/// presenting the invitation id.
+	private func bobHoldingPQTurnWithRecvPQLaggingInvitationID() throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession, invitationClientID: Data,
+		dedicatedClientID: Data
+	) {
+		var (alice, bob, invitationClientID, dedicatedClientID, _) =
+			try fullyEstablishedDedicated()
+
+		_ = try bob.prepareToEncrypt()
+		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		let decrypted = try alice.processIncomingDecrypted(bobFrame)
+		_ = try alice.queueProposal(digest: decrypted.queuedProposal.digest)
+		_ = try alice.prepareToEncrypt()
+		let aliceFoldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
+		_ = try bob.processIncomingDecrypted(aliceFoldFrame)
+
+		_ = try bob.prepareToEncrypt()
+		let bobFrame2 = try bob.encrypt(Data("bob-hello-2".utf8)).frame
+		_ = try alice.processIncomingDecrypted(bobFrame2)
+
+		let begin = try alice.pqBootstrapBegin()
+		let respond = try bob.pqBootstrapRespond(begin.frame)
+		_ = try alice.pqBootstrapJoin(respond.frame)
+		XCTAssertTrue(bob.isFullyEstablished)
+
+		_ = try alice.prepareToEncrypt()
+		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
+		_ = try bob.processIncomingDecrypted(boundFrame)
+		XCTAssertTrue(bob.myPQTurn)
+
+		let recvPQ = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(recvPQ.credential), invitationClientID)
+
+		return (alice, bob, invitationClientID, dedicatedClientID)
+	}
+
+	/// Even though bob's own recv-PQ leaf lags, his own catch-up A.5 opens
+	/// only once the peer has folded the TARGET his `Upd′` would carry —
+	/// observed as his own leaf in `recvGroup.classical` already presenting
+	/// `mine.current`. Simulated here with a further bookkeeping-only
+	/// classical advance (`auth.mine.commit`, no real peer fold) past the
+	/// id alice's classical view of bob actually presents — the same gap a
+	/// peer that never folds a catch-up offer leaves forever. Bob's turn
+	/// keeps ratcheting A.4 instead of stalling on an A.5 he can never
+	/// complete. Kills: removing the own-arm gate.
+	func testBornDedicatedAcceptorKeepsRatchetingA4UntilThePeerFoldsItsTarget() throws {
+		var (_, bob, _, _) = try bobHoldingPQTurnWithRecvPQLaggingInvitationID()
+
+		let unfoldedID = Data("bob-not-yet-folded".utf8)
+		try bob.auth.mine.commit(unfoldedID)
+
+		_ = try bob.prepareToEncrypt()
+		XCTAssertNoThrow(try bob.encrypt(Data("msg".utf8)))
+		guard case .initiating = bob.pqInflight else {
+			XCTFail("expected a plain A.4 — the peer has not folded bob's target")
+			return
+		}
+	}
+
+	/// The literal shape of the gap the own-arm gate closes: a peer that
+	/// never folds bob's catch-up offer at all (no `queueProposal`, ever),
+	/// not just one whose classical view has fallen bookkeeping-behind.
+	/// Bob is fully established and holds the PQ turn; his recv-classical
+	/// leaf still presents the invitation id (alice never folded), his
+	/// recv-PQ leaf also still presents the invitation id, and
+	/// `auth.mine.current` is already the dedicated id. Without the gate,
+	/// bob's own recv-PQ lag alone would open the A.5 — an `Upd′` a
+	/// non-folding peer refuses forever (its announced id is outside what
+	/// it has canonicalized), stalling the PQ ratchet where today it keeps
+	/// ratcheting A.4 for life. Kills: removing the own-arm gate.
+	func testBornDedicatedAcceptorNeverFoldedByPeerKeepsRatchetingA4() throws {
+		var (alice, bob, invitationClientID, dedicatedClientID, _) =
+			try fullyEstablishedDedicated()
+
+		_ = try bob.prepareToEncrypt()
+		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		_ = try alice.processIncomingDecrypted(bobFrame)
+		// alice's host never queues/folds bob's catch-up offer.
+		_ = try alice.prepareToEncrypt()
+		let aliceFrame = try alice.encrypt(Data("alice-no-fold".utf8)).frame
+		_ = try bob.processIncomingDecrypted(aliceFrame)
+
+		_ = try bob.prepareToEncrypt()
+		let bobFrame2 = try bob.encrypt(Data("bob-hello-2".utf8)).frame
+		_ = try alice.processIncomingDecrypted(bobFrame2)
+
+		let begin = try alice.pqBootstrapBegin()
+		let respond = try bob.pqBootstrapRespond(begin.frame)
+		_ = try alice.pqBootstrapJoin(respond.frame)
+		XCTAssertTrue(bob.isFullyEstablished)
+
+		_ = try alice.prepareToEncrypt()
+		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
+		_ = try bob.processIncomingDecrypted(boundFrame)
+		XCTAssertTrue(bob.myPQTurn)
+
+		let recvPQ = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(recvPQ.credential), invitationClientID)
+		let recvClassical = try TwoMLSSession.ownLeaf(
+			of: XCTUnwrap(bob.recvGroup?.classical))
+		XCTAssertEqual(
+			try basicIdentifier(recvClassical.credential), invitationClientID,
+			"the peer never folded — bob's classical leaf still presents the invitation id"
+		)
+		XCTAssertEqual(bob.auth.mine.current, dedicatedClientID)
+
+		_ = try bob.prepareToEncrypt()
+		XCTAssertNoThrow(try bob.encrypt(Data("msg".utf8)))
+		guard case .initiating = bob.pqInflight else {
+			XCTFail(
+				"expected a plain A.4 — the peer has never folded bob's target; got \(String(describing: bob.pqInflight))"
+			)
+			return
+		}
+	}
+
+	/// The gate's other half: once the peer HAS folded the target — the
+	/// ordinary born-dedicated case, where alice's approval already
+	/// canonicalized bob to D — his self-driven catch-up opens for real,
+	/// with no host call, and the round completes exactly as the explicit
+	/// `pqRekeyBegin` case above does. Book: anomaly #2 "is healed once the
+	/// acceptor runs a conforming engine, whose own A.5 fires"
+	/// (`session-lifecycle.md`). Kills: an own-arm that never fires for a
+	/// born-dedicated acceptor.
+	func testBornDedicatedAcceptorSelfDrivesItsRecvPQCatchUp() throws {
+		var (alice, bob, _, dedicatedClientID) =
+			try bobHoldingPQTurnWithRecvPQLaggingInvitationID()
+
+		_ = try bob.prepareToEncrypt()
+		let selfDriven = try bob.encrypt(Data("msg".utf8))
+		XCTAssertEqual(selfDriven.update.kind, .checkpoint)
+		guard case .rekeyInitiated(let updBytes) = bob.pqInflight else {
+			XCTFail("expected the self-drive to stage `.rekeyInitiated`")
+			return
+		}
+		guard
+			case .publicMessage(let updPub) = try MLS.RFC9420.Message(
+				mlsEncoded: updBytes)
+		else {
+			XCTFail("expected a publicMessage-framed Upd′")
+			return
+		}
+		// C1: the deployed-compatible profile announces the handed-off id.
+		XCTAssertEqual(updPub.content.authenticatedData, dedicatedClientID)
+
+		let pending = try XCTUnwrap(bob.pqPendingOutbound())
+		let rekeyRespond = try alice.pqRekeyRespond(pending)
+		XCTAssertEqual(rekeyRespond.rotatedCredential, dedicatedClientID)
+
+		XCTAssertNoThrow(try bob.pqRekeyApply(rekeyRespond.frame))
+		let recvPQAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(recvPQAfter.credential), dedicatedClientID)
+	}
+
 	// MARK: - Accept 8: rotation still available post-born-dedicated
 
 	func testBobCanStillRotateAfterBornDedicated() throws {

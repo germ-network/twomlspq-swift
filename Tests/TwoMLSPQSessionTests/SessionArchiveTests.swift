@@ -991,6 +991,63 @@ final class SessionArchiveTests: XCTestCase {
 		XCTAssertEqual(try basicIdentifier(recvPQLeaf.credential), bobNewID)
 	}
 
+	/// The self-driven catch-up's own `encrypt` returns `.checkpoint`
+	/// (never `.core`) — restoring from that checkpoint (`core: nil`)
+	/// carries the parked round along, and an explicit `pqRekeyBegin()`
+	/// re-serves the IDENTICAL plaintext (AD included), same as an
+	/// explicitly-begun round would. The `.checkpoint` kind assertion
+	/// below is mutation-invisible on its own — the sticky upgrade already
+	/// produces it whenever `encrypt` would otherwise answer `.core`, so
+	/// this test's actual kill is downstream: restoring and re-serving
+	/// proves the archive really carries the self-staged round and its
+	/// `pending` key, not just the kind bit.
+	func testSelfDrivenCatchUpReturnsACheckpointThatRestoresTheParkedUpd() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let bobNewID = Data("bob-self-driven-archive".utf8)
+
+		_ = try bob.prepareToEncrypt(rotating: bobNewID)
+		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
+		if case .initiating = bob.pqInflight {
+			bob.pqInflight = nil
+			bob.pendingSideBand = nil
+		}
+		let offerDecrypted = try alice.processIncomingDecrypted(offerFrame)
+		try alice.queueProposal(digest: offerDecrypted.queuedProposal.digest)
+		let foldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
+		_ = try bob.processIncomingDecrypted(foldFrame)
+		XCTAssertEqual(bob.myPrincipalState, .sync(bobNewID))
+		XCTAssertTrue(bob.myPQTurn)
+
+		// The self-drive, not an explicit `pqRekeyBegin` call.
+		_ = try bob.prepareToEncrypt()
+		let selfDriven = try bob.encrypt(Data("self-driven".utf8))
+		XCTAssertEqual(selfDriven.update.kind, .checkpoint)
+		guard case .rekeyInitiated(let updBytes) = bob.pqInflight else {
+			return XCTFail("expected the self-drive to have staged `.rekeyInitiated`")
+		}
+
+		let opened = try sealAndOpen(selfDriven.update.archive)
+		var restoredBob = try TwoMLSSession.restore(
+			core: nil, checkpoint: opened,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		let reserved = try restoredBob.pqRekeyBegin()
+		guard case .rekeyInitiated(let reservedBytes) = restoredBob.pqInflight else {
+			return XCTFail(
+				"expected the restored session to still hold `.rekeyInitiated`")
+		}
+		XCTAssertEqual(reservedBytes, updBytes)
+
+		let commitFrame = try alice.pqRekeyRespond(reserved.frame).frame
+		_ = try restoredBob.pqRekeyApply(commitFrame)
+		let recvPQLeaf = try TwoMLSSession.ownLeaf(
+			of: try XCTUnwrap(restoredBob.recvGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(recvPQLeaf.credential), bobNewID)
+	}
+
 	// MARK: - Pin safety check (book group-rules.md rule 4)
 
 	/// A `pinned` id nobody presents — no live PQ leaf carries it and it is

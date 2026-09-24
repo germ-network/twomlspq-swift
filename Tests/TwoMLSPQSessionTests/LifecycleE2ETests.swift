@@ -600,6 +600,24 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTAssertEqual(alice.session.sendGroup?.pq?.context.epoch, 2)
 		XCTAssertEqual(bob.session.recvGroup?.pq?.context.epoch, 2)
 
+		// [6b] Bob is a born-dedicated acceptor: his recv-PQ leaf in
+		// Group_A.pq was founded at `initiate` off the invitation
+		// KeyPackage, so it still presents his invitation id even though
+		// alice's classical view of him already canonicalized to his
+		// dedicated one — his first post-A.3 PQ turn is his own catch-up,
+		// not a plain A.4.
+		let bobOpenKind = try bob.drivePQRoundToCompletion(responder: &alice)
+		XCTAssertEqual(bobOpenKind, .rekeyUpd)
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.session.recvGroup?.pq))
+					.credential),
+			dedicatedClientID)
+
+		// Hand the turn back to bob with one plain, uneventful A.4.
+		let aliceOpenKind = try alice.drivePQRoundToCompletion(responder: &bob)
+		XCTAssertEqual(aliceOpenKind, .ratchetEK)
+
 		// [7] §A.4 Bob-initiated: ratchets Group_B.pq (bob's send-PQ /
 		// alice's recv-PQ mirror) — Group_A.pq already moved by the A.3
 		// bind above.
@@ -832,17 +850,10 @@ final class LifecycleE2ETests: XCTestCase {
 		).signatureKey
 
 		// Book: the SESSION self-drives §A.5 — alice's own next PQ round
-		// should open as a re-key, carrying the new credential onto her
-		// recv-PQ leaf, with no host call. Drive whatever round actually
-		// opens (an A.4 ratchet today) to completion with the generic
-		// driver, which works unchanged for either shape.
+		// opens as a re-key, carrying the new credential onto her recv-PQ
+		// leaf, with no host call.
 		let openKind = try alice.drivePQRoundToCompletion(responder: &bob)
-
-		XCTExpectFailure(
-			"no self-driven A.5 once alice's recv-PQ leaf lags a rotation (protocol-flows.md:56)"
-		) {
-			XCTAssertEqual(openKind, .rekeyUpd)
-		}
+		XCTAssertEqual(openKind, .rekeyUpd)
 
 		// This round's own outcome (protocol-flows.md:696-708): unaffected
 		// by whatever round actually opened above, alice's send-PQ own
@@ -875,25 +886,21 @@ final class LifecycleE2ETests: XCTestCase {
 				of: try XCTUnwrap(alice.session.sendGroup?.pq)
 			).signatureKey)
 
-		try XCTExpectFailure(
-			"protocol-flows.md:56, :704-708 / D3: no A.5 credential catch-up after rotation"
-		) {
-			XCTAssertEqual(try basicIdentifier(aliceRecvPQLeaf.credential), alice2ID)
+		XCTAssertEqual(try basicIdentifier(aliceRecvPQLeaf.credential), alice2ID)
 
-			// Bob's own copy of the SAME group (Group_B.pq — his sendGroup,
-			// alice's recvGroup mirror): his view of alice's leaf must agree.
-			let bobsGroupBPQ = try XCTUnwrap(bob.session.sendGroup?.pq)
-			let aliceLeafEntry = try XCTUnwrap(
-				bobsGroupBPQ.tree.nonBlankLeaves().first {
-					$0.index != bobsGroupBPQ.myLeafIndex
-				})
-			let aliceLeafAtBob = try MLS.RFC9420.LeafNode(
-				mlsEncoded: aliceLeafEntry.record.encoded)
-			XCTAssertEqual(try basicIdentifier(aliceLeafAtBob.credential), alice2ID)
+		// Bob's own copy of the SAME group (Group_B.pq — his sendGroup,
+		// alice's recvGroup mirror): his view of alice's leaf must agree.
+		let bobsGroupBPQ = try XCTUnwrap(bob.session.sendGroup?.pq)
+		let aliceLeafEntry = try XCTUnwrap(
+			bobsGroupBPQ.tree.nonBlankLeaves().first {
+				$0.index != bobsGroupBPQ.myLeafIndex
+			})
+		let aliceLeafAtBob = try MLS.RFC9420.LeafNode(
+			mlsEncoded: aliceLeafEntry.record.encoded)
+		XCTAssertEqual(try basicIdentifier(aliceLeafAtBob.credential), alice2ID)
 
-			// D3: the catch-up mints a fresh key for THAT group only.
-			XCTAssertNotEqual(aliceRecvPQLeaf.signatureKey, aliceRecvPQKeyBeforeCatchup)
-		}
+		// D3: the catch-up mints a fresh key for THAT group only.
+		XCTAssertNotEqual(aliceRecvPQLeaf.signatureKey, aliceRecvPQKeyBeforeCatchup)
 
 		// [12] Idle invariants: the non-turn side never has anything
 		// parked; the turn side is nil until its next send, non-nil right

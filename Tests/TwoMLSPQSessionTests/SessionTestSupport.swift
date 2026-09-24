@@ -226,6 +226,47 @@ enum SessionTestSupport {
 			group.myLeafIndex.value
 		)
 	}
+
+	/// Drives whatever PQ round the turn-holder (`initiator`) currently
+	/// holds opens on its next send — an A.4 ratchet or an A.5 re-key,
+	/// dispatched by the parked leg's own shape (`pqInflight`, since
+	/// `pqPendingOutbound()` returns a header-sealed frame, not the raw
+	/// tagged one) — through the responder's reply and the initiator's
+	/// discharge, exactly as
+	/// `ReciprocalCatchUpConformanceTests.driveOneA4Round` does for the
+	/// A.4-only case. Returns the opening leg's own tag (`Frames.pqEKTag`
+	/// or `Frames.pqRekeyUpdTag`), so a caller can assert which round
+	/// actually opened.
+	@discardableResult
+	static func drivePQRound(
+		initiator: inout TwoMLSSession, responder: inout TwoMLSSession,
+		file: StaticString = #filePath, line: UInt = #line
+	) throws -> UInt8 {
+		_ = try initiator.prepareToEncrypt()
+		_ = try initiator.encrypt(Data("pq-round-probe".utf8))
+		let openFrame = try XCTUnwrap(initiator.pqPendingOutbound(), file: file, line: line)
+		let tag: UInt8
+		switch initiator.pqInflight {
+		case .some(.initiating):
+			tag = Frames.pqEKTag
+			let ctFrame = try responder.pqRatchetRespond(openFrame).frame
+			_ = try initiator.pqRatchetBind(ctFrame)
+		case .some(.rekeyInitiated):
+			tag = Frames.pqRekeyUpdTag
+			let commitFrame = try responder.pqRekeyRespond(openFrame).frame
+			_ = try initiator.pqRekeyApply(commitFrame)
+		default:
+			XCTFail(
+				"drivePQRound: unexpected pqInflight \(String(describing: initiator.pqInflight))",
+				file: file, line: line)
+			throw TwoMLSError.sessionNotReady
+		}
+		let discharge = try initiator.prepareToEncrypt()
+		XCTAssertTrue(discharge.didCommit, file: file, line: line)
+		let boundFrame = try initiator.encrypt(Data("pq-round-discharge".utf8)).frame
+		_ = try responder.processIncomingDecrypted(boundFrame, file: file, line: line)
+		return tag
+	}
 }
 
 /// Slice 11: `processIncoming` now returns the 4-case `IncomingResult`

@@ -818,8 +818,8 @@ public enum SessionMigration {
 			mode = .mintConverted
 		}
 		// Drop the dropped round's now-orphaned recv-PQ pending entry,
-		// UNLESS it is the rule-7 catch-up key a later self-drive change
-		// needs (`t == auth.mine.current` and the recv-PQ leaf still lags).
+		// UNLESS it is the rule-7 catch-up key a self-driven catch-up needs
+		// (`t == auth.mine.current` and the recv-PQ leaf still lags).
 		if let droppedRekeyTarget {
 			let mineCurrent = parts.auth.mine.history.last
 			let recvPQLags: Bool = {

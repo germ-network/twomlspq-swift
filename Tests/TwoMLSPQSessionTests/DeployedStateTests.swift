@@ -427,6 +427,68 @@ final class DeployedStateTests: XCTestCase {
 		XCTAssertNil(bob.pqInflight)
 	}
 
+	/// A pair where `bob` holds the PQ turn and his own recv-PQ leaf
+	/// genuinely lags his current canonical id, with the peer already
+	/// having folded it (his own leaf in `recvGroup.classical` — alice's
+	/// view of him — already presents the new id) — the ordinary trigger
+	/// fixture the tests below need, built with a real classical rotation
+	/// and fold rather than hand-set bookkeeping.
+	private func establishedWithBobsRecvPQLagging() throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession
+	) {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		XCTAssertTrue(bob.myPQTurn)
+		let bobNewID = Data("bob-lagging-recv-pq".utf8)
+		_ = try bob.prepareToEncrypt(rotating: bobNewID)
+		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
+		// Bob holds the PQ turn, so his own offer's `encrypt` self-drives
+		// an incidental A.4 (nothing lags yet — the rotation hasn't folded)
+		// — discard it so the tests below see a clean idle turn.
+		if case .initiating = bob.pqInflight {
+			bob.pqInflight = nil
+			bob.pendingSideBand = nil
+		}
+		let offerDecrypted = try alice.processIncomingDecrypted(offerFrame)
+		try alice.queueProposal(digest: offerDecrypted.queuedProposal.digest)
+		let foldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
+		_ = try bob.processIncomingDecrypted(foldFrame)
+		XCTAssertEqual(bob.myPrincipalState, .sync(bobNewID))
+		XCTAssertTrue(bob.myPQTurn)
+		return (alice, bob)
+	}
+
+	/// The A.5-arm twin of `testWedgeSkipsSelfDriveWithNoChange`: a genuinely
+	/// lagging recv-PQ leaf, wedged, must still self-drive nothing. Kills a
+	/// wedge guard moved into the A.4 arm only, or checked after the A.5 arm.
+	func testWedgeSkipsTheSelfDrivenCatchUp() throws {
+		var (_, bob) = try establishedWithBobsRecvPQLagging()
+		_ = try bob.prepareToEncrypt()
+		bob.pqWedge = .rekey
+		let pendingBefore = bob.leafKeys.recvPQ.pending
+		XCTAssertNoThrow(try bob.encrypt(Data("msg".utf8)))
+		XCTAssertNil(bob.pendingSideBand, "self-drive must not stage a round while wedged")
+		XCTAssertNil(bob.pqInflight)
+		XCTAssertEqual(bob.leafKeys.recvPQ.pending.count, pendingBefore.count)
+	}
+
+	/// D1: with no recv-PQ key, the trigger falls through to a plain A.4
+	/// even while the recv-PQ leaf genuinely lags — `stageRekey` would throw
+	/// (it signs there), and the auto-driver must never even attempt an A.5
+	/// it cannot complete, or every future turn would silently stall.
+	func testRecvPQWithoutCustodyKeepsRatchetingWhileItsLeafLags() throws {
+		var (_, bob) = try establishedWithBobsRecvPQLagging()
+		_ = try bob.prepareToEncrypt()
+		bob.noCustody = [.recvPQ]
+		XCTAssertNoThrow(try bob.encrypt(Data("msg".utf8)))
+		guard case .initiating = bob.pqInflight else {
+			XCTFail("expected a plain A.4 ratchet, not a stall")
+			return
+		}
+		XCTAssertEqual(bob.pendingSideBand?.first, Frames.pqEKTag)
+	}
+
 	// MARK: - No-custody guards
 
 	/// The signing-key accessors: a nil `current` maps to

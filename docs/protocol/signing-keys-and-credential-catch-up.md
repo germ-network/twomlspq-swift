@@ -97,6 +97,16 @@ sites. A migrated session's own wedge, when supplied, rides this engine's `pqSid
 (`api-reference.md:304-309`'s "queryable `pq_side_band_wedged()`"); this engine's own bind triggers do not yet latch
 one themselves on failure (a separate, later change) — the exit from a wedged state is re-establishment either way.
 
+**The own-arm gate.** The trigger opens our own catch-up only once the peer has already canonicalized our target —
+observed as our own leaf in `recvGroup.classical` (the peer's view of us, which we mirror) already presenting
+`mine.current`. Until then, our turn keeps ratcheting A.4 instead. This matters for a born-dedicated acceptor: its
+recv-PQ leaf is seeded at birth under the invitation identity, well before the peer has necessarily folded the
+dedicated handoff, and a peer that never folds a catch-up offer would otherwise leave the round permanently
+unanswerable (the same "Unchecked join" shape C2 guards against on the reciprocal side, `session-lifecycle.md:291-302`
+anomaly #5) — without the gate, the PQ side would stall on an A.5 it can never complete where today it ratchets A.4
+for life. The gate applies in both profiles; see C2 (§4), whose own condition is this gate's mirror on the reciprocal
+side.
+
 ## 2. Where the book is silent, and what we decided
 
 The book does not say whether the classical and PQ halves, or a party's two groups, may share signing keys. Its object
@@ -247,9 +257,11 @@ shares a key across its groups, and nothing compares a peer's keys across groups
     is terminal for that staple, which the peer must re-send in a later commit that builds on it.
   - **The wedge and no-custody states.** A migrated session may already be side-band-wedged (§1's "The wedge") or
     missing signing custody over one or more of its four groups (`noCustody`) — a group in that set can only receive;
-    a no-custody PQ group's own driver stops rather than opening a round it cannot complete. Both states are
-    read-only queries on the restored session; no-custody clears the moment a promotion genuinely supplies that
-    group's `current` key.
+    a no-custody PQ group's own driver stops rather than opening a round it cannot complete. Concretely, a session with
+    no recv-PQ key keeps ratcheting A.4 even while its recv-PQ leaf genuinely lags: it can never sign the catch-up
+    `Upd'` there, and the trigger must never even attempt a round it cannot complete. Both states are read-only
+    queries on the restored session; no-custody clears the moment a promotion genuinely supplies that group's
+    `current` key.
   - **Dropping an unverifiable parked re-key proposal.** A migrated session may carry a parked §A.5 `Upd'`
     (`.rekeyInitiated`) that no longer verifies against its restored recv-PQ group — the exact state the deployed
     engine's own `pq_rekey_apply` would fail on forever. Mint drops it instead: self-drive then opens a fresh A.4

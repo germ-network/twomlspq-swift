@@ -392,21 +392,24 @@ extension TwoMLSSession {
 		// A co-stapled side-band frame pads up to this (unsealed) length.
 		lastMessageFrameLen = frame.count
 
-		// §A.4 self-drive: both best-effort (never throw out of `encrypt`) —
-		// `rewrapSideBand` re-mints a stale parked leg at the epoch this send
-		// just moved to; `maybeStageNextRound` then stages the next EK if it's
-		// my turn and nothing else is outstanding.
+		// Self-drive: `rewrapSideBand` re-mints a stale parked leg at the
+		// epoch this send just moved to; `maybeStageNextRound` then stages
+		// the next round if it's my turn and nothing else is outstanding —
+		// an A.4 ratchet, or a catch-up A.5 when a recv-PQ leaf lags. Both
+		// best-effort (never throw out of `encrypt`).
 		rewrapSideBand()
-		maybeStageNextRound()
+		let stagedRekey = maybeStageNextRound()
 
 		// Sealed on exit (PR2, header-encryption.md "Send rule"): every
 		// outbound message-path frame is header-sealed under the recv
 		// group's current classical key.
 		let sealedFrame = try seal(frame)
 
-		// Return cadence (slice 8a): classical-only mutation → `.core`.
+		// Return cadence: a classical-only mutation is `.core`; staging an
+		// A.5 catch-up also changed the PQ tree's pending state, so that
+		// send reports `.checkpoint` instead.
 		advanceStateSeq()
-		let update = try stateUpdate(kind: .core)
+		let update = try stateUpdate(kind: stagedRekey ? .checkpoint : .core)
 		return EncryptResult(frame: sealedFrame, update: update)
 	}
 

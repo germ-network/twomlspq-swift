@@ -340,6 +340,19 @@ final class RotationTests: XCTestCase {
 		_ = try alice.processIncomingDecrypted(boundFrame2)
 		XCTAssertTrue(alice.myPQTurn)
 
+		// Alice's recv-PQ leaf — joined at §A.3 off her identity's original
+		// KeyPackage — still presents her pre-rotation id, so her own next
+		// turn opens the catch-up instead of a plain A.4. Drive it, then
+		// hand the turn back with one plain, uneventful A.4, so the MF4
+		// assertions below see alice holding the turn with nothing lagging.
+		let catchUpTag = try SessionTestSupport.drivePQRound(
+			initiator: &alice, responder: &bob)
+		XCTAssertEqual(catchUpTag, Frames.pqRekeyUpdTag)
+		let handBackTag = try SessionTestSupport.drivePQRound(
+			initiator: &bob, responder: &alice)
+		XCTAssertEqual(handBackTag, Frames.pqEKTag)
+		XCTAssertTrue(alice.myPQTurn)
+
 		// MF4 (a): Alice — the rotator, now turn-holder — self-stages a
 		// fresh EK. `stageRatchet` (`+Ratchet.swift:49`) must sign it under
 		// her NEW rotated key: `protect` never self-verifies, so a
@@ -1174,6 +1187,81 @@ extension RotationTests {
 			bob.leafKeys.recvPQ.pending[c]?.signatureKey, pk,
 			"the retained catch-up key")
 		XCTAssertEqual(bob.leafKeys.recvPQ.pending.count, 1)
+	}
+
+	/// The id-MOVING variant of the race above: bob's own begin targets
+	/// `c1` while his leaf lags, then a classical rotation to `c2` lands
+	/// WHILE that round is still `.rekeyInitiated` — the self-drive makes
+	/// this natively reachable (an explicit-only `pqRekeyBegin` could
+	/// never race a self-driven round against itself). The apply promotes
+	/// `pending[c1]` (the round's own target) regardless of the later
+	/// move; nothing ever staged `pending[c2]`, so `pending` clears
+	/// entirely. His own leaf still lags `c2` afterward, so the NEXT begin
+	/// mints fresh for it, and the parked target restores.
+	func testRekeyApplyDuringIDMovingInFlightRoundThenNextBeginTargetsTheLaterID() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let c1 = Data("bob-race-c1".utf8)
+		bob.auth.mine.history.append(c1)
+		alice.auth.theirs.history.append(c1)
+
+		let upd = try bob.pqRekeyBegin().frame
+		guard case .rekeyInitiated = bob.pqInflight else {
+			XCTFail("expected bob to hold .rekeyInitiated after pqRekeyBegin")
+			return
+		}
+		XCTAssertNotNil(bob.leafKeys.recvPQ.pending[c1])
+
+		// The race: a further classical rotation, to c2, lands while the
+		// round above is still in flight (bookkeeping-only advance — the
+		// actual classical fold mechanics aren't what this test targets).
+		// The parked target (c1) now differs from `mine.current` (c2) —
+		// restore check 6/7 must still admit it. `mine.current` moving also
+		// makes bob's (untouched) recv-CLASSICAL leaf lag, so it needs its
+		// own catch-up entry too (restore's check 7, classical arm) — a
+		// held key, exactly as a migrated session's mint would supply.
+		let c2 = Data("bob-race-c2".utf8)
+		bob.auth.mine.history.append(c2)
+		alice.auth.theirs.history.append(c2)
+		let (recvClassicalSigningKey, recvClassicalSignatureKey) =
+			try TwoMLSIdentity.mintSignatureKeypair()
+		bob.leafKeys.recvClassical.pending[c2] = LeafKey(
+			signingKey: recvClassicalSigningKey, signatureKey: recvClassicalSignatureKey
+		)
+
+		let midRaceArchive = try bob.makeSessionArchive(kind: .checkpoint)
+		XCTAssertNoThrow(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: midRaceArchive,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider))
+
+		let commit = try alice.pqRekeyRespond(upd).frame
+		_ = try bob.pqRekeyApply(commit)
+
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq)).credential),
+			c1, "the apply promoted the round's own target, c1, not the later c2")
+		XCTAssertNil(bob.leafKeys.recvPQ.pending[c2], "nothing ever staged a key for c2")
+		XCTAssertTrue(
+			bob.leafKeys.recvPQ.pending.isEmpty,
+			"c1 was promoted, and no entry pins a target the leaf has already moved past"
+		)
+
+		// His own leaf still lags c2 — the next begin mints a FRESH round
+		// for it, not a re-serve of the stale c1 round. `pqRekeyBegin`
+		// refuses while a bind is owed (the apply above owes one); clear it
+		// here, isolating this begin from the unrelated classical discharge
+		// mechanics a full round would otherwise need to drive first — pure
+		// test scaffolding, not real host behavior.
+		bob.owedBind = nil
+		_ = try bob.pqRekeyBegin()
+		guard case .rekeyInitiated(let nextUpdBytes) = bob.pqInflight else {
+			XCTFail("expected bob to hold .rekeyInitiated after the fresh begin")
+			return
+		}
+		XCTAssertNotEqual(nextUpdBytes, upd)
+		XCTAssertNotNil(bob.leafKeys.recvPQ.pending[c2])
 	}
 
 	/// Rotation staging never touches send-classical at all — its own

@@ -1403,13 +1403,14 @@ final class LeafKeysTests: XCTestCase {
 			try bob.assertLeafKeysPresented()
 		}
 
-		/// `pqRekeyBegin` registers its fresh recv-PQ key in the SAME
-		/// non-throwing block as `recvGroup`'s own write-back, before
-		/// `sealSideBand` — a fault right after that write-back must still
-		/// leave `leafKeys.recvPQ.pending` holding the fresh key even though
-		/// `pqInflight` was never set. A live retry IS possible here (unlike
-		/// `pqRekeyApply`): `pqInflight` stays nil, so the guard admits a
-		/// second call, which mints again (D3: always fresh, never reused).
+		/// `pqRekeyBegin` (via `stageRekey`) registers its fresh recv-PQ key
+		/// in the SAME non-throwing block as `recvGroup`'s/`pqInflight`'s own
+		/// write-back — a fault right after that block must still leave
+		/// `leafKeys.recvPQ.pending` holding the fresh key, with `pqInflight`
+		/// ALSO landed (the write-back is atomic: every field lands
+		/// together, never a stray pending key with no parked round). A
+		/// retry re-serves the SAME parked round idempotently (the top-of-
+		/// call re-serve branch), rather than minting again.
 		func testPqRekeyBeginRegistersTheFreshKeyWithTheGroup() throws {
 			var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 			XCTAssertTrue(bob.myPQTurn)
@@ -1422,13 +1423,64 @@ final class LeafKeysTests: XCTestCase {
 			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
 			XCTAssertThrowsError(try bob.pqRekeyBegin())
 
-			XCTAssertNil(bob.pqInflight, "the fault landed before pqInflight was set")
+			XCTAssertNotNil(
+				bob.pqInflight, "the atomic write-back lands pqInflight too")
 			let pendingKey = try XCTUnwrap(bob.leafKeys.recvPQ.pending[ownID])
 			XCTAssertNotEqual(pendingKey.signatureKey, currentKeyBefore?.signatureKey)
 			XCTAssertEqual(
 				bob.leafKeys.recvPQ.current?.signatureKey,
 				currentKeyBefore?.signatureKey)
 			try bob.assertLeafKeysPresented()
+		}
+
+		/// The self-drive's own call into `stageRekey` swallows its throw
+		/// (`try?`), so `encrypt` itself never surfaces a fault armed there —
+		/// it must still leave `self` in a state whose archive restores
+		/// (check 6/7 pass): the atomic write-back means the parked
+		/// `Upd′` and its staged key land together, never one without the
+		/// other. Kills: splitting that write-back around a throw.
+		func testSelfDriveFaultAfterWriteBackLeavesARestorableSession() throws {
+			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+			let bobNewID = Data("bob-fault-after-writeback".utf8)
+
+			_ = try bob.prepareToEncrypt(rotating: bobNewID)
+			let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
+			if case .initiating = bob.pqInflight {
+				bob.pqInflight = nil
+				bob.pendingSideBand = nil
+			}
+			let offerDecrypted = try alice.processIncomingDecrypted(offerFrame)
+			try alice.queueProposal(digest: offerDecrypted.queuedProposal.digest)
+			let foldPrepared = try alice.prepareToEncrypt()
+			XCTAssertTrue(foldPrepared.didCommit)
+			let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
+			_ = try bob.processIncomingDecrypted(foldFrame)
+			XCTAssertEqual(bob.myPrincipalState, .sync(bobNewID))
+			XCTAssertTrue(bob.myPQTurn)
+
+			TwoMLSSessionTestHooks.armFault("pqRekeyBegin.afterWriteBack")
+			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
+			_ = try bob.prepareToEncrypt()
+			XCTAssertNoThrow(
+				try bob.encrypt(Data("self-driven".utf8)), "encrypt swallows it")
+
+			let hasParkedUpd: Bool
+			if case .rekeyInitiated = bob.pqInflight {
+				hasParkedUpd = true
+			} else {
+				hasParkedUpd = false
+			}
+			let hasPendingKey = bob.leafKeys.recvPQ.pending[bobNewID] != nil
+			XCTAssertEqual(
+				hasParkedUpd, hasPendingKey,
+				"the atomic write-back means both land or neither does")
+
+			let archive = try bob.makeSessionArchive(kind: .checkpoint)
+			XCTAssertNoThrow(
+				try TwoMLSSession.restore(
+					core: nil, checkpoint: archive,
+					classicalProvider: SessionTestSupport.classicalProvider,
+					pqProvider: SessionTestSupport.pqProvider))
 		}
 
 		/// `pqRekeyRespond` registers its fresh send-PQ key in the SAME

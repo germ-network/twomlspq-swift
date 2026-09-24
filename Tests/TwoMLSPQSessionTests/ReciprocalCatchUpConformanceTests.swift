@@ -11,23 +11,17 @@ import XCTest
 /// the two-round reciprocal structure, rule 4's history-window pin, and the
 /// race guarantees — `protocol-flows.md:56`/`:704-708`,
 /// `group-rules.md:143-158` (rule 4), `session-lifecycle.md:81-97`/
-/// `:200-214` and the "Shipped anomalies" section (`:256-`). Where today's engine already
-/// conforms, the assertion is a plain regression guard; where it does not,
-/// it is wrapped in `XCTExpectFailure` so the run stays green today and
-/// turns red once that gap closes — mirrors `SigningKeyProtocolTests`'s and
-/// `LifecycleE2ETests`'s own convention.
+/// `:200-214` and the "Shipped anomalies" section (`:256-`). Every
+/// assertion here is a plain regression guard: the trigger
+/// (`TwoMLSSession+Ratchet.swift`'s `maybeStageNextRound`) opens the
+/// catch-up for real when a recv-PQ leaf lags, gated for the own leaf on
+/// the peer having already folded the target and, for the peer's leaf, on
+/// the peer's own catch-up having already landed.
 ///
-/// One real-API gap recurs across these tests (each marker below cites it):
-/// the trigger (`TwoMLSSession+Ratchet.swift`'s `maybeStageNextRound`) never
-/// checks recv-PQ lag — its own doc comment: "the A.5 `send_pq_leaf_lags`
-/// branch is deferred" — so it always opens A.4, and the reciprocal round is
-/// never self-driven either. Both `pqRekeyBegin()` (a rotated opener's own
-/// id) and `pqRekeyRespond()` (the committer's own catch-up) already carry
-/// their moves for real. `handBuildPQLeafMoveUpd`/
-/// `handBuildPQRekeyCommitWithCommitterMove` below stay in use only to
-/// construct an out-of-order or otherwise non-natively-reachable state for a
-/// specific test's setup, never to paper over a missing gap in the two
-/// calls above.
+/// A handful of tests still reach for `handBuildPQLeafMoveUpd`/
+/// `handBuildPQRekeyCommitWithCommitterMove` to construct an out-of-order or
+/// otherwise non-natively-reachable state for a specific test's setup,
+/// rather than driving the real self-drive end to end.
 @available(iOS 26, macOS 26, *)
 final class ReciprocalCatchUpConformanceTests: XCTestCase {
 
@@ -65,11 +59,11 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	/// on the SAME turn is unobstructed. Pure test scaffolding
 	/// (`@testable`): production code has no way to cancel a self-staged
 	/// round, and this never represents real host behavior. Only ever
-	/// clears an actual incidental self-drive (`.initiating` — the only
-	/// shape `maybeStageNextRound` can produce today): a no-op whenever
-	/// `pqInflight` holds anything else, so it never clobbers a
-	/// legitimate in-flight round (e.g. `.rekeyResponded`) that merely
-	/// happens to still be outstanding at the call site.
+	/// clears an `.initiating` self-drive: a no-op whenever `pqInflight`
+	/// holds anything else (including a self-driven `.rekeyInitiated`, the
+	/// shape a lagging leaf now produces), so it never clobbers a
+	/// legitimate in-flight round that merely happens to still be
+	/// outstanding at the call site.
 	private func discardIncidentalSelfDrive(_ session: inout TwoMLSSession) {
 		guard case .initiating = session.pqInflight else { return }
 		session.pqInflight = nil
@@ -286,11 +280,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		} else {
 			triggerOpensRekey = false
 		}
-		XCTExpectFailure(
-			"protocol-flows.md:56 — the A.4-vs-A.5 trigger never checks recv-PQ lag"
-		) {
-			XCTAssertTrue(triggerOpensRekey)
-		}
+		XCTAssertTrue(triggerOpensRekey)
 
 		// Round 1: alice's real `pqRekeyBegin` now carries her current id
 		// directly, driven through the real commit/apply path.
@@ -736,11 +726,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		} else {
 			opensRekey = false
 		}
-		XCTExpectFailure(
-			"protocol-flows.md:56 — a leaf presenting a history (non-head) id must open an A.5"
-		) {
-			XCTAssertTrue(opensRekey)
-		}
+		XCTAssertTrue(opensRekey)
 	}
 
 	/// Book anomaly #1 guard (`session-lifecycle.md:263-273`): the deployed
@@ -1359,11 +1345,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		} else {
 			opensRekey = false
 		}
-		XCTExpectFailure(
-			"protocol-flows.md:56 — her own next turn must open the recv-PQ catch-up"
-		) {
-			XCTAssertTrue(opensRekey)
-		}
+		XCTAssertTrue(opensRekey)
 	}
 
 	/// A responder whose rotation staple hasn't applied answers with a
@@ -1455,11 +1437,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		} else {
 			opensRekey = false
 		}
-		XCTExpectFailure(
-			"protocol-flows.md:56 — the next turn must open the catch-up once the responder's rotation lands"
-		) {
-			XCTAssertTrue(opensRekey)
-		}
+		XCTAssertTrue(opensRekey)
 	}
 
 	// MARK: - A.3-minted leaf born under the then-canonical id
