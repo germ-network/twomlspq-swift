@@ -1416,6 +1416,106 @@ final class SessionMigrationTests: XCTestCase {
 			freshSignatureKey.data)
 	}
 
+	/// "A rotation Rust won" — `mine.current` moved to `c` but
+	/// BOTH classical own leaves still present the old id, `pending[c]`
+	/// staged on both, no `rotationCandidate`, no `recvLeafPrincipal` — the
+	/// shape a Rust-side rotation's export leaves for a migrated session.
+	/// Built through the MINT (the production path), reusing this suite's
+	/// own generalized-catch-up fixture, rather than poking a live
+	/// session's fields directly. Kills the revert to the old
+	/// candidate-based send-catch-up predicate (half 1b) and, together with
+	/// `BornDedicatedTests.testGeneralizedCatchUpWithoutRecvLeafPrincipal`,
+	/// the recv-side revert (half 1a) in this non-born-dedicated shape too.
+	func testRustWonRotationCatchesUpBothClassicalLeaves() throws {
+		OracleCheck.allow([.sendClassical, .recvClassical])
+		defer { OracleCheck.allow([]) }
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		var parts = try migratedParts(bob)
+		let c = Data("bob-rust-rotated".utf8)
+		parts.auth.mine.history.append(c)
+
+		let (classicalSigningKey, classicalSignatureKey) =
+			try TwoMLSIdentity
+			.mintSignatureKeypair()
+		let classicalPendingKey = MigratedLeafKey(
+			signingKey: classicalSigningKey.data,
+			signatureKey: classicalSignatureKey.data)
+		let identityClassicalKey = MigratedLeafKey(
+			signingKey: bob.identity.signingKey.data,
+			signatureKey: bob.identity.signatureKey.data)
+		let identityPQKey = MigratedLeafKey(
+			signingKey: bob.identity.pqSigningKey.data,
+			signatureKey: bob.identity.pqSignatureKey.data)
+		func classicalWithCatchUp() -> MigratedGroupKeys {
+			MigratedGroupKeys(
+				current: identityClassicalKey,
+				pending: [
+					MigratedPendingLeafKey(target: c, key: classicalPendingKey)
+				])
+		}
+		// Rule 7's PQ arm is ALSO enforced in `.mintSupplied` (leafKeys
+		// supplied) once `mine.current` moves — reuse the identity PQ key
+		// as its own "catch-up" so minting succeeds; this test's own
+		// assertions are about the classical leaves only.
+		func pqWithCatchUp() -> MigratedGroupKeys {
+			MigratedGroupKeys(
+				current: identityPQKey,
+				pending: [MigratedPendingLeafKey(target: c, key: identityPQKey)])
+		}
+		parts.leafKeys = MigratedLeafKeys(
+			sendClassical: classicalWithCatchUp(),
+			recvClassical: classicalWithCatchUp(),
+			sendPQ: pqWithCatchUp(), recvPQ: pqWithCatchUp())
+
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var restoredBob = try TwoMLSSession.restore(
+			core: nil, checkpoint: minted,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertNil(restoredBob.recvLeafPrincipal)
+		XCTAssertNil(restoredBob.rotationCandidate)
+
+		// `alice` is a live, un-migrated session: the send-catch-up commit
+		// below lands as a fold, not a queued-and-authorized offer, so her
+		// own AS needs `c` already reachable in her tracked view of bob —
+		// exactly what a real peer would already hold, having seen the
+		// Rust-side rotation for real before bob ever migrated.
+		alice.auth.theirs.history.append(c)
+
+		let prepared = try restoredBob.prepareToEncrypt()
+		XCTAssertTrue(prepared.didCommit, "the licensed send-classical catch-up (1b)")
+		XCTAssertEqual(
+			restoredBob.pendingProposal?.proposing, c,
+			"the staged recv-classical catch-up offer (1a)")
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(
+					of: XCTUnwrap(restoredBob.sendGroup?.classical)
+				)
+				.credential), c)
+
+		let frame = try restoredBob.encrypt(Data("bob-catchup".utf8)).frame
+		let aliceSaw = try alice.processIncomingDecrypted(frame)
+		XCTAssertTrue(aliceSaw.didApplyRemoteCommit, "1b, mirrored at alice")
+		XCTAssertEqual(aliceSaw.queuedProposal.proposing, c, "1a's offer, surfaced")
+
+		try alice.queueProposal(digest: aliceSaw.queuedProposal.digest)
+		let aliceFolded = try alice.prepareToEncrypt()
+		XCTAssertTrue(aliceFolded.didCommit)
+		let foldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
+		let bobApplied = try restoredBob.processIncomingDecrypted(foldFrame)
+		XCTAssertTrue(bobApplied.didApplyRemoteCommit, "1a lands at bob")
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(
+					of: XCTUnwrap(restoredBob.recvGroup?.classical)
+				)
+				.credential), c)
+	}
+
 	/// A.7's `.mintSupplied`-only PQ enforcement: a born-dedicated bob
 	/// pre-A.3 has `recvGroup.pq` (Group_A is the standard pair, so it
 	/// exists from birth) still presenting the INVITATION identity's PQ

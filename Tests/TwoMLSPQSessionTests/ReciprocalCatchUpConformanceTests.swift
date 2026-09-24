@@ -797,46 +797,131 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	/// pin must stay held as long as EITHER still presents an evicted id,
 	/// and retire only once BOTH have moved.
 	func testRule4Pin() throws {
-		// The nine evictions below still advance `alice.auth.theirs` AND
-		// `bob.auth.mine` directly via their real `.commit()`, in place
-		// (never a wholesale replacement, so any pin a real implementation
-		// might already hold survives) — both, in lockstep, since
-		// `pqRekeyApply`'s adjudication (`adjudicatePQRekeyEffects`) checks
-		// a moved leaf against `auth.mine` on whichever session's own leaf
-		// it is: bob's later real `pqRekeyApply` below adjudicates his OWN
-		// leaf move against `bob.auth.mine`, not `alice.auth.theirs` — a
-		// real rotation protocol would keep these two independent
-		// `PartySequence` instances in lockstep by construction, so
-		// seeding only one (as an earlier version of this test did) is
-		// itself dishonest, not just less real. A real classical-rotation
-		// round trip was tried FIRST,
-		// as the more honest way to age `id0` out — but F2's
-		// one-generation rotation cap makes nine SEQUENTIAL real rotations
-		// of the same party architecturally unreachable, not merely
-		// difficult: once a rotation fully converges (both classical
-		// leaves canonicalize), `rotationCandidate` is never cleared, so
-		// every LATER `prepareToEncrypt(rotating:)` throws
-		// `.rotationInFlight` for the rest of the session's life
-		// (`TwoMLSSession+Messaging.swift:157-180`, "F2's one-generation
-		// cap"). This is pinned down by an existing test —
-		// `RotationTests.testSecondRotationAfterFullConvergenceIsRotationInFlightAndSessionNotBricked`
-		// — which asserts exactly this `.rotationInFlight` throw after a
-		// single full convergence. So the history is aged directly, on
-		// both sides in lockstep; the PQ leaf moves below are still
-		// delivered through the real sessions.
-		OracleCheck.allow([.recvPQ, .sendPQ])
+		// F2's one-generation rotation cap makes nine SEQUENTIAL real
+		// rotations of the same party architecturally unreachable: once a
+		// rotation fully converges (both classical leaves canonicalize),
+		// `rotationCandidate` is never cleared, so every LATER
+		// `prepareToEncrypt(rotating:)` throws `.rotationInFlight` for the
+		// rest of the session's life (`TwoMLSSession+Messaging.swift:157-
+		// 180`) — pinned down by `RotationTests.
+		// testSecondRotationAfterFullConvergenceIsRotationInFlightAndSessionNotBricked`.
+		// So id0's history-window eviction is reached in three phases
+		// instead: (1) seed seven steps directly on `alice.auth.theirs`/
+		// `bob.auth.mine` (lockstep, real `.commit()`, in place) to bring
+		// the window to its edge without yet evicting id0 or touching
+		// bob's classical leaves. This leaves bob's classical leaves
+		// presenting an id seven steps behind `auth.mine.current` — deeper
+		// than a real rotation would ever produce, since classical leaves
+		// lag by at most one canonical step — but `PartySequence.
+		// validSuccessor` only checks that the presented id is still IN
+		// history, so the extra depth is invisible to it; the fixture
+		// stays honest where it matters. (2) A REAL classical catch-up
+		// round moves both of bob's classical leaves onto that edge id,
+		// through the actual generalized-catch-up trigger (Messaging.
+		// swift's `rotating == nil` arm) and the actual send-leaf catch-up
+		// (`committingRound`'s §3c); (3) a REAL classical rotation, through
+		// the engine's own `prepareToEncrypt(rotating:)`/fold/canonicalize
+		// path, is what finally evicts id0 — the engine's own
+		// canonicalization site. Only bob's PQ leaves are left hand-aged
+		// past that point: they never move here, which is the whole
+		// premise this test is about.
+		OracleCheck.allow([.recvClassical, .sendClassical, .recvPQ, .sendPQ])
 		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let id0 = bob.identity.clientID
-		for step in 1...9 {
+
+		// Phase 1: seed to the window's edge (history = [id0, s1...s7], 8
+		// entries — id0 still admissible). Bob's classical leaves still
+		// genuinely present id0; only the bookkeeping is aged.
+		for step in 1...7 {
 			let stepID = Data("bob-step\(step)".utf8)
 			try alice.auth.theirs.commit(stepID)
 			try bob.auth.mine.commit(stepID)
 		}
+		let s7 = try XCTUnwrap(bob.auth.mine.current)
+
+		// Phase 2: a REAL classical catch-up to s7, both of bob's leaves,
+		// through the actual generalized-catch-up trigger — independently
+		// minted keys per classical group (strict per-group independence).
+		let (recvSigningKey, recvSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (sendSigningKey, sendSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		bob.leafKeys.recvClassical.pending[s7] = LeafKey(
+			signingKey: recvSigningKey, signatureKey: recvSignatureKey)
+		bob.leafKeys.sendClassical.pending[s7] = LeafKey(
+			signingKey: sendSigningKey, signatureKey: sendSignatureKey)
+
+		// Bob is already LICENSED (`fullyEstablishedTurnOnBob`), so this one
+		// `prepareToEncrypt` both commits his own SEND-classical catch-up
+		// (§3c, `didCommit`) AND stages a RECV-classical catch-up offer for
+		// the very same frame — converges in one round (verified by
+		// running it, not assumed).
+		let bobRound = try bob.prepareToEncrypt()
+		XCTAssertTrue(bobRound.didCommit, "the licensed send-classical catch-up")
+		XCTAssertEqual(
+			bob.pendingProposal?.proposing, s7, "the staged recv-classical offer")
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.sendGroup?.classical))
+					.credential),
+			s7, "bob's send-classical leaf has caught up")
+		let bobFrame = try bob.encrypt(Data("bob-catchup".utf8)).frame
+		let aliceSaw = try alice.processIncomingDecrypted(bobFrame)
+		XCTAssertTrue(
+			aliceSaw.didApplyRemoteCommit, "bob's send-classical catch-up, mirrored")
+		XCTAssertEqual(aliceSaw.queuedProposal.proposing, s7, "bob's recv-classical offer")
+		XCTAssertEqual(
+			try basicIdentifier(
+				peerLeaf(in: XCTUnwrap(alice.recvGroup?.classical)).credential),
+			s7, "alice's mirror of bob's send-classical leaf agrees")
+
+		try alice.queueProposal(digest: aliceSaw.queuedProposal.digest)
+		let aliceFolded = try alice.prepareToEncrypt()
+		XCTAssertTrue(aliceFolded.didCommit)
+		let aliceFoldFrame = try alice.encrypt(Data("alice-catchup-fold".utf8)).frame
+		let bobAppliedFold = try bob.processIncomingDecrypted(aliceFoldFrame)
+		XCTAssertTrue(bobAppliedFold.didApplyRemoteCommit)
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
+					.credential),
+			s7, "bob's recv-classical leaf has caught up")
+
+		// Phase 3: a REAL rotation to s8 — bob has no outstanding
+		// `rotationCandidate`, so F2's cap does not bite — is what
+		// actually evicts id0 from both `PartySequence`s, through the
+		// engine's own canonicalization.
+		let s8 = Data("bob-step8".utf8)
+		_ = try bob.prepareToEncrypt(rotating: s8)
+		let rotationOfferFrame = try bob.encrypt(Data("bob-rotate-offer".utf8)).frame
+		let aliceSawRotation = try alice.processIncomingDecrypted(rotationOfferFrame)
+		XCTAssertEqual(aliceSawRotation.queuedProposal.proposing, s8)
+		try alice.queueProposal(digest: aliceSawRotation.queuedProposal.digest)
+		let aliceFoldedRotation = try alice.prepareToEncrypt()
+		XCTAssertTrue(aliceFoldedRotation.didCommit)
+		XCTAssertFalse(
+			alice.auth.theirs.history.contains(id0), "alice's own eviction, at her fold"
+		)
+		let rotationFoldFrame = try alice.encrypt(Data("alice-rotation-fold".utf8)).frame
+		let bobAppliedRotation = try bob.processIncomingDecrypted(rotationFoldFrame)
+		XCTAssertTrue(bobAppliedRotation.didApplyRemoteCommit)
+		XCTAssertTrue(bobAppliedRotation.ownCredentialCanonicalized)
+
 		let currentID = try XCTUnwrap(alice.auth.theirs.current)
+		XCTAssertEqual(currentID, s8)
 		XCTAssertEqual(bob.auth.mine.current, currentID)
 		XCTAssertFalse(alice.auth.theirs.history.contains(id0))
+		XCTAssertFalse(bob.auth.mine.history.contains(id0))
 		XCTAssertFalse(alice.auth.theirs.pinned.contains(id0))
+		// Only the PQ leaves still present id0 past the eviction — the
+		// premise the rest of this test exercises.
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq)).credential),
+			id0)
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.sendGroup?.pq)).credential),
+			id0)
 
 		// Bob's leaf in Group_A.pq (alice's send group, his recv-PQ
 		// mirror) still genuinely presents id0 — hand-build his catch-up
