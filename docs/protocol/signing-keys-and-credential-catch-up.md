@@ -266,9 +266,13 @@ shares a key across its groups, and nothing compares a peer's keys across groups
     `current` key.
   - **Dropping an unverifiable parked re-key proposal.** A migrated session may carry a parked §A.5 `Upd'`
     (`.rekeyInitiated`) that no longer verifies against its restored recv-PQ group — the exact state the deployed
-    engine's own `pq_rekey_apply` would fail on forever. Mint drops it instead: self-drive then opens a fresh A.4
-    round under the carried key (book anomaly 5's own resolution, `session-lifecycle.md` at `69a9f0e`: "drops its
-    mis-signed parked `Upd'` and re-proposes under the carried key").
+    engine's own `pq_rekey_apply` would fail on forever. This covers any field shape that fails to verify, including
+    one framed by a THIRD key distinct from both the leaf's own fresh key and the key the leaf currently presents
+    (the deployed engine's own anomaly-5 shape: its A.3 join signs with its CURRENT client PQ key rather than the
+    KP′ key the leaf actually presents). Mint drops it instead: the next send re-opens the round under the key the
+    leaf actually presents — the catch-up A.5 when the recv-PQ leaf still lags (as in the deployed shape that
+    produces this), else a plain A.4 (book anomaly 5's own resolution, `session-lifecycle.md` at `69a9f0e`: "drops
+    its mis-signed parked `Upd'` and re-proposes under the carried key").
 
 ## 5. Session profiles and KeyPackage signaling
 
