@@ -817,10 +817,10 @@ final class LifecycleE2ETests: XCTestCase {
 
 		// [11] Post-rotation credential catch-up. Right after the rotation
 		// lands, alice's send-PQ leaf still presents her pre-rotation
-		// credential — per §1, a round she opens moves only her RECV-PQ
-		// leaf; her send-PQ leaf moves only when she responds to a
-		// peer-opened A.5, so it stays on `aliceOldID` through this whole
-		// step.
+		// credential — a round she opens moves only her RECV-PQ leaf; her
+		// send-PQ leaf moves only when she responds to a peer-opened A.5
+		// (protocol-flows.md:56, :696-708 — TwoMLSPQ `69a9f0e`), so it
+		// stays on `aliceOldID` through this whole step.
 		XCTAssertNil(alice.session.pqInflight)
 		XCTAssertNil(alice.session.owedBind)
 		XCTAssertTrue(alice.session.myPQTurn)
@@ -839,13 +839,15 @@ final class LifecycleE2ETests: XCTestCase {
 		// driver, which works unchanged for either shape.
 		let openKind = try alice.drivePQRoundToCompletion(responder: &bob)
 
-		XCTExpectFailure("no self-driven §A.5 once the send-PQ leaf lags a rotation") {
+		XCTExpectFailure(
+			"no self-driven A.5 once alice's recv-PQ leaf lags a rotation (protocol-flows.md:56)"
+		) {
 			XCTAssertEqual(openKind, .rekeyUpd)
 		}
 
-		// §1's one-round outcome: unaffected by whatever round actually
-		// opened above, alice's send-PQ own leaf still presents her
-		// PRE-rotation credential.
+		// This round's own outcome (protocol-flows.md:696-708): unaffected
+		// by whatever round actually opened above, alice's send-PQ own
+		// leaf still presents her PRE-rotation credential.
 		let aliceSendPQLeafAfterRound = try TwoMLSSession.ownLeaf(
 			of: try XCTUnwrap(alice.session.sendGroup?.pq))
 		XCTAssertEqual(
@@ -866,7 +868,9 @@ final class LifecycleE2ETests: XCTestCase {
 				of: try XCTUnwrap(alice.session.recvGroup?.classical)
 			).signatureKey)
 
-		try XCTExpectFailure("§1/D3: no §A.5 credential catch-up after rotation") {
+		try XCTExpectFailure(
+			"protocol-flows.md:56, :704-708 / D3: no A.5 credential catch-up after rotation"
+		) {
 			XCTAssertEqual(try basicIdentifier(aliceRecvPQLeaf.credential), alice2ID)
 
 			// Bob's own copy of the SAME group (Group_B.pq — his sendGroup,
