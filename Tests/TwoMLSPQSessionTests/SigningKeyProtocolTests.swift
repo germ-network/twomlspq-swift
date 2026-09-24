@@ -1546,34 +1546,16 @@ final class SigningKeyProtocolTests: XCTestCase {
 		assertNoOwnLeafKeyIsHeldByTwoGroups(alice)
 		assertNoOwnLeafKeyIsHeldByTwoGroups(bob)
 
-		// Two full §A.4 rounds, each driven by whichever side currently
-		// holds the turn.
-		for round in 0..<(runA4Rounds ? 2 : 0) {
+		// Two full PQ rounds, whichever the trigger opens, each driven by
+		// whichever side currently holds the turn.
+		for _ in 0..<(runA4Rounds ? 2 : 0) {
 			if bob.myPQTurn {
-				_ = try bob.prepareToEncrypt()
-				_ = try bob.encrypt(Data("m-\(round)".utf8))
-				let ekFrame = try XCTUnwrap(
-					bob.pqPendingOutbound(), "round \(round), bob's turn")
-				let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
-				_ = try bob.pqRatchetBind(ctFrame)
-				let prepared = try bob.prepareToEncrypt()
-				XCTAssertTrue(prepared.didCommit)
-				let roundBoundFrame = try bob.encrypt(Data("bound-\(round)".utf8))
-					.frame
-				_ = try alice.processIncomingDecrypted(roundBoundFrame)
+				_ = try SessionTestSupport.drivePQRound(
+					initiator: &bob, responder: &alice)
 			} else {
 				XCTAssertTrue(alice.myPQTurn)
-				_ = try alice.prepareToEncrypt()
-				_ = try alice.encrypt(Data("m-\(round)".utf8))
-				let ekFrame = try XCTUnwrap(
-					alice.pqPendingOutbound(), "round \(round), alice's turn")
-				let ctFrame = try bob.pqRatchetRespond(ekFrame).frame
-				_ = try alice.pqRatchetBind(ctFrame)
-				let prepared = try alice.prepareToEncrypt()
-				XCTAssertTrue(prepared.didCommit)
-				let roundBoundFrame = try alice.encrypt(Data("bound-\(round)".utf8))
-					.frame
-				_ = try bob.processIncomingDecrypted(roundBoundFrame)
+				_ = try SessionTestSupport.drivePQRound(
+					initiator: &alice, responder: &bob)
 			}
 			assertNoOwnLeafKeyIsHeldByTwoGroups(alice)
 			assertNoOwnLeafKeyIsHeldByTwoGroups(bob)

@@ -97,6 +97,16 @@ sites. A migrated session's own wedge, when supplied, rides this engine's `pqSid
 (`api-reference.md:304-309`'s "queryable `pq_side_band_wedged()`"); this engine's own bind triggers do not yet latch
 one themselves on failure (a separate, later change) — the exit from a wedged state is re-establishment either way.
 
+**The own-arm gate.** The trigger opens our own catch-up only once the peer has already canonicalized our target —
+observed as our own leaf in `recvGroup.classical` (the peer's view of us, which we mirror) already presenting
+`mine.current`. Until then, our turn keeps ratcheting A.4 instead. This matters for a born-dedicated acceptor: its
+recv-PQ leaf is seeded at birth under the invitation identity, well before the peer has necessarily folded the
+dedicated handoff, and a peer that never folds a catch-up offer would otherwise leave the round permanently
+unanswerable (the same "Unchecked join" shape C2 guards against on the reciprocal side, `session-lifecycle.md:291-302`
+anomaly #5) — without the gate, the PQ side would stall on an A.5 it can never complete where today it ratchets A.4
+for life. The gate applies in both profiles; see C2 (§4), whose own condition is this gate's mirror on the reciprocal
+side.
+
 ## 2. Where the book is silent, and what we decided
 
 The book does not say whether the classical and PQ halves, or a party's two groups, may share signing keys. Its object
@@ -215,12 +225,14 @@ shares a key across its groups, and nothing compares a peer's keys across groups
 - **C2 — defer the reciprocal A.5 until the peer's own A.5 has landed.**
   - What it is: when the peer's leaf in OUR recv-PQ lags, we don't open the reciprocal A.5 the moment it does. We wait
     until the peer's own A.5 has landed — its leaf in OUR send-PQ presents its current canonical id — before opening
-    the round that catches its leaf up. That round runs in the PEER's send-PQ group — our own recv-PQ, the group its
-    leaf lags in, never a group we founded (`protocol-flows.md:706`: "Bob's next turn opens the reciprocal A.5 on
-    [ASG-PQ]", Alice's send-PQ group). Our own catch-up (opening an A.5 when OUR OWN leaf lags) is not deferred by
-    this — C2 gates only the reciprocal round. A residual case this doesn't cover: against a deployed peer that
-    rotated before its own A.3 bind, that peer's answer to OUR A.5 — as responder, whichever A.5 it is — still
-    orphans its key (the book's anomaly #5 covers any A.5 the deployed party answers, not only a reciprocal one).
+    the round that catches its leaf up. Deferring means opening a plain A.4 instead — the turn must still pass, or
+    the peer could never run the A.5 we are waiting on. That round runs in the PEER's send-PQ group — our own
+    recv-PQ, the group its leaf lags in, never a group we founded (`protocol-flows.md:706`: "Bob's next turn opens
+    the reciprocal A.5 on [ASG-PQ]", Alice's send-PQ group). Our own catch-up (opening an A.5 when OUR OWN leaf lags)
+    is not deferred by this — C2 gates only the reciprocal round. A residual case this doesn't cover: against a
+    deployed peer that rotated before its own A.3 bind, that peer's answer to OUR A.5 — as responder, whichever A.5
+    it is — still orphans its key (the book's anomaly #5 covers any A.5 the deployed party answers, not only a
+    reciprocal one).
   - Why: the deployed engine's A.3 join signs with its *current* PQ key rather than the KP′ key its leaf actually
     presents there (contrary to rule 4). If that party rotates before its A.3 bind, its own A.5 `Upd'` in that group
     is mis-signed and permanently rejected, and the presented KP′ key survives only as its own send-PQ group's
@@ -247,14 +259,27 @@ shares a key across its groups, and nothing compares a peer's keys across groups
     is terminal for that staple, which the peer must re-send in a later commit that builds on it.
   - **The wedge and no-custody states.** A migrated session may already be side-band-wedged (§1's "The wedge") or
     missing signing custody over one or more of its four groups (`noCustody`) — a group in that set can only receive;
-    a no-custody PQ group's own driver stops rather than opening a round it cannot complete. Both states are
-    read-only queries on the restored session; no-custody clears the moment a promotion genuinely supplies that
-    group's `current` key.
+    a no-custody PQ group's own driver stops rather than opening a round it cannot complete. Concretely, a session with
+    no recv-PQ key keeps ratcheting A.4 even while its recv-PQ leaf genuinely lags: it can never sign the catch-up
+    `Upd'` there, and the trigger must never even attempt a round it cannot complete. Both states are read-only
+    queries on the restored session; no-custody clears the moment a promotion genuinely supplies that group's
+    `current` key.
   - **Dropping an unverifiable parked re-key proposal.** A migrated session may carry a parked §A.5 `Upd'`
     (`.rekeyInitiated`) that no longer verifies against its restored recv-PQ group — the exact state the deployed
-    engine's own `pq_rekey_apply` would fail on forever. Mint drops it instead: self-drive then opens a fresh A.4
-    round under the carried key (book anomaly 5's own resolution, `session-lifecycle.md` at `69a9f0e`: "drops its
-    mis-signed parked `Upd'` and re-proposes under the carried key").
+    engine's own `pq_rekey_apply` would fail on forever. This covers any field shape that fails to verify, including
+    one framed by a THIRD key distinct from both the leaf's own fresh key and the key the leaf currently presents
+    (the deployed engine's own anomaly-5 shape: its A.3 join signs with its CURRENT client PQ key rather than the
+    KP′ key the leaf actually presents). Mint drops it instead: the next send re-opens the round under the key the
+    leaf actually presents — the catch-up A.5 when the recv-PQ leaf still lags (as in the deployed shape that
+    produces this), else a plain A.4 (book anomaly 5's own resolution, `session-lifecycle.md` at `69a9f0e`: "drops
+    its mis-signed parked `Upd'` and re-proposes under the carried key").
+  - **Dropping a parked re-key proposal whose target has left history.** The mint also drops a parked `Upd'` that
+    DOES verify but whose target credential has already left `mine.history` — a rollback to any credential no
+    longer canonical is refused by the same successor rule everywhere else, and a stale parked target is no
+    exception. This is a mint-time admissibility check only: it never re-evaluates a live session's own already-
+    accepted state at a later classical commit, so a parked target that leaves history WHILE the session is running
+    natively (unreachable today — a native session rotates at most once) is a known residual, not something this
+    check reaches.
 
 ## 5. Session profiles and KeyPackage signaling
 

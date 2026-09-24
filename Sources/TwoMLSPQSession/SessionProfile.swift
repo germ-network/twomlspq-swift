@@ -30,4 +30,22 @@ extension TwoMLSSession {
 		guard profile == .deployedCompatible, oldID != newID else { return Data() }
 		return newID
 	}
+
+	/// Whether the send-driven trigger opens an A.5 catch-up instead of a
+	/// plain A.4 ratchet. Our own leaf lagging opens the round once the
+	/// peer has folded our target (the own-arm gate,
+	/// `TwoMLSSession+Ratchet.swift`'s `rekeyDue`) — under BOTH profiles.
+	/// The peer's leaf lagging opens the reciprocal round too, but under
+	/// the deployed-compatible profile only once the peer's own A.5 has
+	/// already landed (protocol doc §4 C2); the correct profile needs no
+	/// such deferral. Pure, so every input combination is unit-testable
+	/// without a DEBUG switch.
+	static func opensRekey(
+		ownLeafLags: Bool, ownTargetFolded: Bool, peerLeafLags: Bool, peerOwnA5Landed: Bool,
+		profile: SessionProfile
+	) -> Bool {
+		if ownLeafLags { return ownTargetFolded }
+		guard peerLeafLags else { return false }
+		return profile == .correct || peerOwnA5Landed
+	}
 }

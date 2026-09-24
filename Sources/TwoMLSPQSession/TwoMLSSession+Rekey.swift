@@ -61,6 +61,36 @@ extension TwoMLSSession {
 		else {
 			throw TwoMLSError.sessionNotReady
 		}
+		try stageRekey()
+		let sealed = try sealSideBand(
+			try pendingSideBand.tryUnwrap(TwoMLSError.sessionNotReady))
+
+		// Return cadence: stages an Upd′ into `recvGroup.pq` — no epoch
+		// change, but the PQ tree's pending state changed → `.checkpoint`.
+		advanceStateSeq()
+		return SideBandResult(frame: sealed, update: try stateUpdate(kind: .checkpoint))
+	}
+
+	/// Stage our §A.5 `Upd′` into `recvGroup.pq` and park it. Shared by the
+	/// explicit `pqRekeyBegin` and the send-driven self-drive; the caller
+	/// owns the turn/idle guards and the return cadence.
+	///
+	/// The Upd′ carries our current canonical id, minted with a fresh
+	/// signature key — a catch-up when our leaf lags, and otherwise the
+	/// SAME id the leaf already presents (a key-only move, mirroring the
+	/// classical routine offer's own shape). The fresh key is staged under
+	/// `targetID` until the peer's Commit′ applies it (`pqRekeyApply`'s
+	/// promotion).
+	///
+	/// Atomic write-back: the message is encoded BEFORE anything lands on
+	/// `self`, and `recvGroup`, `leafKeys`, `pqInflight` and
+	/// `pendingSideBand` are then all written together, in one
+	/// non-throwing block — the self-drive swallows this call's throw
+	/// (`try?`) and goes on to mint a `StateUpdate` regardless, so a throw
+	/// that landed only PART of this write-back would hand the host an
+	/// archive with a staged key but no parked Upd′ to redeem it (or the
+	/// reverse), which restore's own checks reject.
+	mutating func stageRekey() throws {
 		guard var recv = recvGroup, var recvPQ = recv.pq else {
 			throw TwoMLSError.notEstablished
 		}
@@ -69,12 +99,6 @@ extension TwoMLSSession {
 			throw TwoMLSError.leafCustodyUnavailable
 		}
 
-		// D3: the Upd′ carries our current canonical id, minted with a
-		// fresh signature key — a catch-up when our leaf lags, and
-		// otherwise the SAME id the leaf already presents (a key-only
-		// move, mirroring the classical routine offer's own shape). The
-		// fresh key is staged under `targetID` until the peer's Commit′
-		// applies it (`pqRekeyApply`'s promotion).
 		let ownPQID = try basicIdentifier(Self.ownLeaf(of: recvPQ).credential)
 		let targetID = auth.mine.current ?? ownPQID
 		let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
@@ -90,35 +114,30 @@ extension TwoMLSSession {
 				signatureKey: freshKey.signatureKey),
 			authenticatedData: Self.rekeyAnnouncement(
 				oldID: ownPQID, newID: targetID, profile: profile))
+		let updBytes = try message.mlsEncoded()
+		let frame = Frames.encodePQRekeyUpd(updBytes)
+
+		// Everything below is non-throwing — the atomic write-back.
 		recv.pq = recvPQ
 		recvGroup = recv
 		var updatedLeafKeys = leafKeys
 		updatedLeafKeys.recvPQ.replace(freshKey, for: targetID)
 		leafKeys = updatedLeafKeys
-
-		// (DEBUG only): a fault point AFTER the write-back above but
-		// before the next throwing call — proves a fault here leaves
-		// `recvGroup`/`leafKeys` fully written back.
-		#if DEBUG
-			if TwoMLSSessionTestHooks.shouldFault("pqRekeyBegin.afterWriteBack") {
-				throw InjectedTestFault(name: "pqRekeyBegin.afterWriteBack")
-			}
-		#endif
-
-		let updBytes = try message.mlsEncoded()
-		let frame = Frames.encodePQRekeyUpd(updBytes)
 		// The mint's own drop of a parked Upd′ (`SessionMigration.swift`'s
 		// `droppedRekeyTarget` handling) already clears any `recvPQ.pending`
 		// entry staged for it, unless it is a still-lagging leaf's rule-7
 		// catch-up key.
 		pqInflight = .rekeyInitiated(updMessage: updBytes)
 		pendingSideBand = frame
-		let sealed = try sealSideBand(frame)
 
-		// Return cadence (slice 8a): stages an Upd′ into `recvGroup.pq` — no epoch
-		// change, but the PQ tree's pending state changed → `.checkpoint`.
-		advanceStateSeq()
-		return SideBandResult(frame: sealed, update: try stateUpdate(kind: .checkpoint))
+		// (DEBUG only): a fault point AFTER the write-back above — proves a
+		// fault here leaves `recvGroup`/`leafKeys`/`pqInflight`/
+		// `pendingSideBand` fully written back, together.
+		#if DEBUG
+			if TwoMLSSessionTestHooks.shouldFault("pqRekeyBegin.afterWriteBack") {
+				throw InjectedTestFault(name: "pqRekeyBegin.afterWriteBack")
+			}
+		#endif
 	}
 
 	/// The committer — never the turn-holder (§13 M5: `!pqTurnMine`) —
@@ -444,10 +463,11 @@ extension TwoMLSSession {
 			// whether or not that moves the leaf's presentation); a
 			// same-id apply is `promoted`'s own no-op.
 			// Generalized catch-up: retain `pending[mine.current]` when
-			// the recv-PQ leaf still lags it after this apply — the PQ half of rule 7,
-			// which a migrated/lagging session needs for a later self-drive
-			// to consume; every other pending entry is still dropped, same
-			// as before.
+			// the recv-PQ leaf still lags it after this apply — the PQ half of
+			// rule 7. `stageRekey` mints fresh rather than consuming this
+			// retained key (D3), so it stays held until a later round
+			// genuinely lands it; every other pending entry is still dropped,
+			// same as before.
 			var updatedLeafKeys = leafKeys
 			let ownPQLeaf = try Self.ownLeaf(of: recvPQ)
 			let ownPQID = try basicIdentifier(ownPQLeaf.credential)

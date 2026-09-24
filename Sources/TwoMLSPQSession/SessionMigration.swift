@@ -680,19 +680,36 @@ public enum SessionMigration {
 		// session-lifecycle.md at 69a9f0e: "drops its mis-signed parked
 		// Upd' and re-proposes under the carried key"), so mint drops it
 		// here instead of minting a session that can never apply its own
-		// round.
+		// round. Alongside that: a target that DOES verify but has already
+		// left admissibility (evicted from `mine.history`, and not the
+		// leaf's own current presentation) can never be a valid successor
+		// either — a mint-time admissibility drop, same effect as the
+		// verification drop. Pins are irrelevant here: a pinned id is
+		// never a valid successor.
 		var effectivePqInflight = parts.pqInflight
 		var effectivePendingSideBand = parts.pendingSideBand
 		var droppedRekeyTarget: Data?
 		if case .rekeyInitiated(let updMessage) = parts.pqInflight {
-			let verifies: Bool = {
-				guard let recvPQ else { return false }
-				return
-					(try? TwoMLSSession.decodedUpdateTarget(
-						updMessage, against: recvPQ, provider: pqProvider))
-					!= nil
+			let verifiedTarget: Data? = {
+				guard let recvPQ else { return nil }
+				return try? TwoMLSSession.decodedUpdateTarget(
+					updMessage, against: recvPQ, provider: pqProvider
+				).id
 			}()
-			if !verifies {
+			let presentedRecvPQID: Data? = {
+				guard let recvPQ else { return nil }
+				return try? basicIdentifier(
+					TwoMLSSession.ownLeaf(of: recvPQ).credential)
+			}()
+			let admissible: Bool
+			if let verifiedTarget {
+				admissible =
+					verifiedTarget == presentedRecvPQID
+					|| parts.auth.mine.history.contains(verifiedTarget)
+			} else {
+				admissible = false
+			}
+			if !admissible {
 				guard
 					parts.pendingSideBand == nil
 						|| parts.pendingSideBand
@@ -702,8 +719,9 @@ public enum SessionMigration {
 				}
 				effectivePqInflight = nil
 				effectivePendingSideBand = nil
-				droppedRekeyTarget = Self.decodedUpdateTargetIgnoringSignature(
-					updMessage)
+				droppedRekeyTarget =
+					verifiedTarget
+					?? Self.decodedUpdateTargetIgnoringSignature(updMessage)
 			}
 		}
 
@@ -818,8 +836,8 @@ public enum SessionMigration {
 			mode = .mintConverted
 		}
 		// Drop the dropped round's now-orphaned recv-PQ pending entry,
-		// UNLESS it is the rule-7 catch-up key a later self-drive change
-		// needs (`t == auth.mine.current` and the recv-PQ leaf still lags).
+		// UNLESS it is the rule-7 catch-up key a self-driven catch-up needs
+		// (`t == auth.mine.current` and the recv-PQ leaf still lags).
 		if let droppedRekeyTarget {
 			let mineCurrent = parts.auth.mine.history.last
 			let recvPQLags: Bool = {

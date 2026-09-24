@@ -283,23 +283,90 @@ extension TwoMLSSession {
 		pendingSideBand = Frames.encodePQLeg(tag: tag, messageBytes: reEncoded)
 	}
 
-	/// Self-drive (A.4 arm only — the A.5 `send_pq_leaf_lags` branch is
-	/// deferred). No-op unless it's my turn, both halves are established, and
+	/// Self-drive: an A.4 ratchet, or — when our own recv-PQ leaf lags and
+	/// the peer has folded our catch-up target — the §A.5 catch-up
+	/// instead. No-op unless it's my turn, both halves are established, and
 	/// nothing else is outstanding (an inflight round, an owed bind, or an
 	/// already-parked side-band leg). Also skips while
 	/// `sendClassical`/`sendPQ` is in `noCustody` — `stageRatchet` would
 	/// fail anyway (it signs on `sendClassical`), but a wedged/no-custody
 	/// session's auto-driver must never even attempt to open a round it
-	/// cannot complete. Best-effort: swallows `stageRatchet`'s throw rather
-	/// than surfacing it out of `encrypt`.
+	/// cannot complete. The A.4 arm is best-effort (swallows
+	/// `stageRatchet`'s throw); a staging failure in the A.5 arm is not
+	/// retried as an A.4 — a transient failure just retries on the next
+	/// send. Returns whether it staged an A.5 (an A.4 mutates only the
+	/// classical carrier, so it never needs to report anything here).
 	// internal: used by Messaging.encrypt
-	internal mutating func maybeStageNextRound() {
+	@discardableResult
+	internal mutating func maybeStageNextRound() -> Bool {
 		guard pqTurnMine, isFullyEstablished, pqInflight == nil, owedBind == nil,
 			pendingSideBand == nil, pqWedge == nil,
 			!noCustody.contains(.sendClassical), !noCustody.contains(.sendPQ)
 		else {
-			return
+			return false
+		}
+		if !noCustody.contains(.recvPQ), rekeyDue() {
+			return (try? stageRekey()) != nil
 		}
 		try? stageRatchet()
+		return false
+	}
+
+	/// Either leaf of our recv-PQ group presenting an id other than its
+	/// owner's current canonical id (`protocol-flows.md:56`). Our own lag
+	/// opens only once the peer has folded our own offer — observed as our
+	/// leaf in `recvGroup.classical` already presenting `mine.current` —
+	/// so a peer that never folds a catch-up offer (a deployed host that
+	/// never runs A.2, e.g.) leaves this session ratcheting A.4 instead of
+	/// stalled on a §A.5 it can never complete. The peer's own lag opens
+	/// the reciprocal round too, deferred under the deployed-compatible
+	/// profile until the peer's own A.5 has landed — observed as its leaf
+	/// in our send-PQ presenting its current canonical id (protocol doc §4
+	/// C2). Only the receive group's leaves trigger: reading our own
+	/// send-PQ leaf here would be the deployed engine's own anomaly.
+	func rekeyDue() -> Bool {
+		guard let recvPQ = recvGroup?.pq, let sendPQ = sendGroup?.pq else { return false }
+		return Self.opensRekey(
+			ownLeafLags: ownLeafLagsHead(in: recvPQ),
+			ownTargetFolded: ownRekeyTargetFolded(),
+			peerLeafLags: peerLeafLagsHead(in: recvPQ),
+			peerOwnA5Landed: !peerLeafLagsHead(in: sendPQ),
+			profile: profile)
+	}
+
+	private func ownLeafLagsHead(in group: MLS.RFC9420.Group) -> Bool {
+		guard let head = auth.mine.current else { return false }
+		guard let leaf = try? Self.ownLeaf(of: group),
+			let id = try? basicIdentifier(leaf.credential)
+		else { return false }
+		return id != head
+	}
+
+	/// Has the peer already canonicalized our current credential? Read off
+	/// our own leaf in `recvGroup.classical` — the peer's view of us we
+	/// mirror — rather than `auth.mine` itself, which advances the moment
+	/// WE canonicalize, well before the peer has folded anything.
+	private func ownRekeyTargetFolded() -> Bool {
+		guard let recvClassical = recvGroup?.classical, let head = auth.mine.current else {
+			return true
+		}
+		guard let leaf = try? Self.ownLeaf(of: recvClassical),
+			let id = try? basicIdentifier(leaf.credential)
+		else { return true }
+		return id == head
+	}
+
+	/// The non-self leaf of `group` presenting an id other than the peer's
+	/// current canonical one.
+	private func peerLeafLagsHead(in group: MLS.RFC9420.Group) -> Bool {
+		guard let head = auth.theirs.current else { return false }
+		guard
+			let entry = group.tree.nonBlankLeaves().first(where: {
+				$0.index != group.myLeafIndex
+			}),
+			let leaf = try? MLS.RFC9420.LeafNode(mlsEncoded: entry.record.encoded),
+			let id = try? basicIdentifier(leaf.credential)
+		else { return false }
+		return id != head
 	}
 }
