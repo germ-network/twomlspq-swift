@@ -1148,24 +1148,28 @@ final class RotationTests: XCTestCase {
 @available(iOS 26, macOS 26, *)
 extension RotationTests {
 	/// An §A.5 `pqRekeyApply` keeps `recvPQ.pending[mine.current]`
-	/// when the recv-PQ leaf STILL lags after the apply — the apply only
-	/// ever moved a DIFFERENT (send-PQ) leaf, so the retained catch-up key
-	/// for the still-lagging recv-PQ leaf must survive, not just the one
-	/// entry the apply itself touched.
+	/// when the recv-PQ leaf STILL lags after the apply. The in-flight
+	/// race: bob's own begin is minted key-only FIRST, against his
+	/// then-current id; only AFTER that does `c` become canonical, with a
+	/// held catch-up key supplied out of band (as a migrated session's
+	/// mint would). The apply promotes the round's own (same-id) key, and
+	/// must retain the now-lagging `pending[c]` it never touched.
 	func testRekeyApplyRetainsPQCatchUpKey() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let upd = try bob.pqRekeyBegin().frame
+
 		let c = Data("bob-rust-rotated".utf8)
 		let (sk, pk) = try TwoMLSIdentity.mintSignatureKeypair()
 		bob.auth.mine.history.append(c)
 		bob.leafKeys.recvPQ.pending[c] = LeafKey(signingKey: sk, signatureKey: pk)
 		alice.auth.theirs.history.append(c)
-		let upd = try bob.pqRekeyBegin().frame
+
 		let commit = try alice.pqRekeyRespond(upd).frame
 		_ = try bob.pqRekeyApply(commit)
 		XCTAssertNotEqual(
 			try basicIdentifier(
 				TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq)).credential),
-			c, "the apply moved bob's SEND-PQ leaf, not the recv-PQ one")
+			c, "the apply promoted the round's own (same-id) key, not c")
 		XCTAssertEqual(
 			bob.leafKeys.recvPQ.pending[c]?.signatureKey, pk,
 			"the retained catch-up key")

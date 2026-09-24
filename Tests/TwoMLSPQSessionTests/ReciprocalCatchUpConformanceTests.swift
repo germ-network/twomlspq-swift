@@ -298,27 +298,17 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 			XCTAssertTrue(triggerOpensRekey)
 		}
 
-		var beginProbe = alice
-		let beginResult = try beginProbe.pqRekeyBegin()
+		// Round 1: alice's real `pqRekeyBegin` now carries her current id
+		// directly, driven through the real commit/apply path.
+		let beginResult = try alice.pqRekeyBegin()
 		// PR2: opened via `bob` — the frame's addressee.
 		let announcedByBegin = try credentialAnnounced(
 			byRekeyUpdFrame: beginResult.frame, opener: bob,
 			verifyingAgainst: try XCTUnwrap(bob.sendGroup?.pq))
-		XCTExpectFailure(
-			"protocol-flows.md:56/:704-706 — pqRekeyBegin only ever proposes a same-id refresh"
-		) {
-			XCTAssertEqual(announcedByBegin, alice2ID)
-		}
+		XCTAssertEqual(announcedByBegin, alice2ID)
 
-		// Hand-build round 1's real content and drive it through the REAL
-		// commit/apply path — already conforming (plain): `pqRekeyRespond`
-		// already accepts a proposer's move onto an already-canonical id
-		// (SigningKeyProtocolTests §3).
-		let round1 = try handBuildPQLeafMoveUpd(proposer: &alice, newID: alice2ID)
-		let round1Commit = try bob.pqRekeyRespond(round1.frame)
+		let round1Commit = try bob.pqRekeyRespond(beginResult.frame)
 		XCTAssertEqual(round1Commit.rotatedCredential, alice2ID)
-		alice.pqInflight = .rekeyInitiated(updMessage: round1.bytes)
-		alice.pendingSideBand = round1.frame
 		XCTAssertNoThrow(try alice.pqRekeyApply(round1Commit.frame))
 		XCTAssertNil(alice.pqInflight)
 
@@ -478,8 +468,12 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	// MARK: - A rotated opener announces its current id (unit)
 
 	/// `protocol-flows.md:56`: after Alice's rotation converges, the A.5
-	/// she opens must carry a `Upd′` whose leaf presents her new id.
-	func testRotatedOpenerAnnouncesItsCurrentID() throws {
+	/// she opens must carry a `Upd′` whose leaf presents her new id, with a
+	/// fresh key staged under it in `recvPQ.pending` — distinct from the
+	/// old `current` — until the peer's Commit′ applies and promotes it,
+	/// leaving `pending` empty afterward. Kills: `targetID = ownPQID`;
+	/// `replace(…, for: ownPQID)`.
+	func testRotatedOpenerUpdCarriesCurrentIDAndStagesItsKey() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		try driveOneA4Round(initiator: &bob, responder: &alice)
 		XCTAssertTrue(alice.myPQTurn)
@@ -497,16 +491,114 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		XCTAssertEqual(alice.myPrincipalState, .sync(alice2ID))
 		XCTAssertTrue(alice.myPQTurn)
 
+		let aliceRecvPQKeyBefore = try TwoMLSSession.ownLeaf(
+			of: try XCTUnwrap(alice.recvGroup?.pq)
+		).signatureKey
+
 		let begin = try alice.pqRekeyBegin()
 		// PR2: opened via `bob` — the frame's addressee.
 		let announcedID = try credentialAnnounced(
 			byRekeyUpdFrame: begin.frame, opener: bob,
 			verifyingAgainst: try XCTUnwrap(bob.sendGroup?.pq))
-		XCTExpectFailure(
-			"protocol-flows.md:56 — pqRekeyBegin only ever proposes a same-id refresh"
-		) {
-			XCTAssertEqual(announcedID, alice2ID)
-		}
+		XCTAssertEqual(announcedID, alice2ID)
+		let stagedKey = try XCTUnwrap(alice.leafKeys.recvPQ.pending[alice2ID])
+		XCTAssertNotEqual(stagedKey.signatureKey, aliceRecvPQKeyBefore)
+
+		let commit = try bob.pqRekeyRespond(begin.frame)
+		XCTAssertNoThrow(try alice.pqRekeyApply(commit.frame))
+		XCTAssertEqual(
+			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.recvGroup?.pq))
+				.signatureKey,
+			stagedKey.signatureKey)
+		XCTAssertTrue(alice.leafKeys.recvPQ.pending.isEmpty)
+	}
+
+	// MARK: - Both leaves move in one round
+
+	/// Both parties have rotated: bob's real `pqRekeyBegin` carries his own
+	/// new id (the proposer's move); alice's real `pqRekeyRespond`, on the
+	/// SAME call, also catches her own lagging committer leaf up to her
+	/// new id — the effects carry TWO `.credentialReplaced` events, each
+	/// adjudicated against its own party's sequence. Kills: adjudicating
+	/// the committer against the wrong sequence (swapping `mine`/`theirs`
+	/// in `adjudicatePQRekeyEffects`); a shape check that refuses two
+	/// `.credentialReplaced` events.
+	func testOneRoundMovesBothLeaves() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		XCTAssertTrue(bob.myPQTurn)
+
+		// Alice rotates first; bob (turn holder) folds it.
+		let alice2ID = Data("alice-both-move".utf8)
+		_ = try alice.prepareToEncrypt(rotating: alice2ID)
+		let aliceOfferFrame = try alice.encrypt(Data("alice-offer".utf8)).frame
+		let aliceOfferDecrypted = try bob.processIncomingDecrypted(aliceOfferFrame)
+		_ = try bob.queueProposal(digest: aliceOfferDecrypted.queuedProposal.digest)
+		let aliceFoldPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(aliceFoldPrepared.didCommit)
+		let aliceFoldFrame = try bob.encrypt(Data("alice-fold".utf8)).frame
+		discardIncidentalSelfDrive(&bob)
+		_ = try alice.processIncomingDecrypted(aliceFoldFrame)
+		XCTAssertEqual(alice.myPrincipalState, .sync(alice2ID))
+
+		// Bob also rotates; alice folds it.
+		let bob2ID = Data("bob-both-move".utf8)
+		_ = try bob.prepareToEncrypt(rotating: bob2ID)
+		let bobOfferFrame = try bob.encrypt(Data("bob-offer".utf8)).frame
+		discardIncidentalSelfDrive(&bob)
+		let bobOfferDecrypted = try alice.processIncomingDecrypted(bobOfferFrame)
+		_ = try alice.queueProposal(digest: bobOfferDecrypted.queuedProposal.digest)
+		let bobFoldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(bobFoldPrepared.didCommit)
+		let bobFoldFrame = try alice.encrypt(Data("bob-fold".utf8)).frame
+		_ = try bob.processIncomingDecrypted(bobFoldFrame)
+		XCTAssertEqual(bob.myPrincipalState, .sync(bob2ID))
+		XCTAssertTrue(bob.myPQTurn)
+
+		// Bob's own leaf in Group_B.pq (alice's send-PQ) still lags, and so
+		// does alice's own leaf there — neither's PQ leaf has moved yet.
+		let begin = try bob.pqRekeyBegin()
+		let response = try alice.pqRekeyRespond(begin.frame)
+		XCTAssertEqual(response.rotatedCredential, bob2ID, "the PROPOSER's (bob's) move")
+		XCTAssertTrue(alice.leafKeys.sendPQ.pending.isEmpty)
+
+		let aliceOwnLeaf = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.sendGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(aliceOwnLeaf.credential), alice2ID)
+		let bobLeafAtAlice = try peerLeaf(in: try XCTUnwrap(alice.sendGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(bobLeafAtAlice.credential), bob2ID)
+
+		XCTAssertNoThrow(try bob.pqRekeyApply(response.frame))
+		XCTAssertTrue(bob.leafKeys.recvPQ.pending.isEmpty)
+		let bobOwnLeaf = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.recvGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(bobOwnLeaf.credential), bob2ID)
+	}
+
+	// MARK: - A held migrated catch-up key is replaced, not consumed
+
+	/// A `recvPQ.pending[c]` key supplied out of band (as a
+	/// migration mint would) for the SAME id `pqRekeyBegin` is about to
+	/// target is overwritten, not consumed: the leaf lands on `c` under a
+	/// GENUINELY FRESH key, never the held one. Kills: consuming the held
+	/// key instead of minting fresh.
+	func testHeldPQCatchUpKeyIsReplacedByAFreshKey() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let c = Data("bob-migrated-catchup".utf8)
+		let (heldSigningKey, heldSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		bob.auth.mine.history.append(c)
+		bob.leafKeys.recvPQ.pending[c] = LeafKey(
+			signingKey: heldSigningKey, signatureKey: heldSignatureKey)
+		alice.auth.theirs.history.append(c)
+
+		let begin = try bob.pqRekeyBegin()
+		let stagedKey = try XCTUnwrap(bob.leafKeys.recvPQ.pending[c])
+		XCTAssertNotEqual(stagedKey.signatureKey, heldSignatureKey)
+
+		let commit = try alice.pqRekeyRespond(begin.frame)
+		XCTAssertNoThrow(try bob.pqRekeyApply(commit.frame))
+		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.recvGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(recvPQLeaf.credential), c)
+		XCTAssertEqual(recvPQLeaf.signatureKey, stagedKey.signatureKey)
+		XCTAssertNotEqual(recvPQLeaf.signatureKey, heldSignatureKey)
+		XCTAssertTrue(bob.leafKeys.recvPQ.pending.isEmpty)
 	}
 
 	// MARK: - "Lags" compares against the head
