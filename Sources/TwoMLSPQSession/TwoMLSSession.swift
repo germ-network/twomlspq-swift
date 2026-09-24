@@ -665,6 +665,13 @@ public struct TwoMLSSession: Sendable {
 			&& !noCustody.contains(.recvClassical)
 	}
 
+	/// Step 3 (A.5): the id of this session's own-offer window record, if
+	/// one is outstanding. Only ever moves from a value to `nil` (the drain
+	/// at every `recvGroup.classical` epoch advance) — never to a
+	/// DIFFERENT id. `nil` means the host may delete its stored blob once
+	/// the archive from that same call is durable.
+	public var ownOfferWindowID: Data? { ownOfferWindow?.id }
+
 	// MARK: Signing keys stored by role
 
 	/// The four groups' own stored signing-key sets — the ONLY source of a
@@ -790,7 +797,8 @@ public struct TwoMLSSession: Sendable {
 	func sendClassicalSigningKey() throws -> MLS.SignatureSecretKey {
 		guard sendGroup != nil else { throw TwoMLSError.notEstablished }
 		guard let current = leafKeys.sendClassical.current else {
-			throw TwoMLSError.credentialUnknown
+			throw noCustody.contains(.sendClassical)
+				? TwoMLSError.leafCustodyUnavailable : TwoMLSError.credentialUnknown
 		}
 		return current.signingKey
 	}
@@ -801,7 +809,8 @@ public struct TwoMLSSession: Sendable {
 	func recvClassicalSigningKey() throws -> MLS.SignatureSecretKey {
 		guard recvGroup != nil else { throw TwoMLSError.notEstablished }
 		guard let current = leafKeys.recvClassical.current else {
-			throw TwoMLSError.credentialUnknown
+			throw noCustody.contains(.recvClassical)
+				? TwoMLSError.leafCustodyUnavailable : TwoMLSError.credentialUnknown
 		}
 		return current.signingKey
 	}
@@ -814,7 +823,8 @@ public struct TwoMLSSession: Sendable {
 			throw TwoMLSError.notEstablished
 		}
 		guard let current = leafKeys.sendPQ.current else {
-			throw TwoMLSError.credentialUnknown
+			throw noCustody.contains(.sendPQ)
+				? TwoMLSError.leafCustodyUnavailable : TwoMLSError.credentialUnknown
 		}
 		return current.signingKey
 	}
@@ -827,7 +837,8 @@ public struct TwoMLSSession: Sendable {
 			throw TwoMLSError.notEstablished
 		}
 		guard let current = leafKeys.recvPQ.current else {
-			throw TwoMLSError.credentialUnknown
+			throw noCustody.contains(.recvPQ)
+				? TwoMLSError.leafCustodyUnavailable : TwoMLSError.credentialUnknown
 		}
 		return current.signingKey
 	}

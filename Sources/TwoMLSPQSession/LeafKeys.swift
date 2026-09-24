@@ -73,29 +73,53 @@ struct LeafKeys: Sendable {
 extension TwoMLSSession {
 	/// The live choke-point check (`StateUpdate.swift`'s `stateUpdate(kind:)`
 	/// choke point): every EXISTING group's own leaf must currently present
-	/// its stored key set's `current` — fail-closed, `.credentialUnknown`.
-	/// Checks only existing groups (a reservation names no leaf yet, so
-	/// there is nothing to compare it against); costs at most four own-leaf
-	/// `LeafNode` decodes and byte compares, no crypto, and never decodes a
-	/// proposal.
-	func assertLeafKeysPresented() throws {
+	/// its stored key set's `current` — fail-closed, `.credentialUnknown`,
+	/// UNLESS its role is in `noCustody` (step 3), in which case a nil
+	/// `current` is tolerated. Step 3: first runs the monotone `noCustody`
+	/// drain — any role whose set now genuinely has a `current` (a
+	/// promotion since the flag was set, at any of the several promotion
+	/// call sites, none of which touch `noCustody` themselves) is dropped
+	/// here, at the one choke point every state-advancing call already
+	/// passes through — this is how the flag "clears on promotion" without
+	/// hunting down every promotion site individually. Checks only existing
+	/// groups (a reservation names no leaf yet, so there is nothing to
+	/// compare it against); costs at most four own-leaf `LeafNode` decodes
+	/// and byte compares, no crypto, and never decodes a proposal.
+	mutating func assertLeafKeysPresented() throws {
+		if leafKeys.sendClassical.current != nil { noCustody.remove(.sendClassical) }
+		if leafKeys.recvClassical.current != nil { noCustody.remove(.recvClassical) }
+		if leafKeys.sendPQ.current != nil { noCustody.remove(.sendPQ) }
+		if leafKeys.recvPQ.current != nil { noCustody.remove(.recvPQ) }
+
 		if let send = sendGroup {
-			try Self.assertPresented(leafKeys.sendClassical, in: send.classical)
+			try Self.assertPresented(
+				leafKeys.sendClassical, in: send.classical,
+				noCustody: noCustody.contains(.sendClassical))
 			if let sendPQGroup = send.pq {
-				try Self.assertPresented(leafKeys.sendPQ, in: sendPQGroup)
+				try Self.assertPresented(
+					leafKeys.sendPQ, in: sendPQGroup,
+					noCustody: noCustody.contains(.sendPQ))
 			}
 		}
 		if let recv = recvGroup {
-			try Self.assertPresented(leafKeys.recvClassical, in: recv.classical)
+			try Self.assertPresented(
+				leafKeys.recvClassical, in: recv.classical,
+				noCustody: noCustody.contains(.recvClassical))
 			if let recvPQGroup = recv.pq {
-				try Self.assertPresented(leafKeys.recvPQ, in: recvPQGroup)
+				try Self.assertPresented(
+					leafKeys.recvPQ, in: recvPQGroup,
+					noCustody: noCustody.contains(.recvPQ))
 			}
 		}
 	}
 
-	private static func assertPresented(_ set: GroupKeySet, in group: MLS.RFC9420.Group) throws
-	{
-		guard let current = set.current else { throw TwoMLSError.credentialUnknown }
+	private static func assertPresented(
+		_ set: GroupKeySet, in group: MLS.RFC9420.Group, noCustody: Bool
+	) throws {
+		guard let current = set.current else {
+			guard noCustody else { throw TwoMLSError.credentialUnknown }
+			return
+		}
 		guard try ownLeaf(of: group).signatureKey == current.signatureKey else {
 			throw TwoMLSError.credentialUnknown
 		}

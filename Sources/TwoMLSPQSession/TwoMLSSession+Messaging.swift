@@ -2,6 +2,7 @@ import Foundation
 import MLSCodec
 import MLSCombiner
 import MLSProfileRFC9420
+import SecretBytes
 
 // MARK: - Send / receive (one app message; no commit) — messaging loop
 
@@ -48,6 +49,13 @@ extension TwoMLSSession {
 		// `0x01` staple and make `installEstablishmentEnvelope` fail
 		// `.sessionNotReady` forever.
 		try ensureEstablishmentDelegated()
+		// Step 3: no-custody guard, before `committingRound()` — it writes
+		// `recvGroup` even for a bare catch-up-only round
+		// (`TwoMLSSession+ClassicalCommit.swift`'s cross-party PSK export).
+		guard !noCustody.contains(.sendClassical), !noCustody.contains(.recvClassical)
+		else {
+			throw TwoMLSError.leafCustodyUnavailable
+		}
 		let (didCommit, committedRemoteClientID) = try committingRound()
 		rewrapSideBand()
 
@@ -354,8 +362,16 @@ extension TwoMLSSession {
 	/// also dispatches a STANDALONE `0x01`/`0x0B` frame (no `0x03` wrapper),
 	/// and PAUSES on a `0x0B` (stapled or standalone) while `recvGroup ==
 	/// nil` rather than joining — see `IncomingResult`.
-	public mutating func processIncoming(_ inbound: Data) throws -> IncomingResult {
-		try dispatchIncoming(inbound, approval: .unapproved)
+	/// `ownOfferWindow` (step 3, A.5): the caller's own-offer window blob,
+	/// supplied only on a retry after `.ownOfferWindowRequired` — `nil`
+	/// otherwise (the common case). Consulted ONLY when a staple's commit
+	/// references an own-Update by a ref this session's framed
+	/// `stagedUpdates` doesn't hold; ignored entirely otherwise, so passing
+	/// one speculatively costs nothing beyond the argument itself.
+	public mutating func processIncoming(
+		_ inbound: Data, ownOfferWindow: SecretArchive? = nil
+	) throws -> IncomingResult {
+		try dispatchIncoming(inbound, approval: .unapproved, ownOfferWindow: ownOfferWindow)
 	}
 
 	/// Slice 11 (protocol-flows.md:407-432): re-feed a frame carrying a `0x0B` pair the caller has
@@ -381,18 +397,19 @@ extension TwoMLSSession {
 	/// converse order — record first, call second — always heals.
 	public mutating func processIncomingApproved(
 		_ inbound: Data, approvedEnvelopeDigest: Data, approvedWelcomeDigest: Data,
-		expectedCreator: Data
+		expectedCreator: Data, ownOfferWindow: SecretArchive? = nil
 	) throws -> IncomingResult {
 		try dispatchIncoming(
 			inbound,
 			approval: .approved(
 				envelopeDigest: approvedEnvelopeDigest,
 				welcomeDigest: approvedWelcomeDigest,
-				expectedCreator: expectedCreator))
+				expectedCreator: expectedCreator), ownOfferWindow: ownOfferWindow)
 	}
 
 	private mutating func dispatchIncoming(
-		_ inbound: Data, approval: EstablishmentApproval
+		_ inbound: Data, approval: EstablishmentApproval,
+		ownOfferWindow: SecretArchive? = nil
 	) throws -> IncomingResult {
 		// Entry (PR2): transparently removes the header seal if present,
 		// else passes an already-opened frame straight through (book,
@@ -401,7 +418,8 @@ extension TwoMLSSession {
 		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
 		switch tag {
 		case Frames.messageFrameTag:
-			return try processMessageFrame(frame, approval: approval)
+			return try processMessageFrame(
+				frame, approval: approval, ownOfferWindow: ownOfferWindow)
 		case Frames.establishmentHandoffTag:
 			return try processStandaloneHandoff(frame, approval: approval)
 		case Frames.apqWelcomeTag:
@@ -417,7 +435,7 @@ extension TwoMLSSession {
 	/// decrypts normally, `handleStaple` extracting/dedup-ing an already-
 	/// joined `0x0B`'s inner welcome same as it always has for `0x01`.
 	private mutating func processMessageFrame(
-		_ frame: Data, approval: EstablishmentApproval
+		_ frame: Data, approval: EstablishmentApproval, ownOfferWindow: SecretArchive? = nil
 	) throws -> IncomingResult {
 		let (staple, proposalSection, appSection) = try Frames.decodeMessageFrame(frame)
 		if staple.first == Frames.establishmentHandoffTag, recvGroup == nil {
@@ -448,7 +466,7 @@ extension TwoMLSSession {
 		// against an un-checkpointed move surviving a later throw in this
 		// same method; this snapshot only picks the precise kind up front.)
 		let pqManifestBefore = pqEpochManifest
-		let stapleResult = try handleStaple(staple)
+		let stapleResult = try handleStaple(staple, ownOfferWindow: ownOfferWindow)
 		// (DEBUG only): a fault point AFTER `handleStaple`'s own write-back
 		// (a folded/bound commit already landed on `self`, including any
 		// `leafKeys` promotion) but before the next throwing call — proves
@@ -591,7 +609,9 @@ extension TwoMLSSession {
 	/// already joined (`processMessageFrame` pauses on it first while
 	/// `recvGroup == nil`), so it only ever dedups here, never joins.
 	@discardableResult
-	private mutating func handleStaple(_ staple: Data) throws -> StapleApplyResult {
+	private mutating func handleStaple(
+		_ staple: Data, ownOfferWindow: SecretArchive? = nil
+	) throws -> StapleApplyResult {
 		guard let tag = staple.first else { throw TwoMLSError.truncatedSection }
 		switch Frames.stapleKind(tag) {
 		case .welcome:
@@ -601,9 +621,9 @@ extension TwoMLSSession {
 			return try applyWelcomeStaple(welcome)
 		case .mlsMessage:
 			let commitBytes = try Frames.decodeMlsMessageStaple(staple)
-			return try applyFoldCommit(commitBytes)
+			return try applyFoldCommit(commitBytes, ownOfferWindow: ownOfferWindow)
 		case .apqPrivateMessage:
-			return try applyBind(staple)
+			return try applyBind(staple, ownOfferWindow: ownOfferWindow)
 		case .unsupported(let tag):
 			throw TwoMLSError.unsupportedStapleTag(tag)
 		}

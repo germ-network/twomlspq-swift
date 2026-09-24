@@ -185,6 +185,95 @@ enum OwnOfferWindow {
 
 		return (id, targets)
 	}
+
+	// MARK: - Runtime load (step 3, A.5)
+
+	/// Decodes `archive`, checks its own shape (format, ascending unique
+	/// refs, matching lengths), and cross-checks the recomputed id and the
+	/// three hoisted fields against `record` — the session's own persisted
+	/// carry. Every failure is `.archiveInvalid`: a wrong or stale blob
+	/// reads exactly like a corrupt one (N-1).
+	static func loadAndVerify(
+		_ archive: SecretArchive, record: OwnOfferWindowRecord
+	) throws -> [SortedOffer] {
+		let body: OwnOfferWindowArchive
+		do {
+			body = try archive.decode(OwnOfferWindowArchive.self)
+		} catch {
+			throw TwoMLSError.archiveInvalid
+		}
+		guard body.epoch == record.epoch, body.groupID == record.groupID,
+			body.senderLeafIndex == record.senderLeafIndex
+		else {
+			throw TwoMLSError.archiveInvalid
+		}
+		let offers = try body.sortedOffers()
+		let recomputedID = id(
+			epoch: body.epoch, groupID: body.groupID,
+			senderLeafIndex: body.senderLeafIndex,
+			sorted: offers)
+		guard recomputedID == record.id else { throw TwoMLSError.archiveInvalid }
+		return offers
+	}
+
+	/// Named-ref inserts for the runtime detection path: unlike `validate`'s
+	/// own bounded sample, this inserts each of `refs` — the commit's
+	/// ACTUAL missing references — resolved from the already-authenticated,
+	/// already-verified window. Refs already in the caller's `store` are
+	/// never passed here (the caller only ever names what's still missing),
+	/// so `migratedUpdateRefAlreadyStored` never fires. Returns the raw
+	/// refs that failed to resolve — absent from `offers`, or rejected by
+	/// the SPI itself — the caller's own "windowLacked" signal.
+	static func insertNamed(
+		_ refs: [MLS.HashReference], from offers: [SortedOffer],
+		into store: inout MLS.RFC9420.ProposalStore,
+		recvClassical: MLS.RFC9420.Group, myLeafIndex: MLS.LeafIndex,
+		epoch: UInt64, groupID: Data, provider: any MLS.CipherSuiteProvider
+	) -> Set<Data> {
+		var lacked: Set<Data> = []
+		for ref in refs {
+			guard let offer = binarySearch(offers, ref: ref.data) else {
+				lacked.insert(ref.data)
+				continue
+			}
+			let decoded: MLS.RFC9420.Proposal? = try? withDeployedWireConventions {
+				try MLS.RFC9420.Proposal(mlsEncoded: offer.proposal)
+			}
+			guard case .update(let leafNode)? = decoded else {
+				lacked.insert(ref.data)
+				continue
+			}
+			do {
+				try recvClassical.insertMigratedOwnUpdate(
+					as: myLeafIndex, provider, into: &store, ref: ref,
+					leafNode: leafNode,
+					epoch: epoch, groupID: groupID,
+					leafSecret: try MLS.HpkeSecretKey(offer.leafSecret))
+			} catch {
+				lacked.insert(ref.data)
+			}
+		}
+		return lacked
+	}
+
+	/// `offers` is ascending by `ref` (both mints sort via `canonicalOrder`;
+	/// `loadAndVerify` decodes a shape that's already been checked
+	/// ascending) — O(log N) instead of a linear scan per missing ref.
+	private static func binarySearch(_ offers: [SortedOffer], ref: Data) -> SortedOffer? {
+		var low = 0
+		var high = offers.count - 1
+		while low <= high {
+			let mid = (low + high) / 2
+			let candidate = offers[mid].ref
+			if candidate == ref { return offers[mid] }
+			if candidate.lexicographicallyPrecedes(ref) {
+				low = mid + 1
+			} else {
+				high = mid - 1
+			}
+		}
+		return nil
+	}
 }
 
 /// A tiny, deterministic, non-cryptographic PRNG (Vigna's SplitMix64) — used
@@ -267,5 +356,60 @@ extension OwnOfferWindowArchive {
 			format: Self.currentFormat, epoch: epoch, groupID: groupID,
 			senderLeafIndex: senderLeafIndex, refs: refs, proposalLengths: lengths,
 			proposals: proposals, leafSecrets: try SecretBytes(bytes: secretBytes))
+	}
+
+	/// Decodes the columnar layout back to canonically-ordered offers,
+	/// checking the archive's own shape invariants (the current format,
+	/// strictly-ascending refs, matching lengths) — the load-time mirror of
+	/// the mint-time encode above. Every failure is `.archiveInvalid`.
+	func sortedOffers() throws -> [OwnOfferWindow.SortedOffer] {
+		guard format == Self.currentFormat else { throw TwoMLSError.archiveInvalid }
+		guard refs.count % 32 == 0 else { throw TwoMLSError.archiveInvalid }
+		let count = refs.count / 32
+		guard proposalLengths.count == count * 4 else { throw TwoMLSError.archiveInvalid }
+		guard leafSecrets.byteCount == count * 32 else { throw TwoMLSError.archiveInvalid }
+
+		let secretBytes: [UInt8] = leafSecrets.withUnsafeBytes { Array($0) }
+		var result: [OwnOfferWindow.SortedOffer] = []
+		result.reserveCapacity(count)
+		var proposalOffset = proposals.startIndex
+		var previousRef: Data?
+		for index in 0..<count {
+			let refStart = refs.index(refs.startIndex, offsetBy: index * 32)
+			let refEnd = refs.index(refStart, offsetBy: 32)
+			let ref = Data(refs[refStart..<refEnd])
+			if let previousRef {
+				guard previousRef.lexicographicallyPrecedes(ref) else {
+					throw TwoMLSError.archiveInvalid
+				}
+			}
+			previousRef = ref
+
+			let lengthStart = proposalLengths.index(
+				proposalLengths.startIndex, offsetBy: index * 4)
+			let lengthEnd = proposalLengths.index(lengthStart, offsetBy: 4)
+			let length = proposalLengths[lengthStart..<lengthEnd].reduce(UInt32(0)) {
+				($0 << 8) | UInt32($1)
+			}
+			guard
+				let proposalEnd = proposals.index(
+					proposalOffset, offsetBy: Int(length),
+					limitedBy: proposals.endIndex)
+			else {
+				throw TwoMLSError.archiveInvalid
+			}
+			let proposal = Data(proposals[proposalOffset..<proposalEnd])
+			proposalOffset = proposalEnd
+
+			let secretStart = index * 32
+			let leafSecret = try SecretBytes(
+				bytes: Data(secretBytes[secretStart..<(secretStart + 32)]))
+
+			result.append(
+				OwnOfferWindow.SortedOffer(
+					ref: ref, proposal: proposal, leafSecret: leafSecret))
+		}
+		guard proposalOffset == proposals.endIndex else { throw TwoMLSError.archiveInvalid }
+		return result
 	}
 }

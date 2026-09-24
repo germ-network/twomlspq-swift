@@ -138,7 +138,6 @@ extension TwoMLSSession {
 	/// before the bootstrap can add its own commit to the pile. Clears
 	/// `bootstrapKPSecret` once spent (§11 #11).
 	public mutating func pqBootstrapJoin(_ inbound: Data) throws -> StateUpdate {
-		guard pendingProposal == nil else { throw TwoMLSError.sessionNotReady }
 		// Entry (PR2): the peer's `0x15` arrives header-sealed.
 		let frame = openOrRaw(inbound)
 		let welcomeBytes = try Frames.decodePQBootstrapWelcome(frame)
@@ -146,8 +145,19 @@ extension TwoMLSSession {
 		else {
 			throw TwoMLSError.malformedSideBandMessage
 		}
+		// S-2 (step 3): the fatal name at every PQ door, checked right
+		// after the untrusted decode and before any state-shape guard —
+		// mirrors Rust's own `pq_bootstrap_bind` (decode, then
+		// `check_not_wedged`, then its state-shape guards, `mod.rs`).
+		guard pqWedge == nil else { throw TwoMLSError.pqSideBandWedged }
+		guard pendingProposal == nil else { throw TwoMLSError.sessionNotReady }
 		guard let secret = bootstrapKPSecret else { throw TwoMLSError.sessionNotReady }
 		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
+		// Step 3: no-custody guard, before anything is consumed — this
+		// door's `owePQBind` commits `sendGroup.pq`.
+		guard !noCustody.contains(.sendPQ) else {
+			throw TwoMLSError.leafCustodyUnavailable
+		}
 
 		let credentials = MLS.RFC9420.Group.JoinerCredentials(
 			keyPackage: secret.keyPackage, initKey: secret.initSecretKey,

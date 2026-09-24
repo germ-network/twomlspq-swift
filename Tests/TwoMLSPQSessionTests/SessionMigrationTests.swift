@@ -1083,7 +1083,7 @@ final class SessionMigrationTests: XCTestCase {
 			mintedBody.leafKeys.sendPQ?.current?.signatureKey,
 			freshN.pqSignatureKey.data)
 
-		let restored = try TwoMLSSession.restore(
+		var restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
@@ -1114,6 +1114,343 @@ final class SessionMigrationTests: XCTestCase {
 				pqProvider: SessionTestSupport.pqProvider)
 		) { error in
 			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	// MARK: - Step 3: migration inputs on stored per-group signing keys
+
+	/// Converts a LIVE `leafKeys` value 1:1 to `MigratedLeafKeys` — used
+	/// only by tests that hand-stage a key `convertDeployedKeys` could
+	/// never discover on its own (a window offer's target, never framed
+	/// into `stagedUpdates`), so they supply it directly instead of relying
+	/// on the temporary owner-keyed conversion.
+	private func migratedLeafKeys(from leafKeys: LeafKeys) -> MigratedLeafKeys {
+		func convert(_ set: GroupKeySet) -> MigratedGroupKeys {
+			MigratedGroupKeys(
+				current: set.current.map {
+					MigratedLeafKey(
+						signingKey: $0.signingKey.data,
+						signatureKey: $0.signatureKey.data)
+				},
+				pending: set.pending.map { target, key in
+					MigratedPendingLeafKey(
+						target: target,
+						key: MigratedLeafKey(
+							signingKey: key.signingKey.data,
+							signatureKey: key.signatureKey.data)
+					)
+				})
+		}
+		return MigratedLeafKeys(
+			sendClassical: convert(leafKeys.sendClassical),
+			recvClassical: convert(leafKeys.recvClassical),
+			sendPQ: convert(leafKeys.sendPQ), recvPQ: convert(leafKeys.recvPQ))
+	}
+
+	/// Hand-builds one genuinely-signed, unframed own-Update offer against
+	/// `session.recvGroup.classical` (mirrors `RotationTests.
+	/// authorRotatingUpd`) — a fresh keypair, so the offer's identity is
+	/// fully known to the test, and NOT appended to `session.stagedUpdates`
+	/// (a migrated session's framed store may not carry every offer the
+	/// window does). Returns everything a `MigratedOwnOffer`/window record
+	/// needs.
+	private func handBuiltOwnOffer(in session: inout TwoMLSSession) throws -> (
+		ref: Data, bareProposal: Data, epoch: UInt64, groupID: Data, senderLeafIndex: UInt32
+	) {
+		var mirror = try XCTUnwrap(session.recvGroup)
+		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (message, _) = try mirror.classical.proposeUpdate(
+			SessionTestSupport.classicalProvider,
+			sign: MLS.RFC9420.signingClosure(
+				SessionTestSupport.classicalProvider,
+				current: try session.recvClassicalSigningKey(), new: freshSigningKey
+			),
+			framing: .publicMessage,
+			newIdentity: MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: session.identity.clientID),
+				signatureKey: freshSignatureKey))
+		session.recvGroup = mirror
+		// This hand-built Update bypasses `prepareToEncrypt`, which never
+		// stages the fresh key itself — stage it so a later fold's
+		// `promoted()` can find it.
+		try session.leafKeys.recvClassical.stage(
+			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
+			for: session.identity.clientID)
+		guard case .publicMessage(let updatePub) = message else {
+			XCTFail("expected a publicMessage-framed Update")
+			throw TwoMLSError.malformedSideBandMessage
+		}
+		var scratchStore = MLS.RFC9420.ProposalStore()
+		let verified = try mirror.classical.verifying(
+			SessionTestSupport.classicalProvider, proposal: updatePub)
+		let ref = try scratchStore.insert(verified, SessionTestSupport.classicalProvider)
+		guard case .proposal(let bareProposal) = updatePub.content.content else {
+			XCTFail("expected a proposal-carrying PublicMessage")
+			throw TwoMLSError.malformedSideBandMessage
+		}
+		return (
+			ref: ref.data, bareProposal: try bareProposal.mlsEncoded(),
+			epoch: mirror.classical.context.epoch,
+			groupID: mirror.classical.context.groupID,
+			senderLeafIndex: mirror.classical.myLeafIndex.value
+		)
+	}
+
+	/// Rule 10/N-5: `mintArchive(deployedState:)` and `mintOwnOfferWindow`
+	/// must agree on the window id given the SAME window array, unchanged —
+	/// they share the one `OwnOfferWindow.id` function.
+	func testMintArchiveAndMintOwnOfferWindowAgreeOnTheWindowID() throws {
+		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let built = try handBuiltOwnOffer(in: &bob)
+		let offer = MigratedOwnOffer(
+			ref: built.ref, proposal: built.bareProposal,
+			leafSecret: SecretBytes(randomByteCount: 32))
+		let window = MigratedOwnOfferWindow(
+			epoch: built.epoch, groupID: built.groupID,
+			senderLeafIndex: built.senderLeafIndex, offers: [offer])
+
+		var parts = try migratedParts(bob)
+		// The hand-built offer's target lives ONLY in `bob.leafKeys`
+		// (staged directly, not through any staged/pending Update
+		// `convertDeployedKeys` would notice) — supply it explicitly, as a
+		// real migrator would.
+		parts.leafKeys = migratedLeafKeys(from: bob.leafKeys)
+		let mintedArchive = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider,
+			deployedState: MigratedDeployedState(ownOffers: window))
+		let archiveBody = try mintedArchive.decode(SessionArchive.self)
+		let recordID = try XCTUnwrap(archiveBody.deployedCarry?.ownOfferWindow?.id)
+		XCTAssertEqual(recordID.count, 32)
+
+		let mintedWindow = try SessionMigration.mintOwnOfferWindow(
+			window, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider)
+		XCTAssertEqual(mintedWindow.id, recordID)
+	}
+
+	/// An empty `offers` array is `.archiveInvalid` in both mints (A.2's
+	/// "an empty window ⇒ .archiveInvalid in both mints").
+	func testEmptyOwnOfferWindowIsRejectedByBothMints() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let recv = try XCTUnwrap(bob.recvGroup)
+		let window = MigratedOwnOfferWindow(
+			epoch: recv.classical.context.epoch,
+			groupID: recv.classical.context.groupID,
+			senderLeafIndex: recv.classical.myLeafIndex.value, offers: [])
+		let parts = try migratedParts(bob)
+
+		XCTAssertThrowsError(
+			try SessionMigration.mintArchive(
+				kind: .checkpoint, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider,
+				deployedState: MigratedDeployedState(ownOffers: window))
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+		XCTAssertThrowsError(
+			try SessionMigration.mintOwnOfferWindow(
+				window, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// A single flipped proposal byte changes the id (so a load elsewhere
+	/// fails `.archiveInvalid` on the recompute-and-compare) — the direct
+	/// negative for the id function actually covering the proposal bytes
+	/// (one of the required A.10 mutations).
+	func testFlippingAProposalByteChangesTheWindowID() throws {
+		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let built = try handBuiltOwnOffer(in: &bob)
+		var tamperedProposal = built.bareProposal
+		tamperedProposal[tamperedProposal.index(before: tamperedProposal.endIndex)] ^= 0xFF
+		let genuine = MigratedOwnOfferWindow(
+			epoch: built.epoch, groupID: built.groupID,
+			senderLeafIndex: built.senderLeafIndex,
+			offers: [
+				MigratedOwnOffer(
+					ref: built.ref, proposal: built.bareProposal,
+					leafSecret: SecretBytes(randomByteCount: 32))
+			])
+		let tampered = MigratedOwnOfferWindow(
+			epoch: built.epoch, groupID: built.groupID,
+			senderLeafIndex: built.senderLeafIndex,
+			offers: [
+				MigratedOwnOffer(
+					ref: built.ref, proposal: tamperedProposal,
+					leafSecret: SecretBytes(randomByteCount: 32))
+			])
+		let parts = try migratedParts(bob)
+		// The tampered proposal no longer decodes to a genuine `.update`
+		// leaf-signature (flipping its trailing byte breaks the LeafNode's
+		// own self-signature), so rule 10's shape check rejects it before
+		// the id ever matters here — proves the tamper is real, not a
+		// silent id-only difference an attacker could route around.
+		XCTAssertThrowsError(
+			try SessionMigration.mintOwnOfferWindow(
+				tampered, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+		XCTAssertNoThrow(
+			try SessionMigration.mintOwnOfferWindow(
+				genuine, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider))
+	}
+
+	/// A.7 (generalized catch-up), `.mintSupplied`: every existing own leaf
+	/// whose credential lags `auth.mine.current` — classical AND PQ alike —
+	/// needs `pending[mine.current]` in that group, and a caller that
+	/// supplies it is accepted (subsuming the pre-A.7, rotation/born-
+	/// dedicated-only cases).
+	func testMintSuppliedLeafKeysSatisfyTheGeneralizedCatchUpRuleAcrossAllFourGroups() throws {
+		// Needs both PQ halves genuinely established (not the pre-A.3
+		// reservation shape, which requires an EMPTY pending) so a
+		// non-empty PQ `pending` is check 3's "existing group" arm, not
+		// rule 4's reservation arm.
+		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		var parts = try migratedParts(bob)
+		let newID = Data("bob-caught-up-to".utf8)
+		parts.auth.mine.history.append(newID)
+		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let pendingKey = MigratedLeafKey(
+			signingKey: freshSigningKey.data, signatureKey: freshSignatureKey.data)
+
+		func withCatchUp(_ current: MigratedLeafKey) -> MigratedGroupKeys {
+			MigratedGroupKeys(
+				current: current,
+				pending: [MigratedPendingLeafKey(target: newID, key: pendingKey)])
+		}
+		let identityClassicalKey = MigratedLeafKey(
+			signingKey: bob.identity.signingKey.data,
+			signatureKey: bob.identity.signatureKey.data)
+		let identityPQKey = MigratedLeafKey(
+			signingKey: bob.identity.pqSigningKey.data,
+			signatureKey: bob.identity.pqSignatureKey.data)
+		parts.leafKeys = MigratedLeafKeys(
+			sendClassical: withCatchUp(identityClassicalKey),
+			recvClassical: withCatchUp(identityClassicalKey),
+			sendPQ: withCatchUp(identityPQKey),
+			recvPQ: withCatchUp(identityPQKey))
+
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: minted,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertEqual(
+			restored.leafKeys.sendClassical.pending[newID]?.signatureKey.data,
+			freshSignatureKey.data)
+		XCTAssertEqual(
+			restored.leafKeys.recvClassical.pending[newID]?.signatureKey.data,
+			freshSignatureKey.data)
+		XCTAssertEqual(
+			restored.leafKeys.sendPQ.pending[newID]?.signatureKey.data,
+			freshSignatureKey.data)
+		XCTAssertEqual(
+			restored.leafKeys.recvPQ.pending[newID]?.signatureKey.data,
+			freshSignatureKey.data)
+	}
+
+	/// A.7's `.mintSupplied`-only PQ enforcement: a born-dedicated bob
+	/// pre-A.3 has `recvGroup.pq` (Group_A is the standard pair, so it
+	/// exists from birth) still presenting the INVITATION identity's PQ
+	/// key while `auth.mine.current` is already D — a PQ lag
+	/// `.mintConverted` tolerates (native sessions mint no PQ catch-up key
+	/// until a later step; `testMintedBornDedicatedAcceptorRestoresWithCustodyIntact`
+	/// pins exactly this) but `.mintSupplied` must enforce once the caller
+	/// is on the hook for rule 7's PQ arm.
+	func testMintSuppliedModeRequiresThePQCatchUpKeyThatMintConvertedTolerates() throws {
+		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
+		let bob = established.bob
+		let invitationCustody = try XCTUnwrap(bob.recvLeafPrincipal)
+		let parts = try migratedParts(bob)
+
+		// `.mintConverted` (parts.leafKeys == nil): tolerated.
+		XCTAssertNoThrow(
+			try SessionMigration.mintArchive(
+				kind: .checkpoint, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider))
+
+		// `.mintSupplied`, mirroring conversion's own shape everywhere
+		// EXCEPT the recv-PQ catch-up key: rejected.
+		let dClassicalKey = MigratedLeafKey(
+			signingKey: bob.identity.signingKey.data,
+			signatureKey: bob.identity.signatureKey.data)
+		let dPQKey = MigratedLeafKey(
+			signingKey: bob.identity.pqSigningKey.data,
+			signatureKey: bob.identity.pqSignatureKey.data)
+		let invitationClassicalKey = MigratedLeafKey(
+			signingKey: invitationCustody.signingKey.data,
+			signatureKey: invitationCustody.signatureKey.data)
+		let invitationPQKey = MigratedLeafKey(
+			signingKey: invitationCustody.pqSigningKey.data,
+			signatureKey: invitationCustody.pqSignatureKey.data)
+		var suppliedParts = parts
+		suppliedParts.leafKeys = MigratedLeafKeys(
+			sendClassical: MigratedGroupKeys(current: dClassicalKey),
+			recvClassical: MigratedGroupKeys(
+				current: invitationClassicalKey,
+				pending: [
+					MigratedPendingLeafKey(
+						target: bob.identity.clientID, key: dClassicalKey)
+				]),
+			sendPQ: MigratedGroupKeys(current: dPQKey),
+			// No `pending[D]` here — the missing catch-up key.
+			recvPQ: MigratedGroupKeys(current: invitationPQKey))
+		XCTAssertThrowsError(
+			try SessionMigration.mintArchive(
+				kind: .checkpoint, parts: suppliedParts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// Archive keys 44/45 round-trip a no-custody classical role and a PQ
+	/// wedge through restore, and the three owner-decided read-only queries
+	/// (C.1) read them back correctly.
+	func testDeployedCarryRoundTripsNoCustodyAndWedgeThroughRestore() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		var parts = try migratedParts(bob)
+		let identityClassicalKey = MigratedLeafKey(
+			signingKey: bob.identity.signingKey.data,
+			signatureKey: bob.identity.signatureKey.data)
+		let identityPQKey = MigratedLeafKey(
+			signingKey: bob.identity.pqSigningKey.data,
+			signatureKey: bob.identity.pqSignatureKey.data)
+		parts.leafKeys = MigratedLeafKeys(
+			sendClassical: MigratedGroupKeys(current: nil),
+			recvClassical: MigratedGroupKeys(current: identityClassicalKey),
+			sendPQ: MigratedGroupKeys(current: identityPQKey),
+			recvPQ: MigratedGroupKeys(current: identityPQKey))
+
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider,
+			deployedState: MigratedDeployedState(
+				pqWedged: .bootstrap, noCustody: [.sendClassical]))
+
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: minted,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertEqual(restored.noCustody, [.sendClassical])
+		XCTAssertTrue(restored.pqSideBandWedged)
+		XCTAssertFalse(restored.canSend, "no-custody on a classical role blocks canSend")
+		XCTAssertThrowsError(try restored.sendClassicalSigningKey()) { error in
+			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
 		}
 	}
 }

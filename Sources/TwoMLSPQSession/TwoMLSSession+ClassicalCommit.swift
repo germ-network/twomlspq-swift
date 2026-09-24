@@ -4,6 +4,7 @@ import MLSCodec
 import MLSCombiner
 import MLSExtensions
 import MLSProfileRFC9420
+import SecretBytes
 
 // MARK: - Send / receive (one app message; no commit) — classical fold/bind commit machinery
 
@@ -177,6 +178,74 @@ extension TwoMLSSession {
 			_ = try? store.insert(verified, classicalProvider)
 		}
 		return store
+	}
+
+	/// Step 3 (A.5): resolve `commit`'s by-reference own-Update proposals —
+	/// the framed store (`rebuildStagedProposalStore`) first, then, only
+	/// for refs still missing, the caller's own `ownOfferWindow` blob,
+	/// cross-checked against this session's own persisted record
+	/// (`self.ownOfferWindow`). Nothing here mutates `self`; `recv` is the
+	/// caller's own local copy (not yet written back), so every path is
+	/// safe to run before any other consuming step in `applyFoldCommit`/
+	/// `applyBind`.
+	///
+	/// B-1: authenticates BEFORE ever demanding or loading anything. When
+	/// refs are missing, a probe `validating` call — over the FRAMED store
+	/// ONLY (never the window: not loaded yet) and a PSK resolver that
+	/// always returns `nil` — resolves proposal references before PSKs
+	/// (swift-mls `validating`), so `GroupError.unknownProposalReference`
+	/// here means the staple's framing signature and membership tag have
+	/// ALREADY verified, and a ref is genuinely missing: only THEN does
+	/// this throw `.ownOfferWindowRequired` (no window supplied) or load
+	/// the window. Any other error — a bad signature, a bad membership
+	/// tag, or anything else `validating` would have thrown regardless —
+	/// propagates unchanged, exactly as it would have without this
+	/// detection step: a forged commit naming a bogus ref never reaches
+	/// `.ownOfferWindowRequired`.
+	///
+	/// Returns the store the REAL `validating` call should use, and
+	/// whether a named ref still went unresolved (`windowLacked`) — the
+	/// caller maps a subsequent `unknownProposalReference` from that real
+	/// call to `.ownOfferUnavailable` ONLY when this is `true` (S-6/N-1:
+	/// every other `unknownProposalReference` propagates raw, matching
+	/// today's pre-step-3 behavior for a session with no window record at
+	/// all).
+	private func resolvingOwnProposals(
+		commit: MLS.RFC9420.PublicMessage, recv: APQGroup,
+		ownOfferWindow suppliedWindow: SecretArchive?
+	) throws -> (store: MLS.RFC9420.ProposalStore, windowLacked: Bool) {
+		let store = rebuildStagedProposalStore(against: recv.classical)
+		guard case .commit(let commitValue) = commit.content.content else {
+			throw TwoMLSError.malformedSideBandMessage
+		}
+		let missingRefs: [MLS.HashReference] = commitValue.proposals.compactMap {
+			guard case .reference(let ref) = $0, store[ref] == nil else { return nil }
+			return ref
+		}
+		guard !missingRefs.isEmpty, let record = ownOfferWindow else {
+			// Nothing missing, or this session has no window record at all
+			// — continue exactly as today.
+			return (store, false)
+		}
+
+		do {
+			_ = try recv.classical.validating(
+				classicalProvider, commit: commit, proposals: store,
+				psk: { _ in nil })
+			// Resolved without the window after all — nothing left to do.
+			return (store, false)
+		} catch MLS.RFC9420.GroupError.unknownProposalReference {
+			// Authenticated AND missing — fall through to demand/load.
+		}
+
+		guard let suppliedWindow else { throw TwoMLSError.ownOfferWindowRequired }
+		let offers = try OwnOfferWindow.loadAndVerify(suppliedWindow, record: record)
+		var augmented = store
+		let lacked = OwnOfferWindow.insertNamed(
+			missingRefs, from: offers, into: &augmented, recvClassical: recv.classical,
+			myLeafIndex: recv.classical.myLeafIndex, epoch: record.epoch,
+			groupID: record.groupID, provider: classicalProvider)
+		return (augmented, !lacked.isEmpty)
 	}
 
 	/// §11 MF4: export+ledger `classical`'s CURRENT-epoch `0xFF02` cross-party
@@ -554,7 +623,9 @@ extension TwoMLSSession {
 	/// only local `recv`/`send`/`ledger` copies are touched, written back to
 	/// `self` on success — any throw above that point burns no state.
 	// internal: used by Messaging.handleStaple
-	internal mutating func applyFoldCommit(_ commitBytes: Data) throws -> StapleApplyResult {
+	internal mutating func applyFoldCommit(
+		_ commitBytes: Data, ownOfferWindow: SecretArchive? = nil
+	) throws -> StapleApplyResult {
 		// The commit's injected `0xFF02` PSK is `ComponentID`-bearing, like
 		// the `0x05` bind's — decode and construct at the deployed width
 		// (§11 #6/MF7), so the whole body lives in one scope.
@@ -587,7 +658,14 @@ extension TwoMLSSession {
 				return false
 			}
 
-			let proposalStore = rebuildStagedProposalStore(against: recv.classical)
+			// Step 3 (A.5): resolve own-Update by-reference proposals — the
+			// framed store first, then (only for refs still missing) the
+			// own-offer window, authenticated first (B-1). Right after the
+			// commit decode and the epoch classification, before anything
+			// else consumes `send`/the ledgers — mirrors `applyBind`'s own
+			// placement.
+			let (proposalStore, windowLacked) = try resolvingOwnProposals(
+				commit: commitPub, recv: recv, ownOfferWindow: ownOfferWindow)
 
 			guard var send = sendGroup else { throw TwoMLSError.notEstablished }
 			var ledger = sendCrossPSKLedger
@@ -610,9 +688,19 @@ extension TwoMLSSession {
 				expectedExternalPSKIDs: [],
 				allowAttestation: false)
 
-			let pending = try recv.classical.validating(
-				classicalProvider, commit: commitPub, proposals: proposalStore,
-				psk: store.resolver())
+			let pending: MLS.RFC9420.PendingCommit
+			do {
+				pending = try recv.classical.validating(
+					classicalProvider, commit: commitPub,
+					proposals: proposalStore,
+					psk: store.resolver())
+			} catch MLS.RFC9420.GroupError.unknownProposalReference where windowLacked {
+				// Step 3: the supplied window lacked a named ref — terminal,
+				// same authenticated-commit guarantee `resolvingOwnProposals`
+				// already established (its own probe ran this exact
+				// `validating` shape first).
+				throw TwoMLSError.ownOfferUnavailable
+			}
 			let effects = pending.effects
 			try TwoPartyRules.validateTwoPartyUpdateCommit(
 				effects, foldedPeerUpdate: foldedPeerUpdate,
@@ -657,6 +745,12 @@ extension TwoMLSSession {
 			sendAttachmentLedger = attachmentLedger
 			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
+			// Step 3: drain the own-offer window record — `recvGroup.
+			// classical`'s epoch just advanced, the only two sites it ever
+			// does (here and `applyBind`'s own success point below), and
+			// the host may delete its stored blob once this call's own
+			// archive is durable (`ownOfferWindowID`'s own doc).
+			self.ownOfferWindow = nil
 			auth = authCopy
 			leafKeys = updatedLeafKeys
 			// Slice 11 (group-rules.md rule 4): `recvLeafPrincipal` is NOT retired here even
@@ -779,7 +873,9 @@ extension TwoMLSSession {
 	/// point rather than written mid-body. Returns whether the bind was
 	/// actually applied (`false` for an idempotent re-ride).
 	// internal: used by Messaging.handleStaple
-	internal mutating func applyBind(_ staple: Data) throws -> StapleApplyResult {
+	internal mutating func applyBind(
+		_ staple: Data, ownOfferWindow: SecretArchive? = nil
+	) throws -> StapleApplyResult {
 		// The commit messages decoded below carry `ComponentID`-bearing
 		// proposals (the injected external PSK and both `AppDataUpdate`s) —
 		// their decode, not just their construction, must run at the
@@ -831,6 +927,15 @@ extension TwoMLSSession {
 				if case .reference = entry { return true }
 				return false
 			}
+
+			// Step 3 (A.5): resolve own-Update by-reference proposals here,
+			// EARLY — right after the commit decode, before anything in the
+			// PQ half below runs. Valid because the PQ half never touches
+			// `recv.classical` (only `recv.pq`), so this authenticates and
+			// resolves against exactly the same, still-untouched classical
+			// state the PQ half runs alongside, not after.
+			let (proposalStore, windowLacked) = try resolvingOwnProposals(
+				commit: tPub, recv: recv, ownOfferWindow: ownOfferWindow)
 
 			// Mirrors the id `owePQBind` builds on Alice's side (LE64(epoch) ‖
 			// groupID ‖ [0x52]) against `recv.pq!`'s PRE-apply epoch/group id —
@@ -911,7 +1016,6 @@ extension TwoMLSSession {
 			)
 			recv.pq = apqSource
 
-			let proposalStore = rebuildStagedProposalStore(against: recv.classical)
 			var ledger = sendCrossPSKLedger
 			var store = MLS.Combiner.PSKStore()
 			store.register(apqPSK)
@@ -940,10 +1044,18 @@ extension TwoMLSSession {
 			// `verifyApqPskBound` half inspects the `ResolutionRecord` after
 			// the fact instead of a closure-captured bool.
 			let (classicalResolver, pskRecord) = store.recordingResolver()
-			let tPending = try recv.classical.validating(
-				classicalProvider, commit: tPub,
-				proposals: proposalStore,
-				psk: classicalResolver)
+			let tPending: MLS.RFC9420.PendingCommit
+			do {
+				tPending = try recv.classical.validating(
+					classicalProvider, commit: tPub,
+					proposals: proposalStore,
+					psk: classicalResolver)
+			} catch MLS.RFC9420.GroupError.unknownProposalReference where windowLacked {
+				// Step 3: the supplied window lacked a named ref — terminal,
+				// same authenticated-commit guarantee `resolvingOwnProposals`
+				// already established for this staple.
+				throw TwoMLSError.ownOfferUnavailable
+			}
 			let classicalEffects = tPending.effects
 			try TwoPartyRules.validateBindClassicalEffects(
 				classicalEffects, foldedPeerUpdate: foldedPeerUpdate)
@@ -994,6 +1106,10 @@ extension TwoMLSSession {
 			sendAttachmentLedger = attachmentLedger
 			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
+			// Step 3: drain the own-offer window record — see
+			// `applyFoldCommit`'s own comment; this is the ONLY other site
+			// `recvGroup.classical`'s epoch advances.
+			self.ownOfferWindow = nil
 			pqTurnMine = true
 			pqInflight = nil
 			pendingSideBand = nil

@@ -401,4 +401,30 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// approval names a specific dedicated principal, and a join that
 	/// disagrees with it is discarded whole, never partially trusted.
 	case establishmentCreatorMismatch
+
+	// MARK: Migration inputs on stored per-group signing keys (step 3)
+
+	/// A staple's commit referenced an own-offer ref not in the framed
+	/// store, and no `ownOfferWindow` blob was supplied to resolve it.
+	/// Retryable: nothing changed, and this is thrown only AFTER the
+	/// staple's framing signature and membership tag have verified — never
+	/// for a forged commit. Load the blob and retry; an NSE may defer
+	/// without ever loading it.
+	case ownOfferWindowRequired
+	/// A supplied `ownOfferWindow` blob lacked a ref the staple's commit
+	/// named. Terminal for the session's receive path: the peer re-staples
+	/// that commit until its next one, which builds on it. Thrown only
+	/// after authentication, same as `.ownOfferWindowRequired`.
+	case ownOfferUnavailable
+	/// A PQ side-band door (`pqBootstrapJoin`, `pqRatchetBind`,
+	/// `pqRekeyApply`) was called while the migrated deployed engine's own
+	/// trigger had already wedged past its point of no return
+	/// (`pqSideBandWedged`). Never blocks owed-bind discharge or classical
+	/// messaging; the book's exit is re-establishment.
+	case pqSideBandWedged
+	/// A signing site's group is in the migrated deployed engine's
+	/// no-custody set (`noCustody`) — this session presently holds no
+	/// signing key for that group. A no-custody classical group can only
+	/// receive; a no-custody PQ group's own driver stops that door.
+	case leafCustodyUnavailable
 }
