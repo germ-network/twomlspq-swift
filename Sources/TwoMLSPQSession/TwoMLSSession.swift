@@ -167,18 +167,14 @@ public struct DecryptResult: Sendable {
 	/// The peer's current credential id, whenever this apply moved the PEER's
 	/// leaf in this recv group to a new presentation (their own-leaf rotation
 	/// catch-up, or the first fold of their rotating `Upd`) — `nil` otherwise.
-	/// Slice 6. NOTE (D4/NIT6): swift-mls's `.credentialReplaced` effect fires
-	/// on EITHER the credential id or the presented signing key changing
-	/// (`CredentialPresentation` is `Equatable` over both) — so a peer that
-	/// rotates only its signing key while keeping the SAME id still surfaces
-	/// here, with `newSender` equal to that unchanged id (not literally "a
-	/// different credential") — including on a leaf that was already
-	/// lagging: `canonicalize` calls `PartySequence.commit` only for an id
-	/// genuinely new to the sequence, so landing on an already-known
-	/// (in-history or pinned) id canonicalizes nothing, yet `newSender`
-	/// still reports it. Callers should read `newSender` as "the peer's
-	/// current id after this apply," not as proof the id itself changed OR
-	/// that anything was newly canonicalized.
+	/// Slice 6. swift-mls's `.credentialReplaced` effect fires on EITHER the
+	/// credential id or the presented signing key changing
+	/// (`CredentialPresentation` is `Equatable` over both), but `canonicalize`
+	/// filters that down to an id change only: every own-leaf move now mints
+	/// a fresh signature key under the SAME id (a routine offer, a catch-up,
+	/// a commit's path leaf), so a same-id key-only move raises neither
+	/// `newSender` nor `ownCredentialCanonicalized`. `newSender` fires only
+	/// when the peer's id genuinely changes.
 	/// Also set (slice 11) for a Group_B join that adopts a dedicated
 	/// principal D: `didApplyRemoteCommit` stays `false` there (that Bool
 	/// means "applied a remote *commit*"; a join is not one) — `newSender`

@@ -109,7 +109,9 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 		let historyBefore = fixture.alice.auth.theirs.history
 		let result = try deliver(commitBytes, to: &fixture.alice)
 		XCTAssertTrue(result.applied)
-		XCTAssertEqual(result.newSender, fixture.id0)
+		// D3: a same-id move (a key refresh only) surfaces no `newSender` —
+		// only an id change does.
+		XCTAssertNil(result.newSender)
 		XCTAssertEqual(
 			fixture.alice.auth.theirs.history, historyBefore,
 			"nothing new was canonicalized")
@@ -193,7 +195,8 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 		let historyBefore = alice.auth.theirs.history
 		let result = try deliver(commitBytes, to: &alice)
 		XCTAssertTrue(result.applied)
-		XCTAssertEqual(result.newSender, id0)
+		// D3: a same-id move surfaces no `newSender`.
+		XCTAssertNil(result.newSender)
 		XCTAssertEqual(
 			alice.auth.theirs.history, historyBefore, "nothing new was canonicalized")
 	}
@@ -313,7 +316,8 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 		let historyBefore = alice.auth.mine.history
 		let result = try alice.applyFoldCommit(commitBytes)
 		XCTAssertTrue(result.applied)
-		XCTAssertTrue(result.ownCredentialCanonicalized)
+		// D3: a same-id move surfaces no `ownCredentialCanonicalized`.
+		XCTAssertFalse(result.ownCredentialCanonicalized)
 		XCTAssertEqual(
 			alice.auth.mine.history, historyBefore, "nothing new was canonicalized")
 	}

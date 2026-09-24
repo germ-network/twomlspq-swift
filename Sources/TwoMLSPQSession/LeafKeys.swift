@@ -41,6 +41,14 @@ struct GroupKeySet: Sendable {
 		pending[target] = key
 	}
 
+	/// Mint-and-replace: unconditionally set `pending[target]` to `key`,
+	/// discarding whatever was held there. The one path allowed to
+	/// overwrite — a fresh offer key for `target` (D3) — every other
+	/// caller keeps the throwing `stage(_:for:)` guard above.
+	mutating func replace(_ key: LeafKey, for target: Data) {
+		pending[target] = key
+	}
+
 	/// The leaf now presents `signatureKey`, under credential id `id`. If
 	/// that's already `current`, nothing changes (idempotent — a peer-only
 	/// fold that never touched this leaf's own presentation lands here

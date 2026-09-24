@@ -534,10 +534,13 @@ final class FoldTests: XCTestCase {
 		bob.recvGroup = mirror
 		// This hand-built rotation bypasses `prepareToEncrypt`, which would
 		// normally stage the fresh key itself — stage it here so a later
-		// fold's `applyFoldCommit` can promote it (same id, new key).
-		try bob.leafKeys.recvClassical.stage(
-			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
-			for: bob.identity.clientID)
+		// fold's `applyFoldCommit` can promote it (same id, new key). Assigned
+		// directly, not via `stage`: a routine offer now mints fresh too (D3),
+		// so bob's establishment exchange may already hold a DIFFERENT key at
+		// this same target, and this hand-built rotation's key must replace
+		// it, not collide with it.
+		bob.leafKeys.recvClassical.pending[bob.identity.clientID] =
+			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey)
 		return try message.mlsEncoded()
 	}
 
@@ -652,9 +655,9 @@ final class FoldTests: XCTestCase {
 		let recvEpochBefore = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
 		let decrypted = try bob.processIncomingDecrypted(frame)
 		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		// Bob's OWN leaf is what moved (his own rotating Upd, folded by
-		// alice) — `ownCredentialCanonicalized`, never `newSender`.
-		XCTAssertTrue(decrypted.ownCredentialCanonicalized)
+		// D3: a same-id move (a key refresh only) surfaces neither flag —
+		// only an id change would.
+		XCTAssertFalse(decrypted.ownCredentialCanonicalized)
 		XCTAssertNil(decrypted.newSender)
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore + 1)
 	}

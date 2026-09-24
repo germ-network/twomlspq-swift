@@ -1138,6 +1138,7 @@ final class LeafKeysTests: XCTestCase {
 			// A separate peer copy for the restore-continuation check — never
 			// touched by the faulted `alice`'s own (never-delivered) frame.
 			var bobForRestoreCheck = bob
+			let recvClassicalBeforeThisCall = alice.leafKeys.recvClassical
 
 			TwoMLSSessionTestHooks.armFault(
 				"committingRound.afterWriteBackBeforeRendezvous")
@@ -1146,11 +1147,29 @@ final class LeafKeysTests: XCTestCase {
 			try alice.assertLeafKeysPresented()
 
 			_ = try aliceControl.prepareToEncrypt()
+			// The fault fires inside `committingRound` — the send-side half
+			// of `prepareToEncrypt` — so its OWN write-back (send-classical,
+			// both PQ sets) lands exactly as the unfaulted control's does.
+			// D3's fresh routine-offer mint is the RECV-side half, reached
+			// only after `committingRound` returns; the faulted call never
+			// gets there, so `recvClassical` stays exactly as it was going
+			// into this call, not what the control's own (freshly minted,
+			// randomized) offer left it as.
 			XCTAssertEqual(
-				LeafKeysArchive(alice.leafKeys, kind: .checkpoint),
-				LeafKeysArchive(aliceControl.leafKeys, kind: .checkpoint),
-				"the write-back landed the SAME leafKeys value the unfaulted round would have"
+				GroupKeySetArchive(alice.leafKeys.sendClassical),
+				GroupKeySetArchive(aliceControl.leafKeys.sendClassical),
+				"the write-back landed the SAME send-classical value the unfaulted round would have"
 			)
+			XCTAssertEqual(
+				GroupKeySetArchive(alice.leafKeys.sendPQ),
+				GroupKeySetArchive(aliceControl.leafKeys.sendPQ))
+			XCTAssertEqual(
+				GroupKeySetArchive(alice.leafKeys.recvPQ),
+				GroupKeySetArchive(aliceControl.leafKeys.recvPQ))
+			XCTAssertEqual(
+				GroupKeySetArchive(alice.leafKeys.recvClassical),
+				GroupKeySetArchive(recvClassicalBeforeThisCall),
+				"the recv-side offer mint never ran — recvClassical is untouched")
 
 			// Restoring from the last blob persisted BEFORE this call continues
 			// normally — a durable-but-behind record is not stuck, even though

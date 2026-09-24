@@ -263,12 +263,10 @@ final class RotationTests: XCTestCase {
 		XCTAssertTrue(decrypted.didApplyRemoteCommit)
 		XCTAssertFalse(decrypted.ownCredentialCanonicalized)
 
-		// NIT6: `canonicalize` (+ClassicalCommit.swift) sets `newSender`
-		// whenever the PEER's leaf moves to a new PRESENTATION — id and/or
-		// key — so it fires here too, equal to the (unchanged) id; see
-		// `DecryptResult.newSender`'s own doc for why this is the intended
-		// reading, not a bug.
-		XCTAssertEqual(decrypted.newSender, sameID)
+		// D3: `canonicalize` (+ClassicalCommit.swift) sets `newSender` only
+		// on an id change — a same-id key-only refresh is accepted and
+		// canonicalizes nothing.
+		XCTAssertNil(decrypted.newSender)
 		XCTAssertEqual(alice.theirPrincipalState, .sync(sameID))
 	}
 

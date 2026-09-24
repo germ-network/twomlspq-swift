@@ -848,10 +848,15 @@ extension TwoMLSSession {
 		var newSender: Data?
 		var ownCredentialCanonicalized = false
 		for event in effects.events {
-			guard case .credentialReplaced(let leaf, _, let new) = event else {
+			guard case .credentialReplaced(let leaf, let old, let new) = event else {
 				continue
 			}
 			let newID = try basicIdentifier(new.credential)
+			// Every own-leaf move now changes the signature key (D3), so a
+			// same-id move is no longer rare — it is the routine case. Only
+			// an id change is worth surfacing to the host; a same-id
+			// key-only move canonicalizes nothing and sets neither flag.
+			let idChanged = try basicIdentifier(old.credential) != newID
 			// Canonicalize only a credential NEW to the sequence — one
 			// neither already in `history` nor `pinned`. A leaf moving to
 			// an id that's already known is a legitimate catch-up (the
@@ -862,10 +867,8 @@ extension TwoMLSSession {
 			// on an id it would treat as a rollback candidate is simply
 			// skipped here rather than caught after the fact.
 			// `AuthCore.validateSuccession` (run at `adjudicate`) remains
-			// the only rollback gate. The flags below are set regardless —
-			// a same-id signing-key-only change still canonicalizes
-			// nothing but is still a credential-replaced event worth
-			// surfacing.
+			// the only rollback gate.
+			guard idChanged else { continue }
 			if leaf == myLeaf {
 				if !(updated.mine.history.contains(newID)
 					|| updated.mine.pinned.contains(newID))

@@ -49,10 +49,13 @@ final class DeployedStateTests: XCTestCase {
 		// stages the fresh key itself — stage it so a later fold's
 		// `promoted()` can find it (mirrors `RotationTests.
 		// authorRotatingUpd`'s own PQ analogue,
-		// `SigningKeyProtocolTests.handBuildPQLeafMoveUpd`).
-		try session.leafKeys.recvClassical.stage(
-			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
-			for: session.identity.clientID)
+		// `SigningKeyProtocolTests.handBuildPQLeafMoveUpd`). Assigned
+		// directly, not via `stage`: a routine offer now mints fresh too
+		// (D3), so an earlier real offer from establishment may already
+		// hold a DIFFERENT key at this same target, and this hand-built
+		// offer's key must replace it, not collide with it.
+		session.leafKeys.recvClassical.pending[session.identity.clientID] =
+			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey)
 		guard case .publicMessage(let updatePub) = message else {
 			XCTFail("expected a publicMessage-framed Update")
 			throw TwoMLSError.malformedSideBandMessage
