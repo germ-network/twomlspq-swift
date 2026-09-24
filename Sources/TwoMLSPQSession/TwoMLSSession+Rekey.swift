@@ -231,9 +231,12 @@ extension TwoMLSSession {
 			}
 
 			// D3: the committer's own send-PQ path leaf mints a fresh key
-			// too — for the SAME id it already presents; an id catch-up on
-			// this leaf is not attempted here.
+			// too, straight onto `mine.current` — this is where our own
+			// leaf catches up when it lags (`protocol-flows.md:696-708`).
+			// When it doesn't lag, `pathID` is just the id the leaf already
+			// presents, so the move stays key-only, as before.
 			let ownSendPQID = try basicIdentifier(Self.ownLeaf(of: sendPQ).credential)
+			let pathID = auth.mine.current ?? ownSendPQID
 			let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 			let freshKey = LeafKey(signingKey: signingKey, signatureKey: signatureKey)
 			let transition = try sendPQ.committing(
@@ -245,7 +248,7 @@ extension TwoMLSSession {
 				includePath: true, framing: .publicMessage,
 				psk: pskStore.resolver(),
 				newIdentity: MLS.RFC9420.NewSigningIdentity(
-					credential: .basic(identity: ownSendPQID),
+					credential: .basic(identity: pathID),
 					signatureKey: freshKey.signatureKey)
 			)
 			return try withTransitionHandoff(transition) { adopted, sent in
@@ -256,7 +259,7 @@ extension TwoMLSSession {
 				// `.credentialReplaced` this Commit′ ACTUALLY carries, on LOCAL
 				// copies, before any write-back — the proposer's leaf against
 				// `theirs`, and this session's own (committer's) leaf against
-				// `mine`. Today our own leaf never changes here; see
+				// `mine`, which now moves here whenever it lags; see
 				// `adjudicatePQRekeyEffects`.
 				try Self.adjudicatePQRekeyEffects(
 					pending.effects, myLeaf: sendPQ.myLeafIndex, auth: auth)
@@ -265,19 +268,14 @@ extension TwoMLSSession {
 				try TwoPartyRules.ensureTwoParty(sendPQ)
 
 				// D3: the committer's own send-PQ leaf just moved to the
-				// fresh key this round minted — go straight to `current`,
-				// retaining a still-held catch-up entry (rule 7's send-PQ
-				// analog) only while the leaf still lags `mine.current`.
+				// fresh key this round minted — go straight to `current`.
+				// Our own commit applies in this same call, so there is no
+				// window where the leaf could still lag afterward, and so
+				// no `pending` entry to retain (contrast the opener's own
+				// leaf, which stages under `pending` until the peer's
+				// Commit′ applies).
 				var updatedLeafKeys = leafKeys
-				if let mineCurrent = auth.mine.current, ownSendPQID != mineCurrent,
-					let catchUpKey = updatedLeafKeys.sendPQ.pending[mineCurrent]
-				{
-					updatedLeafKeys.sendPQ = GroupKeySet(
-						current: freshKey,
-						pending: [mineCurrent: catchUpKey])
-				} else {
-					updatedLeafKeys.sendPQ = GroupKeySet(current: freshKey)
-				}
+				updatedLeafKeys.sendPQ = GroupKeySet(current: freshKey)
 
 				send.pq = sendPQ
 				sendGroup = send

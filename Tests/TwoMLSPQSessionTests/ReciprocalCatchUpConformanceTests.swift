@@ -362,22 +362,14 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 			XCTAssertTrue(round2OpensRekey)
 		}
 
-		// Hand-build round 2: Bob's real `pqRekeyBegin` (same-id — he
-		// never rotated, matching the book's own shape for this round),
-		// then a hand-built committer-move Commit′ carrying alice's
-		// current id onto her OWN send-PQ leaf — `pqRekeyRespond` never
-		// builds this (marked above), but `pqRekeyApply` already accepts
-		// it once built (SigningKeyProtocolTests §3 committer-move case,
-		// plain).
+		// Round 2: Bob's real `pqRekeyBegin` (same-id — he never rotated,
+		// matching the book's own shape for this round), and alice's real
+		// `pqRekeyRespond` now carries her current id onto her OWN
+		// send-PQ leaf directly — this is the reciprocal catch-up's own
+		// half.
 		let round2Begin = try bob.pqRekeyBegin()
-		guard case .rekeyInitiated(let round2UpdBytes) = bob.pqInflight else {
-			XCTFail("expected bob to hold .rekeyInitiated after pqRekeyBegin")
-			return
-		}
-		_ = round2Begin
-		let round2CommitFrame = try handBuildPQRekeyCommitWithCommitterMove(
-			committer: &alice, updBytes: round2UpdBytes, committerNewID: alice2ID)
-		XCTAssertNoThrow(try bob.pqRekeyApply(round2CommitFrame))
+		let round2Commit = try alice.pqRekeyRespond(round2Begin.frame)
+		XCTAssertNoThrow(try bob.pqRekeyApply(round2Commit.frame))
 		XCTAssertNil(bob.pqInflight)
 		XCTAssertNotNil(bob.owedBind)
 
@@ -433,9 +425,12 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	/// still presents the old id; both ASes are at the new id. Bob opens
 	/// an A.5 via the native begin path with a same-id `Upd′`. Alice's
 	/// `pqRekeyRespond` `Commit′` must move her own send-PQ leaf to her
-	/// current id, with a key different from before (D3). Bob's
-	/// `pqRekeyApply` accepts it.
-	func testResponderCarriesItsCredential() throws {
+	/// current id, with a key different from before (D3), and leave
+	/// `sendPQ.pending` empty (her own commit applies in the same call, so
+	/// there is no window to hold a catch-up entry in). Bob's
+	/// `pqRekeyApply` accepts it. Kills: `pathID = ownSendPQID` (the
+	/// revert); retaining `pending[mine.current]` after the move.
+	func testResponderCommitCarriesCurrentIDWithFreshKeyAndNoPending() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let aliceOldID = alice.identity.clientID
 		let alice2ID = Data("alice-responder-carries".utf8)
@@ -463,43 +458,21 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		XCTAssertTrue(bob.myPQTurn)
 		let begin = try bob.pqRekeyBegin()
 
-		// Book: the REAL `pqRekeyRespond` should move alice's own leaf to
-		// her current id, with a fresh key (D3) — probed on a copy.
-		var realProbe = alice
-		_ = try realProbe.pqRekeyRespond(begin.frame)
-		let realAliceSendPQLeaf = try TwoMLSSession.ownLeaf(
-			of: try XCTUnwrap(realProbe.sendGroup?.pq))
-		let realAliceSendPQID = try basicIdentifier(realAliceSendPQLeaf.credential)
-		let realAliceSendPQKey = realAliceSendPQLeaf.signatureKey
-		XCTExpectFailure(
-			"protocol-flows.md:704-708 — pqRekeyRespond never catches the committer's own leaf up"
-		) {
-			XCTAssertEqual(realAliceSendPQID, alice2ID)
-		}
-		// D3: fresh key — this half is no longer a gap.
-		XCTAssertNotEqual(realAliceSendPQKey, aliceSendPQKeyBefore)
+		// The real `pqRekeyRespond` moves alice's own leaf to her current
+		// id, with a fresh key (D3), and leaves no catch-up key pending.
+		let response = try alice.pqRekeyRespond(begin.frame)
+		XCTAssertNil(response.rotatedCredential, "the PROPOSER (bob) never moved")
+		let aliceSendPQLeaf = try TwoMLSSession.ownLeaf(
+			of: try XCTUnwrap(alice.sendGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(aliceSendPQLeaf.credential), alice2ID)
+		XCTAssertNotEqual(aliceSendPQLeaf.signatureKey, aliceSendPQKeyBefore)
+		XCTAssertTrue(alice.leafKeys.sendPQ.pending.isEmpty)
 
-		// Hand-build what a conformant Commit′ carries — mutates `alice`
-		// in place, mirroring what `pqRekeyRespond` would do to `self`
-		// once this lands. (The id/key changing here is a property of the
-		// hand-build itself, not a fact about the engine — the marker
-		// above is what documents the real gap.)
-		guard case .rekeyInitiated(let updBytes) = bob.pqInflight else {
-			XCTFail("expected bob to hold .rekeyInitiated after pqRekeyBegin")
-			return
-		}
-		let handBuiltCommitFrame = try handBuildPQRekeyCommitWithCommitterMove(
-			committer: &alice, updBytes: updBytes, committerNewID: alice2ID)
-		let aliceSendPQIDAfter = try basicIdentifier(
-			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.sendGroup?.pq)).credential
-		)
-		XCTAssertEqual(aliceSendPQIDAfter, alice2ID)
-
-		// Bob's `pqRekeyApply` accepts it — already conforming (plain):
-		// SigningKeyProtocolTests §3's committer-move case (b).
-		XCTAssertNoThrow(try bob.pqRekeyApply(handBuiltCommitFrame))
+		XCTAssertNoThrow(try bob.pqRekeyApply(response.frame))
 		XCTAssertNil(bob.pqInflight)
 		XCTAssertNotNil(bob.owedBind)
+		let bobsViewOfAlice = try peerLeaf(in: try XCTUnwrap(bob.recvGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(bobsViewOfAlice.credential), alice2ID)
 	}
 
 	// MARK: - A rotated opener announces its current id (unit)
