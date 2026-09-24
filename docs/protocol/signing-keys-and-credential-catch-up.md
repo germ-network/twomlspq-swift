@@ -187,6 +187,7 @@ says so.
 | Reciprocal A.5 opened before the peer's own A.5 has landed | never, ourselves — see C2 | never | C2 |
 | Upd′ authenticated data | absent, or equal to the leaf's new id; any other value is rejected | deployed-compatible: C1; correct: never sent | C1 |
 | An own leaf (any group, any cause — a rotation, a born-dedicated acceptor's recv leaf, or a migrated session's stored key set) presenting an id other than the current canonical principal | n/a (own-leaf only) | catches up via that group's own `pending[current canonical id]`, once such a key is held | book `group-rules.md:143-158` rule 4 |
+| A PQ leaf presenting a credential evicted from the history window | accepted as a move's predecessor while any live PQ leaf still presents it; pinned while presented, retired once no live PQ leaf presents it any longer; a migrated session's pins are derived at the mint (§4) rather than carried over from the deployed engine's own pins | same | book `group-rules.md:152-154` rule 4 |
 
 ## 4. What we do only for compatibility with the deployed Rust engine
 
@@ -228,6 +229,9 @@ shares a key across its groups, and nothing compares a peer's keys across groups
     send-PQ, recv-PQ) — a `current` key plus zero or more `pending[target id]` keys, exactly this engine's own D1
     shape. Until a migrator supplies these directly, mint falls back to a temporary conversion from the deployed
     engine's owner-keyed parts.
+  - **Pinned credentials.** The mint derives each party's pinned set itself, from the ids that party's live PQ leaves
+    present in the restored trees — the deployed engine pins only the A.3 founding ids, so its own supplied pins are
+    ignored rather than carried over.
   - **The own-offer window.** The deployed engine may hold far more outstanding own-Update offers than this engine's
     framed store carries inline; the excess rides its own separate, on-demand blob (never the session archives), keyed
     by a shared id both a migrator's mint and a later re-mint compute the same way. A staple that names an offer this

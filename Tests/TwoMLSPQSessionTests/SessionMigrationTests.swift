@@ -342,6 +342,43 @@ final class SessionMigrationTests: XCTestCase {
 		try assertMintedMatchesNative(minted, native, kind: .core)
 	}
 
+	/// The deployed Rust engine pins only the A.3 founding ids (book
+	/// group-rules.md rule 4's own example, not its full rule) — a strict
+	/// subset of what the live engine's normal form actually needs. Rust-
+	/// shaped parts here supply an unrelated, stale legacy pin; the mint
+	/// must ignore it and derive the minted archive's pins itself, from
+	/// what the RESTORED PQ trees actually present. Mutation: copying
+	/// `parts.auth.mine.pinned`/`parts.auth.theirs.pinned` straight through
+	/// (instead of deriving via `livePQPresentedIDs`/`AuthCore.withPQPins`)
+	/// makes this fail.
+	func testMintDerivesPinsFromRestoredPQTreesAndDropsAStaleLegacyPin() throws {
+		let (alice, _) = try fullyEstablishedPair()
+		let aliceID = alice.identity.clientID
+		var parts = try migratedParts(alice)
+		parts.auth.mine.pinned = [Data("legacy-rust-founding-pin-only".utf8)]
+		parts.auth.theirs.pinned = [Data("legacy-rust-founding-pin-only".utf8)]
+
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let mintedBody = try minted.decode(SessionArchive.self)
+
+		XCTAssertEqual(mintedBody.auth.mine.pinned, [aliceID])
+		XCTAssertFalse(
+			mintedBody.auth.mine.pinned.contains(
+				Data("legacy-rust-founding-pin-only".utf8)))
+
+		// The minted archive must still restore and keep messaging — proves
+		// the derived pins are themselves well-formed, not merely present.
+		var restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: minted,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		_ = try restored.prepareToEncrypt()
+		_ = try restored.encrypt(Data("post-mint".utf8))
+	}
+
 	/// A mid-rotation session — an outstanding `rotationCandidate` plus its
 	/// still-staged classical Upd(self) in `stagedUpdates` — must convert
 	/// to matching `recvClassical`/`sendClassical` `pending` entries, not

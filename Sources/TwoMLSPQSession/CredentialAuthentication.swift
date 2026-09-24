@@ -34,13 +34,44 @@ func basicIdentifier(_ credential: MLS.RFC9420.Credential) throws -> Data {
 	return identity
 }
 
+/// The Basic credential ids each party's leaves presently present across a
+/// session's two live PQ trees (book group-rules.md rule 4's pin
+/// invariant): `mine` — my leaf in `sendPQ` and in `recvPQ`; `theirs` — the
+/// peer's leaf in each. Classical leaves are never included. Either half may
+/// be `nil` (deferred, or not yet founded) — that tree simply contributes
+/// nothing. A non-`.basic` credential on any occupied leaf throws (never
+/// reachable for a leaf this module mints or accepts, which advertises only
+/// `.basic`).
+func livePQPresentedIDs(
+	sendPQ: MLS.RFC9420.Group?, recvPQ: MLS.RFC9420.Group?
+) throws -> (mine: Set<Data>, theirs: Set<Data>) {
+	var mine: Set<Data> = []
+	var theirs: Set<Data> = []
+	for group in [sendPQ, recvPQ] {
+		guard let group else { continue }
+		for entry in group.tree.nonBlankLeaves() {
+			let leaf = try MLS.RFC9420.LeafNode(mlsEncoded: entry.record.encoded)
+			let id = try basicIdentifier(leaf.credential)
+			if entry.index == group.myLeafIndex {
+				mine.insert(id)
+			} else {
+				theirs.insert(id)
+			}
+		}
+	}
+	return (mine, theirs)
+}
+
 /// One party's app-defined credential sequence (TwoMLS design, not RFC
 /// 9420): the canonical `history` (oldest → newest, trimmed to
 /// `credentialHistoryWindow`), the app-`authorize`d in-flight successors —
 /// several candidates may be proposed, the one the peer commits becomes
-/// canonical and the rest expire — and `pinned` ids held admissible past
-/// window eviction (e.g. a leaf that still carries an otherwise-evicted
-/// credential).
+/// canonical and the rest expire — and `pinned`: the normal-form set of ids
+/// a live PQ leaf of this party currently presents, excluding a
+/// not-yet-canonical candidate (`pins(forPresented:)`'s own doc). Not
+/// "evicted but held" — an in-history presented id is included too
+/// (behavior-neutral for every caller), and a presented id is pinned
+/// whether or not it has ever been evicted from `history`.
 struct PartySequence: Sendable, Equatable, Codable {
 	/// How many canonical credentials are retained for the catch-up rule —
 	/// a lagging leaf may fast-forward to any already-canonical element
@@ -79,12 +110,18 @@ struct PartySequence: Sendable, Equatable, Codable {
 	/// Hold `id` admissible past window eviction (idempotent): widens
 	/// `knownIDs` and lets an evicted `id` still serve as a successor
 	/// `pred`, but it is never itself a valid `succ` (see `validSuccessor`),
-	/// so a pin can never authorize a downgrade back onto it.
+	/// so a pin can never authorize a downgrade back onto it. Test-only: the
+	/// live session never calls this directly — `pinned` is maintained by
+	/// `pins(forPresented:)`/`AuthCore.withPQPins`, recomputed from what a
+	/// session's live PQ leaves actually present. Kept for unit tests that
+	/// exercise `PartySequence`'s own pinned-predecessor mechanics in
+	/// isolation.
 	mutating func pin(_ id: Data) {
 		if !pinned.contains(id) { pinned.append(id) }
 	}
 
-	/// Retire a pin once nothing still carries it (idempotent).
+	/// Retire a pin once nothing still carries it (idempotent). Test-only,
+	/// same reasoning as `pin(_:)` above.
 	mutating func unpin(_ id: Data) {
 		pinned.removeAll { $0 == id }
 	}
@@ -93,14 +130,31 @@ struct PartySequence: Sendable, Equatable, Codable {
 
 	var knownIDs: [Data] { history + authorizedNext + pinned }
 
+	/// The normal-form pin set (book group-rules.md rule 4: "a credential
+	/// that a live PQ leaf still presents stays admissible past window
+	/// eviction until that leaf catches up"), given the ids this party's
+	/// live PQ leaves currently present (`livePQPresentedIDs`): every
+	/// presented id EXCEPT a candidate — an `authorizedNext` id not yet in
+	/// `history` — since pinning a candidate would block its own
+	/// canonicalization (`commit` rejects a pinned id as a rollback). An
+	/// in-history presented id is included but behavior-neutral (`commit`
+	/// already checks `current == id` first; `validSuccessor`'s shortcut
+	/// already excludes a `history` successor). Sorted (lexicographic
+	/// bytes), deduplicated by construction (`Set`).
+	func pins(forPresented presented: Set<Data>) -> [Data] {
+		let candidates = Set(authorizedNext).subtracting(history)
+		return presented.subtracting(candidates).sorted { $0.lexicographicallyPrecedes($1) }
+	}
+
 	/// Canonicalize `id` as the newest `history` element, expiring every
 	/// in-flight authorization. In this protocol every identity is a freshly
 	/// generated key, so a recurrence is never legitimate convergence — it is a
 	/// rollback, and rejected: `id == current` is an idempotent no-op (kept
 	/// BEFORE clearing `authorizedNext`, so re-committing the head does not drop
 	/// an authorization already in flight for the NEXT step); an `id` already
-	/// retired — still in `history`, or `pinned` (evicted but held) — throws
-	/// `.credentialRollback`; a brand-new `id` is appended (oldest evicted past
+	/// known — still in `history`, or `pinned` (a live PQ leaf of this party
+	/// currently presents it) — throws `.credentialRollback`; a brand-new
+	/// `id` is appended (oldest evicted past
 	/// the window). Fail-closed: the throw happens before any mutation. The
 	/// recurrence check is bounded to `history` + `pinned`; an id evicted past
 	/// the window AND unpinned is no longer remembered, so the always-fresh-key
@@ -207,6 +261,20 @@ struct AuthCore: Sendable, Equatable, Codable {
 			|| theirs.validSuccessor(pred: pred, succ: succ)
 	}
 
+	/// This `AuthCore` with both sequences' `pinned` recomputed to the
+	/// normal form (`PartySequence.pins(forPresented:)`) for the given
+	/// live-PQ-presented sets — `TwoMLSSession.pqPinnedAuth()`'s pure
+	/// underlying step, shared by the live session's state-update choke
+	/// point and the migration mint's one-shot derivation.
+	func withPQPins(mine minePresented: Set<Data>, theirs theirsPresented: Set<Data>)
+		-> AuthCore
+	{
+		var updated = self
+		updated.mine.pinned = mine.pins(forPresented: minePresented)
+		updated.theirs.pinned = theirs.pins(forPresented: theirsPresented)
+		return updated
+	}
+
 	/// `MLS.RFC9420.CredentialPresentation`'s memberwise initializer is
 	/// `internal` to `MLSProfileRFC9420`, so this session layer can never
 	/// construct one itself — only receive one already built (a commit's
@@ -302,5 +370,28 @@ struct AuthCore: Sendable, Equatable, Codable {
 				break
 			}
 		}
+	}
+}
+
+@available(iOS 26, macOS 26, *)
+extension TwoMLSSession {
+	/// `stateUpdate`'s pin-maintenance choke point (book group-rules.md rule
+	/// 4): `auth` with both sequences' `pinned` recomputed to the normal
+	/// form of what this session's live PQ leaves presently present
+	/// (`livePQPresentedIDs`) — re-derived at every state-advancing call
+	/// rather than tracked incrementally at each of the several sites that
+	/// can move a PQ leaf. Total, not throwing: a leaf presenting a
+	/// non-`.basic` credential is unreachable (every leaf this module mints
+	/// or accepts advertises only `.basic`) — if it ever happened anyway,
+	/// this leaves `pinned` at its PREVIOUS value rather than throwing from
+	/// inside `stateUpdate`'s sticky-manifest section (`StateUpdate.swift`),
+	/// where a throw after a PQ write-back has already landed on `self`
+	/// would strand that move un-checkpointed.
+	func pqPinnedAuth() -> AuthCore {
+		guard
+			let presented = try? livePQPresentedIDs(
+				sendPQ: sendGroup?.pq, recvPQ: recvGroup?.pq)
+		else { return auth }
+		return auth.withPQPins(mine: presented.mine, theirs: presented.theirs)
 	}
 }

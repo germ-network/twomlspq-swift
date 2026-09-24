@@ -99,6 +99,14 @@ public struct MigratedPartySequence: Sendable {
 	/// window by the live path; supplied as the legacy state holds them.
 	public var history: [Data]
 	public var authorizedNext: [Data]
+	/// IGNORED by `mintArchive`: the deployed engine pins only the A.3
+	/// founding ids (book group-rules.md rule 4's own example, not its full
+	/// rule), so a legacy value here is a strict subset of what the mint
+	/// actually needs. The mint instead derives the minted archive's pins
+	/// itself, from the ids the RESTORED PQ trees actually present — the
+	/// same normal form the live engine maintains
+	/// (`AuthCore.withPQPins`/`TwoMLSSession.pqPinnedAuth()`). Kept for
+	/// shape compatibility with the caller's own parts struct only.
 	public var pinned: [Data]
 
 	public init(history: [Data], authorizedNext: [Data], pinned: [Data]) {
@@ -805,6 +813,26 @@ public enum SessionMigration {
 			}
 		}
 
+		// Pin derivation (book group-rules.md rule 4): the minted archive's
+		// pins are the normal form of the ids the RESTORED PQ trees actually
+		// present — never the legacy `parts.auth.*.pinned` (the deployed
+		// engine pins only the A.3 founding ids, a strict subset). A
+		// non-`.basic` credential on any occupied PQ leaf is
+		// `.archiveInvalid` — unreachable for a leaf any migrator this port
+		// accepts ever presents, but this mint never trusts that without
+		// checking.
+		guard
+			let presentedPQIDs = try? livePQPresentedIDs(sendPQ: sendPQ, recvPQ: recvPQ)
+		else { throw TwoMLSError.archiveInvalid }
+		let mintedAuth = AuthCore(
+			mine: PartySequence(
+				history: parts.auth.mine.history,
+				authorizedNext: parts.auth.mine.authorizedNext, pinned: []),
+			theirs: PartySequence(
+				history: parts.auth.theirs.history,
+				authorizedNext: parts.auth.theirs.authorizedNext, pinned: [])
+		).withPQPins(mine: presentedPQIDs.mine, theirs: presentedPQIDs.theirs)
+
 		// Today this mostly re-checks `convertDeployedKeys`'s own conversion
 		// (`.mintConverted`); it becomes load-bearing against genuinely
 		// adversarial input for a caller-supplied `leafKeys`
@@ -850,15 +878,7 @@ public enum SessionMigration {
 					pqSigningKey: try MLS.SignatureSecretKey($0.pqSigningKey),
 					pqSignatureKey: MLS.SignaturePublicKey($0.pqSignatureKey))
 			},
-			auth: AuthCore(
-				mine: PartySequence(
-					history: parts.auth.mine.history,
-					authorizedNext: parts.auth.mine.authorizedNext,
-					pinned: parts.auth.mine.pinned),
-				theirs: PartySequence(
-					history: parts.auth.theirs.history,
-					authorizedNext: parts.auth.theirs.authorizedNext,
-					pinned: parts.auth.theirs.pinned)),
+			auth: mintedAuth,
 			mode: mode,
 			noCustody: deployedState?.noCustody ?? [],
 			windowTargets: windowTargets,
@@ -883,15 +903,7 @@ public enum SessionMigration {
 			sendClassicalGroupID: sendClassical.context.groupID,
 			recvClassicalGroupID: recvClassical?.context.groupID,
 			identity: identityArchive,
-			auth: AuthCore(
-				mine: PartySequence(
-					history: parts.auth.mine.history,
-					authorizedNext: parts.auth.mine.authorizedNext,
-					pinned: parts.auth.mine.pinned),
-				theirs: PartySequence(
-					history: parts.auth.theirs.history,
-					authorizedNext: parts.auth.theirs.authorizedNext,
-					pinned: parts.auth.theirs.pinned)),
+			auth: mintedAuth,
 			sendGroup: GroupEntry(
 				classical: try reSnapshot(sendClassical),
 				pq: kind == .checkpoint ? try sendPQ.map(reSnapshot) : nil),

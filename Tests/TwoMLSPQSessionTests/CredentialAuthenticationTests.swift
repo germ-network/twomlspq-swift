@@ -549,4 +549,49 @@ final class CredentialAuthenticationTests: XCTestCase {
 		}
 		XCTAssertNoThrow(try movedOn.validateSuccession(old: old, new: new))
 	}
+
+	// MARK: - pins(forPresented:) normal form (book group-rules.md rule 4)
+
+	/// A presented id already in `history` is included in the pin set —
+	/// behavior-neutral (`commit`/`validSuccessor` both special-case an
+	/// in-history id ahead of ever consulting `pinned`), but the normal form
+	/// includes it regardless, rather than special-casing it out. Mutation:
+	/// subtracting `history` from `presented` (instead of only the candidate
+	/// set) makes this fail.
+	func testPinsForPresentedIncludesAnInHistoryID() throws {
+		var sequence = PartySequence.seeded(id("a"))
+		try sequence.commit(id("b"))
+		XCTAssertEqual(sequence.pins(forPresented: [id("a")]), [id("a")])
+	}
+
+	/// A presented id that is an authorized-but-not-yet-canonical candidate
+	/// is EXCLUDED — pinning it would make `commit` reject its own
+	/// canonicalization as a rollback. Mutation: dropping the
+	/// `.subtracting(candidates)` step makes this fail.
+	func testPinsForPresentedExcludesAnAuthorizedCandidate() throws {
+		var sequence = PartySequence.seeded(id("a"))
+		sequence.authorize(id("candidate"))
+		XCTAssertEqual(sequence.pins(forPresented: [id("candidate")]), [])
+	}
+
+	/// An id nobody presents is never in the pin set, even if it was pinned
+	/// before — the normal form is a pure function of `presented`, not an
+	/// incremental update. Mutation: unioning with the sequence's own prior
+	/// `pinned` (instead of deriving purely from `presented`) makes this
+	/// fail.
+	func testPinsForPresentedDropsAnIDNoLongerPresented() throws {
+		var sequence = PartySequence.seeded(id("a"))
+		sequence.pin(id("stale"))
+		XCTAssertEqual(sequence.pins(forPresented: []), [])
+	}
+
+	/// Sorted (lexicographic bytes) and deduplicated — the exact shape
+	/// `SessionMigrationTests`'s minted-vs-native comparison relies on.
+	/// Mutation: returning `Array(presented)` unsorted makes this fail
+	/// (order-dependent on `Set`'s unspecified iteration).
+	func testPinsForPresentedIsSortedAndDeduplicated() throws {
+		let sequence = PartySequence.seeded(id("z"))
+		let result = sequence.pins(forPresented: [id("z"), id("m"), id("a")])
+		XCTAssertEqual(result, [id("a"), id("m"), id("z")])
+	}
 }

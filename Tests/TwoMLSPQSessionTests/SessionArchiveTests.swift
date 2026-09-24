@@ -928,4 +928,129 @@ final class SessionArchiveTests: XCTestCase {
 		let decrypted = try alice.processIncomingDecrypted(boundFrame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("rekey-bound".utf8))
 	}
+
+	// MARK: - Pin safety check (book group-rules.md rule 4)
+
+	/// A `pinned` id nobody presents — no live PQ leaf carries it and it is
+	/// not even a known candidate — is rejected. Mutation: dropping the
+	/// subset check against `presented` makes this fail.
+	func testRestoreRejectsAStalePin() throws {
+		let bob = try RatchetTests.fullyEstablishedTurnOnBob().bob
+		let archive = try bob.makeSessionArchive(kind: .checkpoint)
+		var body = try archive.decode(SessionArchive.self)
+		body.auth.mine.pinned = [Data("nobody-presents-this".utf8)]
+
+		XCTAssertThrowsError(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: try SecretArchive(encoding: body),
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// A `pinned` id that IS presented but is also an authorized-but-not-
+	/// yet-canonical candidate (`authorizedNext` minus `history`) is
+	/// rejected — pinning a candidate would block its own canonicalization.
+	/// Mutation: dropping the candidate-exclusion clause from the allowed-
+	/// pins computation (checking subset-of-`presented` alone) makes this
+	/// fail.
+	func testRestoreRejectsAPinnedCandidate() throws {
+		let bob = try RatchetTests.fullyEstablishedTurnOnBob().bob
+		let bobID = bob.identity.clientID
+		let archive = try bob.makeSessionArchive(kind: .checkpoint)
+		var body = try archive.decode(SessionArchive.self)
+		// `bobID` is presented (bob's own founding leaf, in both his PQ
+		// trees) but re-shaped here as an outstanding candidate: dropped
+		// from `history`, re-added only to `authorizedNext`.
+		body.auth.mine.history = []
+		body.auth.mine.authorizedNext = [bobID]
+		body.auth.mine.pinned = [bobID]
+
+		XCTAssertThrowsError(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: try SecretArchive(encoding: body),
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// A presented id covered by NEITHER `history` NOR `pinned` NOR
+	/// `authorizedNext` — stranded, as if the id had been evicted from
+	/// history with nothing ever pinning it — is rejected. Mutation:
+	/// dropping the "every presented id is covered" check makes this fail.
+	func testRestoreRejectsAStrandedPresentedID() throws {
+		let bob = try RatchetTests.fullyEstablishedTurnOnBob().bob
+		let archive = try bob.makeSessionArchive(kind: .checkpoint)
+		var body = try archive.decode(SessionArchive.self)
+		body.auth.mine.history = []
+		// The live session's own archive already pins the presented id
+		// correctly (`pqPinnedAuth()`) — clear it too, so the coverage gap
+		// this test targets is genuine, not masked by the still-legitimate
+		// pin.
+		body.auth.mine.pinned = []
+
+		XCTAssertThrowsError(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: try SecretArchive(encoding: body),
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// A duplicate entry in `pinned` is rejected on its own, independent of
+	/// coverage. Mutation: dropping the no-duplicates check makes this fail.
+	func testRestoreRejectsADuplicatePin() throws {
+		let bob = try RatchetTests.fullyEstablishedTurnOnBob().bob
+		let bobID = bob.identity.clientID
+		let archive = try bob.makeSessionArchive(kind: .checkpoint)
+		var body = try archive.decode(SessionArchive.self)
+		// `bobID` is already covered by `history`, so this is otherwise a
+		// no-op pin — only the duplicate itself is invalid.
+		body.auth.mine.pinned = [bobID, bobID]
+
+		XCTAssertThrowsError(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: try SecretArchive(encoding: body),
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// A healthy archive — pins already the normal form the live engine
+	/// maintains (every currently-presented id, here just bob's own
+	/// founding id, still in `history` too) — restores without complaint,
+	/// and a live state update afterward leaves it exactly stable
+	/// (idempotent recompute). An UNDER-populated `pinned` (a genuine
+	/// pre-fix archive, which never called `.pin()` at all) is tolerated
+	/// too — not exact equality — as long as nothing presented goes
+	/// uncovered by `history`/`authorizedNext` alone; the next state
+	/// update self-heals it to this same normal form.
+	func testRestoreAcceptsHealthyPinsAndStaysNormalizedAfterward() throws {
+		let bob = try RatchetTests.fullyEstablishedTurnOnBob().bob
+		let bobID = bob.identity.clientID
+		XCTAssertEqual(bob.auth.mine.pinned, [bobID])
+		let archive = try bob.makeSessionArchive(kind: .checkpoint)
+		var body = try archive.decode(SessionArchive.self)
+		// An under-populated (pre-fix-shaped) `pinned` — still tolerated,
+		// since `bobID` remains covered by `history` alone.
+		body.auth.mine.pinned = []
+		let opened = try sealAndOpen(try SecretArchive(encoding: body))
+		var restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: opened,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertEqual(restored.auth.mine.pinned, [])
+
+		_ = try restored.prepareToEncrypt()
+		_ = try restored.encrypt(Data("still-healthy".utf8))
+		XCTAssertEqual(restored.auth.mine.pinned, [bobID])
+	}
 }

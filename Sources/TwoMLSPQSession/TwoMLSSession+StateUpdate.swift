@@ -138,11 +138,13 @@ extension TwoMLSSession {
 	/// epoch — does not spuriously upgrade it.
 	mutating func stateUpdate(kind: BlobKind) throws -> StateUpdate {
 		// The live choke point runs FIRST — fail-closed, `.credentialUnknown`,
-		// before the kind is even decided — then the sticky kind upgrade,
-		// then the encode, and only once that has succeeded is the checkpoint
-		// manifest stamped. A violation here mints nothing and stamps
-		// nothing.
+		// before the kind is even decided — then the pin-maintenance
+		// recompute (`pqPinnedAuth()`, total — never throws), then the
+		// sticky kind upgrade, then the encode, and only once that has
+		// succeeded is the checkpoint manifest stamped. A violation in the
+		// first step mints nothing and stamps nothing.
 		try assertLeafKeysPresented()
+		auth = pqPinnedAuth()
 		var kind = kind
 		if kind == .core, pqEpochManifest != lastCheckpointedManifest {
 			kind = .checkpoint
