@@ -56,7 +56,8 @@ final class BornDedicatedTests: XCTestCase {
 		var (alice, bob, _, invitationClientID, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		XCTAssertTrue(bob.owesEstablishmentEnvelope)
-		XCTAssertEqual(bob.identity.clientID, dedicatedClientID)
+		XCTAssertEqual(bob.identity.clientID, invitationClientID)
+		XCTAssertEqual(bob.myPrincipalState, .sync(dedicatedClientID))
 		XCTAssertEqual(bob.recvLeafPrincipal?.clientID, invitationClientID)
 		XCTAssertEqual(bob.currentStaple.first, Frames.apqWelcomeTag)
 
@@ -329,7 +330,8 @@ final class BornDedicatedTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 		XCTAssertTrue(restored.owesEstablishmentEnvelope)
 		XCTAssertEqual(restored.recvLeafPrincipal?.clientID, invitationClientID)
-		XCTAssertEqual(restored.identity.clientID, dedicatedClientID)
+		XCTAssertEqual(restored.identity.clientID, invitationClientID)
+		XCTAssertEqual(restored.myPrincipalState, .sync(dedicatedClientID))
 		XCTAssertEqual(restored.currentStaple.first, Frames.apqWelcomeTag)
 		XCTAssertThrowsError(try restored.encrypt(Data())) { error in
 			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
@@ -804,5 +806,48 @@ final class BornDedicatedTests: XCTestCase {
 		XCTAssertTrue(bobDecrypted.didApplyRemoteCommit)
 		let leafAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
 		XCTAssertEqual(try basicIdentifier(leafAfter.credential), dedicatedClientID)
+	}
+
+	/// D's rule-4 catch-up key (`recvClassical.pending[D]`) is minted
+	/// separately from D's founding leaf key (`sendClassical.current`) —
+	/// never the same pair. Proved both before and after the catch-up fold
+	/// actually lands, so all four of D's own-leaf keys stay pairwise
+	/// distinct throughout.
+	func testBornDedicatedCatchUpKeyIsIndependent() throws {
+		var (alice, bob, _, dedicatedClientID, _) =
+			try SessionTestSupport.establishedDedicatedAndApproved(
+				dedicatedClientID: Data("d1-independent".utf8))
+
+		let catchUpKeyBefore = try XCTUnwrap(
+			bob.leafKeys.recvClassical.pending[dedicatedClientID])
+		let sendClassicalKeyBefore = try XCTUnwrap(bob.leafKeys.sendClassical.current)
+		XCTAssertNotEqual(
+			catchUpKeyBefore.signatureKey, sendClassicalKeyBefore.signatureKey)
+
+		// §A.3, so all four of D's own-leaf groups exist.
+		let kpFrame = try alice.pqBootstrapBegin().frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
+
+		// Drive the rule-4 catch-up fold (mirrors
+		// `testAcceptCaseXReceiveFoldsTheRuleFourCatchUp` above).
+		_ = try bob.prepareToEncrypt()
+		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		let decrypted = try alice.processIncomingDecrypted(frame)
+		try alice.queueProposal(digest: decrypted.queuedProposal.digest)
+		_ = try alice.prepareToEncrypt()
+		let aliceFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
+		let bobDecrypted = try bob.processIncomingDecrypted(aliceFrame)
+		XCTAssertTrue(bobDecrypted.didApplyRemoteCommit)
+		let leafAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
+		XCTAssertEqual(try basicIdentifier(leafAfter.credential), dedicatedClientID)
+
+		let keys = [
+			try XCTUnwrap(bob.leafKeys.sendClassical.current).signatureKey.data,
+			try XCTUnwrap(bob.leafKeys.recvClassical.current).signatureKey.data,
+			try XCTUnwrap(bob.leafKeys.sendPQ.current).signatureKey.data,
+			try XCTUnwrap(bob.leafKeys.recvPQ.current).signatureKey.data,
+		]
+		XCTAssertEqual(Set(keys).count, keys.count)
 	}
 }

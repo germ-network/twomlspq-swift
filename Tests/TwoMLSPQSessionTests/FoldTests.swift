@@ -306,7 +306,8 @@ final class FoldTests: XCTestCase {
 			return
 		}
 		let (ownUpdateMessage, _) = try sendGroupA.classical.proposeUpdate(
-			SessionTestSupport.classicalProvider, signingKey: alice.identity.signingKey,
+			SessionTestSupport.classicalProvider,
+			signingKey: try alice.sendClassicalSigningKey(),
 			framing: .publicMessage)
 		let ownUpdateBytes = try ownUpdateMessage.mlsEncoded()
 
@@ -392,7 +393,8 @@ final class FoldTests: XCTestCase {
 					.reference(ref),
 					.proposal(.add(mallory.keyPackage.classical)),
 				],
-				proposalStore: proposalStore, signingKey: alice.identity.signingKey,
+				proposalStore: proposalStore,
+				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
 				includePath: true, framing: .publicMessage)
 			return try transition.takeOutput().message.mlsEncoded()
@@ -470,7 +472,8 @@ final class FoldTests: XCTestCase {
 					.reference(ref),
 					.proposal(.preSharedKey(forgedIdentifier)),
 				],
-				proposalStore: proposalStore, signingKey: alice.identity.signingKey,
+				proposalStore: proposalStore,
+				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
 				includePath: true, framing: .publicMessage,
 				psk: { identifier in
@@ -523,7 +526,7 @@ final class FoldTests: XCTestCase {
 			SessionTestSupport.classicalProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.classicalProvider,
-				current: bob.identity.signingKey, new: freshSigningKey),
+				current: try bob.recvClassicalSigningKey(), new: freshSigningKey),
 			framing: .publicMessage,
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: bob.identity.clientID),
@@ -627,7 +630,8 @@ final class FoldTests: XCTestCase {
 			let transition = try sendGroupA.classical.committing(
 				SessionTestSupport.classicalProvider,
 				proposals: [.reference(ref)],
-				proposalStore: proposalStore, signingKey: alice.identity.signingKey,
+				proposalStore: proposalStore,
+				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
 				includePath: true, framing: .publicMessage)
 			let adopted = transition.group
@@ -638,7 +642,7 @@ final class FoldTests: XCTestCase {
 			let appPM = try postFold.protect(
 				SessionTestSupport.classicalProvider,
 				applicationData: Data("carrier".utf8), authenticatedData: Data(),
-				signingKey: alice.identity.signingKey)
+				signingKey: try alice.sendClassicalSigningKey())
 			let appBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
 			return (commitBytes, appBytes)
 		}
@@ -677,7 +681,7 @@ final class FoldTests: XCTestCase {
 		func commitOnce(_ group: inout MLS.RFC9420.Group) throws -> Data {
 			let transition = try group.committing(
 				SessionTestSupport.classicalProvider, proposals: [],
-				signingKey: alice.identity.signingKey,
+				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
 				includePath: true, framing: .publicMessage)
 			let adopted = transition.group

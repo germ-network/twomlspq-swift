@@ -129,7 +129,8 @@ final class BootstrapTests: XCTestCase {
 		// per-half signing keys. Bob's Group_B.pq is founded fresh here
 		// (`pqBootstrapRespond`), so this is provable immediately.
 		let bobOwnPQLeaf = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.sendGroup?.pq))
-		XCTAssertEqual(bobOwnPQLeaf.signatureKey, bob.identity.pqSignatureKey)
+		XCTAssertEqual(bobOwnPQLeaf.signatureKey, bob.leafKeys.sendPQ.current?.signatureKey)
+		XCTAssertNotEqual(bobOwnPQLeaf.signatureKey, bob.identity.pqSignatureKey)
 		XCTAssertNotEqual(bobOwnPQLeaf.signatureKey, bob.identity.signatureKey)
 
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
@@ -140,7 +141,9 @@ final class BootstrapTests: XCTestCase {
 		// construction — Group_A is a full pair from `initiate`).
 		let aliceOwnPQLeaf = try TwoMLSSession.ownLeaf(
 			of: try XCTUnwrap(alice.sendGroup?.pq))
-		XCTAssertEqual(aliceOwnPQLeaf.signatureKey, alice.identity.pqSignatureKey)
+		XCTAssertEqual(
+			aliceOwnPQLeaf.signatureKey, alice.leafKeys.sendPQ.current?.signatureKey)
+		XCTAssertNotEqual(aliceOwnPQLeaf.signatureKey, alice.identity.pqSignatureKey)
 		XCTAssertNotEqual(aliceOwnPQLeaf.signatureKey, alice.identity.signatureKey)
 
 		// Bob's establishment-time frame already licensed Alice (§11 #8), so
@@ -299,7 +302,7 @@ final class BootstrapTests: XCTestCase {
 	/// PQ commit to the session's own copy, so building after the join would
 	/// frame at the post-apply epoch and fail framing, not reach the guard.
 	private func bindPQCommitWithoutInjectedS(
-		sendPQ: MLS.RFC9420.Group, aliceIdentity: TwoMLSIdentity,
+		sendPQ: MLS.RFC9420.Group, signingKey: MLS.SignatureSecretKey,
 		tEpoch: UInt64, pqEpoch: UInt64
 	) throws -> Data {
 		try withDeployedWireConventions {
@@ -316,7 +319,7 @@ final class BootstrapTests: XCTestCase {
 			]
 			let transition = try sendPQ.committing(
 				SessionTestSupport.pqProvider, proposals: proposals,
-				signingKey: aliceIdentity.pqSigningKey,
+				signingKey: signingKey,
 				randomness: try .generate(SessionTestSupport.pqProvider),
 				includePath: false, framing: .publicMessage, psk: { _ in nil })
 			return try transition.takeOutput().message.mlsEncoded()
@@ -343,7 +346,7 @@ final class BootstrapTests: XCTestCase {
 			]
 			let transition = try sendClassical.committing(
 				SessionTestSupport.classicalProvider, proposals: proposals,
-				signingKey: aliceIdentity.signingKey,
+				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
 				includePath: true, framing: .publicMessage, psk: { _ in nil })
 			return try transition.takeOutput().message.mlsEncoded()
@@ -371,7 +374,8 @@ final class BootstrapTests: XCTestCase {
 		// to the session's own copy — after that, the group frames at epoch 2
 		// and would fail framing instead of reaching the PSK guard.
 		let pqCommit = try bindPQCommitWithoutInjectedS(
-			sendPQ: try XCTUnwrap(alice.sendGroup?.pq), aliceIdentity: aliceIdentity,
+			sendPQ: try XCTUnwrap(alice.sendGroup?.pq),
+			signingKey: try alice.sendPQSigningKey(),
 			tEpoch: 2, pqEpoch: 2)
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		let owed = try XCTUnwrap(alice.owedBind)
@@ -546,7 +550,7 @@ final class BootstrapTests: XCTestCase {
 
 			let transition = try sendClassical.committing(
 				SessionTestSupport.classicalProvider, proposals: proposals,
-				signingKey: aliceIdentity.signingKey,
+				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
 				includePath: true, framing: .publicMessage, psk: store.resolver())
 			return try transition.takeOutput().message.mlsEncoded()
@@ -691,7 +695,8 @@ final class BootstrapTests: XCTestCase {
 		]
 
 		let (proposalMessage, _) = try recv.classical.proposeUpdate(
-			SessionTestSupport.classicalProvider, signingKey: aliceIdentity.signingKey,
+			SessionTestSupport.classicalProvider,
+			signingKey: try alice.recvClassicalSigningKey(),
 			framing: .publicMessage)
 		let proposalBytes = try proposalMessage.mlsEncoded()
 		let proposalHash = try SessionTestSupport.classicalProvider.hash(proposalBytes)
@@ -704,7 +709,7 @@ final class BootstrapTests: XCTestCase {
 			try withDeployedWireConventions {
 				let transition = try send.classical.committing(
 					SessionTestSupport.classicalProvider, proposals: proposals,
-					signingKey: aliceIdentity.signingKey,
+					signingKey: try alice.sendClassicalSigningKey(),
 					randomness: try .generate(
 						SessionTestSupport.classicalProvider),
 					includePath: true, framing: .publicMessage,
@@ -719,7 +724,8 @@ final class BootstrapTests: XCTestCase {
 
 		let appPM = try send.classical.protect(
 			SessionTestSupport.classicalProvider, applicationData: Data("bound".utf8),
-			authenticatedData: proposalHash, signingKey: aliceIdentity.signingKey)
+			authenticatedData: proposalHash,
+			signingKey: try alice.sendClassicalSigningKey())
 		let appBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
 
 		let badStaple = Frames.encodeAPQPrivateMessage(
@@ -806,5 +812,52 @@ final class BootstrapTests: XCTestCase {
 				componentID: TwoMLSSession.crossPartyComponentID))
 
 		_ = try bob.processIncomingDecrypted(frame)
+	}
+
+	// MARK: - D1: KP′ is the identity's own PQ half
+
+	/// KP′ is `identity.keyPackage.pq` itself, not a separately minted KP —
+	/// survives restore, and once Alice joins Group_B.pq off it at §A.3,
+	/// recv-PQ presents exactly that key.
+	func testKPPrimeIsTheIdentityPQHalf() throws {
+		let aliceIdentity = try SessionTestSupport.identity("kpprime-alice")
+		let bobIdentity = try SessionTestSupport.identity("kpprime-bob")
+		let initiated = try TwoMLSSession.initiate(
+			identity: aliceIdentity, their: bobIdentity.keyPackage,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		let bootstrapKP = try XCTUnwrap(initiated.session.bootstrapKPSecret?.keyPackage)
+		XCTAssertEqual(bootstrapKP, aliceIdentity.keyPackage.pq)
+
+		let checkpoint = try initiated.session.makeSessionArchive(kind: .checkpoint)
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: checkpoint,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertEqual(restored.bootstrapKPSecret?.keyPackage, aliceIdentity.keyPackage.pq)
+
+		var alice = initiated.session
+		let received = try TwoMLSSession.receive(
+			identity: bobIdentity, welcome: initiated.welcome,
+			theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var bob = received.session
+		_ = try bob.prepareToEncrypt()
+		let hello = try bob.encrypt(Data("hello".utf8)).frame
+		_ = try alice.processIncomingDecrypted(hello)
+
+		let kpFrame = try alice.pqBootstrapBegin().frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
+
+		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.recvGroup?.pq))
+		XCTAssertEqual(
+			recvPQLeaf.signatureKey, aliceIdentity.keyPackage.pq.leafNode.signatureKey)
+		XCTAssertEqual(
+			alice.leafKeys.recvPQ.current?.signatureKey,
+			aliceIdentity.keyPackage.pq.leafNode.signatureKey)
 	}
 }

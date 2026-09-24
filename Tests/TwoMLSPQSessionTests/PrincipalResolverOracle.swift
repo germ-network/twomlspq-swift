@@ -186,6 +186,10 @@ enum OracleCheck {
 
 		var found: [String] = []
 		if let send = session.sendGroup {
+			// sendClassical.current is always a freshly minted founding
+			// leaf now — never `identity`'s own key — so the frozen
+			// resolver can never resolve it; only the stored-vs-presented
+			// half still applies.
 			found += checkExisting(
 				session.leafKeys.sendClassical, group: "sendClassical",
 				presented: try? TwoMLSSession.ownLeaf(of: send.classical)
@@ -193,14 +197,33 @@ enum OracleCheck {
 				resolve: {
 					try PrincipalResolverOracle.classicalSigningKey(
 						presenting: $0, in: session)
-				}, liveTargets: liveClassicalTargets)
+				}, liveTargets: liveClassicalTargets, skipCurrentResolve: true)
 		} else {
 			found += checkReservation(
 				session.leafKeys.sendClassical, group: "sendClassical",
 				identitySignatureKey: session.identity.signatureKey,
 				identitySigningKey: session.identity.signingKey)
 		}
+		// The rule-4 catch-up target is `auth.mine.current` (D, once a
+		// dedicated session has one) rather than `session.identity.clientID`
+		// (always the invitation identity now) — its fresh key, pending or
+		// already promoted into `current`, is never something the frozen
+		// resolver (which only ever reads `identity`/`recvLeafPrincipal`)
+		// can resolve.
+		let mineCurrent = session.auth.mine.current
+		let catchUpTarget = mineCurrent.map { Set([$0]) } ?? []
 		if let recv = session.recvGroup {
+			// Skip the resolve half only for the rule-4 catch-up key once it's
+			// promoted into `current`: it differs from BOTH `identity`'s key and
+			// `rotationCandidate`'s, so the frozen resolver has no arm for it.
+			// A converged rotation's promoted key also differs from `identity`,
+			// but the resolver's candidate arm still resolves it (`rotationCandidate`
+			// hasn't been cleared yet) — that key must keep its resolve check.
+			let recvClassicalSkipCurrent =
+				session.leafKeys.recvClassical.current?.signatureKey
+				!= session.identity.signatureKey
+				&& session.leafKeys.recvClassical.current?.signatureKey
+					!= session.rotationCandidate?.signatureKey
 			found += checkExisting(
 				session.leafKeys.recvClassical, group: "recvClassical",
 				presented: try? TwoMLSSession.ownLeaf(of: recv.classical)
@@ -209,8 +232,9 @@ enum OracleCheck {
 					try PrincipalResolverOracle.classicalSigningKey(
 						presenting: $0, in: session)
 				},
-				liveTargets: liveClassicalTargets.union([session.identity.clientID])
-			)
+				liveTargets: liveClassicalTargets.union(catchUpTarget),
+				skipCurrentResolve: recvClassicalSkipCurrent,
+				noResolveTargets: catchUpTarget)
 		} else {
 			found += checkReservation(
 				session.leafKeys.recvClassical, group: "recvClassical",
@@ -218,19 +242,19 @@ enum OracleCheck {
 				identitySigningKey: session.identity.signingKey)
 		}
 		if let sendPQGroup = session.sendGroup?.pq {
+			// sendPQ.current is always a freshly minted A.3 founding leaf —
+			// same reasoning as sendClassical above.
 			found += checkExisting(
 				session.leafKeys.sendPQ, group: "sendPQ",
 				presented: try? TwoMLSSession.ownLeaf(of: sendPQGroup).signatureKey,
 				resolve: {
 					try PrincipalResolverOracle.pqSigningKey(
 						presenting: $0, in: session)
-				}, liveTargets: Set(session.leafKeys.sendPQ.pending.keys))
-		} else if session.sendGroup != nil {
-			found += checkReservation(
-				session.leafKeys.sendPQ, group: "sendPQ",
-				identitySignatureKey: session.identity.pqSignatureKey,
-				identitySigningKey: session.identity.pqSigningKey)
+				}, liveTargets: Set(session.leafKeys.sendPQ.pending.keys),
+				skipCurrentResolve: true)
 		}
+		// No `else` arm: a not-yet-founded send-PQ holds no reservation to
+		// check against — nothing is stored ahead of A.3 founding.
 		if let recvPQGroup = session.recvGroup?.pq {
 			found += checkExisting(
 				session.leafKeys.recvPQ, group: "recvPQ",
@@ -279,10 +303,20 @@ enum OracleCheck {
 			file: file, line: line)
 	}
 
+	/// `skipCurrentResolve` and `noResolveTargets` narrow the oracle: the
+	/// "stored key == presented leaf key" half always runs for `current`
+	/// (and, for every live pending entry, membership in `set.pending`
+	/// itself is exactly that stored value); only the RESOLVE half — asking
+	/// the frozen oracle to independently derive the same key — is skipped
+	/// for a slot named here, because a fresh founding/catch-up key is
+	/// never something `PrincipalResolverOracle` (which only ever reads
+	/// `identity`/`rotationCandidate`/`recvLeafPrincipal`) could resolve.
 	private static func checkExisting(
 		_ set: GroupKeySet, group: String, presented: MLS.SignaturePublicKey?,
 		resolve: (MLS.SignaturePublicKey) throws -> MLS.SignatureSecretKey,
-		liveTargets: Set<Data>
+		liveTargets: Set<Data>,
+		skipCurrentResolve: Bool = false,
+		noResolveTargets: Set<Data> = []
 	) -> [String] {
 		var found: [String] = []
 		if let presented {
@@ -290,7 +324,9 @@ enum OracleCheck {
 				found.append(
 					"\(group).current: stored key does not match the presented leaf key"
 				)
-			} else if let currentSigningKey = set.current?.signingKey {
+			} else if !skipCurrentResolve,
+				let currentSigningKey = set.current?.signingKey
+			{
 				do {
 					let resolved = try resolve(presented)
 					if resolved.data != currentSigningKey.data {
@@ -306,6 +342,7 @@ enum OracleCheck {
 			found.append("\(group).current: own leaf unreadable")
 		}
 		for (target, key) in set.pending where liveTargets.contains(target) {
+			guard !noResolveTargets.contains(target) else { continue }
 			do {
 				let resolved = try resolve(key.signatureKey)
 				if resolved.data != key.signingKey.data {
@@ -379,19 +416,95 @@ final class PrincipalResolverOracleTests: XCTestCase {
 		XCTAssertEqual(OracleCheck.mismatches(in: alice), [])
 	}
 
-	func testMismatchesReportsACorruptedSendClassicalCurrentKey() throws {
-		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+	/// sendClassical/sendPQ.current are always fresh founding leaves now
+	/// (their RESOLVE half is skipped — the frozen oracle could never
+	/// derive a fresh key from `identity` anyway), so a byte-level
+	/// signing-key corruption there is no longer something `mismatches`
+	/// catches; recvPQ (KP′, still `identity`'s own PQ half) is unaffected
+	/// and still proves the resolver's byte-compare arm works.
+	func testMismatchesReportsACorruptedRecvPQCurrentKey() throws {
+		var (alice, _) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let wrongKey = try TwoMLSIdentity.generate(
 			clientID: Data("wrong-key".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider
 		).signingKey
-		alice.leafKeys.sendClassical.current = LeafKey(
+		alice.leafKeys.recvPQ.current = LeafKey(
 			signingKey: wrongKey,
-			signatureKey: try XCTUnwrap(alice.leafKeys.sendClassical.current)
+			signatureKey: try XCTUnwrap(alice.leafKeys.recvPQ.current)
 				.signatureKey)
 		XCTAssertEqual(
-			OracleCheck.mismatches(in: alice), ["sendClassical.current: byte mismatch"])
+			OracleCheck.mismatches(in: alice), ["recvPQ.current: byte mismatch"])
+	}
+
+	/// Once Alice's own rotation has FULLY CONVERGED (both her classical
+	/// leaves present the new credential — `RotationTests.
+	/// testSecondRotationAfterFullConvergenceIsRotationInFlightAndSessionNotBricked`'s
+	/// setup), `recvClassical.current` presents `rotationCandidate`'s key,
+	/// not `identity`'s. The oracle's resolve half must still cover that
+	/// slot — the frozen resolver's candidate arm can derive it — so a byte
+	/// mismatch there is still reported, not silently skipped.
+	func testMismatchesReportsACorruptedRecvClassicalCurrentKeyAfterAConvergedRotation()
+		throws
+	{
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let aliceNewID = Data("alice-converged-v2".utf8)
+
+		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
+		let decryptedOffer = try bob.processIncomingDecrypted(offerFrame)
+		_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
+		_ = try alice.processIncomingDecrypted(foldFrame)
+
+		// Alice's own-leaf catch-up: both her classical leaves now present
+		// `aliceNewID` — the rotation has fully converged, and
+		// `rotationCandidate` is still live (untouched by convergence).
+		_ = try alice.prepareToEncrypt()
+		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
+		_ = try bob.processIncomingDecrypted(catchUpFrame)
+		XCTAssertEqual(alice.myPrincipalState, .sync(aliceNewID))
+		XCTAssertNotNil(alice.rotationCandidate)
+		XCTAssertEqual(
+			alice.leafKeys.recvClassical.current?.signatureKey,
+			alice.rotationCandidate?.signatureKey)
+
+		let wrongKey = try TwoMLSIdentity.generate(
+			clientID: Data("wrong-key".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider
+		).signingKey
+		alice.leafKeys.recvClassical.current = LeafKey(
+			signingKey: wrongKey,
+			signatureKey: try XCTUnwrap(alice.leafKeys.recvClassical.current)
+				.signatureKey)
+		XCTAssertEqual(
+			OracleCheck.mismatches(in: alice), ["recvClassical.current: byte mismatch"])
+	}
+
+	/// Pins `checkExisting`'s "stored key == presented leaf key" half, which
+	/// `skipCurrentResolve` never touches — it still runs for `sendPQ.current`
+	/// even though the resolve half is skipped there (a fresh A.3 founding
+	/// leaf, never something the frozen resolver could derive). Corrupting
+	/// the STORED signature key (not merely the signing key) makes it
+	/// disagree with what the tree actually presents, which only that first
+	/// half can catch.
+	func testMismatchesReportsAStoredSendPQCurrentKeyThatDoesNotMatchThePresentedLeaf()
+		throws
+	{
+		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		var mutableBob = bob
+		let wrongIdentity = try TwoMLSIdentity.generate(
+			clientID: Data("wrong-key".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		mutableBob.leafKeys.sendPQ.current = LeafKey(
+			signingKey: wrongIdentity.pqSigningKey,
+			signatureKey: wrongIdentity.pqSignatureKey)
+		XCTAssertEqual(
+			OracleCheck.mismatches(in: mutableBob),
+			["sendPQ.current: stored key does not match the presented leaf key"])
 	}
 
 	// MARK: - `unexpectedMisses(in:allowed:)` — the pure filter `run` fails on

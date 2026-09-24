@@ -192,8 +192,15 @@ final class LeafCapabilityGateTests: XCTestCase {
 		// consistency against the leaf's own embedded key) — only the
 		// CAPABILITIES are rogue here. This is a plain non-rotating
 		// Update (same id, same signature key), so this session's own
-		// stored key set already holds it.
-		let aliceSigningKey = try alice.sendClassicalSigningKey()
+		// stored key set already holds it. Alice's leaf INSIDE Group_B
+		// (bob's send group) is the one she presents joining it — her
+		// recv-classical leaf (the return KP, `identity`'s own classical
+		// half), never her (now separately founded) send-classical one.
+		// Alice has not processed Bob's welcome yet in this fixture, so
+		// `recvClassicalSigningKey()` isn't available; `identity.signingKey`
+		// is the same value her (not-yet-founded) recv-classical
+		// reservation already holds.
+		let aliceSigningKey = alice.identity.signingKey
 		rogueLeaf.signature = try MLS.signWithLabel(
 			provider, privateKey: aliceSigningKey, label: "LeafNodeTBS",
 			content: try rogueLeaf.toBeSigned(
@@ -492,8 +499,29 @@ final class LeafCapabilityGateTests: XCTestCase {
 
 	private func assertR1Rejects(_ aliceRogue: TwoMLSIdentity, suffix: String) throws {
 		let bob = try SessionTestSupport.identity("cap-gate-\(suffix)-bob")
+		// `initiate` mints its own clean founding leaves by default, so a
+		// rogue-capability KP half never reaches Group_A's actual founder
+		// leaf anymore — inject it directly through the `founding:` seam,
+		// reusing `aliceRogue`'s own (rogue) already-signed KP halves as
+		// the founding leaves.
+		let founding: (classical: FoundingLeaf, pq: FoundingLeaf) = (
+			classical: (
+				leafNode: aliceRogue.keyPackage.classical.leafNode,
+				leafSecretKey: aliceRogue.classicalLeafSecretKey,
+				key: LeafKey(
+					signingKey: aliceRogue.signingKey,
+					signatureKey: aliceRogue.signatureKey)
+			),
+			pq: (
+				leafNode: aliceRogue.keyPackage.pq.leafNode,
+				leafSecretKey: aliceRogue.pqLeafSecretKey,
+				key: LeafKey(
+					signingKey: aliceRogue.pqSigningKey,
+					signatureKey: aliceRogue.pqSignatureKey)
+			)
+		)
 		let initiated = try TwoMLSSession.initiate(
-			identity: aliceRogue, their: bob.keyPackage,
+			identity: aliceRogue, their: bob.keyPackage, founding: founding,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
@@ -632,29 +660,31 @@ final class LeafCapabilityGateTests: XCTestCase {
 					bob: "cap-gate-r3-bob-\(missing)")
 			_ = aliceIdentity
 
+			// `pqBootstrapRespond` founds Group_B.pq on a freshly minted
+			// leaf now, never reading `identity.keyPackage.pq` at all — so
+			// swapping `identity` alone no longer reaches the founded leaf.
+			// Inject the rogue capabilities directly through the
+			// `founding:` seam instead, re-signed under bob's own real PQ
+			// signing key (matching what a genuine A.3 founding key would
+			// present).
 			let rogueBobPQLeafNode = try Self.rogueSignedPQLeaf(
 				bobIdentity, capabilities: missing.capabilities)
-			let rogueBobIdentity = TwoMLSIdentity(
-				clientID: bobIdentity.clientID, signingKey: bobIdentity.signingKey,
-				signatureKey: bobIdentity.signatureKey,
-				pqSigningKey: bobIdentity.pqSigningKey,
-				pqSignatureKey: bobIdentity.pqSignatureKey,
-				classicalLeafSecretKey: bobIdentity.classicalLeafSecretKey,
-				classicalInitSecretKey: bobIdentity.classicalInitSecretKey,
-				pqLeafSecretKey: bobIdentity.pqLeafSecretKey,
-				pqInitSecretKey: bobIdentity.pqInitSecretKey,
-				keyPackage: CombinerKeyPackage(
-					classical: bobIdentity.keyPackage.classical,
-					pq: rogueBobPQLeafNode))
-			bobSession.identity = rogueBobIdentity
+			let rogueFounding: FoundingLeaf = (
+				leafNode: rogueBobPQLeafNode.leafNode,
+				leafSecretKey: bobIdentity.pqLeafSecretKey,
+				key: LeafKey(
+					signingKey: bobIdentity.pqSigningKey,
+					signatureKey: bobIdentity.pqSignatureKey)
+			)
 
 			_ = try bobSession.prepareToEncrypt()
 			let helloFrame = try bobSession.encrypt(Data("hello".utf8)).frame
 			_ = try aliceSession.processIncomingDecrypted(helloFrame)
 
 			let kpFrame = try aliceSession.pqBootstrapBegin().frame
-			let welcomeFrame = try bobSession.pqBootstrapRespond(kpFrame).frame
-
+			let welcomeFrame = try bobSession.pqBootstrapRespond(
+				kpFrame, founding: rogueFounding
+			).frame
 			XCTAssertThrowsError(try aliceSession.pqBootstrapJoin(welcomeFrame)) {
 				error in
 				XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)

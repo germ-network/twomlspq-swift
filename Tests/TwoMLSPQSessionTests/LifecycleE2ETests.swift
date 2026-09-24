@@ -868,6 +868,14 @@ final class LifecycleE2ETests: XCTestCase {
 				of: try XCTUnwrap(alice.session.recvGroup?.classical)
 			).signatureKey)
 
+		// D1: recv-PQ (KP′) is always distinct from send-PQ (a fresh A.3
+		// founding leaf) by construction.
+		XCTAssertNotEqual(
+			aliceRecvPQLeaf.signatureKey,
+			try TwoMLSSession.ownLeaf(
+				of: try XCTUnwrap(alice.session.sendGroup?.pq)
+			).signatureKey)
+
 		try XCTExpectFailure(
 			"protocol-flows.md:56, :704-708 / D3: no A.5 credential catch-up after rotation"
 		) {
@@ -886,11 +894,6 @@ final class LifecycleE2ETests: XCTestCase {
 
 			// D3: the catch-up mints a fresh key for THAT group only.
 			XCTAssertNotEqual(aliceRecvPQLeaf.signatureKey, aliceRecvPQKeyBeforeCatchup)
-			XCTAssertNotEqual(
-				aliceRecvPQLeaf.signatureKey,
-				try TwoMLSSession.ownLeaf(
-					of: try XCTUnwrap(alice.session.sendGroup?.pq)
-				).signatureKey)
 		}
 
 		// [12] Idle invariants: the non-turn side never has anything

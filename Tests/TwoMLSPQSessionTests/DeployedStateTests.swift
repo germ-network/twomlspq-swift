@@ -795,7 +795,8 @@ extension DeployedStateTests {
 								nonce: Data(repeating: 0, count: 32)
 							))),
 				],
-				proposalStore: proposalStore, signingKey: alice.identity.signingKey,
+				proposalStore: proposalStore,
+				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
 				includePath: true, framing: .publicMessage,
 				psk: { _ in SecretBytes(randomByteCount: 32) })

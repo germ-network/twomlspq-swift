@@ -59,6 +59,24 @@ extension TwoMLSSession {
 	/// Group_B.pq the real peer never agrees to join, so the bind can never
 	/// complete.
 	public mutating func pqBootstrapRespond(_ inbound: Data) throws -> SideBandResult {
+		// The founding leaf is minted under this party's own then-canonical
+		// id (book session-lifecycle.md: A.3 runs on the principal a prior
+		// rotation may have installed) — before anything about the peer's
+		// frame is even decoded, so an unused mint is the only cost of a
+		// frame that later fails validation.
+		guard let founderID = auth.mine.current else { throw TwoMLSError.credentialUnknown }
+		let founding = try TwoMLSIdentity.mintFoundingLeaf(
+			clientID: founderID, provider: pqProvider)
+		return try pqBootstrapRespond(inbound, founding: founding)
+	}
+
+	/// The `founding:` seam: the current entry point above mints a fresh
+	/// founding leaf and calls through here. Tests that need to control it
+	/// directly (a deployed-shaped fixture, or an injected capability-less
+	/// rogue leaf) call this overload.
+	mutating func pqBootstrapRespond(_ inbound: Data, founding: FoundingLeaf) throws
+		-> SideBandResult
+	{
 		// Slice 11: the non-emittable gate.
 		try ensureEstablishmentDelegated()
 		// Entry (PR2): the peer's `0x13` arrives header-sealed.
@@ -88,34 +106,32 @@ extension TwoMLSSession {
 		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
 			peerBootstrapKP.leafNode, codepoints: codepoints)
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
-		// Founding signs with the reservation already held in
-		// `leafKeys.sendPQ.current` — seeded at `receive` to the founder
-		// identity's own PQ pair (D's, once a dedicated principal exists),
-		// which is why this reads the stored slot rather than
-		// `identity.pqSigningKey` directly.
-		guard let sendPQReservation = leafKeys.sendPQ.current else {
-			throw TwoMLSError.credentialUnknown
-		}
 
-		// Slice 11: founding always presents `identity`'s OWN
-		// fresh PQ leaf — with `identity` = D that is Group_B.pq's own
-		// founder, `leafKeys.sendPQ.current` already names D's own key, so
-		// this is correct without any further lookup; no existing
-		// group to read a "presented leaf" off yet.
 		let (pqGroup, welcome) = try APQGroup.foundPQHalf(
 			sendGroupClassical: send.classical,
-			ownPQLeaf: identity.keyPackage.pq.leafNode,
-			ownPQLeafSecret: identity.pqLeafSecretKey,
-			signingKey: sendPQReservation.signingKey,
+			ownPQLeaf: founding.leafNode,
+			ownPQLeafSecret: founding.leafSecretKey,
+			signingKey: founding.key.signingKey,
 			peerBootstrapKP: peerBootstrapKP, randomness: try .generate(pqProvider),
 			epochSecret: SecretBytes(randomByteCount: pqProvider.hashSize),
 			pqProvider: pqProvider,
 			codepoints: codepoints)
-		// `sendPQReservation` (already `leafKeys.sendPQ.current`, seeded at
-		// `receive`) signed the founding leaf above; this call founds the
-		// GROUP off it, so `leafKeys` itself is untouched.
 		send.pq = pqGroup
 		sendGroup = send
+		// Registered in the same non-throwing block as the group write-back,
+		// before `recordPQHeaderKey()` — the founding key this leaf just
+		// presented becomes the group's own stored signing source right
+		// away, never left implicit.
+		leafKeys.sendPQ = GroupKeySet(current: founding.key)
+		// (DEBUG only): a fault point right after the write-back above —
+		// proves `sendGroup`/`leafKeys.sendPQ` are already fully
+		// write-back-complete (both the founded group and its registered
+		// key) even if the next throwing call fails.
+		#if DEBUG
+			if TwoMLSSessionTestHooks.shouldFault("pqBootstrapRespond.afterWriteBack") {
+				throw InjectedTestFault(name: "pqBootstrapRespond.afterWriteBack")
+			}
+		#endif
 		// Founds `sendGroup.pq` (PR2): capture its birth-epoch header key.
 		try recordPQHeaderKey()
 

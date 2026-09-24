@@ -22,7 +22,16 @@ final class SessionMigrationTests: XCTestCase {
 	/// read off a legacy Rust session (same byte representations the native
 	/// state holds). The kind is deliberately NOT part of the parts: the
 	/// migrator supplies the same parts to either mint.
-	private func migratedParts(_ session: TwoMLSSession) throws -> MigratedSession {
+	/// `identityOverride` defaults to `session.identity`, correct for every
+	/// non-dedicated fixture (a deployed-shaped session founds its own
+	/// leaves on exactly that identity's KP halves, so it already IS the
+	/// exported identity). A born-dedicated deployed session instead
+	/// exports D's own full bundle — the deployed engine has no
+	/// invitation-vs-D split at all — so those call sites pass D explicitly.
+	private func migratedParts(
+		_ session: TwoMLSSession, identityOverride: TwoMLSIdentity? = nil
+	) throws -> MigratedSession {
+		let identity = identityOverride ?? session.identity
 		let send = try XCTUnwrap(session.sendGroup)
 		let sendClassicalSnapshot = try send.classical.archive()
 		let sendPQSnapshot = try send.pq?.archive()
@@ -30,20 +39,20 @@ final class SessionMigrationTests: XCTestCase {
 			stateSeq: session.stateSeq,
 			initiated: session.initiated,
 			identity: MigratedSessionIdentity(
-				clientID: session.identity.clientID,
-				signingKey: session.identity.signingKey.data,
-				signatureKey: session.identity.signatureKey.data,
-				pqSigningKey: session.identity.pqSigningKey.data,
-				pqSignatureKey: session.identity.pqSignatureKey.data,
-				classicalLeafSecretKey: session.identity.classicalLeafSecretKey
+				clientID: identity.clientID,
+				signingKey: identity.signingKey.data,
+				signatureKey: identity.signatureKey.data,
+				pqSigningKey: identity.pqSigningKey.data,
+				pqSignatureKey: identity.pqSignatureKey.data,
+				classicalLeafSecretKey: identity.classicalLeafSecretKey
 					.data,
-				classicalInitSecretKey: session.identity.classicalInitSecretKey?
+				classicalInitSecretKey: identity.classicalInitSecretKey?
 					.data,
-				pqLeafSecretKey: session.identity.pqLeafSecretKey.data,
-				pqInitSecretKey: session.identity.pqInitSecretKey?.data,
-				classicalKeyPackage: try session.identity.keyPackage.classical
+				pqLeafSecretKey: identity.pqLeafSecretKey.data,
+				pqInitSecretKey: identity.pqInitSecretKey?.data,
+				classicalKeyPackage: try identity.keyPackage.classical
 					.mlsEncoded(),
-				pqKeyPackage: try session.identity.keyPackage.pq.mlsEncoded()),
+				pqKeyPackage: try identity.keyPackage.pq.mlsEncoded()),
 			auth: MigratedAuth(
 				mine: MigratedPartySequence(
 					history: session.auth.mine.history,
@@ -145,13 +154,186 @@ final class SessionMigrationTests: XCTestCase {
 			owesEstablishmentEnvelope: session.owesEstablishmentEnvelope)
 	}
 
+	// MARK: - Deployed-shaped fixtures
+	//
+	// A migrator's input is a genuine deployed Rust session: every group a
+	// party founds is founded on that SAME party's one KP-bundle leaf, so
+	// one `identity` key legitimately founds several groups at once
+	// (`SessionMigration`'s owner-keyed `convertDeployedKeys` exists only
+	// to read exactly that shape). The native path no longer produces it
+	// (each founds a fresh leaf per group) — these helpers reproduce it
+	// directly through the `founding:`/`catchUpKey:` test seam, so this
+	// file keeps exercising the converter against the shape it must
+	// actually accept. D1 (fresh, independent founding leaves) is proven
+	// by the native-path tests elsewhere, never here.
+
+	private func deployedShapedFounding(
+		_ half: MLS.RFC9420.KeyPackage, secret: MLS.HpkeSecretKey,
+		signingKey: MLS.SignatureSecretKey,
+		signatureKey: MLS.SignaturePublicKey
+	) -> FoundingLeaf {
+		(
+			leafNode: half.leafNode, leafSecretKey: secret,
+			key: LeafKey(signingKey: signingKey, signatureKey: signatureKey)
+		)
+	}
+
+	/// `SessionTestSupport.established()`'s deployed-shaped analogue: Alice
+	/// founds Group_A's classical+PQ halves on her own already-signed KP
+	/// leaves (never a freshly minted founding leaf), and Bob founds
+	/// Group_B's classical half on his.
+	private func deployedShapedEstablished(
+		alice aliceName: String = "alice", bob bobName: String = "bob"
+	) throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
+		bobIdentity: TwoMLSIdentity
+	) {
+		let aliceIdentity = try SessionTestSupport.identity(aliceName)
+		let bobIdentity = try SessionTestSupport.identity(bobName)
+		let initiated = try TwoMLSSession.initiate(
+			identity: aliceIdentity, their: bobIdentity.keyPackage,
+			founding: (
+				classical: deployedShapedFounding(
+					aliceIdentity.keyPackage.classical,
+					secret: aliceIdentity.classicalLeafSecretKey,
+					signingKey: aliceIdentity.signingKey,
+					signatureKey: aliceIdentity.signatureKey),
+				pq: deployedShapedFounding(
+					aliceIdentity.keyPackage.pq,
+					secret: aliceIdentity.pqLeafSecretKey,
+					signingKey: aliceIdentity.pqSigningKey,
+					signatureKey: aliceIdentity.pqSignatureKey)
+			),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let received = try TwoMLSSession.receive(
+			identity: bobIdentity, welcome: initiated.welcome,
+			theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			founding: deployedShapedFounding(
+				bobIdentity.keyPackage.classical,
+				secret: bobIdentity.classicalLeafSecretKey,
+				signingKey: bobIdentity.signingKey,
+				signatureKey: bobIdentity.signatureKey),
+			catchUpKey: nil,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		return (
+			alice: initiated.session, bob: received.session,
+			aliceIdentity: aliceIdentity,
+			bobIdentity: bobIdentity
+		)
+	}
+
+	private func deployedShapedEstablishedAndExchanged(
+		alice aliceName: String = "alice", bob bobName: String = "bob"
+	) throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
+		bobIdentity: TwoMLSIdentity
+	) {
+		var (alice, bob, aliceIdentity, bobIdentity) = try deployedShapedEstablished(
+			alice: aliceName, bob: bobName)
+		_ = try bob.prepareToEncrypt()
+		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		_ = try alice.processIncomingDecrypted(frame)
+		return (
+			alice: alice, bob: bob, aliceIdentity: aliceIdentity,
+			bobIdentity: bobIdentity
+		)
+	}
+
+	/// `RatchetTests.fullyEstablishedTurnOnBob()`'s deployed-shaped
+	/// analogue: Bob's A.3 founding leaf is his own already-signed PQ KP
+	/// leaf too, signed with the same key his classical founding leaf uses
+	/// — exactly the deployed engine's one-key-per-party shape.
+	private func deployedShapedFullyEstablishedTurnOnBob() throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession
+	) {
+		var (alice, bob, _, bobIdentity) = try deployedShapedEstablishedAndExchanged()
+		let kpFrame = try alice.pqBootstrapBegin().frame
+		let welcomeFrame = try bob.pqBootstrapRespond(
+			kpFrame,
+			founding: deployedShapedFounding(
+				bobIdentity.keyPackage.pq, secret: bobIdentity.pqLeafSecretKey,
+				signingKey: bobIdentity.pqSigningKey,
+				signatureKey: bobIdentity.pqSignatureKey)
+		).frame
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
+
+		_ = try alice.prepareToEncrypt()
+		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
+		_ = try bob.processIncomingDecrypted(boundFrame)
+
+		XCTAssertTrue(bob.myPQTurn)
+		XCTAssertFalse(alice.myPQTurn)
+		return (alice, bob)
+	}
+
+	/// `SessionTestSupport.establishedDedicated()`'s deployed-shaped
+	/// analogue: D is a real, full `TwoMLSIdentity` bundle (never a bare
+	/// credential id) — the deployed engine has no invitation-vs-D split,
+	/// so its exported `identity` for a dedicated session IS D. Both the
+	/// founding leaf and the rule-4 `pending[D]` catch-up entry are the
+	/// SAME key (the deployed engine mints exactly one key per party), so
+	/// `catchUpKey` reuses `founding.key` rather than a second, independent
+	/// mint.
+	private func deployedShapedEstablishedDedicated(
+		bob bobName: String = "bob", dedicatedClientID: Data = Data("bob-dedicated".utf8)
+	) throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession, invitationIdentity: TwoMLSIdentity,
+		dIdentity: TwoMLSIdentity
+	) {
+		let aliceIdentity = try SessionTestSupport.identity("alice")
+		let invitationIdentity = try SessionTestSupport.identity(bobName)
+		// A born-dedicated principal never joins with its own KP, so both
+		// init secrets are cleared immediately — mirrors the native
+		// `receive`'s own "never separately read" reasoning, and matters
+		// here because `migratedParts(identityOverride:)` embeds this value
+		// directly (a live PQ init secret would fail the mint's own gate).
+		let dIdentity = try TwoMLSIdentity.generate(
+			clientID: dedicatedClientID,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider
+		).clearingInitSecrets(classical: true, pq: true)
+		let initiated = try TwoMLSSession.initiate(
+			identity: aliceIdentity, their: invitationIdentity.keyPackage,
+			founding: (
+				classical: deployedShapedFounding(
+					aliceIdentity.keyPackage.classical,
+					secret: aliceIdentity.classicalLeafSecretKey,
+					signingKey: aliceIdentity.signingKey,
+					signatureKey: aliceIdentity.signatureKey),
+				pq: deployedShapedFounding(
+					aliceIdentity.keyPackage.pq,
+					secret: aliceIdentity.pqLeafSecretKey,
+					signingKey: aliceIdentity.pqSigningKey,
+					signatureKey: aliceIdentity.pqSignatureKey)
+			),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let dFounding = deployedShapedFounding(
+			dIdentity.keyPackage.classical, secret: dIdentity.classicalLeafSecretKey,
+			signingKey: dIdentity.signingKey, signatureKey: dIdentity.signatureKey)
+		let received = try TwoMLSSession.receive(
+			identity: invitationIdentity, welcome: initiated.welcome,
+			theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			founding: dFounding, catchUpKey: dFounding.key,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider, newClientID: dedicatedClientID)
+		return (
+			alice: initiated.session, bob: received.session,
+			invitationIdentity: invitationIdentity, dIdentity: dIdentity
+		)
+	}
+
 	/// A fully-established session pair — post-A.3 bootstrap plus one
 	/// complete PQ round (`RatchetTests`' own flow), landing at PQ epoch 2,
 	/// quiescent (no inflight/owed state), ledgers and windows populated.
 	private func fullyEstablishedPair() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession
 	) {
-		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		var (alice, bob) = try deployedShapedFullyEstablishedTurnOnBob()
 
 		// The full A.4 round (mirrors
 		// RatchetTests.testBobInitiatedRatchetRoundAdvancesGroupBPQAndReturnsTurn):
@@ -386,7 +568,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// ignores staged/parked proposals" (the classical half; PQ has no
 	/// resolvable-but-new-key migrated scenario here).
 	func testMintedMidRotationConvertsStagedUpdateAndLeafKeysMatch() throws {
-		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
 		let newID = Data("alice-v2".utf8)
 		_ = try alice.prepareToEncrypt(rotating: newID)
 		XCTAssertNotNil(alice.rotationCandidate)
@@ -419,7 +601,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// item (c) entirely makes `pending[C]` vanish while `pending[C′]`
 	/// still exists — this is the test that catches it.
 	func testMintedConversionItemCPopulatesTheStagedTargetIndependentlyOfItemA() throws {
-		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
 		let c = Data("alice-c".utf8)
 		_ = try alice.prepareToEncrypt(rotating: c)
 		let candidate = try XCTUnwrap(alice.rotationCandidate)
@@ -470,7 +652,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// A mid-A.4 `.responding` mint: the held `S`/parked CT map, the body
 	/// matches the native one, and the restored session completes the round.
 	func testMintedMidFlightResponderRoundTripsAndCompletesRound() throws {
-		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		var (alice, bob) = try deployedShapedFullyEstablishedTurnOnBob()
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
@@ -506,7 +688,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// only `pending`) — a DIFFERENT point in the lifecycle from the
 	/// mid-rotation (staged-but-unfolded) test above.
 	func testMintedRotationFoldedMatchesNative() throws {
-		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		var (alice, bob, _, _) = try deployedShapedEstablishedAndExchanged()
 		let newID = Data("alice-v2".utf8)
 		_ = try alice.prepareToEncrypt(rotating: newID)
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
@@ -529,7 +711,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// present the new id, and the outstanding candidate's `pending`
 	/// entries are gone (promoted to `current` on both classical sets).
 	func testMintedRotationConvergedMatchesNative() throws {
-		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		var (alice, bob, _, _) = try deployedShapedEstablishedAndExchanged()
 		let newID = Data("alice-v2".utf8)
 		_ = try alice.prepareToEncrypt(rotating: newID)
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
@@ -563,7 +745,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// the §A.3 bootstrap) does not yet — `recvPQ` converts to its
 	/// identity-keyed reservation.
 	func testMintedPreA3InitiatorMatchesNative() throws {
-		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
 		XCTAssertNotNil(alice.sendGroup?.pq)
 		XCTAssertNil(alice.recvGroup?.pq)
 
@@ -583,10 +765,11 @@ final class SessionMigrationTests: XCTestCase {
 
 	/// The mirror image on the acceptor: bob's `recvGroup` (Group_A) already
 	/// carries PQ (founded at invitation-accept time), but his `sendGroup`
-	/// (Group_B) is still classical-only pre-A.3 — `sendPQ` converts to its
-	/// identity-keyed reservation instead of `recvPQ`.
+	/// (Group_B) is still classical-only pre-A.3 — `sendPQ` converts to the
+	/// canonical present-but-empty shape: nothing is reserved ahead of A.3
+	/// founding.
 	func testMintedPreA3AcceptorMatchesNative() throws {
-		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let (_, bob, _, _) = try deployedShapedEstablishedAndExchanged()
 		XCTAssertNotNil(bob.recvGroup?.pq)
 		XCTAssertNil(bob.sendGroup?.pq)
 
@@ -602,13 +785,85 @@ final class SessionMigrationTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		XCTAssertNil(restored.sendGroup?.pq)
+		XCTAssertNil(restored.leafKeys.sendPQ.current)
+	}
+
+	/// A deployed-shaped pre-A.3 acceptor's mint+restore never founds
+	/// send-PQ, and a NATIVE `pqBootstrapRespond` afterward mints its own
+	/// fresh founding key — never a stored or identity key. Two input
+	/// shapes both land there (the CLARIFICATION's twin): a `.mintSupplied`
+	/// non-nil `sendPQ.current` reservation is dropped without throwing,
+	/// and the canonical present-but-empty `.mintConverted` shape is
+	/// accepted as-is.
+	func testMigratedPreA3AcceptorFoundsSendPQOnAFreshKey() throws {
+		for suppliedReservation in [false, true] {
+			var (alice, bob, aliceIdentity, bobIdentity) =
+				try deployedShapedEstablishedAndExchanged(
+					alice: "d6-alice-\(suppliedReservation)",
+					bob: "d6-bob-\(suppliedReservation)")
+			XCTAssertNil(bob.sendGroup?.pq)
+
+			var parts = try migratedParts(bob)
+			if suppliedReservation {
+				func migratedKey(_ key: LeafKey) -> MigratedLeafKey {
+					MigratedLeafKey(
+						signingKey: key.signingKey.data,
+						signatureKey: key.signatureKey.data)
+				}
+				parts.leafKeys = MigratedLeafKeys(
+					sendClassical: MigratedGroupKeys(
+						current: migratedKey(
+							try XCTUnwrap(
+								bob.leafKeys.sendClassical.current))
+					),
+					recvClassical: MigratedGroupKeys(
+						current: migratedKey(
+							try XCTUnwrap(
+								bob.leafKeys.recvClassical.current))
+					),
+					// A supplied reservation — must be dropped, never thrown on.
+					sendPQ: MigratedGroupKeys(
+						current: migratedKey(
+							LeafKey(
+								signingKey: bobIdentity
+									.pqSigningKey,
+								signatureKey: bobIdentity
+									.pqSignatureKey))),
+					recvPQ: MigratedGroupKeys(
+						current: migratedKey(
+							try XCTUnwrap(bob.leafKeys.recvPQ.current)))
+				)
+			}
+			let minted = try SessionMigration.mintArchive(
+				kind: .checkpoint, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+			var restored = try TwoMLSSession.restore(
+				core: nil, checkpoint: minted,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+			XCTAssertNil(restored.leafKeys.sendPQ.current)
+			XCTAssertNil(restored.sendGroup?.pq)
+
+			let kpFrame = try alice.pqBootstrapBegin().frame
+			_ = try restored.pqBootstrapRespond(kpFrame)
+			let foundedKey = try XCTUnwrap(restored.leafKeys.sendPQ.current)
+			let presentedKey = try TwoMLSSession.ownLeaf(
+				of: try XCTUnwrap(restored.sendGroup?.pq)
+			).signatureKey
+			XCTAssertEqual(foundedKey.signatureKey, presentedKey)
+			XCTAssertNotEqual(foundedKey.signatureKey, bobIdentity.pqSignatureKey)
+			XCTAssertNotEqual(foundedKey.signatureKey, restored.identity.pqSignatureKey)
+			XCTAssertNotEqual(foundedKey.signatureKey, aliceIdentity.pqSignatureKey)
+			try restored.assertLeafKeysPresented()
+		}
 	}
 
 	/// Mint parity for the A.3-stalled initiator: the founder has sent its
 	/// KP′ and is waiting on the peer's Welcome′ — `bootstrapKPSecret`
 	/// held, `pqInflight == .bootstrapInitiated`, `recvGroup.pq` still nil.
 	func testMintedA3StalledInitiatorMatchesNative() throws {
-		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
 		_ = try alice.pqBootstrapBegin()
 		XCTAssertNotNil(alice.bootstrapKPSecret)
 		guard case .bootstrapInitiated = alice.pqInflight else {
@@ -677,10 +932,12 @@ final class SessionMigrationTests: XCTestCase {
 	/// classical init secret carried, restores, and COMPLETES establishment —
 	/// the full PR3c flow a migrated mid-establishment session needs.
 	func testMintedPreEstablishmentInitiatorCompletesEstablishment() throws {
-		let alicePrincipal = try Principal.generate(
-			clientID: Data("alice".utf8),
-			classicalProvider: SessionTestSupport.classicalProvider,
-			pqProvider: SessionTestSupport.pqProvider)
+		// Deployed-shaped: founds Group_A on alice's own
+		// already-signed KP leaves directly, rather than the public
+		// `initiate(principal:their:)`'s fresh founding leaves — this test
+		// exercises the converter's owner-keyed shape, matching a genuine
+		// deployed session.
+		let aliceIdentity = try SessionTestSupport.identity("alice")
 		let bobPrincipal = try Principal.generate(
 			clientID: Data("bob".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -688,7 +945,21 @@ final class SessionMigrationTests: XCTestCase {
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			identity: aliceIdentity, their: theirKP,
+			founding: (
+				classical: deployedShapedFounding(
+					aliceIdentity.keyPackage.classical,
+					secret: aliceIdentity.classicalLeafSecretKey,
+					signingKey: aliceIdentity.signingKey,
+					signatureKey: aliceIdentity.signatureKey),
+				pq: deployedShapedFounding(
+					aliceIdentity.keyPackage.pq,
+					secret: aliceIdentity.pqLeafSecretKey,
+					signingKey: aliceIdentity.pqSigningKey,
+					signatureKey: aliceIdentity.pqSignatureKey)
+			),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
 
 		let parts = try migratedParts(initiated.session)
 		XCTAssertNotNil(parts.identity.classicalInitSecretKey)
@@ -1074,14 +1345,17 @@ final class SessionMigrationTests: XCTestCase {
 	/// — so it already EXISTS at mint time, and its own leaf still presents
 	/// the INVITATION identity's PQ key (nothing catches PQ up to D in this
 	/// slice). `lookupPQ` must resolve it via `recvLeafPrincipal`'s PQ
-	/// slot, not `identity`'s (which is D) — `assertMintedMatchesNative`
-	/// below is the direct proof: it fails if that resolution is wrong.
+	/// slot, not `identity`'s (which is D) — the explicit `recvPQ.current`
+	/// check below, against both the minted archive directly and the
+	/// restored session, is the direct proof: it fails if that resolution
+	/// is wrong.
 	func testMintedBornDedicatedAcceptorRestoresWithCustodyIntact() throws {
-		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
+		let established = try deployedShapedEstablishedDedicated(bob: "bob-d")
 		let bob = established.bob
 		XCTAssertTrue(bob.owesEstablishmentEnvelope)
 		let invitationCustody = try XCTUnwrap(bob.recvLeafPrincipal)
-		XCTAssertNotEqual(bob.identity.clientID, invitationCustody.clientID)
+		XCTAssertEqual(bob.identity.clientID, invitationCustody.clientID)
+		XCTAssertNotEqual(established.dIdentity.clientID, invitationCustody.clientID)
 		XCTAssertNotNil(
 			bob.recvGroup?.pq, "Group_A.pq already exists at mint time")
 		XCTAssertEqual(
@@ -1089,11 +1363,17 @@ final class SessionMigrationTests: XCTestCase {
 			"recv-PQ still presents the invitation identity's key, not D's")
 
 		let minted = try SessionMigration.mintArchive(
-			kind: .checkpoint, parts: try migratedParts(bob),
+			kind: .checkpoint,
+			parts: try migratedParts(bob, identityOverride: established.dIdentity),
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		let native = try bob.makeSessionArchive(kind: .checkpoint)
-		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
+		let mintedBody = try minted.decode(SessionArchive.self)
+		XCTAssertEqual(
+			mintedBody.leafKeys.recvPQ?.current?.signatureKey,
+			invitationCustody.pqSignatureKey.data,
+			"minted recvPQ.current must resolve via recvLeafPrincipal's PQ slot, not identity's (D's)"
+		)
+
 		let restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -1107,7 +1387,12 @@ final class SessionMigrationTests: XCTestCase {
 		XCTAssertEqual(
 			restored.recvLeafPrincipal?.pqSignatureKey,
 			bob.recvLeafPrincipal?.pqSignatureKey)
-		XCTAssertEqual(restored.identity.clientID, bob.identity.clientID)
+		XCTAssertEqual(
+			restored.leafKeys.recvPQ.current?.signatureKey,
+			invitationCustody.pqSignatureKey,
+			"restored recvPQ.current must still present the invitation identity's PQ key"
+		)
+		XCTAssertEqual(restored.identity.clientID, established.dIdentity.clientID)
 		XCTAssertTrue(restored.owesEstablishmentEnvelope)
 	}
 
@@ -1133,7 +1418,7 @@ final class SessionMigrationTests: XCTestCase {
 		// fixture (rather than hand-driving §A.3) starts past the PQ
 		// bootstrap/ratchet entirely, so the classical rotation driven below
 		// is the only PQ-adjacent thing this test needs to reason about.
-		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		var (alice, bob) = try deployedShapedFullyEstablishedTurnOnBob()
 
 		let oldPQSigningKey = alice.identity.pqSigningKey
 		let oldPQSignatureKey = alice.identity.pqSignatureKey
@@ -1474,7 +1759,7 @@ final class SessionMigrationTests: XCTestCase {
 		// shape from before A.3, which requires an EMPTY pending) so a
 		// non-empty PQ `pending` is check 3's "existing group" arm, not
 		// rule 4's reservation arm.
-		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let (_, bob) = try deployedShapedFullyEstablishedTurnOnBob()
 		var parts = try migratedParts(bob)
 		let newID = Data("bob-caught-up-to".utf8)
 		parts.auth.mine.history.append(newID)
@@ -1534,7 +1819,7 @@ final class SessionMigrationTests: XCTestCase {
 	func testRustWonRotationCatchesUpBothClassicalLeaves() throws {
 		OracleCheck.allow([.sendClassical, .recvClassical])
 		defer { OracleCheck.allow([]) }
-		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		var (alice, bob) = try deployedShapedFullyEstablishedTurnOnBob()
 		var parts = try migratedParts(bob)
 		let c = Data("bob-rust-rotated".utf8)
 		parts.auth.mine.history.append(c)
@@ -1630,10 +1915,11 @@ final class SessionMigrationTests: XCTestCase {
 	/// pins exactly this) but `.mintSupplied` must enforce once the caller
 	/// is on the hook for rule 7's PQ arm.
 	func testMintSuppliedModeRequiresThePQCatchUpKeyThatMintConvertedTolerates() throws {
-		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
+		let established = try deployedShapedEstablishedDedicated(bob: "bob-d")
 		let bob = established.bob
+		let dIdentity = established.dIdentity
 		let invitationCustody = try XCTUnwrap(bob.recvLeafPrincipal)
-		let parts = try migratedParts(bob)
+		let parts = try migratedParts(bob, identityOverride: dIdentity)
 
 		// `.mintConverted` (parts.leafKeys == nil): tolerated.
 		XCTAssertNoThrow(
@@ -1645,11 +1931,8 @@ final class SessionMigrationTests: XCTestCase {
 		// `.mintSupplied`, mirroring conversion's own shape everywhere
 		// EXCEPT the recv-PQ catch-up key: rejected.
 		let dClassicalKey = MigratedLeafKey(
-			signingKey: bob.identity.signingKey.data,
-			signatureKey: bob.identity.signatureKey.data)
-		let dPQKey = MigratedLeafKey(
-			signingKey: bob.identity.pqSigningKey.data,
-			signatureKey: bob.identity.pqSignatureKey.data)
+			signingKey: dIdentity.signingKey.data,
+			signatureKey: dIdentity.signatureKey.data)
 		let invitationClassicalKey = MigratedLeafKey(
 			signingKey: invitationCustody.signingKey.data,
 			signatureKey: invitationCustody.signatureKey.data)
@@ -1663,9 +1946,10 @@ final class SessionMigrationTests: XCTestCase {
 				current: invitationClassicalKey,
 				pending: [
 					MigratedPendingLeafKey(
-						target: bob.identity.clientID, key: dClassicalKey)
+						target: dIdentity.clientID, key: dClassicalKey)
 				]),
-			sendPQ: MigratedGroupKeys(current: dPQKey),
+			// The canonical pre-A.3 empty shape.
+			sendPQ: MigratedGroupKeys(current: nil),
 			// No `pending[D]` here — the missing catch-up key.
 			recvPQ: MigratedGroupKeys(current: invitationPQKey))
 		XCTAssertThrowsError(
@@ -1816,7 +2100,7 @@ extension SessionMigrationTests {
 	}
 
 	private func mintedWithWindow() throws -> (bob: TwoMLSSession, archive: SecretArchive) {
-		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let (_, bob, _, _) = try deployedShapedEstablishedAndExchanged()
 		let g = try knownSecretOffers(1, in: bob)
 		let parts = try migratedParts(bob)
 		let archive = try SessionMigration.mintArchive(
@@ -1877,7 +2161,7 @@ extension SessionMigrationTests {
 	private func rekeyInitiatedBob() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, upd: Data
 	) {
-		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		var (alice, bob) = try deployedShapedFullyEstablishedTurnOnBob()
 		_ = try bob.pqRekeyBegin()
 		guard case .rekeyInitiated(let upd) = bob.pqInflight else {
 			XCTFail("expected .rekeyInitiated")
