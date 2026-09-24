@@ -4,6 +4,7 @@ import MLSCodec
 import MLSCombiner
 import MLSExtensions
 import MLSProfileRFC9420
+import SecretBytes
 
 // MARK: - Send / receive (one app message; no commit) — classical fold/bind commit machinery
 
@@ -179,6 +180,74 @@ extension TwoMLSSession {
 		return store
 	}
 
+	/// Step 3 (A.5): resolve `commit`'s by-reference own-Update proposals —
+	/// the framed store (`rebuildStagedProposalStore`) first, then, only
+	/// for refs still missing, the caller's own `ownOfferWindow` blob,
+	/// cross-checked against this session's own persisted record
+	/// (`self.ownOfferWindow`). Nothing here mutates `self`; `recv` is the
+	/// caller's own local copy (not yet written back), so every path is
+	/// safe to run before any other consuming step in `applyFoldCommit`/
+	/// `applyBind`.
+	///
+	/// B-1: authenticates BEFORE ever demanding or loading anything. When
+	/// refs are missing, a probe `validating` call — over the FRAMED store
+	/// ONLY (never the window: not loaded yet) and a PSK resolver that
+	/// always returns `nil` — resolves proposal references before PSKs
+	/// (swift-mls `validating`), so `GroupError.unknownProposalReference`
+	/// here means the staple's framing signature and membership tag have
+	/// ALREADY verified, and a ref is genuinely missing: only THEN does
+	/// this throw `.ownOfferWindowRequired` (no window supplied) or load
+	/// the window. Any other error — a bad signature, a bad membership
+	/// tag, or anything else `validating` would have thrown regardless —
+	/// propagates unchanged, exactly as it would have without this
+	/// detection step: a forged commit naming a bogus ref never reaches
+	/// `.ownOfferWindowRequired`.
+	///
+	/// Returns the store the REAL `validating` call should use, and
+	/// whether a named ref still went unresolved (`windowLacked`) — the
+	/// caller maps a subsequent `unknownProposalReference` from that real
+	/// call to `.ownOfferUnavailable` ONLY when this is `true` (S-6/N-1:
+	/// every other `unknownProposalReference` propagates raw, matching
+	/// today's pre-step-3 behavior for a session with no window record at
+	/// all).
+	private func resolvingOwnProposals(
+		commit: MLS.RFC9420.PublicMessage, recv: APQGroup,
+		ownOfferWindow suppliedWindow: SecretArchive?
+	) throws -> (store: MLS.RFC9420.ProposalStore, windowLacked: Bool) {
+		let store = rebuildStagedProposalStore(against: recv.classical)
+		guard case .commit(let commitValue) = commit.content.content else {
+			throw TwoMLSError.malformedSideBandMessage
+		}
+		let missingRefs: [MLS.HashReference] = commitValue.proposals.compactMap {
+			guard case .reference(let ref) = $0, store[ref] == nil else { return nil }
+			return ref
+		}
+		guard !missingRefs.isEmpty, let record = ownOfferWindow else {
+			// Nothing missing, or this session has no window record at all
+			// — continue exactly as today.
+			return (store, false)
+		}
+
+		do {
+			_ = try recv.classical.validating(
+				classicalProvider, commit: commit, proposals: store,
+				psk: { _ in nil })
+			// Resolved without the window after all — nothing left to do.
+			return (store, false)
+		} catch MLS.RFC9420.GroupError.unknownProposalReference {
+			// Authenticated AND missing — fall through to demand/load.
+		}
+
+		guard let suppliedWindow else { throw TwoMLSError.ownOfferWindowRequired }
+		let offers = try OwnOfferWindow.loadAndVerify(suppliedWindow, record: record)
+		var augmented = store
+		let lacked = OwnOfferWindow.insertNamed(
+			missingRefs, from: offers, into: &augmented, recvClassical: recv.classical,
+			myLeafIndex: recv.classical.myLeafIndex, epoch: record.epoch,
+			groupID: record.groupID, provider: classicalProvider)
+		return (augmented, !lacked.isEmpty)
+	}
+
 	/// §11 MF4: export+ledger `classical`'s CURRENT-epoch `0xFF02` cross-party
 	/// PSK into `ledger`, unless that epoch is already there — mirrors the
 	/// Rust `remember_send_psk`. Pure with respect to `self`: both parameters
@@ -207,25 +276,28 @@ extension TwoMLSSession {
 		}
 	}
 
-	/// The own-leaf catch-up (§3c, slice 6): does `send`'s own classical leaf lag the canonical
-	/// principal `candidate` already achieved on `recv`'s own leaf (the FIRST
-	/// leaf to canonicalize a rotation, per `applyFoldCommit`/`applyBind`)?
-	/// Both reads are tree-derived (never a cached claim), so this can never
-	/// disagree with what the stored key sets would sign with. Returns the
-	/// TARGET id, not the candidate record — the key itself always comes
-	/// from `leafKeys.sendClassical.pending`, never `rotationCandidate.
-	/// signingKey` directly — `nil` when there is no outstanding candidate,
-	/// either group is absent, or the send-leaf already presents the
-	/// canonical id.
+	/// The own-leaf catch-up (§3c, slice 6; generalized by A.7 — step 3): does
+	/// `send`'s own classical leaf "lag" — present an id other than
+	/// `mineCurrent` (`auth.mine.current`)? No candidate is needed to answer
+	/// that: `mine.current` only ever moves once SOME leaf has already
+	/// canonicalized the new id (`canonicalize`'s `mine.commit`, run when my
+	/// OWN recv-leaf's rotation is folded), so a send-leaf lag against it is
+	/// exactly "the recv leaf got there first" — the same condition the old
+	/// candidate-based check derived less directly, plus every migrated or
+	/// rule-7-supplied lag a candidate could never explain. The read is
+	/// tree-derived (never a cached claim), so this can never disagree with
+	/// what the stored key set would sign with. Returns the TARGET id, not a
+	/// candidate record — the key itself always comes from
+	/// `leafKeys.sendClassical.pending`, never `rotationCandidate.
+	/// signingKey` directly — `nil` when the group is absent, there is no
+	/// canonical principal yet, or the send-leaf already presents it.
 	private static func ownLeafCatchUpTarget(
-		send: APQGroup?, recv: APQGroup?, candidate: RotationCandidate?
+		send: APQGroup?, mineCurrent: Data?
 	) throws -> Data? {
-		guard let candidate, let send, let recv else { return nil }
+		guard let send, let mineCurrent else { return nil }
 		let sendOwnID = try basicIdentifier(Self.ownLeaf(of: send.classical).credential)
-		guard sendOwnID != candidate.clientID else { return nil }
-		let canonicalID = try basicIdentifier(Self.ownLeaf(of: recv.classical).credential)
-		guard canonicalID == candidate.clientID else { return nil }
-		return candidate.clientID
+		guard sendOwnID != mineCurrent else { return nil }
+		return mineCurrent
 	}
 
 	/// §3b/§11 MF6: a committing round on `sendGroup.classical` — folds the
@@ -280,7 +352,7 @@ extension TwoMLSSession {
 		let catchUpTargetID =
 			licensed
 			? try Self.ownLeafCatchUpTarget(
-				send: sendGroup, recv: recvGroup, candidate: rotationCandidate)
+				send: sendGroup, mineCurrent: auth.mine.current)
 			: nil
 		// The pending-key lookup runs only when there IS a catch-up target
 		// — never unconditionally — and is captured now, on `self.leafKeys`,
@@ -551,7 +623,9 @@ extension TwoMLSSession {
 	/// only local `recv`/`send`/`ledger` copies are touched, written back to
 	/// `self` on success — any throw above that point burns no state.
 	// internal: used by Messaging.handleStaple
-	internal mutating func applyFoldCommit(_ commitBytes: Data) throws -> StapleApplyResult {
+	internal mutating func applyFoldCommit(
+		_ commitBytes: Data, ownOfferWindow: SecretArchive? = nil
+	) throws -> StapleApplyResult {
 		// The commit's injected `0xFF02` PSK is `ComponentID`-bearing, like
 		// the `0x05` bind's — decode and construct at the deployed width
 		// (§11 #6/MF7), so the whole body lives in one scope.
@@ -584,7 +658,14 @@ extension TwoMLSSession {
 				return false
 			}
 
-			let proposalStore = rebuildStagedProposalStore(against: recv.classical)
+			// Step 3 (A.5): resolve own-Update by-reference proposals — the
+			// framed store first, then (only for refs still missing) the
+			// own-offer window, authenticated first (B-1). Right after the
+			// commit decode and the epoch classification, before anything
+			// else consumes `send`/the ledgers — mirrors `applyBind`'s own
+			// placement.
+			let (proposalStore, windowLacked) = try resolvingOwnProposals(
+				commit: commitPub, recv: recv, ownOfferWindow: ownOfferWindow)
 
 			guard var send = sendGroup else { throw TwoMLSError.notEstablished }
 			var ledger = sendCrossPSKLedger
@@ -607,9 +688,19 @@ extension TwoMLSSession {
 				expectedExternalPSKIDs: [],
 				allowAttestation: false)
 
-			let pending = try recv.classical.validating(
-				classicalProvider, commit: commitPub, proposals: proposalStore,
-				psk: store.resolver())
+			let pending: MLS.RFC9420.PendingCommit
+			do {
+				pending = try recv.classical.validating(
+					classicalProvider, commit: commitPub,
+					proposals: proposalStore,
+					psk: store.resolver())
+			} catch MLS.RFC9420.GroupError.unknownProposalReference where windowLacked {
+				// Step 3: the supplied window lacked a named ref — terminal,
+				// same authenticated-commit guarantee `resolvingOwnProposals`
+				// already established (its own probe ran this exact
+				// `validating` shape first).
+				throw TwoMLSError.ownOfferUnavailable
+			}
 			let effects = pending.effects
 			try TwoPartyRules.validateTwoPartyUpdateCommit(
 				effects, foldedPeerUpdate: foldedPeerUpdate,
@@ -645,9 +736,8 @@ extension TwoMLSSession {
 			// actually moved.
 			let updatedLeafKeys = try Self.updateRecvClassicalKeys(
 				leafKeys, classical: recv.classical,
-				authCopy: authCopy, recvLeafPrincipal: recvLeafPrincipal,
-				identity: identity,
-				rotationCandidateID: rotationCandidate?.clientID)
+				authCopy: authCopy, rotationCandidateID: rotationCandidate?.clientID
+			)
 
 			recvGroup = recv
 			sendGroup = send
@@ -655,6 +745,12 @@ extension TwoMLSSession {
 			sendAttachmentLedger = attachmentLedger
 			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
+			// Step 3: drain the own-offer window record — `recvGroup.
+			// classical`'s epoch just advanced, the only two sites it ever
+			// does (here and `applyBind`'s own success point below), and
+			// the host may delete its stored blob once this call's own
+			// archive is durable (`ownOfferWindowID`'s own doc).
+			self.ownOfferWindow = nil
 			auth = authCopy
 			leafKeys = updatedLeafKeys
 			// Slice 11 (group-rules.md rule 4): `recvLeafPrincipal` is NOT retired here even
@@ -718,11 +814,14 @@ extension TwoMLSSession {
 	/// presents rather than depend on that AS-level event agreeing with it;
 	/// retention likewise runs regardless, since `stagedUpdates` goes stale
 	/// at every advance regardless of which leaf this particular commit
-	/// moved.
+	/// moved. Generalized by A.7 (step 3): the retained rule-4 target is
+	/// `authCopy.mine.current` itself whenever the post-apply leaf still
+	/// lags it — subsumes the born-dedicated-only case (`recvLeafPrincipal`/
+	/// `identity` are no longer needed here: kept as unread records on
+	/// `TwoMLSSession` until a later step retires them).
 	private static func updateRecvClassicalKeys(
 		_ leafKeys: LeafKeys, classical: MLS.RFC9420.Group,
-		authCopy: AuthCore, recvLeafPrincipal: RecvLeafPrincipal?, identity: TwoMLSIdentity,
-		rotationCandidateID: Data?
+		authCopy: AuthCore, rotationCandidateID: Data?
 	) throws -> LeafKeys {
 		var updated = leafKeys
 		let ownLeaf = try Self.ownLeaf(of: classical)
@@ -734,10 +833,10 @@ extension TwoMLSSession {
 					$0, mineHistory: authCopy.mine.history)
 			} ?? true
 		let ruleFourTarget: Data? = {
-			guard let recvLeafPrincipal, recvLeafPrincipal.clientID == ownID,
-				ownID != authCopy.mine.current
-			else { return nil }
-			return identity.clientID
+			guard let mineCurrent = authCopy.mine.current, ownID != mineCurrent else {
+				return nil
+			}
+			return mineCurrent
 		}()
 		updated.recvClassical.retainRecvClassical(
 			candidateID: rotationCandidateID,
@@ -774,7 +873,9 @@ extension TwoMLSSession {
 	/// point rather than written mid-body. Returns whether the bind was
 	/// actually applied (`false` for an idempotent re-ride).
 	// internal: used by Messaging.handleStaple
-	internal mutating func applyBind(_ staple: Data) throws -> StapleApplyResult {
+	internal mutating func applyBind(
+		_ staple: Data, ownOfferWindow: SecretArchive? = nil
+	) throws -> StapleApplyResult {
 		// The commit messages decoded below carry `ComponentID`-bearing
 		// proposals (the injected external PSK and both `AppDataUpdate`s) —
 		// their decode, not just their construction, must run at the
@@ -826,6 +927,15 @@ extension TwoMLSSession {
 				if case .reference = entry { return true }
 				return false
 			}
+
+			// Step 3 (A.5): resolve own-Update by-reference proposals here,
+			// EARLY — right after the commit decode, before anything in the
+			// PQ half below runs. Valid because the PQ half never touches
+			// `recv.classical` (only `recv.pq`), so this authenticates and
+			// resolves against exactly the same, still-untouched classical
+			// state the PQ half runs alongside, not after.
+			let (proposalStore, windowLacked) = try resolvingOwnProposals(
+				commit: tPub, recv: recv, ownOfferWindow: ownOfferWindow)
 
 			// Mirrors the id `owePQBind` builds on Alice's side (LE64(epoch) ‖
 			// groupID ‖ [0x52]) against `recv.pq!`'s PRE-apply epoch/group id —
@@ -906,7 +1016,6 @@ extension TwoMLSSession {
 			)
 			recv.pq = apqSource
 
-			let proposalStore = rebuildStagedProposalStore(against: recv.classical)
 			var ledger = sendCrossPSKLedger
 			var store = MLS.Combiner.PSKStore()
 			store.register(apqPSK)
@@ -935,10 +1044,18 @@ extension TwoMLSSession {
 			// `verifyApqPskBound` half inspects the `ResolutionRecord` after
 			// the fact instead of a closure-captured bool.
 			let (classicalResolver, pskRecord) = store.recordingResolver()
-			let tPending = try recv.classical.validating(
-				classicalProvider, commit: tPub,
-				proposals: proposalStore,
-				psk: classicalResolver)
+			let tPending: MLS.RFC9420.PendingCommit
+			do {
+				tPending = try recv.classical.validating(
+					classicalProvider, commit: tPub,
+					proposals: proposalStore,
+					psk: classicalResolver)
+			} catch MLS.RFC9420.GroupError.unknownProposalReference where windowLacked {
+				// Step 3: the supplied window lacked a named ref — terminal,
+				// same authenticated-commit guarantee `resolvingOwnProposals`
+				// already established for this staple.
+				throw TwoMLSError.ownOfferUnavailable
+			}
 			let classicalEffects = tPending.effects
 			try TwoPartyRules.validateBindClassicalEffects(
 				classicalEffects, foldedPeerUpdate: foldedPeerUpdate)
@@ -980,9 +1097,8 @@ extension TwoMLSSession {
 			// advances.
 			let updatedLeafKeys = try Self.updateRecvClassicalKeys(
 				leafKeys, classical: recv.classical,
-				authCopy: authCopy, recvLeafPrincipal: recvLeafPrincipal,
-				identity: identity,
-				rotationCandidateID: rotationCandidate?.clientID)
+				authCopy: authCopy, rotationCandidateID: rotationCandidate?.clientID
+			)
 
 			recvGroup = recv
 			sendGroup = send
@@ -990,6 +1106,10 @@ extension TwoMLSSession {
 			sendAttachmentLedger = attachmentLedger
 			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
+			// Step 3: drain the own-offer window record — see
+			// `applyFoldCommit`'s own comment; this is the ONLY other site
+			// `recvGroup.classical`'s epoch advances.
+			self.ownOfferWindow = nil
 			pqTurnMine = true
 			pqInflight = nil
 			pendingSideBand = nil

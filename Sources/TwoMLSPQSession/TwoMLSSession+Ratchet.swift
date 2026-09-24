@@ -79,6 +79,11 @@ extension TwoMLSSession {
 		}
 		guard pendingProposal == nil else { throw TwoMLSError.sessionNotReady }
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
+		// Step 3: no-custody guard, before `processA4Leg`'s write-back —
+		// this responder frames its `0x19` reply on `send.classical`.
+		guard !noCustody.contains(.sendClassical) else {
+			throw TwoMLSError.leafCustodyUnavailable
+		}
 
 		let ek = try processA4Leg(
 			on: &recv.classical, innerTag: Frames.pqEKTag, message: msg)
@@ -124,19 +129,56 @@ extension TwoMLSSession {
 		let msg = try MLS.RFC9420.Message(mlsEncoded: messageBytes)
 		guard case .privateMessage(let pm) = msg else { throw TwoMLSError.decryptionFailed }
 
+		// S-2 (step 3): the fatal name at every PQ door, right after the
+		// untrusted decode — mirrors Rust's `pq_ratchet_bind`
+		// (decode, then `check_not_wedged`, then its state-shape guards).
+		guard pqWedge == nil else { throw TwoMLSError.pqSideBandWedged }
+
 		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
-		guard pm.epoch >= recv.classical.context.epoch else { throw TwoMLSError.staleFrame }
 		guard pendingProposal == nil, owedBind == nil else {
 			throw TwoMLSError.sessionNotReady
 		}
 		guard case .initiating(let eph) = pqInflight else {
 			throw TwoMLSError.sessionNotReady
 		}
-		guard let sendPQ = sendGroup?.pq else { throw TwoMLSError.notEstablished }
+		guard var send = sendGroup, let sendPQ = send.pq else {
+			throw TwoMLSError.notEstablished
+		}
+		// Step 3: no-custody guard, before anything is consumed — this
+		// door's `owePQBind` commits `sendGroup.pq`.
+		guard !noCustody.contains(.sendPQ) else {
+			throw TwoMLSError.leafCustodyUnavailable
+		}
 
-		let wireCT = try processA4Leg(
-			on: &recv.classical, innerTag: Frames.pqCTTag, message: msg)
-		recvGroup = recv
+		// S-1 (step 3): DUAL-FORM, matching Rust's own `pq_ratchet_bind` —
+		// a responder whose round predates the classical carriers may only
+		// be able to re-send the LEGACY, PQ-carried form of its CT (the
+		// payload is MLS-encrypted to us, so it can't rebuild the classical
+		// one); refusing it would strand an otherwise-completable round.
+		// Classify by the leg's OWN `group_id`, never by comparing epochs
+		// across families: the classical form rides `recv.classical` (the
+		// responder's send-classical, our recv mirror) at the current
+		// epoch floor; the legacy PQ form rides `send.pq` (our own
+		// send-PQ, the responder's recv-PQ mirror) instead, with no epoch
+		// floor — a PQ-carried leg sits at a `pq_epoch` that cannot move
+		// mid-round.
+		let wireCT: Data
+		if pm.groupID == recv.classical.context.groupID {
+			guard pm.epoch >= recv.classical.context.epoch else {
+				throw TwoMLSError.staleFrame
+			}
+			wireCT = try processA4Leg(
+				on: &recv.classical, innerTag: Frames.pqCTTag, message: msg)
+			recvGroup = recv
+		} else if pm.groupID == sendPQ.context.groupID {
+			var sendPQMutable = sendPQ
+			wireCT = try processA4Leg(
+				on: &sendPQMutable, innerTag: Frames.pqCTTag, message: msg)
+			send.pq = sendPQMutable
+			sendGroup = send
+		} else {
+			throw TwoMLSError.decryptionFailed
+		}
 
 		let psk = try CTSeal.ctSealPSK(group: sendPQ, pqProvider: pqProvider)
 		let s = try CTSeal.open(
@@ -174,12 +216,11 @@ extension TwoMLSSession {
 		return try? sealSideBand(pending)
 	}
 
-	/// Best-effort: if the parked side-band leg was minted at an epoch
-	/// `sendGroup.classical` has since moved past, re-mint it (EK from the
-	/// held `.initiating` ephemeral, CT from the held `.responding` wireCT)
-	/// at the current epoch and re-park. Classical carrier only. Never
-	/// throws — a failure here just leaves the stale leg parked for the next
-	/// call to retry.
+	/// Best-effort: if the parked side-band leg is due for re-minting, do so
+	/// (EK from the held `.initiating` ephemeral, CT from the held
+	/// `.responding` wireCT) at the current classical epoch and re-park.
+	/// Never throws — a failure here just leaves the stale leg parked for
+	/// the next call to retry.
 	// internal: used by Messaging.prepareToEncrypt/encrypt
 	internal mutating func rewrapSideBand() {
 		guard let pending = pendingSideBand, var send = sendGroup else { return }
@@ -191,7 +232,29 @@ extension TwoMLSSession {
 		guard let message = try? MLS.RFC9420.Message(mlsEncoded: messageBytes),
 			case .privateMessage(let pm) = message
 		else { return }
-		guard pm.epoch < send.classical.context.epoch else { return }
+
+		// S-1 (step 3): classify the parked leg by its OWN `group_id` —
+		// exactly Rust's `leg_carrier` — never by comparing a PQ epoch to a
+		// classical one. Classical → due once `send.classical`'s epoch has
+		// moved past the wrap (the steady-state case). PQ + EK → due
+		// UNCONDITIONALLY, whatever the epochs say: a migrated round's EK
+		// form is itself what's stale (book wire-format.md:86-92, "an
+		// old-form EK is migrated, not answered … the first send after
+		// such a restore converts it"). PQ + CT is exempt either way —
+		// unrebuildable (the payload is MLS-encrypted to the peer) and it
+		// never needs re-minting: the CT re-sent as parked opens under
+		// either family (`tryOpen`).
+		let due: Bool
+		if pm.groupID == send.classical.context.groupID {
+			due = pm.epoch < send.classical.context.epoch
+		} else if let sendPQ = send.pq, pm.groupID == sendPQ.context.groupID,
+			tag == Frames.pqEKTag
+		{
+			due = true
+		} else {
+			due = false
+		}
+		guard due else { return }
 
 		let payload: Data
 		switch tag {
@@ -223,12 +286,17 @@ extension TwoMLSSession {
 	/// Self-drive (A.4 arm only — the A.5 `send_pq_leaf_lags` branch is
 	/// deferred). No-op unless it's my turn, both halves are established, and
 	/// nothing else is outstanding (an inflight round, an owed bind, or an
-	/// already-parked side-band leg). Best-effort: swallows `stageRatchet`'s
-	/// throw rather than surfacing it out of `encrypt`.
+	/// already-parked side-band leg). Step 3: also skips while
+	/// `sendClassical`/`sendPQ` is in `noCustody` — `stageRatchet` would
+	/// fail anyway (it signs on `sendClassical`), but a wedged/no-custody
+	/// session's auto-driver must never even attempt to open a round it
+	/// cannot complete. Best-effort: swallows `stageRatchet`'s throw rather
+	/// than surfacing it out of `encrypt`.
 	// internal: used by Messaging.encrypt
 	internal mutating func maybeStageNextRound() {
 		guard pqTurnMine, isFullyEstablished, pqInflight == nil, owedBind == nil,
-			pendingSideBand == nil
+			pendingSideBand == nil, pqWedge == nil,
+			!noCustody.contains(.sendClassical), !noCustody.contains(.sendPQ)
 		else {
 			return
 		}

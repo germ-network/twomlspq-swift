@@ -309,6 +309,15 @@ extension TwoMLSSession {
 		// just-rebuilt groups and the rest of this same decoded state.
 		let leafKeys = try body.leafKeys.restore()
 		try verifyManifestFingerprintsMatchRestoredLeafKeys(body, leafKeys: leafKeys)
+
+		// Step 3 (archive keys 44/45): decode + validate the deployed
+		// carry, before `validateLeafKeys` — rule 3's `noCustody` and check
+		// 6/7's window-shaped state both need it in hand first.
+		let (pqWedge, noCustody, ownOfferWindowRecord) = try decodeDeployedCarry(
+			body.deployedCarry, recvGroup: recvGroup)
+		try validateInitialAppPayload(
+			body.initialAppPayload, initiated: body.initiated, recvGroup: recvGroup)
+
 		try validateLeafKeys(
 			leafKeys, sendGroup: sendGroup, recvGroup: recvGroup, identity: identity,
 			bootstrapKPSecret: bootstrapKPSecret,
@@ -316,6 +325,7 @@ extension TwoMLSSession {
 			pendingProposal: body.pendingProposal?.asTuple,
 			pqInflight: pqInflight, rotationCandidate: rotationCandidate,
 			recvLeafPrincipal: recvLeafPrincipal, auth: body.auth,
+			mode: .restore, noCustody: noCustody,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
 
 		// `.deployed` is hard-coded, never archived: the port only ever
@@ -342,6 +352,10 @@ extension TwoMLSSession {
 			spawnToken: body.spawnToken,
 			recvLeafPrincipal: recvLeafPrincipal,
 			owesEstablishmentEnvelope: body.owesEstablishmentEnvelope ?? false,
+			ownOfferWindow: ownOfferWindowRecord,
+			pqWedge: pqWedge,
+			noCustody: noCustody,
+			initialAppPayload: body.initialAppPayload,
 			leafKeys: leafKeys)
 
 		session.offeredProposal = body.offeredProposal?.asTuple
@@ -411,6 +425,70 @@ extension TwoMLSSession {
 			sendPQKeys: leafKeys.sendPQ.fingerprint,
 			recvPQKeys: leafKeys.recvPQ.fingerprint)
 		return session
+	}
+
+	/// Step 3, archive key 44: decode + validate the deployed carry against
+	/// the rebuilt groups. Every failure is `.archiveInvalid`. `noCustody`'s
+	/// own set-equality against the rebuilt groups' `current` state is
+	/// `validateLeafKeys`'s check 3, not duplicated here — this only
+	/// decodes the raw archive shape (a valid `MigratedPQWedge`/
+	/// `MigratedGroupRole` tag, a non-empty sorted-unique `noCustody`
+	/// array) and the window record's own shape against the rebuilt
+	/// recv-classical group.
+	private static func decodeDeployedCarry(
+		_ carry: DeployedCarryArchive?, recvGroup: APQGroup?
+	) throws -> (
+		pqWedge: MigratedPQWedge?, noCustody: Set<MigratedGroupRole>,
+		ownOfferWindow: OwnOfferWindowRecord?
+	) {
+		guard let carry else { return (nil, [], nil) }
+		guard !carry.isEmpty else { throw TwoMLSError.archiveInvalid }
+
+		let pqWedge = try carry.pqWedged.map { raw -> MigratedPQWedge in
+			guard let wedge = MigratedPQWedge(rawValue: raw) else {
+				throw TwoMLSError.archiveInvalid
+			}
+			return wedge
+		}
+
+		var noCustody: Set<MigratedGroupRole> = []
+		if let raw = carry.noCustody {
+			guard !raw.isEmpty, raw == raw.sorted(), Set(raw).count == raw.count else {
+				throw TwoMLSError.archiveInvalid
+			}
+			for value in raw {
+				guard let role = MigratedGroupRole(rawValue: value) else {
+					throw TwoMLSError.archiveInvalid
+				}
+				noCustody.insert(role)
+			}
+		}
+
+		var ownOfferWindow: OwnOfferWindowRecord?
+		if let record = carry.ownOfferWindow {
+			guard record.id.count == 32, record.count >= 1,
+				record.count <= UInt32(MigratedOwnOfferWindow.maximumOfferCount)
+			else { throw TwoMLSError.archiveInvalid }
+			guard let recv = recvGroup else { throw TwoMLSError.archiveInvalid }
+			guard record.epoch == recv.classical.context.epoch,
+				record.groupID == recv.classical.context.groupID,
+				record.senderLeafIndex == recv.classical.myLeafIndex.value
+			else { throw TwoMLSError.archiveInvalid }
+			ownOfferWindow = record
+		}
+
+		return (pqWedge, noCustody, ownOfferWindow)
+	}
+
+	/// Rule 9, re-checked at restore: non-empty, and only for a pre-join
+	/// initiator.
+	private static func validateInitialAppPayload(
+		_ payload: Data?, initiated: Bool, recvGroup: APQGroup?
+	) throws {
+		guard let payload else { return }
+		guard !payload.isEmpty, initiated, recvGroup == nil else {
+			throw TwoMLSError.archiveInvalid
+		}
 	}
 
 	/// The winning body's self-reported PQ-epoch manifest is what step 5

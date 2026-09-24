@@ -348,6 +348,14 @@ public struct MigratedSession: Sendable {
 	public var initialTheirKP: (classical: Data, pq: Data)?
 	public var recvLeafPrincipal: MigratedRecvLeafPrincipal?
 	public var owesEstablishmentEnvelope: Bool
+	/// Step 3, rule 1: per-group signing keys — authoritative when present.
+	/// `nil` falls back to the temporary owner-keyed conversion
+	/// (`convertDeployedKeys`), deleted once every migrator supplies this.
+	public var leafKeys: MigratedLeafKeys?
+	/// Step 3, rule 9: non-empty only for a pre-join initiator. Stored and
+	/// validated only — there is no host accessor; a later step's envelope/
+	/// pre-establishment change consumes it through `pendingOutbound()`.
+	public var initialAppPayload: Data?
 
 	public init(
 		stateSeq: UInt64 = 0,
@@ -382,7 +390,9 @@ public struct MigratedSession: Sendable {
 		recvAttachmentLedger: [UInt64: SecretBytes] = [:],
 		initialTheirKP: (classical: Data, pq: Data)? = nil,
 		recvLeafPrincipal: MigratedRecvLeafPrincipal? = nil,
-		owesEstablishmentEnvelope: Bool = false
+		owesEstablishmentEnvelope: Bool = false,
+		leafKeys: MigratedLeafKeys? = nil,
+		initialAppPayload: Data? = nil
 	) {
 		self.stateSeq = stateSeq
 		self.initiated = initiated
@@ -417,6 +427,8 @@ public struct MigratedSession: Sendable {
 		self.initialTheirKP = initialTheirKP
 		self.recvLeafPrincipal = recvLeafPrincipal
 		self.owesEstablishmentEnvelope = owesEstablishmentEnvelope
+		self.leafKeys = leafKeys
+		self.initialAppPayload = initialAppPayload
 	}
 }
 
@@ -571,7 +583,8 @@ public enum SessionMigration {
 		kind: BlobKind,
 		parts: MigratedSession,
 		classicalProvider: any MLS.CipherSuiteProvider,
-		pqProvider: any MLS.CipherSuiteProvider
+		pqProvider: any MLS.CipherSuiteProvider,
+		deployedState: MigratedDeployedState? = nil
 	) throws -> SecretArchive {
 		guard
 			classicalProvider.cipherSuite == TwoMLSSuite.classical,
@@ -644,6 +657,41 @@ public enum SessionMigration {
 			try restoredGroup($0, pqProvider)
 		}
 
+		// A.2 step 2 ("drop at import", both leafKeys paths — run before
+		// `convertDeployedKeys`/`nativeLeafKeys` and before
+		// `validateLeafKeys`): a parked §A.5 Upd′ that fails to verify
+		// against the restored recv-PQ group is exactly what `pqRekeyApply`
+		// would fail on forever (book anomaly 5's resolution,
+		// session-lifecycle.md at 69a9f0e: "drops its mis-signed parked
+		// Upd' and re-proposes under the carried key"), so mint drops it
+		// here instead of minting a session that can never apply its own
+		// round.
+		var effectivePqInflight = parts.pqInflight
+		var effectivePendingSideBand = parts.pendingSideBand
+		var droppedRekeyTarget: Data?
+		if case .rekeyInitiated(let updMessage) = parts.pqInflight {
+			let verifies: Bool = {
+				guard let recvPQ else { return false }
+				return
+					(try? TwoMLSSession.decodedUpdateTarget(
+						updMessage, against: recvPQ, provider: pqProvider))
+					!= nil
+			}()
+			if !verifies {
+				guard
+					parts.pendingSideBand == nil
+						|| parts.pendingSideBand
+							== Frames.encodePQRekeyUpd(updMessage)
+				else {
+					throw TwoMLSError.archiveInvalid
+				}
+				effectivePqInflight = nil
+				effectivePendingSideBand = nil
+				droppedRekeyTarget = Self.decodedUpdateTargetIgnoringSignature(
+					updMessage)
+			}
+		}
+
 		// The two optional custody records derive-check kind-independently —
 		// a core-kind mint gets no trial restore (which would run these via
 		// the archive types' own `restore()`s), and `convertDeployedKeys`
@@ -687,20 +735,80 @@ public enum SessionMigration {
 			}
 		}
 
-		// The temporary one-time conversion from today's owner-keyed parts
-		// to per-group `leafKeys` — replaces `checkClassicalCustody`/
+		// Rule 1 (precedence): a supplied `parts.leafKeys` is authoritative;
+		// `nil` falls back to the temporary one-time conversion from
+		// today's owner-keyed parts — replaces `checkClassicalCustody`/
 		// `checkPQCustody`, which this subsumes (a lookup miss within a
 		// half is the exact same `.archiveInvalid` the old custody check
-		// threw). Deleted once the migration input carries per-group keys
-		// of its own.
-		let leafKeys = try convertDeployedKeys(
-			parts: parts, sendClassical: sendClassical, sendPQ: sendPQ,
-			recvClassical: recvClassical, recvPQ: recvPQ,
-			bootstrapKPSecret: bootstrapKPSecret,
-			classicalProvider: classicalProvider, pqProvider: pqProvider)
-		// Today this mostly re-checks `convertDeployedKeys`'s own conversion;
-		// it becomes load-bearing against genuinely adversarial input once
-		// the migration input carries per-group keys of its own.
+		// threw). Deleted once every migrator supplies per-group keys of
+		// its own. Either way, the drop-at-import's EFFECTIVE `pqInflight`
+		// (not `parts.pqInflight`) governs any Upd′-justified recv-PQ
+		// pending entry `convertDeployedKeys` would otherwise add.
+		var leafKeys: LeafKeys
+		let mode: LeafKeysValidationMode
+		if let migratedLeafKeys = parts.leafKeys {
+			leafKeys = try nativeLeafKeys(migratedLeafKeys)
+			mode = .mintSupplied
+		} else {
+			leafKeys = try convertDeployedKeys(
+				parts: parts, sendClassical: sendClassical, sendPQ: sendPQ,
+				recvClassical: recvClassical, recvPQ: recvPQ,
+				bootstrapKPSecret: bootstrapKPSecret,
+				pqInflight: effectivePqInflight,
+				classicalProvider: classicalProvider, pqProvider: pqProvider)
+			mode = .mintConverted
+		}
+		// A.2 step 2, continued: drop the dropped round's now-orphaned
+		// recv-PQ pending entry, UNLESS it is the rule-7 catch-up key step
+		// 7's self-drive needs (`t == auth.mine.current` and the recv-PQ
+		// leaf still lags).
+		if let droppedRekeyTarget {
+			let mineCurrent = parts.auth.mine.history.last
+			let recvPQLags: Bool = {
+				guard let recvPQ, let mineCurrent else { return false }
+				guard
+					let ownID = try? basicIdentifier(
+						TwoMLSSession.ownLeaf(of: recvPQ).credential)
+				else { return false }
+				return ownID != mineCurrent
+			}()
+			let isRuleSevenKey = droppedRekeyTarget == mineCurrent && recvPQLags
+			if !isRuleSevenKey {
+				leafKeys.recvPQ.pending[droppedRekeyTarget] = nil
+			}
+		}
+
+		// Rule 10 (the window), when `deployedState` carries one — shares
+		// the id function and validation with `mintOwnOfferWindow`, so the
+		// two calls' ids always agree given the same window (B.2 #1: same
+		// array, unchanged, to both).
+		var windowTargets: [(id: Data, signatureKey: MLS.SignaturePublicKey)] = []
+		var ownOfferWindowRecord: OwnOfferWindowRecord?
+		if let window = deployedState?.ownOffers {
+			guard let recvClassical else { throw TwoMLSError.archiveInvalid }
+			let (windowID, targets) = try OwnOfferWindow.validate(
+				window, recvClassical: recvClassical,
+				myLeafIndex: recvClassical.myLeafIndex, provider: classicalProvider)
+			windowTargets = targets
+			ownOfferWindowRecord = OwnOfferWindowRecord(
+				id: windowID, epoch: window.epoch, groupID: window.groupID,
+				senderLeafIndex: window.senderLeafIndex,
+				count: UInt32(window.offers.count))
+		}
+
+		// Rule 9: `initialAppPayload` is non-empty and accepted only for a
+		// pre-join initiator.
+		if let initialAppPayload = parts.initialAppPayload {
+			guard !initialAppPayload.isEmpty, parts.initiated, parts.recvGroup == nil
+			else {
+				throw TwoMLSError.archiveInvalid
+			}
+		}
+
+		// Today this mostly re-checks `convertDeployedKeys`'s own conversion
+		// (`.mintConverted`); it becomes load-bearing against genuinely
+		// adversarial input for a caller-supplied `leafKeys`
+		// (`.mintSupplied`).
 		try TwoMLSSession.validateLeafKeys(
 			leafKeys,
 			sendGroup: APQGroup(
@@ -726,7 +834,7 @@ public enum SessionMigration {
 			pendingProposal: parts.pendingProposal.map {
 				($0.proposing, $0.message, $0.hash)
 			},
-			pqInflight: try parts.pqInflight.map(Self.nativePQInflight),
+			pqInflight: try effectivePqInflight.map(Self.nativePQInflight),
 			rotationCandidate: try parts.rotationCandidate.map {
 				RotationCandidate(
 					clientID: $0.clientID,
@@ -751,7 +859,18 @@ public enum SessionMigration {
 					history: parts.auth.theirs.history,
 					authorizedNext: parts.auth.theirs.authorizedNext,
 					pinned: parts.auth.theirs.pinned)),
+			mode: mode,
+			noCustody: deployedState?.noCustody ?? [],
+			windowTargets: windowTargets,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
+
+		let noCustodyRoles = deployedState?.noCustody ?? []
+		let candidateCarry = DeployedCarryArchive(
+			ownOfferWindow: ownOfferWindowRecord,
+			pqWedged: deployedState?.pqWedged?.rawValue,
+			noCustody: noCustodyRoles.isEmpty
+				? nil : noCustodyRoles.map { $0.rawValue }.sorted())
+		let deployedCarry = candidateCarry.isEmpty ? nil : candidateCarry
 
 		let body = SessionArchive(
 			version: sessionArchiveVersion,
@@ -800,8 +919,8 @@ public enum SessionMigration {
 					pqCommitMessage: $0.pqCommitMessage, tEpoch: $0.tEpoch,
 					pqEpoch: $0.pqEpoch)
 			},
-			pqInflight: parts.pqInflight.map(PQInflightArchive.init),
-			pendingSideBand: parts.pendingSideBand,
+			pqInflight: effectivePqInflight.map(PQInflightArchive.init),
+			pendingSideBand: effectivePendingSideBand,
 			peerAppliedSendEpoch: parts.peerAppliedSendEpoch,
 			lastCrossInjected: parts.lastCrossInjected,
 			lastCrossInjectedPQ: parts.lastCrossInjectedPQ,
@@ -856,7 +975,9 @@ public enum SessionMigration {
 			},
 			leafKeys: LeafKeysArchive(leafKeys, kind: kind),
 			sendPQKeysFingerprint: leafKeys.sendPQ.fingerprint,
-			recvPQKeysFingerprint: leafKeys.recvPQ.fingerprint)
+			recvPQKeysFingerprint: leafKeys.recvPQ.fingerprint,
+			deployedCarry: deployedCarry,
+			initialAppPayload: parts.initialAppPayload)
 		// Decode invariants (the 32-byte rules on the commitment, the three
 		// windows and both attachment ledgers) run kind-independently — same
 		// reasoning as the derive-checks above; the checkpoint's trial
@@ -884,6 +1005,43 @@ public enum SessionMigration {
 			throw TwoMLSError.archiveInvalid
 		}
 		return archive
+	}
+
+	/// Mint the own-offer window into its OWN blob — never into the session
+	/// archives (`MigratedDeployedState.ownOffers`, consumed here rather
+	/// than by `mintArchive`, is what a migrator that also wants the record
+	/// on `mintArchive` passes to BOTH calls unchanged, per B.2 #1). Runs
+	/// the SAME `OwnOfferWindow.validate` (rule 10) `mintArchive` runs when
+	/// `deployedState.ownOffers` is present, so the two calls' ids always
+	/// agree given the same window.
+	///
+	/// - Throws: `TwoMLSError.archiveInvalid` if `parts.recvGroup` is `nil`,
+	///   or if `window` fails rule 10 (a hoisted field disagreeing with the
+	///   restored recv-classical group, an out-of-range count, a non-32-byte
+	///   or duplicate ref, a non-`.update` proposal, a non-32-byte secret, a
+	///   duplicate encryption key, or a sampled offer the swift-mls
+	///   migration SPI itself rejects).
+	public static func mintOwnOfferWindow(
+		_ window: MigratedOwnOfferWindow, parts: MigratedSession,
+		classicalProvider: any MLS.CipherSuiteProvider
+	) throws -> MintedOwnOfferWindow {
+		guard let recvGroupParts = parts.recvGroup else { throw TwoMLSError.archiveInvalid }
+		let recvClassical = try restoredGroup(recvGroupParts.classical, classicalProvider)
+		let (id, _) = try OwnOfferWindow.validate(
+			window, recvClassical: recvClassical,
+			myLeafIndex: recvClassical.myLeafIndex,
+			provider: classicalProvider)
+		let sorted = try OwnOfferWindow.canonicalOrder(window.offers)
+		let body = try OwnOfferWindowArchive(
+			epoch: window.epoch, groupID: window.groupID,
+			senderLeafIndex: window.senderLeafIndex, sorted: sorted)
+		let archive: SecretArchive
+		do {
+			archive = try SecretArchive(encoding: body)
+		} catch {
+			throw TwoMLSError.archiveInvalid
+		}
+		return MintedOwnOfferWindow(archive: archive, id: id)
 	}
 
 	/// `Group.restore` + `makeSnapshot()` per half — the only public path
@@ -938,6 +1096,56 @@ public enum SessionMigration {
 		return secret
 	}
 
+	/// Rule 1's authoritative path (step 3): `migrated`, derive-checked and
+	/// converted 1:1 to the native `LeafKeys` shape — no lookup, no search,
+	/// unlike `convertDeployedKeys` below (which this supersedes once every
+	/// migrator supplies real per-group keys of its own).
+	private static func nativeLeafKeys(_ migrated: MigratedLeafKeys) throws -> LeafKeys {
+		func convertKey(_ key: MigratedLeafKey) throws -> LeafKey {
+			guard key.signingKey.byteCount == 32, key.signatureKey.count == 32,
+				try InvitationMigration.derivedEd25519Public(from: key.signingKey)
+					== key.signatureKey
+			else {
+				throw TwoMLSError.archiveInvalid
+			}
+			return LeafKey(
+				signingKey: try MLS.SignatureSecretKey(key.signingKey),
+				signatureKey: MLS.SignaturePublicKey(key.signatureKey))
+		}
+		func convertSet(_ groupKeys: MigratedGroupKeys) throws -> GroupKeySet {
+			var pending: [Data: LeafKey] = [:]
+			for entry in groupKeys.pending {
+				guard !entry.target.isEmpty, pending[entry.target] == nil else {
+					throw TwoMLSError.archiveInvalid
+				}
+				pending[entry.target] = try convertKey(entry.key)
+			}
+			return GroupKeySet(
+				current: try groupKeys.current.map(convertKey), pending: pending)
+		}
+		return LeafKeys(
+			sendClassical: try convertSet(migrated.sendClassical),
+			recvClassical: try convertSet(migrated.recvClassical),
+			sendPQ: try convertSet(migrated.sendPQ),
+			recvPQ: try convertSet(migrated.recvPQ))
+	}
+
+	/// A.2 step 2's lenient decode: does `updMessage` at least parse to an
+	/// Update proposal, WITHOUT verifying its framing signature or epoch
+	/// (the Upd′ may be exactly the mis-signed one being dropped — that's
+	/// why this never calls `verifying`)? Returns the target id it names,
+	/// or `nil` on any decode failure.
+	private static func decodedUpdateTargetIgnoringSignature(_ updMessage: Data) -> Data? {
+		guard
+			case .publicMessage(let updatePub) = try? MLS.RFC9420.Message(
+				mlsEncoded: updMessage),
+			case .proposal(let proposal) = updatePub.content.content,
+			case .update(let leafNode) = proposal,
+			let id = try? basicIdentifier(leafNode.credential)
+		else { return nil }
+		return id
+	}
+
 	/// The temporary one-time conversion from today's owner-keyed migrated
 	/// parts to per-group `leafKeys` — deleted once the migration input
 	/// carries per-group keys of its own. Every
@@ -949,6 +1157,11 @@ public enum SessionMigration {
 		sendClassical: MLS.RFC9420.Group, sendPQ: MLS.RFC9420.Group?,
 		recvClassical: MLS.RFC9420.Group?, recvPQ: MLS.RFC9420.Group?,
 		bootstrapKPSecret: MigratedBootstrapKPSecret?,
+		// A.2 step 2 (drop at import): the effective PQ inflight, AFTER an
+		// unverifiable parked §A.5 Upd′ has already been dropped — never
+		// `parts.pqInflight` directly, so a dropped round's target never
+		// gets a pending entry from this arm either.
+		pqInflight: MigratedPQInflight?,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider
 	) throws -> LeafKeys {
@@ -1000,16 +1213,40 @@ public enum SessionMigration {
 			throw TwoMLSError.archiveInvalid
 		}
 
+		// A.7 (step 3, generalized catch-up): "lags" means the leaf presents
+		// an id other than `mineCurrent`. This conversion can only supply a
+		// rule-7 `pending[mineCurrent]` entry when it actually holds a key
+		// for `mineCurrent` — the rotation candidate's, when outstanding, or
+		// `identity`'s own, when `identity.clientID == mineCurrent` (the
+		// born-dedicated D case, or any non-rotated session). A lag this
+		// conversion cannot explain either way fails `validateLeafKeys`'s
+		// check 7 at mint, same as before — an inherent limit of this
+		// temporary owner-keyed conversion, not a new gap.
+		let mineCurrent = parts.auth.mine.history.last
+
 		let sendOwnLeaf = try TwoMLSSession.ownLeaf(of: sendClassical)
+		let sendOwnID = try basicIdentifier(sendOwnLeaf.credential)
 		var sendClassicalSet = GroupKeySet(
 			current: try lookupClassical(sendOwnLeaf.signatureKey.data))
+		var sendHasCandidateEntry = false
 		if let candidate = parts.rotationCandidate {
-			let sendPresentsCandidate =
-				try basicIdentifier(sendOwnLeaf.credential) == candidate.clientID
+			let sendPresentsCandidate = sendOwnID == candidate.clientID
 			if !sendPresentsCandidate {
 				sendClassicalSet.pending[candidate.clientID] = try lookupClassical(
 					candidate.signatureKey)
+				sendHasCandidateEntry = true
 			}
+		}
+		// (b′) rule 4, generalized: a lagging SEND leaf under the identity's
+		// own canonical principal, when the candidate arm above doesn't
+		// already cover it — new relative to the pre-A.7 conversion, which
+		// never gave the send side a rule-4 arm at all.
+		if let mineCurrent, parts.identity.clientID == mineCurrent,
+			sendOwnID != mineCurrent,
+			!sendHasCandidateEntry
+		{
+			sendClassicalSet.pending[mineCurrent] = try lookupClassical(
+				parts.identity.signatureKey)
 		}
 
 		var recvClassicalSet: GroupKeySet
@@ -1028,11 +1265,14 @@ public enum SessionMigration {
 				recvClassicalSet.pending[candidate.clientID] = try lookupClassical(
 					candidate.signatureKey)
 			}
-			// (b) rule 4: the born-dedicated catch-up target.
-			if let recvLeaf = parts.recvLeafPrincipal, recvLeaf.clientID == recvOwnID,
-				recvOwnID != parts.auth.mine.history.last
+			// (b) rule 4, generalized (A.7): a lagging RECV leaf under the
+			// identity's own canonical principal — subsumes the
+			// born-dedicated-only case (`recvLeafPrincipal` stays an unread
+			// record until step 5).
+			if let mineCurrent, parts.identity.clientID == mineCurrent,
+				recvOwnID != mineCurrent
 			{
-				recvClassicalSet.pending[parts.identity.clientID] =
+				recvClassicalSet.pending[mineCurrent] =
 					try lookupClassical(
 						parts.identity.signatureKey)
 			}
@@ -1077,7 +1317,7 @@ public enum SessionMigration {
 			let recvPQOwnLeaf = try TwoMLSSession.ownLeaf(of: recvPQ)
 			recvPQSet = GroupKeySet(
 				current: try lookupPQ(recvPQOwnLeaf.signatureKey.data))
-			if case .rekeyInitiated(let updMessage) = parts.pqInflight,
+			if case .rekeyInitiated(let updMessage) = pqInflight,
 				let target = try? TwoMLSSession.decodedUpdateTarget(
 					updMessage, against: recvPQ, provider: pqProvider),
 				target.signatureKey != recvPQSet.current?.signatureKey

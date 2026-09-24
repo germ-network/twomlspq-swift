@@ -23,11 +23,11 @@ let package = Package(
 		// `MLSCrypto` is the CipherSuiteProvider seam this package's ML-KEM-768
 		// provider conforms to; `AppBinding` (0xF0A2) rides into Group_A's
 		// classical half via `CombinerGroup.establish(classicalExtraExtensions:)`.
-		// 0.1.5: self-Update proposals carry authenticated data, and a
-		// migration-only SPI restores a member's own outstanding Update.
+		// 0.1.6: the migration-only SPI also takes an outstanding Update's
+		// leaf HPKE secret.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			from: "0.1.5"
+			from: "0.1.6"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
 		// 0.5.0 is its swift-crypto-5 release.

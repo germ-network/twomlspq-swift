@@ -773,4 +773,36 @@ final class BornDedicatedTests: XCTestCase {
 			XCTAssertEqual(error as? TwoMLSError, .invalidClientID)
 		}
 	}
+
+	// MARK: - The generalized trigger without `recvLeafPrincipal`
+
+	/// The generalized rule-4 trigger (Messaging.swift's `recvClassical.
+	/// pending[mine.current]` predicate) fires even with
+	/// `recvLeafPrincipal == nil` — the shape a migrated session's restored
+	/// state presents (the field is archived but never consulted for keys
+	/// once `leafKeys` is supplied). Kills a revert to the
+	/// born-dedicated-only `recvLeafPrincipal`-keyed trigger the rule-4
+	/// pin depends on.
+	func testGeneralizedCatchUpWithoutRecvLeafPrincipal() throws {
+		OracleCheck.allow([.recvClassical, .recvPQ])
+		defer { OracleCheck.allow([]) }
+		var (alice, bob, invitationClientID, dedicatedClientID, _) =
+			try SessionTestSupport.establishedDedicatedAndApproved()
+		bob.recvLeafPrincipal = nil
+		let leafBefore = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
+		XCTAssertEqual(try basicIdentifier(leafBefore.credential), invitationClientID)
+
+		_ = try bob.prepareToEncrypt()
+		XCTAssertEqual(bob.pendingProposal?.proposing, dedicatedClientID)
+		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		let decrypted = try alice.processIncomingDecrypted(frame)
+		XCTAssertEqual(decrypted.queuedProposal.proposing, dedicatedClientID)
+		try alice.queueProposal(digest: decrypted.queuedProposal.digest)
+		_ = try alice.prepareToEncrypt()
+		let aliceFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
+		let bobDecrypted = try bob.processIncomingDecrypted(aliceFrame)
+		XCTAssertTrue(bobDecrypted.didApplyRemoteCommit)
+		let leafAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
+		XCTAssertEqual(try basicIdentifier(leafAfter.credential), dedicatedClientID)
+	}
 }

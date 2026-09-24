@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/germ-network/swift-mls.git",
       "state" : {
-        "revision" : "4f81d1f667e8a89add4cc860a0aabe740ff5a7ae",
-        "version" : "0.1.5"
+        "revision" : "b809eb1ef46b4e908efd689a5ecfc959c3a88035",
+        "version" : "0.1.6"
       }
     },
     {

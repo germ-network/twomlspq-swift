@@ -73,33 +73,72 @@ struct LeafKeys: Sendable {
 extension TwoMLSSession {
 	/// The live choke-point check (`StateUpdate.swift`'s `stateUpdate(kind:)`
 	/// choke point): every EXISTING group's own leaf must currently present
-	/// its stored key set's `current` — fail-closed, `.credentialUnknown`.
-	/// Checks only existing groups (a reservation names no leaf yet, so
-	/// there is nothing to compare it against); costs at most four own-leaf
-	/// `LeafNode` decodes and byte compares, no crypto, and never decodes a
-	/// proposal.
-	func assertLeafKeysPresented() throws {
+	/// its stored key set's `current` — fail-closed, `.credentialUnknown`,
+	/// UNLESS its role is in `noCustody` (step 3), in which case a nil
+	/// `current` is tolerated. Step 3: first runs the monotone `noCustody`
+	/// drain — any role whose set now genuinely has a `current` (a
+	/// promotion since the flag was set, at any of the several promotion
+	/// call sites, none of which touch `noCustody` themselves) is dropped
+	/// here, at the one choke point every state-advancing call already
+	/// passes through — this is how the flag "clears on promotion" without
+	/// hunting down every promotion site individually. Checks only existing
+	/// groups (a reservation names no leaf yet, so there is nothing to
+	/// compare it against); costs at most four own-leaf `LeafNode` decodes
+	/// and byte compares, no crypto, and never decodes a proposal.
+	mutating func assertLeafKeysPresented() throws {
+		if leafKeys.sendClassical.current != nil { noCustody.remove(.sendClassical) }
+		if leafKeys.recvClassical.current != nil { noCustody.remove(.recvClassical) }
+		if leafKeys.sendPQ.current != nil { noCustody.remove(.sendPQ) }
+		if leafKeys.recvPQ.current != nil { noCustody.remove(.recvPQ) }
+
 		if let send = sendGroup {
-			try Self.assertPresented(leafKeys.sendClassical, in: send.classical)
+			try Self.assertPresented(
+				leafKeys.sendClassical, in: send.classical,
+				noCustody: noCustody.contains(.sendClassical))
 			if let sendPQGroup = send.pq {
-				try Self.assertPresented(leafKeys.sendPQ, in: sendPQGroup)
+				try Self.assertPresented(
+					leafKeys.sendPQ, in: sendPQGroup,
+					noCustody: noCustody.contains(.sendPQ))
 			}
 		}
 		if let recv = recvGroup {
-			try Self.assertPresented(leafKeys.recvClassical, in: recv.classical)
+			try Self.assertPresented(
+				leafKeys.recvClassical, in: recv.classical,
+				noCustody: noCustody.contains(.recvClassical))
 			if let recvPQGroup = recv.pq {
-				try Self.assertPresented(leafKeys.recvPQ, in: recvPQGroup)
+				try Self.assertPresented(
+					leafKeys.recvPQ, in: recvPQGroup,
+					noCustody: noCustody.contains(.recvPQ))
 			}
 		}
 	}
 
-	private static func assertPresented(_ set: GroupKeySet, in group: MLS.RFC9420.Group) throws
-	{
-		guard let current = set.current else { throw TwoMLSError.credentialUnknown }
+	private static func assertPresented(
+		_ set: GroupKeySet, in group: MLS.RFC9420.Group, noCustody: Bool
+	) throws {
+		guard let current = set.current else {
+			guard noCustody else { throw TwoMLSError.credentialUnknown }
+			return
+		}
 		guard try ownLeaf(of: group).signatureKey == current.signatureKey else {
 			throw TwoMLSError.credentialUnknown
 		}
 	}
+}
+
+/// Which caller context is validating `leafKeys` — step 3 widens
+/// `validateLeafKeys` (previously restore-only) to also run at mint, where
+/// two further modes apply. `.restore` is the default so every pre-step-3
+/// call site (and every existing test) keeps its exact prior behavior.
+enum LeafKeysValidationMode: Equatable {
+	/// `TwoMLSSession.restore`.
+	case restore
+	/// `SessionMigration.mintArchive` on the temporary owner-keyed
+	/// `convertDeployedKeys` fallback (`parts.leafKeys == nil`).
+	case mintConverted
+	/// `SessionMigration.mintArchive`/`mintOwnOfferWindow` on a caller-
+	/// supplied `MigratedLeafKeys` (`parts.leafKeys != nil`).
+	case mintSupplied
 }
 
 @available(iOS 26, macOS 26, *)
@@ -115,6 +154,15 @@ extension TwoMLSSession {
 	/// skip, never reject, a foreign-group/undecodable/non-`PublicMessage`/
 	/// non-`.update` entry — a verification failure also transparently
 	/// skips a stale-epoch entry, since `verifying` itself is epoch-checked.
+	///
+	/// Step 3 additions: `mode`/`noCustody` widen check 3 (an existing
+	/// group's `current` may legitimately be `nil` when its role is in
+	/// `noCustody`) and generalize check 7 (any lagging own leaf, not only a
+	/// rotation candidate or the retained born-dedicated custody, needs
+	/// `pending[mine.current]` — see `isRotationCandidateOutstanding`'s
+	/// sibling doc, `TwoMLSSession+ClassicalCommit.swift`'s
+	/// `ownLeafCatchUpTarget`). All three default to the pre-step-3 shape
+	/// (`.restore`, empty `noCustody`) so no other call site changes.
 	static func validateLeafKeys(
 		_ leafKeys: LeafKeys,
 		sendGroup: APQGroup?, recvGroup: APQGroup?,
@@ -130,31 +178,45 @@ extension TwoMLSSession {
 		rotationCandidate: RotationCandidate?,
 		recvLeafPrincipal: RecvLeafPrincipal?,
 		auth: AuthCore,
+		mode: LeafKeysValidationMode = .restore,
+		noCustody: Set<MigratedGroupRole> = [],
+		windowTargets: [(id: Data, signatureKey: MLS.SignaturePublicKey)] = [],
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider
 	) throws {
-		// Check 2: every EXISTING group presents its own `current`.
+		// Check 3: every EXISTING group presents its own `current`, UNLESS
+		// its role is in `noCustody` (step 3) — in which case `current` must
+		// be `nil`. `noCustody` must name exactly the existing groups whose
+		// `current` is nil: a role listed there whose `current` is actually
+		// present is as inconsistent as an un-listed group with a nil one
+		// (and, since only `.mintSupplied`/restore ever populate a nil
+		// `current` in the first place, a non-empty `noCustody` under
+		// `.mintConverted` always fails here — conversion never produces
+		// one).
+		var actualNoCustody: Set<MigratedGroupRole> = []
 		if let send = sendGroup {
-			try requirePresented(leafKeys.sendClassical, in: send.classical)
+			try requirePresented(
+				leafKeys.sendClassical, in: send.classical, role: .sendClassical,
+				noCustody: noCustody, actual: &actualNoCustody)
 			if let sendPQGroup = send.pq {
-				try requirePresented(leafKeys.sendPQ, in: sendPQGroup)
-				// Nothing in this version ever stages a send-PQ pending
-				// entry (PQ has no rotation-candidate arm) — a non-empty
-				// one could only be a leftover or a smuggled, unresolvable
-				// entry, never a meaningful in-flight offer.
-				guard leafKeys.sendPQ.pending.isEmpty else {
-					throw TwoMLSError.archiveInvalid
-				}
+				try requirePresented(
+					leafKeys.sendPQ, in: sendPQGroup, role: .sendPQ,
+					noCustody: noCustody, actual: &actualNoCustody)
 			}
 		}
 		if let recv = recvGroup {
-			try requirePresented(leafKeys.recvClassical, in: recv.classical)
+			try requirePresented(
+				leafKeys.recvClassical, in: recv.classical, role: .recvClassical,
+				noCustody: noCustody, actual: &actualNoCustody)
 			if let recvPQGroup = recv.pq {
-				try requirePresented(leafKeys.recvPQ, in: recvPQGroup)
+				try requirePresented(
+					leafKeys.recvPQ, in: recvPQGroup, role: .recvPQ,
+					noCustody: noCustody, actual: &actualNoCustody)
 			}
 		}
+		guard actualNoCustody == noCustody else { throw TwoMLSError.archiveInvalid }
 
-		// Check 3: reservations for every group that does NOT exist yet.
+		// Check 4: reservations for every group that does NOT exist yet.
 		if recvGroup == nil {
 			guard leafKeys.recvClassical.pending.isEmpty,
 				leafKeys.recvClassical.current?.signatureKey
@@ -183,9 +245,12 @@ extension TwoMLSSession {
 			else { throw TwoMLSError.archiveInvalid }
 		}
 
-		// Check 5: every current-epoch OWN Update names `current` or
-		// `pending[its leaf id]` — `stagedUpdates`/`pendingProposal` against
-		// recv-classical, a parked Upd′ against recv-PQ.
+		// Check 6: every current-epoch OWN Update names `current` or
+		// `pending[its leaf id]` — `stagedUpdates`/`pendingProposal` (and,
+		// at mint, the window's own targets — an O(1) dictionary lookup)
+		// against recv-classical, a parked Upd′ against recv-PQ. A
+		// no-custody group has no `current` to match, so this already forces
+		// such a target into `pending` with no special-casing.
 		if let recv = recvGroup {
 			var ownClassicalProposals = stagedUpdates.map { $0.message }
 			if let pendingProposal {
@@ -204,35 +269,70 @@ extension TwoMLSSession {
 							== signatureKey
 				else { throw TwoMLSError.archiveInvalid }
 			}
+			for (targetID, signatureKey) in windowTargets {
+				guard
+					leafKeys.recvClassical.current?.signatureKey == signatureKey
+						|| leafKeys.recvClassical.pending[targetID]?
+							.signatureKey == signatureKey
+				else { throw TwoMLSError.archiveInvalid }
+			}
 			if let recvPQGroup = recv.pq {
-				if case .rekeyInitiated(let updMessage) = pqInflight {
-					if let (targetID, signatureKey) = try? decodedUpdateTarget(
+				// Step 3 (generalized rule 7, PQ arm): a lagging recv-PQ own
+				// leaf's `pending[mine.current]` is allowed independent of
+				// `pqInflight` — the retained catch-up entry
+				// (`TwoMLSSession+Rekey.swift`'s post-apply retention)
+				// survives across restore with no round outstanding. The
+				// parked `.rekeyInitiated` Upd′'s own target is allowed too,
+				// WHATEVER id it names — a parked Upd′ staged before a later
+				// classical rotation may still target a now-historical id
+				// (a classical canonicalization never clears recv-PQ
+				// pending, and an in-flight Upd′ is never re-minted), so
+				// this is never restricted to `{mine.current} ∪
+				// authorizedNext` (that restriction is classical-only,
+				// check 8).
+				let ownPQID = try basicIdentifier(
+					Self.ownLeaf(of: recvPQGroup).credential)
+				var allowed: [Data: MLS.SignaturePublicKey] = [:]
+				if let mineCurrent = auth.mine.current, ownPQID != mineCurrent,
+					let key = leafKeys.recvPQ.pending[mineCurrent]
+				{
+					allowed[mineCurrent] = key.signatureKey
+				}
+				if case .rekeyInitiated(let updMessage) = pqInflight,
+					let (targetID, signatureKey) = try? decodedUpdateTarget(
 						updMessage, against: recvPQGroup,
 						provider: pqProvider)
-					{
-						guard
-							leafKeys.recvPQ.current?.signatureKey
-								== signatureKey
-								|| leafKeys.recvPQ.pending[
-									targetID]?
-									.signatureKey
-									== signatureKey
-						else { throw TwoMLSError.archiveInvalid }
-					}
-				} else {
-					// No Upd′ parked to justify a recv-PQ pending entry — the
-					// only thing that ever stages one is a parked §A.5 Upd′
-					// (`.rekeyInitiated`); a non-empty `pending` under any
-					// other `pqInflight` is a leftover or smuggled entry, not
-					// a meaningful in-flight offer.
-					guard leafKeys.recvPQ.pending.isEmpty else {
+				{
+					allowed[targetID] = signatureKey
+				}
+				for (target, key) in leafKeys.recvPQ.pending {
+					guard allowed[target] == key.signatureKey else {
 						throw TwoMLSError.archiveInvalid
 					}
 				}
 			}
 		}
+		// send-PQ's own pending is never meaningful except the same
+		// generalized rule-7 catch-up entry (step 3) — PQ has no
+		// rotation-candidate arm of its own, so any OTHER entry is a
+		// leftover or a smuggled, unresolvable key.
+		if let send = sendGroup, let sendPQGroup = send.pq {
+			let ownSendPQID = try basicIdentifier(
+				Self.ownLeaf(of: sendPQGroup).credential)
+			var allowed: [Data: MLS.SignaturePublicKey] = [:]
+			if let mineCurrent = auth.mine.current, ownSendPQID != mineCurrent,
+				let key = leafKeys.sendPQ.pending[mineCurrent]
+			{
+				allowed[mineCurrent] = key.signatureKey
+			}
+			for (target, key) in leafKeys.sendPQ.pending {
+				guard allowed[target] == key.signatureKey else {
+					throw TwoMLSError.archiveInvalid
+				}
+			}
+		}
 
-		// Check 6: whenever a candidate is outstanding, the send leaf not
+		// Check 8: whenever a candidate is outstanding, the send leaf not
 		// yet presenting it needs
 		// `sendClassical.pending[C]` REGARDLESS of whether the candidate has
 		// canonicalized; an UNCANONICAL candidate additionally needs
@@ -259,26 +359,112 @@ extension TwoMLSSession {
 				}
 			}
 		}
+		// S-3 (step 3, `.mintSupplied` only — CLASSICAL only, never PQ: a
+		// recv-PQ pending target may legitimately be a historical id the
+		// classical AS no longer tracks, per check 6 above): every classical
+		// pending target is plausible (`{mine.current} ∪ authorizedNext`),
+		// and every candidate target (a pending target ≠ `mine.current`)
+		// carries the SAME key in both classical sets, matching
+		// `rotationCandidate`'s own key when it names that target. Does NOT
+		// require every `authorizedNext` id to have a live pending entry —
+		// `authorizedNext` may outlive its candidate (see the type's own
+		// doc, `CredentialAuthentication.swift`).
+		if mode == .mintSupplied {
+			try requireMintSuppliedRotationShape(
+				leafKeys, auth: auth, rotationCandidate: rotationCandidate)
+		}
 
-		// Check 7: a lagging born-dedicated recv leaf has
-		// `pending[identity.clientID]`.
-		if let recvLeafPrincipal, let recv = recvGroup {
-			let recvID = try basicIdentifier(
-				Self.ownLeaf(of: recv.classical).credential)
-			if recvID == recvLeafPrincipal.clientID, recvID != auth.mine.current {
-				guard leafKeys.recvClassical.pending[identity.clientID] != nil
-				else {
-					throw TwoMLSError.archiveInvalid
-				}
+		// Check 7: any existing own leaf whose credential lags
+		// `auth.mine.current` needs `pending[mine.current]` in that group —
+		// classical, in every mode; PQ, only in `.mintSupplied` (native
+		// sessions mint no PQ catch-up key until a later step's per-move
+		// keys land, and a migrated session converted through the temporary
+		// owner-keyed fallback can't always supply one either).
+		if let recv = recvGroup {
+			try requireCatchUpTargetIfLagging(
+				leafKeys.recvClassical, in: recv.classical,
+				mineCurrent: auth.mine.current,
+				required: true)
+			if let recvPQGroup = recv.pq {
+				try requireCatchUpTargetIfLagging(
+					leafKeys.recvPQ, in: recvPQGroup,
+					mineCurrent: auth.mine.current,
+					required: mode == .mintSupplied)
+			}
+		}
+		if let send = sendGroup {
+			try requireCatchUpTargetIfLagging(
+				leafKeys.sendClassical, in: send.classical,
+				mineCurrent: auth.mine.current,
+				required: true)
+			if let sendPQGroup = send.pq {
+				try requireCatchUpTargetIfLagging(
+					leafKeys.sendPQ, in: sendPQGroup,
+					mineCurrent: auth.mine.current,
+					required: mode == .mintSupplied)
 			}
 		}
 	}
 
-	private static func requirePresented(_ set: GroupKeySet, in group: MLS.RFC9420.Group) throws
-	{
-		guard let current = set.current else { throw TwoMLSError.archiveInvalid }
+	private static func requirePresented(
+		_ set: GroupKeySet, in group: MLS.RFC9420.Group, role: MigratedGroupRole,
+		noCustody: Set<MigratedGroupRole>, actual: inout Set<MigratedGroupRole>
+	) throws {
+		guard let current = set.current else {
+			actual.insert(role)
+			guard noCustody.contains(role) else { throw TwoMLSError.archiveInvalid }
+			return
+		}
 		guard try Self.ownLeaf(of: group).signatureKey == current.signatureKey else {
 			throw TwoMLSError.archiveInvalid
+		}
+	}
+
+	/// Check 7 (generalized catch-up): does `set`'s own leaf (read off
+	/// `group`'s tree) lag `mineCurrent`? If so and `required`, it must hold
+	/// `pending[mineCurrent]`; if so and NOT `required`, nothing is enforced
+	/// (a native or `.mintConverted`/`.restore` PQ session may simply have
+	/// no catch-up key yet — step 5's self-drive is what would consume one
+	/// if supplied). A leaf that does not lag needs nothing here regardless.
+	private static func requireCatchUpTargetIfLagging(
+		_ set: GroupKeySet, in group: MLS.RFC9420.Group, mineCurrent: Data?, required: Bool
+	) throws {
+		guard required, let mineCurrent else { return }
+		let ownID = try basicIdentifier(Self.ownLeaf(of: group).credential)
+		guard ownID != mineCurrent else { return }
+		guard set.pending[mineCurrent] != nil else { throw TwoMLSError.archiveInvalid }
+	}
+
+	/// S-3's `.mintSupplied`-only companion to check 8 — see that check's
+	/// call site for the exact rule. CLASSICAL sets only.
+	private static func requireMintSuppliedRotationShape(
+		_ leafKeys: LeafKeys, auth: AuthCore, rotationCandidate: RotationCandidate?
+	) throws {
+		guard let mineCurrent = auth.mine.current else { throw TwoMLSError.archiveInvalid }
+		let allowedTargets = Set(auth.mine.authorizedNext).union([mineCurrent])
+		for target in leafKeys.sendClassical.pending.keys {
+			guard allowedTargets.contains(target) else {
+				throw TwoMLSError.archiveInvalid
+			}
+		}
+		for target in leafKeys.recvClassical.pending.keys {
+			guard allowedTargets.contains(target) else {
+				throw TwoMLSError.archiveInvalid
+			}
+		}
+		let sendCandidates = leafKeys.sendClassical.pending.filter { $0.key != mineCurrent }
+		let recvCandidates = leafKeys.recvClassical.pending.filter { $0.key != mineCurrent }
+		let candidateTargets = Set(sendCandidates.keys).union(recvCandidates.keys)
+		for target in candidateTargets {
+			guard let sendKey = sendCandidates[target]?.signatureKey,
+				let recvKey = recvCandidates[target]?.signatureKey,
+				sendKey == recvKey
+			else { throw TwoMLSError.archiveInvalid }
+			if let rotationCandidate, rotationCandidate.clientID == target {
+				guard rotationCandidate.signatureKey == sendKey else {
+					throw TwoMLSError.archiveInvalid
+				}
+			}
 		}
 	}
 

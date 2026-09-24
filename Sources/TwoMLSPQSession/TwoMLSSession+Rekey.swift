@@ -60,6 +60,10 @@ extension TwoMLSSession {
 		guard var recv = recvGroup, var recvPQ = recv.pq else {
 			throw TwoMLSError.notEstablished
 		}
+		// Step 3: no-custody guard, before anything is consumed.
+		guard !noCustody.contains(.recvPQ) else {
+			throw TwoMLSError.leafCustodyUnavailable
+		}
 
 		let (message, _) = try recvPQ.proposeUpdate(
 			pqProvider, signingKey: try recvPQSigningKey(), framing: .publicMessage)
@@ -104,6 +108,11 @@ extension TwoMLSSession {
 		}
 		guard var recv = recvGroup, recv.pq != nil else {
 			throw TwoMLSError.notEstablished
+		}
+		// Step 3: no-custody guard, before anything is consumed — this
+		// door commits `sendGroup.pq`.
+		guard !noCustody.contains(.sendPQ) else {
+			throw TwoMLSError.leafCustodyUnavailable
 		}
 		// Entry (PR2): the peer's `0x1B` Upd′ arrives header-sealed.
 		let frame = openOrRaw(inbound)
@@ -259,20 +268,15 @@ extension TwoMLSSession {
 	/// error. Any of these leaves `pqInflight` untouched, so an honest
 	/// re-sent Commit′ still applies.
 	public mutating func pqRekeyApply(_ inbound: Data) throws -> StateUpdate {
-		guard pendingProposal == nil, owedBind == nil else {
-			throw TwoMLSError.sessionNotReady
-		}
-		guard case .rekeyInitiated(let updMessage) = pqInflight else {
-			throw TwoMLSError.sessionNotReady
-		}
-		guard var recv = recvGroup, var recvPQ = recv.pq else {
-			throw TwoMLSError.notEstablished
-		}
-		guard let sendPQ = sendGroup?.pq else { throw TwoMLSError.notEstablished }
 		// Entry (PR2): the peer's `0x1D` Commit′ arrives header-sealed.
 		let frame = openOrRaw(inbound)
 
 		return try withDeployedWireConventions {
+			// S-2 (step 3): decode first, then the fatal name, then every
+			// state-shape guard — mirrors Rust's own PQ-door order
+			// (`check_not_wedged` runs before the `pq_inflight`/etc. shape
+			// checks at every door, `mod.rs`). This moves the guards that
+			// used to precede the decode below it.
 			let commitBytes = try Frames.decodePQRekeyCommit(frame)
 			guard
 				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(
@@ -280,6 +284,25 @@ extension TwoMLSSession {
 			else {
 				throw TwoMLSError.malformedSideBandMessage
 			}
+
+			guard pqWedge == nil else { throw TwoMLSError.pqSideBandWedged }
+
+			guard pendingProposal == nil, owedBind == nil else {
+				throw TwoMLSError.sessionNotReady
+			}
+			guard case .rekeyInitiated(let updMessage) = pqInflight else {
+				throw TwoMLSError.sessionNotReady
+			}
+			guard var recv = recvGroup, var recvPQ = recv.pq else {
+				throw TwoMLSError.notEstablished
+			}
+			guard let sendPQ = sendGroup?.pq else { throw TwoMLSError.notEstablished }
+			// Step 3: no-custody guard, before anything is consumed — this
+			// door's `owePQBind` commits `sendGroup.pq`.
+			guard !noCustody.contains(.sendPQ) else {
+				throw TwoMLSError.leafCustodyUnavailable
+			}
+
 			guard
 				case .publicMessage(let updPub) = try MLS.RFC9420.Message(
 					mlsEncoded: updMessage)
@@ -342,14 +365,23 @@ extension TwoMLSSession {
 			// Commit′ moved its presentation (a hand-built/migrated Upd′
 			// carrying a `newIdentity`; the routine self-driven proposal
 			// never does) — a same-key apply is `promoted`'s own no-op.
-			// recv-PQ retains no other pending entry across a rekey, so
-			// every remaining one is dropped regardless.
+			// A.7 (step 3): retain `pending[mine.current]` when the recv-PQ
+			// leaf still lags it after this apply — the PQ half of rule 7,
+			// which a migrated/lagging session needs for a later self-drive
+			// to consume; every other pending entry is still dropped, same
+			// as before.
 			var updatedLeafKeys = leafKeys
 			let ownPQLeaf = try Self.ownLeaf(of: recvPQ)
 			let ownPQID = try basicIdentifier(ownPQLeaf.credential)
 			try updatedLeafKeys.recvPQ.promoted(
 				presenting: ownPQLeaf.signatureKey, id: ownPQID)
-			updatedLeafKeys.recvPQ.pending = [:]
+			if let mineCurrent = auth.mine.current, ownPQID != mineCurrent,
+				let catchUpKey = updatedLeafKeys.recvPQ.pending[mineCurrent]
+			{
+				updatedLeafKeys.recvPQ.pending = [mineCurrent: catchUpKey]
+			} else {
+				updatedLeafKeys.recvPQ.pending = [:]
+			}
 
 			// §13 M2: export `S` off the just-rekeyed group and stamp the
 			// watermark right after — mirrors `pqBootstrapJoin` (the export

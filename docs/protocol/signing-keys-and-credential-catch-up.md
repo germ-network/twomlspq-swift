@@ -90,9 +90,12 @@ party's own leaf: an Update proposal that gets folded, or a commit with an updat
 > host never sends side-band frames at all, later A.4/A.5 rounds "stay open, without error, until it upgrades" —
 > never a stall, just indefinitely deferred (`session-lifecycle.md:303-319`, anomaly #6).
 
-**Pending.** The trigger's "not wedged" gate (`protocol-flows.md:56`) has nothing to check yet: the book's wedge is
-the native `pq_side_band_wedged()` latch (`api-reference.md:304-307`), and this engine has no wedged state at all
-yet. Conformance here is a pending item, not yet testable.
+**The wedge.** The trigger's "not wedged" gate (`protocol-flows.md:56`) guards every PQ side-band door
+(`pqBootstrapJoin`, `pqRatchetBind`, `pqRekeyApply`) and the self-drive trigger — never an owed-bind discharge, a
+respond door, a begin door, or classical messaging, matching the deployed engine's own `check_not_wedged` call
+sites. A migrated session's own wedge, when supplied, rides this engine's `pqSideBandWedged` query
+(`api-reference.md:304-309`'s "queryable `pq_side_band_wedged()`"); this engine's own bind triggers do not yet latch
+one themselves on failure (a separate, later change) — the exit from a wedged state is re-establishment either way.
 
 ## 2. Where the book is silent, and what we decided
 
@@ -183,6 +186,7 @@ says so.
 | An old key kept on a lagging send-PQ leaf (one-sided rotation, peer never opens an A.5) | yes | yes, whenever the book's trigger leaves that leaf unmoved | book `group-rules.md:154-155`; `session-lifecycle.md:269-273` anomaly #1 |
 | Reciprocal A.5 opened before the peer's own A.5 has landed | never, ourselves — see C2 | never | C2 |
 | Upd′ authenticated data | absent, or equal to the leaf's new id; any other value is rejected | deployed-compatible: C1; correct: never sent | C1 |
+| An own leaf (any group, any cause — a rotation, a born-dedicated acceptor's recv leaf, or a migrated session's stored key set) presenting an id other than the current canonical principal | n/a (own-leaf only) | catches up via that group's own `pending[current canonical id]`, once such a key is held | book `group-rules.md:143-158` rule 4 |
 
 ## 4. What we do only for compatibility with the deployed Rust engine
 
@@ -219,7 +223,26 @@ shares a key across its groups, and nothing compares a peer's keys across groups
   - Cost against a conforming peer: at most one extra round — the reciprocal round waits one turn longer than the
     book's bare trigger rule would otherwise allow, exactly the same "race costs one extra round, never a stall"
     shape as §1's other races.
-- Sessions migrated from the deployed engine carry its key layout. The implementation plan covers how they restore.
+- **Migrated sessions.** A session migrated from the deployed engine carries four inputs beyond its key layout:
+  - **Per-group signing keys.** The authoritative form is one stored key set per group (send-classical, recv-classical,
+    send-PQ, recv-PQ) — a `current` key plus zero or more `pending[target id]` keys, exactly this engine's own D1
+    shape. Until a migrator supplies these directly, mint falls back to a temporary conversion from the deployed
+    engine's owner-keyed parts.
+  - **The own-offer window.** The deployed engine may hold far more outstanding own-Update offers than this engine's
+    framed store carries inline; the excess rides its own separate, on-demand blob (never the session archives), keyed
+    by a shared id both a migrator's mint and a later re-mint compute the same way. A staple that names an offer this
+    session's framed store doesn't hold asks the host to supply that blob; a supplied blob that still doesn't name it
+    is terminal for that staple, which the peer must re-send in a later commit that builds on it.
+  - **The wedge and no-custody states.** A migrated session may already be side-band-wedged (§1's "The wedge") or
+    missing signing custody over one or more of its four groups (`noCustody`) — a group in that set can only receive;
+    a no-custody PQ group's own driver stops rather than opening a round it cannot complete. Both states are
+    read-only queries on the restored session; no-custody clears the moment a promotion genuinely supplies that
+    group's `current` key.
+  - **Dropping an unverifiable parked re-key proposal.** A migrated session may carry a parked §A.5 `Upd'`
+    (`.rekeyInitiated`) that no longer verifies against its restored recv-PQ group — the exact state the deployed
+    engine's own `pq_rekey_apply` would fail on forever. Mint drops it instead: self-drive then opens a fresh A.4
+    round under the carried key (book anomaly 5's own resolution, `session-lifecycle.md` at `69a9f0e`: "drops its
+    mis-signed parked `Upd'` and re-proposes under the carried key").
 
 ## 5. Session profiles and KeyPackage signaling
 

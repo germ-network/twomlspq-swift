@@ -770,6 +770,32 @@ extension LeafKeysArchive {
 	}
 }
 
+/// Archive key 44 — the deployed engine's migration carry (step 3):
+/// omitted when there's nothing to carry; present-but-empty (every
+/// sub-field absent/empty) is `.archiveInvalid` — there's never a reason to
+/// encode one that way, so one surviving decode is corrupt or adversarial.
+/// Both keys 44/45 ride both kinds (`Core` and `Checkpoint` alike) and come
+/// from the winning body at restore — never spliced, unlike the PQ-gated
+/// fields `splicingPQ` touches.
+struct DeployedCarryArchive: Codable, Sendable, Equatable {
+	var ownOfferWindow: OwnOfferWindowRecord?
+	/// Raw `MigratedPQWedge.rawValue` — an unknown value at restore is
+	/// `.archiveInvalid`.
+	var pqWedged: UInt8?
+	/// Raw `MigratedGroupRole.rawValue`s — sorted, unique, non-empty when
+	/// present (an empty set is represented by omitting this field, not by
+	/// an empty array).
+	var noCustody: [UInt8]?
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case ownOfferWindow = 0
+		case pqWedged = 1
+		case noCustody = 2
+	}
+
+	var isEmpty: Bool { ownOfferWindow == nil && pqWedged == nil && noCustody == nil }
+}
+
 // MARK: - The session archive body
 
 /// The `SessionArchive` wire body — one `Codable` struct for both Core and
@@ -863,6 +889,11 @@ struct SessionArchive: Codable, Sendable {
 	var leafKeys: LeafKeysArchive
 	var sendPQKeysFingerprint: GroupKeySetFingerprint
 	var recvPQKeysFingerprint: GroupKeySetFingerprint
+	/// Step 3, archive key 44 — see `DeployedCarryArchive`'s own doc.
+	var deployedCarry: DeployedCarryArchive?
+	/// Step 3, archive key 45 — core state, not carry: rule 9's stored,
+	/// validated-only pre-establishment app payload.
+	var initialAppPayload: Data?
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case version = 0
@@ -909,6 +940,8 @@ struct SessionArchive: Codable, Sendable {
 		case leafKeys = 41
 		case sendPQKeysFingerprint = 42
 		case recvPQKeysFingerprint = 43
+		case deployedCarry = 44
+		case initialAppPayload = 45
 	}
 }
 
@@ -1014,7 +1047,21 @@ extension TwoMLSSession {
 			recvLeafPrincipal: recvLeafPrincipal.map(RecvLeafPrincipalArchive.init),
 			leafKeys: LeafKeysArchive(leafKeys, kind: kind),
 			sendPQKeysFingerprint: leafKeys.sendPQ.fingerprint,
-			recvPQKeysFingerprint: leafKeys.recvPQ.fingerprint)
+			recvPQKeysFingerprint: leafKeys.recvPQ.fingerprint,
+			deployedCarry: makeDeployedCarryArchive(),
+			initialAppPayload: initialAppPayload)
 		return try SecretArchive(encoding: body)
+	}
+
+	/// Step 3, archive key 44's live encode — `O(1)`, the record only, never
+	/// the window blob itself (which the host owns separately). `nil` when
+	/// there's nothing to carry, matching the archive's own "omitted when
+	/// empty" contract.
+	private func makeDeployedCarryArchive() -> DeployedCarryArchive? {
+		let carry = DeployedCarryArchive(
+			ownOfferWindow: ownOfferWindow,
+			pqWedged: pqWedge?.rawValue,
+			noCustody: noCustody.isEmpty ? nil : noCustody.map { $0.rawValue }.sorted())
+		return carry.isEmpty ? nil : carry
 	}
 }

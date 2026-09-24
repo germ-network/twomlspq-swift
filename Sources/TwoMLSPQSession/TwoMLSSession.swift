@@ -105,6 +105,29 @@ struct OwedBind: Sendable, Codable {
 	}
 }
 
+/// Step 3: the persisted record of a session's own-offer window — hoisted
+/// fields plus the count, NOT the window itself (which rides its own
+/// separate, host-owned blob — `MigratedOwnOfferWindow`/
+/// `MintedOwnOfferWindow`, never the session archives). `id` is what
+/// `ownOfferWindowID`/a window load cross-checks; the other four fields are
+/// what restore cross-checks against the rebuilt recv-classical group
+/// (`buildSession`).
+struct OwnOfferWindowRecord: Sendable, Codable, Equatable {
+	var id: Data
+	var epoch: UInt64
+	var groupID: Data
+	var senderLeafIndex: UInt32
+	var count: UInt32
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case id = 0
+		case epoch = 1
+		case groupID = 2
+		case senderLeafIndex = 3
+		case count = 4
+	}
+}
+
 /// The peer's staged proposal, carried uninterpreted alongside a
 /// `DecryptResult` — `digest` is `sha256` of the proposal bytes, `proposing`
 /// is the sender's `ClientId`, `context` is a digest of this session's
@@ -596,6 +619,59 @@ public struct TwoMLSSession: Sendable {
 	/// `0x01` staple before the signed contract-26 handoff wraps it.
 	var owesEstablishmentEnvelope: Bool = false
 
+	// MARK: Migration inputs on stored per-group signing keys (step 3)
+
+	/// The migrated deployed engine's own-offer window record, when this
+	/// session was minted (or restored) with one — the window BLOB itself
+	/// never rides here; this is only the hoisted fields plus id a window
+	/// load/apply cross-checks. Drained to `nil` the moment
+	/// `recvGroup.classical`'s epoch next advances (`ownOfferWindowID`'s own
+	/// doc) — the host may then delete its stored blob once the archive
+	/// from that same call is durable.
+	var ownOfferWindow: OwnOfferWindowRecord? = nil
+	/// The migrated deployed engine's PQ side-band wedge, when present —
+	/// blocks the PQ bind/join doors and self-drive; never blocks owed-bind
+	/// discharge or classical messaging (matching the deployed engine).
+	/// Never cleared natively (this step); the book's exit is
+	/// re-establishment. Internal: `pqSideBandWedged` (below) is the public
+	/// `Bool` query — split the same way the deployed engine itself splits
+	/// its internal `pq_wedged: Option<PqWedge>` from its public
+	/// `pq_side_band_wedged() -> bool`.
+	var pqWedge: MigratedPQWedge? = nil
+	/// The migrated deployed engine's carried pre-establishment app
+	/// payload, when supplied. Stored and validated only (rule 9) — no host
+	/// accessor; a later step's envelope/pre-establishment change consumes
+	/// it through `pendingOutbound()`.
+	var initialAppPayload: Data? = nil
+	/// The migrated deployed engine's set of groups this session presently
+	/// has no signing custody over — the owner-decided read-only query
+	/// (C.1), exposed as the raw set. Signing in such a group throws
+	/// `.leafCustodyUnavailable`; self-drive never opens a round that needs
+	/// one. Monotonically drained (never re-added) the moment a promotion
+	/// gives the group a `current` key (`StateUpdate.swift`'s choke point).
+	public internal(set) var noCustody: Set<MigratedGroupRole> = []
+
+	/// Owner-decided read-only query (C.1): whether a PQ side-band round
+	/// has wedged past its point of no return. Never blocks owed-bind
+	/// discharge or classical messaging.
+	public var pqSideBandWedged: Bool { pqWedge != nil }
+
+	/// Owner-decided read-only query (C.1): true when both classical roles
+	/// currently have signing custody and the session is established — a
+	/// recv-classical no-custody session cannot even mint its own
+	/// `Upd(self)`.
+	public var canSend: Bool {
+		isEstablished && !noCustody.contains(.sendClassical)
+			&& !noCustody.contains(.recvClassical)
+	}
+
+	/// Step 3 (A.5): the id of this session's own-offer window record, if
+	/// one is outstanding. Only ever moves from a value to `nil` (the drain
+	/// at every `recvGroup.classical` epoch advance) — never to a
+	/// DIFFERENT id. `nil` means the host may delete its stored blob once
+	/// the archive from that same call is durable.
+	public var ownOfferWindowID: Data? { ownOfferWindow?.id }
+
 	// MARK: Signing keys stored by role
 
 	/// The four groups' own stored signing-key sets — the ONLY source of a
@@ -721,7 +797,8 @@ public struct TwoMLSSession: Sendable {
 	func sendClassicalSigningKey() throws -> MLS.SignatureSecretKey {
 		guard sendGroup != nil else { throw TwoMLSError.notEstablished }
 		guard let current = leafKeys.sendClassical.current else {
-			throw TwoMLSError.credentialUnknown
+			throw noCustody.contains(.sendClassical)
+				? TwoMLSError.leafCustodyUnavailable : TwoMLSError.credentialUnknown
 		}
 		return current.signingKey
 	}
@@ -732,7 +809,8 @@ public struct TwoMLSSession: Sendable {
 	func recvClassicalSigningKey() throws -> MLS.SignatureSecretKey {
 		guard recvGroup != nil else { throw TwoMLSError.notEstablished }
 		guard let current = leafKeys.recvClassical.current else {
-			throw TwoMLSError.credentialUnknown
+			throw noCustody.contains(.recvClassical)
+				? TwoMLSError.leafCustodyUnavailable : TwoMLSError.credentialUnknown
 		}
 		return current.signingKey
 	}
@@ -745,7 +823,8 @@ public struct TwoMLSSession: Sendable {
 			throw TwoMLSError.notEstablished
 		}
 		guard let current = leafKeys.sendPQ.current else {
-			throw TwoMLSError.credentialUnknown
+			throw noCustody.contains(.sendPQ)
+				? TwoMLSError.leafCustodyUnavailable : TwoMLSError.credentialUnknown
 		}
 		return current.signingKey
 	}
@@ -758,7 +837,8 @@ public struct TwoMLSSession: Sendable {
 			throw TwoMLSError.notEstablished
 		}
 		guard let current = leafKeys.recvPQ.current else {
-			throw TwoMLSError.credentialUnknown
+			throw noCustody.contains(.recvPQ)
+				? TwoMLSError.leafCustodyUnavailable : TwoMLSError.credentialUnknown
 		}
 		return current.signingKey
 	}
@@ -793,6 +873,10 @@ public struct TwoMLSSession: Sendable {
 		spawnToken: Data? = nil,
 		recvLeafPrincipal: RecvLeafPrincipal? = nil,
 		owesEstablishmentEnvelope: Bool = false,
+		ownOfferWindow: OwnOfferWindowRecord? = nil,
+		pqWedge: MigratedPQWedge? = nil,
+		noCustody: Set<MigratedGroupRole> = [],
+		initialAppPayload: Data? = nil,
 		leafKeys: LeafKeys
 	) {
 		self.classicalProvider = classicalProvider
@@ -820,6 +904,10 @@ public struct TwoMLSSession: Sendable {
 		self.spawnToken = spawnToken
 		self.recvLeafPrincipal = recvLeafPrincipal
 		self.owesEstablishmentEnvelope = owesEstablishmentEnvelope
+		self.ownOfferWindow = ownOfferWindow
+		self.pqWedge = pqWedge
+		self.noCustody = noCustody
+		self.initialAppPayload = initialAppPayload
 		self.leafKeys = leafKeys
 	}
 }

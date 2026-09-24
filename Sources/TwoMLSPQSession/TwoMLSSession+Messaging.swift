@@ -2,6 +2,7 @@ import Foundation
 import MLSCodec
 import MLSCombiner
 import MLSProfileRFC9420
+import SecretBytes
 
 // MARK: - Send / receive (one app message; no commit) — messaging loop
 
@@ -48,6 +49,13 @@ extension TwoMLSSession {
 		// `0x01` staple and make `installEstablishmentEnvelope` fail
 		// `.sessionNotReady` forever.
 		try ensureEstablishmentDelegated()
+		// Step 3: no-custody guard, before `committingRound()` — it writes
+		// `recvGroup` even for a bare catch-up-only round
+		// (`TwoMLSSession+ClassicalCommit.swift`'s cross-party PSK export).
+		guard !noCustody.contains(.sendClassical), !noCustody.contains(.recvClassical)
+		else {
+			throw TwoMLSError.leafCustodyUnavailable
+		}
 		let (didCommit, committedRemoteClientID) = try committingRound()
 		rewrapSideBand()
 
@@ -64,27 +72,24 @@ extension TwoMLSSession {
 		// forever with no fold ever able to canonicalize it.
 		let myCurrentID = try basicIdentifier(Self.ownLeaf(of: recv.classical).credential)
 
-		// Slice 11 (group-rules.md rule 4): the recv-leaf catch-up — my own
-		// recv-leaf still lags my canonical principal (the born-dedicated
-		// acceptor's Group_A leaf presenting the invitation identity while
-		// `auth.mine.current` is already D) AND custody over the lagging
-		// key is still held. Explicit `rotating:` wins over this implicit
-		// arm (checked first, below) UNLESS it names D itself — closing the
-		// `rotating == auth.mine.current` hole (Messaging:65-99 would
-		// otherwise mint a 2nd D keypair and leak `authorize(D)` into
+		// Slice 11 / step 3 (group-rules.md rule 4, generalized —
+		// protocol-flows.md:56): the recv-leaf catch-up — my own recv-leaf
+		// still "lags" (presents an id other than `auth.mine.current`),
+		// whatever put it there: the born-dedicated acceptor's Group_A leaf
+		// presenting the invitation identity while `auth.mine.current` is
+		// already D, or a migrated session's leaf presenting a Rust-era id.
+		// The target key always lives at `recvClassical.pending[mine.
+		// current]` — rule 7 requires it to be there for any lagging own
+		// leaf, native or migrated alike. Explicit `rotating:` wins over
+		// this implicit arm (checked first, below) UNLESS it names
+		// `auth.mine.current` itself — closing the `rotating ==
+		// auth.mine.current` hole (Messaging:65-99 would otherwise mint a
+		// 2nd keypair and leak `authorize(mine.current)` into
 		// `authorizedNext` forever, since `PartySequence.commit`'s own
 		// `current == id` early return never canonicalizes a no-op).
-		if rotating == nil, let custody = recvLeafPrincipal,
-			myCurrentID != auth.mine.current,
-			custody.clientID == myCurrentID
+		if rotating == nil, let mineCurrent = auth.mine.current, myCurrentID != mineCurrent
 		{
-			// The framing key reads the stored slot directly (it still
-			// equals the invitation identity's key, same as `custody.
-			// signingKey`); the NEW leaf key is the rule-4 target already
-			// staged at `receive` — a miss here (impossible in a session
-			// this module ever builds, since `custody`/the target are
-			// seeded together) fails closed before any mutation.
-			guard let target = leafKeys.recvClassical.pending[identity.clientID] else {
+			guard let target = leafKeys.recvClassical.pending[mineCurrent] else {
 				throw TwoMLSError.credentialUnknown
 			}
 			let (catchUpMessage, _) = try recv.classical.proposeUpdate(
@@ -94,27 +99,22 @@ extension TwoMLSSession {
 					new: target.signingKey),
 				framing: .publicMessage,
 				newIdentity: MLS.RFC9420.NewSigningIdentity(
-					credential: .basic(identity: identity.clientID),
+					credential: .basic(identity: mineCurrent),
 					signatureKey: target.signatureKey))
 			message = catchUpMessage
-			proposing = identity.clientID
+			proposing = mineCurrent
 		} else if let rotating {
 			guard !rotating.isEmpty else { throw TwoMLSError.credentialUnknown }
 			guard rotating != myCurrentID else { throw TwoMLSError.credentialUnknown }
 
 			if rotating == auth.mine.current {
 				// Naming the identity already canonical isn't a NEW
-				// rotation — route it to the SAME catch-up this session
-				// would perform implicitly, if custody is still held; else
-				// there is nothing to catch up AND no legitimate rotation
-				// target here either.
-				guard let custody = recvLeafPrincipal,
-					custody.clientID == myCurrentID
-				else {
-					throw TwoMLSError.credentialUnknown
-				}
-				guard let target = leafKeys.recvClassical.pending[identity.clientID]
-				else {
+				// rotation — route it to the SAME generalized catch-up this
+				// session would perform implicitly (the arm above), keyed
+				// on `rotating` itself since it already equals `mine.current`;
+				// else there is nothing to catch up AND no legitimate
+				// rotation target here either.
+				guard let target = leafKeys.recvClassical.pending[rotating] else {
 					throw TwoMLSError.credentialUnknown
 				}
 				let (catchUpMessage, _) = try recv.classical.proposeUpdate(
@@ -125,10 +125,10 @@ extension TwoMLSSession {
 						new: target.signingKey),
 					framing: .publicMessage,
 					newIdentity: MLS.RFC9420.NewSigningIdentity(
-						credential: .basic(identity: identity.clientID),
+						credential: .basic(identity: rotating),
 						signatureKey: target.signatureKey))
 				message = catchUpMessage
-				proposing = identity.clientID
+				proposing = rotating
 			} else {
 				let candidate: RotationCandidate
 				let candidateKey: LeafKey
@@ -189,21 +189,32 @@ extension TwoMLSSession {
 						signingKey: signingKey, signatureKey: signatureKey)
 					// Stage the fresh key into BOTH classical sets — recv-
 					// classical via `stage` (idempotent-safe, though a fresh
-					// mint can never collide with a live target here), send-
-					// classical by outright replacement, since F2's
+					// mint can never collide with a live target here);
+					// send-classical replaces every OTHER entry, since F2's
 					// one-generation cap means at most one candidate is ever
-					// outstanding for the whole party. A candidate this
-					// replaces leaves its own dead `pending[C_old]` entry
-					// behind on recv-classical ONLY — send-classical's whole
-					// `pending` is replaced wholesale below, so it never
-					// accumulates one. Either way it's harmless: no signing
-					// site ever reads a target that isn't the current
-					// `rotating`.
+					// outstanding for the whole party, but (A.7, generalized
+					// catch-up) it KEEPS `pending[mine.current]` when the
+					// send leaf itself still lags — without this, a
+					// migrated session whose send-classical leaf lags after
+					// a rotation Rust won, and which then rotates again
+					// natively, would lose its catch-up key and brick. A
+					// candidate this replaces leaves its own dead
+					// `pending[C_old]` entry behind on recv-classical ONLY —
+					// harmless: no signing site ever reads a target that
+					// isn't the current `rotating` or the retained
+					// catch-up.
 					try stagedLeafKeys.recvClassical.stage(
 						candidateKey, for: rotating)
-					stagedLeafKeys.sendClassical.pending = [
-						rotating: candidateKey
-					]
+					var sendPending: [Data: LeafKey] = [:]
+					if let mineCurrent = auth.mine.current,
+						let catchUpKey = stagedLeafKeys.sendClassical
+							.pending[
+								mineCurrent]
+					{
+						sendPending[mineCurrent] = catchUpKey
+					}
+					sendPending[rotating] = candidateKey
+					stagedLeafKeys.sendClassical.pending = sendPending
 				}
 				mintedLeafKeys = stagedLeafKeys
 
@@ -351,8 +362,16 @@ extension TwoMLSSession {
 	/// also dispatches a STANDALONE `0x01`/`0x0B` frame (no `0x03` wrapper),
 	/// and PAUSES on a `0x0B` (stapled or standalone) while `recvGroup ==
 	/// nil` rather than joining — see `IncomingResult`.
-	public mutating func processIncoming(_ inbound: Data) throws -> IncomingResult {
-		try dispatchIncoming(inbound, approval: .unapproved)
+	/// `ownOfferWindow` (step 3, A.5): the caller's own-offer window blob,
+	/// supplied only on a retry after `.ownOfferWindowRequired` — `nil`
+	/// otherwise (the common case). Consulted ONLY when a staple's commit
+	/// references an own-Update by a ref this session's framed
+	/// `stagedUpdates` doesn't hold; ignored entirely otherwise, so passing
+	/// one speculatively costs nothing beyond the argument itself.
+	public mutating func processIncoming(
+		_ inbound: Data, ownOfferWindow: SecretArchive? = nil
+	) throws -> IncomingResult {
+		try dispatchIncoming(inbound, approval: .unapproved, ownOfferWindow: ownOfferWindow)
 	}
 
 	/// Slice 11 (protocol-flows.md:407-432): re-feed a frame carrying a `0x0B` pair the caller has
@@ -378,18 +397,19 @@ extension TwoMLSSession {
 	/// converse order — record first, call second — always heals.
 	public mutating func processIncomingApproved(
 		_ inbound: Data, approvedEnvelopeDigest: Data, approvedWelcomeDigest: Data,
-		expectedCreator: Data
+		expectedCreator: Data, ownOfferWindow: SecretArchive? = nil
 	) throws -> IncomingResult {
 		try dispatchIncoming(
 			inbound,
 			approval: .approved(
 				envelopeDigest: approvedEnvelopeDigest,
 				welcomeDigest: approvedWelcomeDigest,
-				expectedCreator: expectedCreator))
+				expectedCreator: expectedCreator), ownOfferWindow: ownOfferWindow)
 	}
 
 	private mutating func dispatchIncoming(
-		_ inbound: Data, approval: EstablishmentApproval
+		_ inbound: Data, approval: EstablishmentApproval,
+		ownOfferWindow: SecretArchive? = nil
 	) throws -> IncomingResult {
 		// Entry (PR2): transparently removes the header seal if present,
 		// else passes an already-opened frame straight through (book,
@@ -398,7 +418,8 @@ extension TwoMLSSession {
 		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
 		switch tag {
 		case Frames.messageFrameTag:
-			return try processMessageFrame(frame, approval: approval)
+			return try processMessageFrame(
+				frame, approval: approval, ownOfferWindow: ownOfferWindow)
 		case Frames.establishmentHandoffTag:
 			return try processStandaloneHandoff(frame, approval: approval)
 		case Frames.apqWelcomeTag:
@@ -414,7 +435,7 @@ extension TwoMLSSession {
 	/// decrypts normally, `handleStaple` extracting/dedup-ing an already-
 	/// joined `0x0B`'s inner welcome same as it always has for `0x01`.
 	private mutating func processMessageFrame(
-		_ frame: Data, approval: EstablishmentApproval
+		_ frame: Data, approval: EstablishmentApproval, ownOfferWindow: SecretArchive? = nil
 	) throws -> IncomingResult {
 		let (staple, proposalSection, appSection) = try Frames.decodeMessageFrame(frame)
 		if staple.first == Frames.establishmentHandoffTag, recvGroup == nil {
@@ -445,7 +466,7 @@ extension TwoMLSSession {
 		// against an un-checkpointed move surviving a later throw in this
 		// same method; this snapshot only picks the precise kind up front.)
 		let pqManifestBefore = pqEpochManifest
-		let stapleResult = try handleStaple(staple)
+		let stapleResult = try handleStaple(staple, ownOfferWindow: ownOfferWindow)
 		// (DEBUG only): a fault point AFTER `handleStaple`'s own write-back
 		// (a folded/bound commit already landed on `self`, including any
 		// `leafKeys` promotion) but before the next throwing call — proves
@@ -588,7 +609,9 @@ extension TwoMLSSession {
 	/// already joined (`processMessageFrame` pauses on it first while
 	/// `recvGroup == nil`), so it only ever dedups here, never joins.
 	@discardableResult
-	private mutating func handleStaple(_ staple: Data) throws -> StapleApplyResult {
+	private mutating func handleStaple(
+		_ staple: Data, ownOfferWindow: SecretArchive? = nil
+	) throws -> StapleApplyResult {
 		guard let tag = staple.first else { throw TwoMLSError.truncatedSection }
 		switch Frames.stapleKind(tag) {
 		case .welcome:
@@ -598,9 +621,9 @@ extension TwoMLSSession {
 			return try applyWelcomeStaple(welcome)
 		case .mlsMessage:
 			let commitBytes = try Frames.decodeMlsMessageStaple(staple)
-			return try applyFoldCommit(commitBytes)
+			return try applyFoldCommit(commitBytes, ownOfferWindow: ownOfferWindow)
 		case .apqPrivateMessage:
-			return try applyBind(staple)
+			return try applyBind(staple, ownOfferWindow: ownOfferWindow)
 		case .unsupported(let tag):
 			throw TwoMLSError.unsupportedStapleTag(tag)
 		}

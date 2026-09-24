@@ -3,6 +3,7 @@ import MLSCodec
 import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
+import SecretBytes
 import TwoMLSPQCrypto
 import XCTest
 
@@ -172,6 +173,71 @@ enum SessionTestSupport {
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncomingDecrypted(frame)
 		return (alice: alice, bob: bob)
+	}
+
+	/// An own Update whose HPKE pair `session.recvGroup.classical` NEVER
+	/// holds — no write-back to `session` at all, unlike
+	/// `RotationTests.authorRotatingUpd`/`DeployedStateTests.
+	/// handBuiltUnframedOwnOffer`, which both stage their fresh key into
+	/// `leafKeys`. This is the shape the own-offer window's caller-supplied-
+	/// `leafSecret` branch (`insertMigratedOwnUpdate`) actually exercises: a
+	/// migrated session's snapshot never carries these pairs, so production
+	/// resolution runs on the secret the window blob itself supplies, not on
+	/// anything the group already has. Built entirely from public swift-mls
+	/// API: a fresh X25519 pair, a self-signed `LeafNode(source: .update)`,
+	/// framed and verified on a scratch `ProposalStore` so the caller gets
+	/// both the wire bytes and the bare proposal/ref/secret needed for a
+	/// `MigratedOwnOffer`.
+	static func knownSecretOwnOffer(in session: TwoMLSSession) throws -> (
+		framedMessage: Data, ref: Data, bareProposal: Data, leafSecret: SecretBytes,
+		epoch: UInt64, groupID: Data, senderLeafIndex: UInt32
+	) {
+		let provider = classicalProvider
+		let throwaway = try XCTUnwrap(session.recvGroup)
+		var group = throwaway.classical
+		let current = try TwoMLSSession.ownLeaf(of: group)
+		let (hpkeSecret, hpkePublic) = try provider.hpkeGenerateKeyPair()
+		var leaf = MLS.RFC9420.LeafNode(
+			encryptionKey: hpkePublic, signatureKey: current.signatureKey,
+			credential: current.credential, capabilities: current.capabilities,
+			source: .update, extensions: current.extensions, signature: Data())
+		let tbs = try leaf.toBeSigned(
+			placement: .inGroup(
+				groupID: group.context.groupID, leafIndex: group.myLeafIndex))
+		leaf.signature = try MLS.signWithLabel(
+			provider, privateKey: try session.recvClassicalSigningKey(),
+			label: "LeafNodeTBS", content: tbs)
+		// A throwaway `proposeUpdate` call, only to get a correctly-shaped
+		// sender for the hand-built `FramedContent` below — its own Update
+		// leaf/keys are discarded.
+		let (template, _) = try group.proposeUpdate(
+			provider,
+			sign: MLS.RFC9420.signingClosure(
+				provider, try session.recvClassicalSigningKey()),
+			framing: .publicMessage)
+		guard case .publicMessage(let templatePub) = template else {
+			throw TwoMLSError.malformedSideBandMessage
+		}
+		let content = MLS.RFC9420.FramedContent(
+			groupID: group.context.groupID, epoch: group.context.epoch,
+			sender: templatePub.content.sender, authenticatedData: Data(),
+			content: .proposal(.update(leaf)))
+		let pub = try MLS.RFC9420.protectPublic(
+			provider, content: content, groupContext: group.context,
+			confirmationTag: nil,
+			signingKey: try session.recvClassicalSigningKey(),
+			membershipKey: group.epoch.membershipKey)
+		var scratch = MLS.RFC9420.ProposalStore()
+		let verified = try group.verifying(provider, proposal: pub)
+		let ref = try scratch.insert(verified, provider)
+		let bare = try withDeployedWireConventions {
+			try MLS.RFC9420.Proposal.update(leaf).mlsEncoded()
+		}
+		return (
+			try MLS.RFC9420.Message.publicMessage(pub).mlsEncoded(), ref.data, bare,
+			hpkeSecret.data, group.context.epoch, group.context.groupID,
+			group.myLeafIndex.value
+		)
 	}
 }
 
