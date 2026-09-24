@@ -455,8 +455,6 @@ final class SigningKeyProtocolTests: XCTestCase {
 		// The PQ resolver has no rotation-candidate arm (a PQ leaf move is
 		// not a rotation), so the hand-built catch-up target below can never
 		// resolve there by construction.
-		OracleCheck.allow([.recvPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		XCTAssertTrue(bob.myPQTurn)
 		let bobNewID = Data("bob-canonical-catchup".utf8)
@@ -590,8 +588,6 @@ final class SigningKeyProtocolTests: XCTestCase {
 		// Same reason as `testSection3PQLeafCatchUpToAnAlreadyCanonicalID`:
 		// the hand-built stuck-heal target has no rotation-candidate arm to
 		// resolve through.
-		OracleCheck.allow([.recvPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		XCTAssertTrue(bob.myPQTurn)
 		let bobNewID = Data("bob-stuck-heal".utf8)

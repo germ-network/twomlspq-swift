@@ -141,11 +141,6 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	/// rotating key itself today — stage the fresh key so `pqRekeyApply`'s
 	/// promotion can find it when this move lands, mirroring the stored-
 	/// signing-keys update this same helper got in `SigningKeyProtocolTests`.
-	/// A call site needs `OracleCheck.allow([.recvPQ])` only when the
-	/// `proposer` it mutates is later reused for a further real,
-	/// state-update-producing call in the same test — the oracle fires at
-	/// the end of `stateUpdate(kind:)`, so a proposer whose only further use
-	/// is being read, or that the test never touches again, never trips it.
 	private func handBuildPQLeafMoveUpd(
 		proposer: inout TwoMLSSession, newID: Data
 	) throws -> (frame: Data, bytes: Data) {
@@ -186,11 +181,6 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	/// fresh key is staged into `committer.leafKeys.sendPQ` AND promoted
 	/// to `current` immediately, in the same call — mirroring what a real
 	/// committer-move `pqRekeyRespond` would do to `self` once it exists.
-	/// As with the proposer's helper above, a call site needs
-	/// `OracleCheck.allow([.sendPQ])` only when `committer` is later reused
-	/// for a further real, state-update-producing call — e.g.
-	/// `testResponderCarriesItsCredential` never touches `alice` again
-	/// after this call, so it sets no allowance at all.
 	private func handBuildPQRekeyCommitWithCommitterMove(
 		committer: inout TwoMLSSession, updBytes: Data, committerNewID: Data
 	) throws -> Data {
@@ -259,8 +249,6 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	func testTwoRoundCatchUpEndToEnd() throws {
 		// Both hand-built rounds below mint store-only keys the old
 		// resolvers never covered (a PQ leaf move is not a rotation).
-		OracleCheck.allow([.recvPQ, .sendPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let aliceOldID = alice.identity.clientID
 
@@ -563,8 +551,6 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		// The hand-built same-id/fresh-key Upd′ below mints a store-only
 		// key (a PQ leaf move is not a rotation, so the old resolver has
 		// no arm for it regardless of id).
-		OracleCheck.allow([.recvPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 
 		// Flip the turn to alice first, so bob (not holding it) can
@@ -625,8 +611,6 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		// The reciprocal-first hand-build mints store-only keys in both
 		// bob's recv-PQ (his same-id carrier, orphaned in `pending`) and
 		// alice's send-PQ (her committer-move, promoted to `current`).
-		OracleCheck.allow([.recvPQ, .sendPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let aliceOldID = alice.identity.clientID
 		let alice2ID = Data("alice-recv-only-lag".utf8)
@@ -712,8 +696,6 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	func testTriggerIgnoresSendPQLag() throws {
 		// Round 1's hand-built Upd′ mints a store-only key (a PQ leaf move
 		// is not a rotation).
-		OracleCheck.allow([.recvPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		try driveOneA4Round(initiator: &bob, responder: &alice)
 		XCTAssertTrue(alice.myPQTurn)
@@ -823,8 +805,6 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		// canonicalization site. Only bob's PQ leaves are left hand-aged
 		// past that point: they never move here, which is the whole
 		// premise this test is about.
-		OracleCheck.allow([.recvClassical, .sendClassical, .recvPQ, .sendPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let id0 = bob.identity.clientID
 
@@ -1033,8 +1013,6 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	/// just-moved id, so `restore`'s own pin safety check rejects it).
 	#if DEBUG
 		func testArchiveAfterFaultedRekeyApplyWriteBackStillRestores() throws {
-			OracleCheck.allow([.recvClassical, .sendClassical, .recvPQ, .sendPQ])
-			defer { OracleCheck.allow([]) }
 			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 			let id0 = bob.identity.clientID
 
@@ -1142,8 +1120,6 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	/// success is already true at the fault point rules that out.
 	#if DEBUG
 		func testPinnedBeforeEvictionHealsOnRetryAndAcceptsTheCatchUp() throws {
-			OracleCheck.allow([.recvClassical, .sendClassical, .recvPQ, .sendPQ])
-			defer { OracleCheck.allow([]) }
 			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 			let id0 = bob.identity.clientID
 
@@ -1467,8 +1443,6 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	func testReciprocalDefersUntilOwnA5Lands() throws {
 		// Alice's own A.5, once hand-built to genuinely land, mints a
 		// store-only key (a PQ leaf move is not a rotation).
-		OracleCheck.allow([.recvPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		XCTAssertTrue(bob.myPQTurn)
 

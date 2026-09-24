@@ -1155,8 +1155,6 @@ extension RotationTests {
 	/// for the still-lagging recv-PQ leaf must survive, not just the one
 	/// entry the apply itself touched.
 	func testRekeyApplyRetainsPQCatchUpKey() throws {
-		OracleCheck.allow([.recvPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let c = Data("bob-rust-rotated".utf8)
 		let (sk, pk) = try TwoMLSIdentity.mintSignatureKeypair()

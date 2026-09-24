@@ -712,17 +712,10 @@ final class LeafKeysTests: XCTestCase {
 	/// round's committer); and a full classical rotation round (author/
 	/// approve/fold/catch-up, exercising both classical accessors) — all
 	/// while `bob`, who never sees `identity` at all, keeps verifying every
-	/// frame. Once `identity` is swapped, this test's own frames are no
-	/// longer oracle-resolvable by design — this test allows all four
-	/// groups via `OracleCheck.allow(_:)`.
+	/// frame.
 	func testIdentityNotConsultedOnceEveryKeyPackageStepIsBehindUs() throws {
 		// Every group's `current` still traces back to the ORIGINAL identity
-		// until each group's own next mechanism replaces it, so the oracle
-		// — which still reads `identity` — is EXPECTED to miss on all four
-		// groups for the rest of this test; that miss is the point, not a
-		// bug.
-		OracleCheck.allow([.sendClassical, .recvClassical, .sendPQ, .recvPQ])
-		defer { OracleCheck.allow([]) }
+		// until each group's own next mechanism replaces it.
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let begin = try alice.pqBootstrapBegin()
 		let respond = try bob.pqBootstrapRespond(begin.frame)
@@ -1063,59 +1056,12 @@ final class LeafKeysTests: XCTestCase {
 		let recvPQEpochBefore = alice.recvGroup?.pq?.context.epoch
 		alice.leafKeys.recvPQ.pending[Data("fingerprint-probe".utf8)] = try freshKey()
 
-		// The injected entry is a store-only probe the oracle can never
-		// resolve (nothing it corresponds to on the wire) — not a signing
-		// change, so it's exempted here rather than allowlisting the whole
-		// test.
-		let update = try OracleCheck.withMissesIgnored {
-			try alice.stateUpdate(kind: .core)
-		}
+		let update = try alice.stateUpdate(kind: .core)
 		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
 		XCTAssertEqual(alice.recvGroup?.pq?.context.epoch, recvPQEpochBefore)
 		XCTAssertEqual(
 			update.kind, .checkpoint,
 			"a PQ key-set change must upgrade a .core request even with no epoch move")
-	}
-
-	// MARK: - The oracle catches what nothing else in this call would
-
-	/// Proves the oracle does independent work, not merely duplicate a
-	/// check something else already makes: swaps `recvPQ.current`'s
-	/// SIGNING key for an unrelated one while leaving its SIGNATURE key
-	/// untouched (still matching the tree — `assertLeafKeysPresented`
-	/// passes; `LeafKey` enforces no derivation relationship between its
-	/// two fields). recv-PQ (KP′) is still `identity`'s own key, so it
-	/// stays inside the oracle's narrowed resolve scope, unlike
-	/// send-classical/send-PQ (always fresh founding leaves the frozen
-	/// oracle can never resolve). A plain classical `prepareToEncrypt()`
-	/// with the turn on the peer touches neither PQ group at all, so it
-	/// does not throw — nothing else in this call ever reads, let alone
-	/// verifies, this specific key. `OracleCheck.mismatches(in:)` is the
-	/// one thing that notices, and reports exactly this slot. Mutation-
-	/// tested: making `OracleCheck.run` a no-op (or `mismatches` itself
-	/// vacuous) leaves the entire suite green except this direct assertion.
-	func testOracleCatchesAMismatchedStoredKeyNothingElseInThisCallWouldNotice() throws {
-		var (alice, _) = try RatchetTests.fullyEstablishedTurnOnBob()
-		let realSignatureKey = try XCTUnwrap(alice.leafKeys.recvPQ.current)
-			.signatureKey
-		let (wrongSigningKey, _) = try TwoMLSIdentity.mintSignatureKeypair()
-		alice.leafKeys.recvPQ.current = LeafKey(
-			signingKey: wrongSigningKey, signatureKey: realSignatureKey)
-
-		// `withMissesIgnored` only silences the INSTALLED observer's own
-		// `XCTFail` for this deliberate corruption — `mismatches(in:)`
-		// right after, called directly and outside that scope, still
-		// makes the real, unsuppressed assertion below.
-		try OracleCheck.withMissesIgnored {
-			XCTAssertNoThrow(
-				try alice.prepareToEncrypt(),
-				"an idle call reads/verifies neither field of a stored key it never signs with"
-			)
-		}
-		XCTAssertEqual(
-			OracleCheck.mismatches(in: alice), ["recvPQ.current: byte mismatch"],
-			"only the oracle's own comparison catches a signing/signature mismatch "
-				+ "nothing in this call signs with or verifies")
 	}
 
 	// MARK: - Fault injection: write-back is write-back-only-on-success
@@ -1352,8 +1298,6 @@ final class LeafKeysTests: XCTestCase {
 			// Same reason as `SigningKeyProtocolTests`'s §3 catch-up tests:
 			// the hand-built renaming Upd′ has no rotation-candidate arm to
 			// resolve through.
-			OracleCheck.allow([.recvPQ])
-			defer { OracleCheck.allow([]) }
 			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 			// A routine (non-hand-built) mechanical round never renames the
 			// credential, so `promoted` would be a no-op and this fault

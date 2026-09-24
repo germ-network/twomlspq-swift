@@ -556,8 +556,6 @@ final class FoldTests: XCTestCase {
 		// entirely — the pre-existing resolver has no arm for a same-id
 		// key-only rotation outside the ring either, so this was never
 		// something it covered in the first place.
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let rotatingMessage = try authorBobCredentialRotation(bob: &bob)
 
@@ -592,8 +590,6 @@ final class FoldTests: XCTestCase {
 	func testFoldedCredentialRotationIsAcceptedAndAdvancesEpoch() throws {
 		// Same reason as `testQueueProposalAcceptsSameIDCredentialRotation`:
 		// `authorBobCredentialRotation` bypasses `rotationCandidate` entirely.
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let rotatingMessage = try authorBobCredentialRotation(bob: &bob)
 		bob.stagedUpdates.append(

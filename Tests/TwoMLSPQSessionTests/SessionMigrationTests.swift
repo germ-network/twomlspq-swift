@@ -1817,8 +1817,6 @@ final class SessionMigrationTests: XCTestCase {
 	/// `BornDedicatedTests.testGeneralizedCatchUpWithoutRecvLeafPrincipal`,
 	/// the recv-side revert (half 1a) in this non-born-dedicated shape too.
 	func testRustWonRotationCatchesUpBothClassicalLeaves() throws {
-		OracleCheck.allow([.sendClassical, .recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try deployedShapedFullyEstablishedTurnOnBob()
 		var parts = try migratedParts(bob)
 		let c = Data("bob-rust-rotated".utf8)

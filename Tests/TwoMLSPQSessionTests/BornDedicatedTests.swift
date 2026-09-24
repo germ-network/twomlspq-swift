@@ -786,8 +786,6 @@ final class BornDedicatedTests: XCTestCase {
 	/// born-dedicated-only `recvLeafPrincipal`-keyed trigger the rule-4
 	/// pin depends on.
 	func testGeneralizedCatchUpWithoutRecvLeafPrincipal() throws {
-		OracleCheck.allow([.recvClassical, .recvPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob, invitationClientID, dedicatedClientID, _) =
 			try SessionTestSupport.establishedDedicatedAndApproved()
 		bob.recvLeafPrincipal = nil
