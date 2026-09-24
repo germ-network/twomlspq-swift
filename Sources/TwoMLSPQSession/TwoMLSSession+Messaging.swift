@@ -226,12 +226,15 @@ extension TwoMLSSession {
 						// (`recvGroup.classical`'s epoch has moved past the
 						// epoch it was staged at). A candidate that DID
 						// converge means a rotation already landed on this
-						// leaf; replacing it here would drop the very key both
-						// classical leaves may already present, bricking every
-						// later `encrypt`/`prepareToEncrypt` — so a second
-						// rotation on a converged leaf is rejected outright
-						// (F2's one-generation cap) until a later slice's PQ
-						// catch-up.
+						// leaf, so a second rotation on a converged leaf is
+						// rejected outright (F2's one-generation cap) until a
+						// later slice's PQ catch-up — lifting the cap is a
+						// separate policy call, not merely a consequence of
+						// send-classical no longer holding a candidate
+						// key that could be stranded. It also keeps at most two targets
+						// (routine + one candidate) ever outstanding per
+						// epoch, bounding `stagedUpdates`/`recvClassical.
+						// pending` the same way.
 						guard
 							isRotationCandidateOutstanding(
 								existing.clientID,
@@ -249,34 +252,14 @@ extension TwoMLSSession {
 						proposedAtRecvEpoch: recv.classical.context.epoch)
 					candidateKey = LeafKey(
 						signingKey: signingKey, signatureKey: signatureKey)
-					// Stage the fresh key into BOTH classical sets — recv-
-					// classical via `stage` (idempotent-safe, though a fresh
-					// mint can never collide with a live target here);
-					// send-classical replaces every OTHER entry, since F2's
-					// one-generation cap means at most one candidate is ever
-					// outstanding for the whole party, but (generalized
-					// catch-up) it KEEPS `pending[mine.current]` when the
-					// send leaf itself still lags — without this, a
-					// migrated session whose send-classical leaf lags after
-					// a rotation Rust won, and which then rotates again
-					// natively, would lose its catch-up key and brick. A
-					// candidate this replaces leaves its own dead
-					// `pending[C_old]` entry behind on recv-classical ONLY —
-					// harmless: no signing site ever reads a target that
-					// isn't the current `rotating` or the retained
-					// catch-up.
+					// Stage the fresh key into recv-classical only, via `stage`
+					// (idempotent-safe, though a fresh mint can never collide
+					// with a live target here). Send-classical never holds
+					// a `pending` entry any more — its own next committing
+					// round mints fresh for whatever id it then presents, so
+					// there is nothing to stage there in advance.
 					try stagedLeafKeys.recvClassical.stage(
 						candidateKey, for: rotating)
-					var sendPending: [Data: LeafKey] = [:]
-					if let mineCurrent = auth.mine.current,
-						let catchUpKey = stagedLeafKeys.sendClassical
-							.pending[
-								mineCurrent]
-					{
-						sendPending[mineCurrent] = catchUpKey
-					}
-					sendPending[rotating] = candidateKey
-					stagedLeafKeys.sendClassical.pending = sendPending
 				}
 				mintedLeafKeys = stagedLeafKeys
 

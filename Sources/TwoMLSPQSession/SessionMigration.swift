@@ -1174,8 +1174,13 @@ public enum SessionMigration {
 		// dropped, never thrown on: A.3 founding always mints its own fresh
 		// key, so nothing here needs it.
 		let sendPQSet = sendPQFounded ? try convertSet(migrated.sendPQ) : GroupKeySet()
+		// A supplied send-classical `pending` entry is dropped, not
+		// converted — the leaf's own next committing round mints fresh for
+		// whatever id it then presents, so nothing here needs one in
+		// advance, and restore rejects a non-empty one.
 		return LeafKeys(
-			sendClassical: try convertSet(migrated.sendClassical),
+			sendClassical: GroupKeySet(
+				current: try migrated.sendClassical.current.map(convertKey)),
 			recvClassical: try convertSet(migrated.recvClassical),
 			sendPQ: sendPQSet,
 			recvPQ: try convertSet(migrated.recvPQ))
@@ -1275,30 +1280,13 @@ public enum SessionMigration {
 		// temporary owner-keyed conversion, not a new gap.
 		let mineCurrent = parts.auth.mine.history.last
 
+		// Send-classical converts `current` only — its own next
+		// committing round mints fresh for whatever id it then presents
+		// (the candidate's, or the identity's own lagging principal), so
+		// this conversion stages nothing into `pending` in advance.
 		let sendOwnLeaf = try TwoMLSSession.ownLeaf(of: sendClassical)
-		let sendOwnID = try basicIdentifier(sendOwnLeaf.credential)
-		var sendClassicalSet = GroupKeySet(
+		let sendClassicalSet = GroupKeySet(
 			current: try lookupClassical(sendOwnLeaf.signatureKey.data))
-		var sendHasCandidateEntry = false
-		if let candidate = parts.rotationCandidate {
-			let sendPresentsCandidate = sendOwnID == candidate.clientID
-			if !sendPresentsCandidate {
-				sendClassicalSet.pending[candidate.clientID] = try lookupClassical(
-					candidate.signatureKey)
-				sendHasCandidateEntry = true
-			}
-		}
-		// (b′) rule 4, generalized: a lagging SEND leaf under the identity's
-		// own canonical principal, when the candidate arm above doesn't
-		// already cover it — new relative to the prior conversion, which
-		// never gave the send side a rule-4 arm at all.
-		if let mineCurrent, parts.identity.clientID == mineCurrent,
-			sendOwnID != mineCurrent,
-			!sendHasCandidateEntry
-		{
-			sendClassicalSet.pending[mineCurrent] = try lookupClassical(
-				parts.identity.signatureKey)
-		}
 
 		var recvClassicalSet: GroupKeySet
 		if let recvClassical {

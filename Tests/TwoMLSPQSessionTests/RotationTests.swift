@@ -1172,14 +1172,15 @@ extension RotationTests {
 		XCTAssertEqual(bob.leafKeys.recvPQ.pending.count, 1)
 	}
 
-	/// Rotation staging must not wipe an already-retained
-	/// send-classical catch-up key for a DIFFERENT, still-outstanding
-	/// target. Bob's send-classical leaf already lags `mine.current`
-	/// (`c`, from an earlier Rust-won rotation), and — before ever
-	/// catching up to `c` — he authors ANOTHER native rotation (to `d`).
-	/// `pending[c]` must still be there afterward, alongside the new
-	/// candidate's own `pending[d]`.
-	func testRotationWhileSendLeafLagsKeepsTheCatchUpKey() throws {
+	/// Rotation staging never touches send-classical at all — its own
+	/// next committing round mints fresh for whatever id it then presents,
+	/// so there is nothing to stage there in advance and nothing for a new
+	/// candidate's own recv-classical staging to disturb. Bob's
+	/// send-classical leaf already lags `mine.current` (`c`, from an
+	/// earlier Rust-won rotation, hand-set here); authoring ANOTHER native
+	/// rotation (to `d`) leaves that entry exactly as it was, and stages
+	/// nothing send-side for `d` either.
+	func testRotationWhileSendLeafLagsLeavesSendClassicalPendingUntouched() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		let c = Data("bob-send-lags".utf8)
 		let (csk, cpk) = try TwoMLSIdentity.mintSignatureKeypair()
@@ -1191,11 +1192,12 @@ extension RotationTests {
 		XCTAssertFalse(prepared.didCommit, "a fresh candidate offer, not a fold")
 		XCTAssertEqual(
 			bob.leafKeys.sendClassical.pending[c]?.signatureKey, cpk,
-			"the pre-existing catch-up key for c survives the d candidate's own staging"
+			"a hand-set send-classical entry is left untouched by recv-side staging"
 		)
-		XCTAssertNotNil(
+		XCTAssertNil(
 			bob.leafKeys.sendClassical.pending[d],
-			"the new candidate's own key is staged too")
+			"the new candidate's key is staged in recv-classical only")
+		XCTAssertEqual(bob.leafKeys.sendClassical.pending.count, 1)
 		XCTAssertEqual(bob.rotationCandidate?.clientID, d)
 	}
 }

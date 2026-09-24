@@ -509,7 +509,7 @@ final class SessionMigrationTests: XCTestCase {
 		let (alice, _) = try fullyEstablishedPair()
 		let native = try alice.makeSessionArchive(kind: .checkpoint)
 		let minted = try SessionMigration.mintArchive(
-			kind: .checkpoint, parts: try migratedParts(alice),
+			kind: .checkpoint, parts: try migratedParts(alice, suppliedLeafKeys: true),
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
@@ -519,7 +519,7 @@ final class SessionMigrationTests: XCTestCase {
 		let (alice, _) = try fullyEstablishedPair()
 		let native = try alice.makeSessionArchive(kind: .core)
 		let minted = try SessionMigration.mintArchive(
-			kind: .core, parts: try migratedParts(alice),
+			kind: .core, parts: try migratedParts(alice, suppliedLeafKeys: true),
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		try assertMintedMatchesNative(minted, native, kind: .core)
@@ -537,7 +537,7 @@ final class SessionMigrationTests: XCTestCase {
 	func testMintDerivesPinsFromRestoredPQTreesAndDropsAStaleLegacyPin() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		let aliceID = alice.identity.clientID
-		var parts = try migratedParts(alice)
+		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.auth.mine.pinned = [Data("legacy-rust-founding-pin-only".utf8)]
 		parts.auth.theirs.pinned = [Data("legacy-rust-founding-pin-only".utf8)]
 
@@ -564,10 +564,11 @@ final class SessionMigrationTests: XCTestCase {
 
 	/// A mid-rotation session — an outstanding `rotationCandidate` plus its
 	/// still-staged classical Upd(self) in `stagedUpdates` — must convert
-	/// to matching `recvClassical`/`sendClassical` `pending` entries, not
-	/// silently drop them: the direct parity check for "the conversion...
-	/// ignores staged/parked proposals" (the classical half; PQ has no
-	/// resolvable-but-new-key migrated scenario here).
+	/// to a matching `recvClassical.pending` entry, not silently drop it:
+	/// the direct parity check for "the conversion... ignores staged/
+	/// parked proposals" (the classical half; PQ has no resolvable-but-
+	/// new-key migrated scenario here). Send-classical never holds a
+	/// pending entry — the candidate's key lives in recv-classical only.
 	func testMintedMidRotationConvertsStagedUpdateAndLeafKeysMatch() throws {
 		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
 		let newID = Data("alice-v2".utf8)
@@ -586,9 +587,9 @@ final class SessionMigrationTests: XCTestCase {
 		XCTAssertFalse(
 			mintedBody.leafKeys.recvClassical.pending.isEmpty,
 			"the staged rotating Upd(self) must convert into recvClassical.pending")
-		XCTAssertFalse(
+		XCTAssertTrue(
 			mintedBody.leafKeys.sendClassical.pending.isEmpty,
-			"the outstanding candidate must convert into sendClassical.pending")
+			"send-classical never holds a pending entry")
 	}
 
 	/// The mint's rotation-shape check: a supplied `MigratedRotationCandidate
@@ -967,7 +968,7 @@ final class SessionMigrationTests: XCTestCase {
 	func testMintedCheckpointRestoresAndKeepsMessaging() throws {
 		var (alice, bob) = try fullyEstablishedPair()
 		let minted = try SessionMigration.mintArchive(
-			kind: .checkpoint, parts: try migratedParts(alice),
+			kind: .checkpoint, parts: try migratedParts(alice, suppliedLeafKeys: true),
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		var restored = try TwoMLSSession.restore(
@@ -1006,6 +1007,73 @@ final class SessionMigrationTests: XCTestCase {
 		let frame = try restored.encrypt(Data("from-restored-bob".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(frame)
 		XCTAssertEqual(decrypted.applicationMessage, Data("from-restored-bob".utf8))
+	}
+
+	/// A supplied send-classical `pending` entry is dropped at mint —
+	/// `.core` and `.checkpoint` alike — never carried through into the
+	/// minted body. Kills: the mint forwarding a supplied send-classical
+	/// pending entry.
+	func testMintDropsSuppliedSendClassicalPending() throws {
+		let (alice, _) = try fullyEstablishedPair()
+		var parts = try migratedParts(alice, suppliedLeafKeys: true)
+		let (smuggledSigningKey, smuggledSignatureKey) =
+			try TwoMLSIdentity.mintSignatureKeypair()
+		var leafKeys = try XCTUnwrap(parts.leafKeys)
+		leafKeys.sendClassical.pending.append(
+			MigratedPendingLeafKey(
+				target: Data("smuggled".utf8),
+				key: MigratedLeafKey(
+					signingKey: smuggledSigningKey.data,
+					signatureKey: smuggledSignatureKey.data)))
+		parts.leafKeys = leafKeys
+
+		for kind: BlobKind in [.core, .checkpoint] {
+			let minted = try SessionMigration.mintArchive(
+				kind: kind, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+			let mintedBody = try minted.decode(SessionArchive.self)
+			XCTAssertTrue(
+				mintedBody.leafKeys.sendClassical.pending.isEmpty,
+				"\(kind): a supplied send-classical pending entry must be dropped")
+		}
+	}
+
+	/// R-5: a deployed-shaped party's one classical key, shared across its
+	/// send- and recv-classical leaves, diverges at each leaf's own first
+	/// native move — the send leaf at its first commit, the recv leaf at
+	/// its first fold — never together. PQ divergence (the first A.5) is
+	/// deferred to the commit that mints per-move PQ keys.
+	func testMigratedSharedKeysDivergeAtEachLeafsNextMove() throws {
+		var (alice, bob, aliceIdentity, _) = try deployedShapedEstablishedAndExchanged()
+		let sharedKey = aliceIdentity.signatureKey
+		XCTAssertEqual(alice.leafKeys.sendClassical.current?.signatureKey, sharedKey)
+		XCTAssertEqual(alice.leafKeys.recvClassical.current?.signatureKey, sharedKey)
+
+		// The first COMMIT: alice approves and folds bob's routine offer,
+		// which diverges her send-classical leaf from the shared key — and,
+		// in the same call, mints her own fresh recv-classical offer.
+		_ = try bob.prepareToEncrypt()
+		let bobOfferFrame = try bob.encrypt(Data("bob-offer".utf8)).frame
+		let bobOfferDecrypted = try alice.processIncomingDecrypted(bobOfferFrame)
+		_ = try alice.queueProposal(digest: bobOfferDecrypted.queuedProposal.digest)
+		let foldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		XCTAssertNotEqual(alice.leafKeys.sendClassical.current?.signatureKey, sharedKey)
+		XCTAssertEqual(
+			alice.leafKeys.recvClassical.current?.signatureKey, sharedKey,
+			"recv-classical has not folded yet")
+
+		// The first FOLD: bob approves and folds alice's own offer (minted
+		// above), which diverges her recv-classical leaf too.
+		let aliceFrame = try alice.encrypt(Data("alice-offer".utf8)).frame
+		let aliceOfferDecrypted = try bob.processIncomingDecrypted(aliceFrame)
+		_ = try bob.queueProposal(digest: aliceOfferDecrypted.queuedProposal.digest)
+		let bobFoldPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(bobFoldPrepared.didCommit)
+		let bobFoldFrame = try bob.encrypt(Data("bob-fold".utf8)).frame
+		_ = try alice.processIncomingDecrypted(bobFoldFrame)
+		XCTAssertNotEqual(alice.leafKeys.recvClassical.current?.signatureKey, sharedKey)
 	}
 
 	// MARK: - AC 4: spent/edge — pre-establishment initiator
@@ -1092,7 +1160,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// entries are lost, the documented scope choice).
 	func testEmptyDerivableWindowsMintAndRestore() throws {
 		let (alice, _) = try fullyEstablishedPair()
-		var parts = try migratedParts(alice)
+		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.listenRendezvous = [:]
 		parts.recvHeaderKeys = [:]
 		parts.recvHeaderKeysPQ = [:]
@@ -1115,7 +1183,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// (whose trial restore runs the same capture) must reject it loudly.
 	func testEmptyAttachmentLedgerIsRejectedAtMint() throws {
 		let (alice, _) = try fullyEstablishedPair()
-		var parts = try migratedParts(alice)
+		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.sendAttachmentLedger = [:]
 
 		XCTAssertThrowsError(
@@ -1172,7 +1240,7 @@ final class SessionMigrationTests: XCTestCase {
 		let rogueKP = try rogueKeyPackage(
 			named: "rogue-their-kp", capabilities: Self.rogueCapabilities)
 
-		var classicalRogueParts = try migratedParts(alice)
+		var classicalRogueParts = try migratedParts(alice, suppliedLeafKeys: true)
 		classicalRogueParts.initialTheirKP = (
 			classical: try rogueKP.mlsEncoded(), pq: try wellCapableKP.mlsEncoded()
 		)
@@ -1185,7 +1253,7 @@ final class SessionMigrationTests: XCTestCase {
 			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 
-		var pqRogueParts = try migratedParts(alice)
+		var pqRogueParts = try migratedParts(alice, suppliedLeafKeys: true)
 		pqRogueParts.initialTheirKP = (
 			classical: try wellCapableKP.mlsEncoded(), pq: try rogueKP.mlsEncoded()
 		)
@@ -1201,7 +1269,7 @@ final class SessionMigrationTests: XCTestCase {
 
 	func testCorruptedClassicalSigningKeyIsRejectedAtMint() throws {
 		let (alice, _) = try fullyEstablishedPair()
-		var parts = try migratedParts(alice)
+		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.identity.signingKey = SecretBytes(randomByteCount: 32)
 
 		XCTAssertThrowsError(
@@ -1219,7 +1287,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// comparison, which is the check that actually catches a mis-mapped key.
 	func testValidButWrongPqLeafSecretIsRejectedAtMint() throws {
 		let (alice, _) = try fullyEstablishedPair()
-		var parts = try migratedParts(alice)
+		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		let (wrongSecret, _) = try SessionTestSupport.pqProvider.hpkeGenerateKeyPair()
 		parts.identity.pqLeafSecretKey = wrongSecret.data
 
@@ -1271,7 +1339,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// rejected at mint.
 	func testInitSecretSuppliedForEstablishedSessionIsRejected() throws {
 		let (alice, _) = try fullyEstablishedPair()
-		var parts = try migratedParts(alice)
+		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.identity.classicalInitSecretKey = SecretBytes(randomByteCount: 32)
 
 		XCTAssertThrowsError(
@@ -1327,7 +1395,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// own send/recv mapping discipline is what prevents that one.
 	func testResponderTopologyWithoutRecvGroupIsRejected() throws {
 		let (alice, _) = try fullyEstablishedPair()
-		var parts = try migratedParts(alice)
+		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.initiated = false
 		parts.recvGroup = nil
 
@@ -1345,7 +1413,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// `restoreStandardPair` fail-closes on its absence.
 	func testStandardHalfWithoutPQSnapshotIsRejected() throws {
 		let (alice, _) = try fullyEstablishedPair()
-		var parts = try migratedParts(alice)
+		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.sendGroup.pq = nil
 
 		XCTAssertThrowsError(
@@ -1367,7 +1435,8 @@ final class SessionMigrationTests: XCTestCase {
 
 		XCTAssertThrowsError(
 			try SessionMigration.mintArchive(
-				kind: .checkpoint, parts: try migratedParts(alice),
+				kind: .checkpoint,
+				parts: try migratedParts(alice, suppliedLeafKeys: true),
 				classicalProvider: wrongProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		) { error in
@@ -1383,7 +1452,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// consumer path, since a Core alone is never restorable.
 	func testMintedCoreAndCheckpointPairReconcilesAndMessages() throws {
 		var (alice, bob) = try fullyEstablishedPair()
-		let parts = try migratedParts(alice)
+		let parts = try migratedParts(alice, suppliedLeafKeys: true)
 
 		var checkpointParts = parts
 		checkpointParts.stateSeq = 5
@@ -1870,11 +1939,13 @@ final class SessionMigrationTests: XCTestCase {
 			shuffledBody.leafSecrets.withUnsafeBytes { Data($0) })
 	}
 
-	/// Generalized catch-up, `.mintSupplied`: every existing own leaf
-	/// whose credential lags `auth.mine.current` — classical AND PQ alike —
-	/// needs `pending[mine.current]` in that group, and a caller that
-	/// supplies it is accepted (subsuming the prior rotation/born-
-	/// dedicated-only cases).
+	/// Generalized catch-up, `.mintSupplied`: every existing own leaf whose
+	/// credential lags `auth.mine.current` needs `pending[mine.current]` in
+	/// that group, and a caller that supplies it is accepted (subsuming the
+	/// prior rotation/born-dedicated-only cases) — recv-classical and both
+	/// PQ groups. Send-classical is the one exception — it never holds
+	/// a `pending` entry, so a supplied one there is silently dropped at
+	/// mint rather than carried through to restore.
 	func testMintSuppliedLeafKeysSatisfyTheGeneralizedCatchUpRuleAcrossAllFourGroups() throws {
 		// Needs both PQ halves genuinely established (not the reservation
 		// shape from before A.3, which requires an EMPTY pending) so a
@@ -1900,6 +1971,8 @@ final class SessionMigrationTests: XCTestCase {
 			signingKey: bob.identity.pqSigningKey.data,
 			signatureKey: bob.identity.pqSignatureKey.data)
 		parts.leafKeys = MigratedLeafKeys(
+			// Supplied anyway, to prove the mint drops it rather than
+			// throwing or carrying it through.
 			sendClassical: withCatchUp(identityClassicalKey),
 			recvClassical: withCatchUp(identityClassicalKey),
 			sendPQ: withCatchUp(identityPQKey),
@@ -1913,9 +1986,7 @@ final class SessionMigrationTests: XCTestCase {
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertEqual(
-			restored.leafKeys.sendClassical.pending[newID]?.signatureKey.data,
-			freshSignatureKey.data)
+		XCTAssertTrue(restored.leafKeys.sendClassical.pending.isEmpty)
 		XCTAssertEqual(
 			restored.leafKeys.recvClassical.pending[newID]?.signatureKey.data,
 			freshSignatureKey.data)

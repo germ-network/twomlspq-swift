@@ -402,19 +402,23 @@ extension TwoMLSSession {
 			? try Self.ownLeafCatchUpTarget(
 				send: sendGroup, mineCurrent: auth.mine.current)
 			: nil
-		// The pending-key lookup runs only when there IS a catch-up target
-		// — never unconditionally — and is captured now, on `self.leafKeys`,
-		// before anything in this round mutates state.
-		let catchUpKey: LeafKey? = try catchUpTargetID.map { target in
-			guard let key = leafKeys.sendClassical.pending[target] else {
-				throw TwoMLSError.credentialUnknown
-			}
-			return key
-		}
 		guard folded != nil || willDischargeBind || catchUpTargetID != nil else {
 			return (false, nil)
 		}
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
+
+		// D3: every committing round presents a FRESH send-classical
+		// key — the catch-up id when one is licensed, else the leaf's own
+		// current id (a same-id key-only move). No `pending` entry is ever
+		// read here any more: a migrated session missing a send-classical
+		// catch-up key now heals, minting fresh instead of throwing
+		// `.credentialUnknown`.
+		let pathID =
+			try catchUpTargetID
+			?? basicIdentifier(Self.ownLeaf(of: send.classical).credential)
+		let (freshSigningKey, freshSignatureKey) =
+			try TwoMLSIdentity.mintSignatureKeypair()
+		let freshKey = LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey)
 
 		return try withDeployedWireConventions {
 			var proposalStore = MLS.RFC9420.ProposalStore()
@@ -543,20 +547,12 @@ extension TwoMLSSession {
 			// sender leaf; `.leafNode`/`.groupInfo` route to the candidate's
 			// NEW key. Absent a catch-up, the single-key sugar over the
 			// resolved current key suffices (identical to CP0/CP1).
-			let sign: MLS.RFC9420.SigningClosure
-			let newIdentity: MLS.RFC9420.NewSigningIdentity?
-			if let catchUpTargetID, let catchUpKey {
-				sign = MLS.RFC9420.signingClosure(
-					classicalProvider, current: try sendClassicalSigningKey(),
-					new: catchUpKey.signingKey)
-				newIdentity = MLS.RFC9420.NewSigningIdentity(
-					credential: .basic(identity: catchUpTargetID),
-					signatureKey: catchUpKey.signatureKey)
-			} else {
-				sign = MLS.RFC9420.signingClosure(
-					classicalProvider, try sendClassicalSigningKey())
-				newIdentity = nil
-			}
+			let sign = MLS.RFC9420.signingClosure(
+				classicalProvider, current: try sendClassicalSigningKey(),
+				new: freshKey.signingKey)
+			let newIdentity = MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: pathID),
+				signatureKey: freshKey.signatureKey)
 
 			let transition = try send.classical.committing(
 				classicalProvider, proposals: proposals,
@@ -587,15 +583,13 @@ extension TwoMLSSession {
 				// construction bug on the send side just as fast.
 				try TwoPartyRules.ensureTwoParty(send.classical)
 
-				// The catch-up's target key is now what `send.classical`'s
-				// own leaf presents — promote it, on a local copy, right
-				// after the apply that actually moved it.
+				// D3: the leaf now presents the fresh key this round just
+				// minted — go straight to `current`, on a local copy, right
+				// after the apply that actually moved it. Send-classical
+				// never holds a `pending` entry any more: the round applies
+				// immediately, so there is nothing left to stage.
 				var updatedLeafKeys = leafKeys
-				if let catchUpTargetID, let catchUpKey {
-					try updatedLeafKeys.sendClassical.promoted(
-						presenting: catchUpKey.signatureKey,
-						id: catchUpTargetID)
-				}
+				updatedLeafKeys.sendClassical = GroupKeySet(current: freshKey)
 
 				// MF4: also remember the newly-landed epoch, so a crossed peer
 				// commit referencing it still resolves even if this session

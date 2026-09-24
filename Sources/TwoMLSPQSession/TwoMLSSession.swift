@@ -281,11 +281,13 @@ public enum PrincipalState: Sendable, Equatable {
 
 /// A minted classical successor, held while a rotation is in flight (a
 /// single candidate at a time) — bookkeeping only: the actual signing key
-/// this candidate names lives in `leafKeys.sendClassical.pending`/
-/// `recvClassical.pending`, seeded from the SAME mint (`prepareToEncrypt
-/// (rotating:)`). Its `.basic(clientID)` is what `NewSigningIdentity`
-/// carries (with that stored key) when authoring the rotation or catching
-/// up the lagging leaf.
+/// this candidate names lives in `leafKeys.recvClassical.pending` alone,
+/// seeded from the SAME mint (`prepareToEncrypt(rotating:)`). Send-classical
+/// never holds a copy: our own commit mints its own fresh key straight into
+/// `current` on apply, independent of any recv-classical candidate. Its
+/// `.basic(clientID)` is what `NewSigningIdentity` carries (with the stored
+/// recv-classical key) when authoring the rotation or catching up the
+/// lagging leaf.
 struct RotationCandidate: Sendable {
 	let clientID: Data
 	/// The `recvGroup.classical` epoch this candidate's rotating `Upd(self)`

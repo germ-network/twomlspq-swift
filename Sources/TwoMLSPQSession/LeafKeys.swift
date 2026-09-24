@@ -341,53 +341,41 @@ extension TwoMLSSession {
 			}
 		}
 
-		// Check 8: whenever a candidate is outstanding, the send leaf not
-		// yet presenting it needs
-		// `sendClassical.pending[C]` REGARDLESS of whether the candidate has
-		// canonicalized; an UNCANONICAL candidate additionally needs
-		// `recvClassical.pending[C]` (the offer awaiting the peer's fold).
-		if let candidate = rotationCandidate {
-			let sendPresentsCandidate =
-				try sendGroup.map {
-					try basicIdentifier(
-						Self.ownLeaf(of: $0.classical).credential)
-						== candidate.clientID
-				} ?? false
-			if !sendPresentsCandidate {
-				guard leafKeys.sendClassical.pending[candidate.clientID] != nil
-				else {
-					throw TwoMLSError.archiveInvalid
-				}
-			}
-			if isRotationCandidateOutstanding(
+		// Check 8: while a candidate is outstanding (not yet canonicalized),
+		// recv-classical needs `pending[C]` (the offer awaiting the peer's
+		// fold). Send-classical never holds a candidate copy — its own
+		// next committing round mints fresh for whatever id it then
+		// presents, so there is nothing to require of it here.
+		if let candidate = rotationCandidate,
+			isRotationCandidateOutstanding(
 				candidate.clientID, mineHistory: auth.mine.history)
-			{
-				guard leafKeys.recvClassical.pending[candidate.clientID] != nil
-				else {
-					throw TwoMLSError.archiveInvalid
-				}
+		{
+			guard leafKeys.recvClassical.pending[candidate.clientID] != nil
+			else {
+				throw TwoMLSError.archiveInvalid
 			}
 		}
-		// `.mintSupplied` only — CLASSICAL only, never PQ: a
-		// recv-PQ pending target may legitimately be a historical id the
-		// classical AS no longer tracks, per check 6 above. Every classical
-		// pending target is plausible (`{mine.current} ∪ authorizedNext`),
-		// and every candidate target (a pending target ≠ `mine.current`)
-		// carries the SAME key in both classical sets, matching
-		// `rotationCandidate`'s own key when it names that target. Does NOT
-		// require every `authorizedNext` id to have a live pending entry —
-		// `authorizedNext` may outlive its candidate (see the type's own
-		// doc, `CredentialAuthentication.swift`).
+		// `.mintSupplied` only — recv-classical only, never PQ (a recv-PQ
+		// pending target may legitimately be a historical id the classical
+		// AS no longer tracks, per check 6 above) and never send-classical
+		// (it holds no pending entry to check). Every recv-classical
+		// pending target is plausible (`{mine.current} ∪ authorizedNext`).
+		// Does NOT require every `authorizedNext` id to have a live pending
+		// entry — `authorizedNext` may outlive its candidate (see the
+		// type's own doc, `CredentialAuthentication.swift`).
 		if mode == .mintSupplied {
 			try requireMintSuppliedRotationShape(leafKeys, auth: auth)
 		}
 
 		// Check 7: any existing own leaf whose credential lags
 		// `auth.mine.current` needs `pending[mine.current]` in that group —
-		// classical, in every mode; PQ, only in `.mintSupplied` (native
-		// sessions mint no PQ catch-up key until a later step's per-move
-		// keys land, and a migrated session converted through the temporary
+		// recv-classical, in every mode; PQ, only in `.mintSupplied` (native
+		// sessions mint no per-move PQ catch-up key yet, and a migrated
+		// session converted through the temporary
 		// owner-keyed fallback can't always supply one either).
+		// Send-classical is a strict-empty case instead (below): its own
+		// next committing round mints fresh for whatever id it then
+		// presents, so it never needs — or is allowed — a held catch-up key.
 		if let recv = recvGroup {
 			try requireCatchUpTargetIfLagging(
 				leafKeys.recvClassical, in: recv.classical,
@@ -401,10 +389,9 @@ extension TwoMLSSession {
 			}
 		}
 		if let send = sendGroup {
-			try requireCatchUpTargetIfLagging(
-				leafKeys.sendClassical, in: send.classical,
-				mineCurrent: auth.mine.current,
-				required: true)
+			guard leafKeys.sendClassical.pending.isEmpty else {
+				throw TwoMLSError.archiveInvalid
+			}
 			if let sendPQGroup = send.pq {
 				try requireCatchUpTargetIfLagging(
 					leafKeys.sendPQ, in: sendPQGroup,
@@ -432,8 +419,8 @@ extension TwoMLSSession {
 	/// `group`'s tree) lag `mineCurrent`? If so and `required`, it must hold
 	/// `pending[mineCurrent]`; if so and NOT `required`, nothing is enforced
 	/// (a native or `.mintConverted`/`.restore` PQ session may simply have
-	/// no catch-up key yet — a later self-drive change is what would consume
-	/// one if supplied). A leaf that does not lag needs nothing here
+	/// no catch-up key yet — nothing today mints one until the PQ leg's
+	/// own per-move keys land). A leaf that does not lag needs nothing here
 	/// regardless.
 	private static func requireCatchUpTargetIfLagging(
 		_ set: GroupKeySet, in group: MLS.RFC9420.Group, mineCurrent: Data?, required: Bool
@@ -449,30 +436,19 @@ extension TwoMLSSession {
 	/// own supplied signature key is cross-checked by the mint itself,
 	/// beside its derive check, against the caller-supplied
 	/// `MigratedRotationCandidate` — this function only sees the native
-	/// `RotationCandidate`, which carries no key of its own.
+	/// `RotationCandidate`, which carries no key of its own. Send-
+	/// classical holds no `pending` entry to cross-check any more (its own
+	/// commit mints fresh, and the mint drops any the caller supplies), so
+	/// this checks recv-classical's shape alone.
 	private static func requireMintSuppliedRotationShape(
 		_ leafKeys: LeafKeys, auth: AuthCore
 	) throws {
 		guard let mineCurrent = auth.mine.current else { throw TwoMLSError.archiveInvalid }
 		let allowedTargets = Set(auth.mine.authorizedNext).union([mineCurrent])
-		for target in leafKeys.sendClassical.pending.keys {
-			guard allowedTargets.contains(target) else {
-				throw TwoMLSError.archiveInvalid
-			}
-		}
 		for target in leafKeys.recvClassical.pending.keys {
 			guard allowedTargets.contains(target) else {
 				throw TwoMLSError.archiveInvalid
 			}
-		}
-		let sendCandidates = leafKeys.sendClassical.pending.filter { $0.key != mineCurrent }
-		let recvCandidates = leafKeys.recvClassical.pending.filter { $0.key != mineCurrent }
-		let candidateTargets = Set(sendCandidates.keys).union(recvCandidates.keys)
-		for target in candidateTargets {
-			guard let sendKey = sendCandidates[target]?.signatureKey,
-				let recvKey = recvCandidates[target]?.signatureKey,
-				sendKey == recvKey
-			else { throw TwoMLSError.archiveInvalid }
 		}
 	}
 

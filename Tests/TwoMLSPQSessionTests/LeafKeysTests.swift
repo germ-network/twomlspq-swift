@@ -319,15 +319,15 @@ final class LeafKeysTests: XCTestCase {
 
 	// MARK: - Archive round-trip with pending entries
 
-	/// Stages a live rotation (so `leafKeys.recvClassical`/`sendClassical`
-	/// both carry a `pending` entry, not just `current`), round-trips
-	/// through `makeSessionArchive`/`restore`, and checks the restored
-	/// `leafKeys` matches the live one field for field.
+	/// Stages a live rotation (so `leafKeys.recvClassical` carries a
+	/// `pending` entry, not just `current` — send-classical never does),
+	/// round-trips through `makeSessionArchive`/`restore`, and checks the
+	/// restored `leafKeys` matches the live one field for field.
 	func testArchiveRoundTripPreservesPendingEntries() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try alice.prepareToEncrypt(rotating: Data("alice-v2".utf8))
 		XCTAssertFalse(alice.leafKeys.recvClassical.pending.isEmpty)
-		XCTAssertFalse(alice.leafKeys.sendClassical.pending.isEmpty)
+		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
 
 		let checkpoint = try alice.stateUpdate(kind: .checkpoint).archive
 		let restored = try TwoMLSSession.restore(
@@ -784,18 +784,18 @@ final class LeafKeysTests: XCTestCase {
 		XCTAssertEqual(finalDecrypted.applicationMessage, Data("post-rotation".utf8))
 	}
 
-	// MARK: - Check 6: a canonical candidate whose send leaf still lags
+	// MARK: - Check 7: send-classical `pending` must be strictly empty
 
-	/// Check 6 requires `sendClassical.pending[C]` whenever
-	/// the send leaf doesn't yet present the candidate, REGARDLESS of
-	/// whether the candidate has already canonicalized — not just while
-	/// it's still uncanonical. Reaches the exact intermediate state (recv-
-	/// leaf converged, send-leaf still lagging, `sendClassical.pending[C]`
-	/// still populated) `testFullClassicalRotationRoundTripsBothLeavesAndPrincipalStates`
-	/// documents between its steps 4 and 5, then strips that one entry and
-	/// confirms `validateLeafKeys` rejects it.
-	func
-		testValidateLeafKeysRejectsACanonicalCandidateWhoseSendLeafStillLagsWithNoPendingEntry()
+	/// Send-classical never holds a `pending` entry — its own next
+	/// committing round mints fresh for whatever id it then presents, so
+	/// restore/mint reject any non-empty `pending` outright, even while a
+	/// canonical candidate's send leaf still genuinely lags. Reaches the
+	/// exact intermediate state (recv-leaf converged, send-leaf still
+	/// lagging) `testFullClassicalRotationRoundTripsBothLeavesAndPrincipalStates`
+	/// documents between its steps 4 and 5, confirms `leafKeys` is
+	/// naturally empty there, then pollutes it with an entry and confirms
+	/// `validateLeafKeys` rejects it.
+	func testValidateLeafKeysRejectsANonEmptySendClassicalPendingEvenWhileACandidateLags()
 		throws
 	{
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -814,14 +814,17 @@ final class LeafKeysTests: XCTestCase {
 				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
 			alice.identity.clientID, "send-classical documentedly still lags here")
 		let candidate = try XCTUnwrap(alice.rotationCandidate)
-		XCTAssertNotNil(alice.leafKeys.sendClassical.pending[candidate.clientID])
+		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
 
-		var strippedLeafKeys = alice.leafKeys
-		strippedLeafKeys.sendClassical.pending[candidate.clientID] = nil
+		let (pollutedSigningKey, pollutedSignatureKey) =
+			try TwoMLSIdentity.mintSignatureKeypair()
+		var polluted = alice.leafKeys
+		polluted.sendClassical.pending[candidate.clientID] = LeafKey(
+			signingKey: pollutedSigningKey, signatureKey: pollutedSignatureKey)
 
 		XCTAssertThrowsError(
 			try TwoMLSSession.validateLeafKeys(
-				strippedLeafKeys, sendGroup: alice.sendGroup,
+				polluted, sendGroup: alice.sendGroup,
 				recvGroup: alice.recvGroup,
 				identity: alice.identity, bootstrapKPSecret: nil,
 				stagedUpdates: alice.stagedUpdates,
@@ -835,7 +838,7 @@ final class LeafKeysTests: XCTestCase {
 			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 
-		// The unmodified `leafKeys` (still carrying the entry) passes.
+		// The unmodified `leafKeys` (strictly empty send-classical `pending`) passes.
 		XCTAssertNoThrow(
 			try TwoMLSSession.validateLeafKeys(
 				alice.leafKeys, sendGroup: alice.sendGroup,
@@ -1139,6 +1142,7 @@ final class LeafKeysTests: XCTestCase {
 			// touched by the faulted `alice`'s own (never-delivered) frame.
 			var bobForRestoreCheck = bob
 			let recvClassicalBeforeThisCall = alice.leafKeys.recvClassical
+			let sendClassicalBeforeThisCall = alice.leafKeys.sendClassical
 
 			TwoMLSSessionTestHooks.armFault(
 				"committingRound.afterWriteBackBeforeRendezvous")
@@ -1148,17 +1152,23 @@ final class LeafKeysTests: XCTestCase {
 
 			_ = try aliceControl.prepareToEncrypt()
 			// The fault fires inside `committingRound` — the send-side half
-			// of `prepareToEncrypt` — so its OWN write-back (send-classical,
-			// both PQ sets) lands exactly as the unfaulted control's does.
+			// of `prepareToEncrypt`. Send-classical mints its key AT the
+			// commit itself (system randomness), so — unlike sendPQ/recvPQ
+			// below, which this round never touches — the faulted call and
+			// the unfaulted control mint INDEPENDENT keys and can never
+			// match byte for byte. What must still hold: the write-back
+			// left `current` set to something new (the mint ran), and
+			// `pending` empty (nothing is ever staged there in advance).
 			// D3's fresh routine-offer mint is the RECV-side half, reached
 			// only after `committingRound` returns; the faulted call never
 			// gets there, so `recvClassical` stays exactly as it was going
 			// into this call, not what the control's own (freshly minted,
 			// randomized) offer left it as.
-			XCTAssertEqual(
-				GroupKeySetArchive(alice.leafKeys.sendClassical),
-				GroupKeySetArchive(aliceControl.leafKeys.sendClassical),
-				"the write-back landed the SAME send-classical value the unfaulted round would have"
+			XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
+			XCTAssertNotEqual(
+				alice.leafKeys.sendClassical.current?.signatureKey,
+				sendClassicalBeforeThisCall.current?.signatureKey,
+				"the write-back must have minted and promoted a new send-classical key"
 			)
 			XCTAssertEqual(
 				GroupKeySetArchive(alice.leafKeys.sendPQ),
@@ -1192,17 +1202,13 @@ final class LeafKeysTests: XCTestCase {
 	/// (`leafKeys = mintedLeafKeys`) followed by a fault right before
 	/// `message.mlsEncoded()` — the newly-staged candidate must already be
 	/// in `leafKeys.recvClassical.pending` even though the proposal never
-	/// gets encoded. Unlike the other three sites, an unfaulted TWIN is
-	/// not the right comparison here: a first-time rotation mints a FRESH
-	/// random candidate key per call, so two independent mints for the
-	/// same target id are expected to differ. The full-value check instead
-	/// confirms the write-back's own internal consistency — the SAME key
-	/// landed in both `sendClassical.pending`/`recvClassical.pending` and
-	/// `rotationCandidate`, exactly as the source comment documents ("stage
-	/// the fresh key into BOTH classical sets"). A live retry IS genuinely
-	/// possible: re-staging the SAME candidate reuses the ALREADY-staged
-	/// key (`existing.clientID == rotating`), not a fresh mint — this is
-	/// `GroupKeySet.stage`'s own documented idempotent no-op.
+	/// gets encoded. An unfaulted TWIN is not the right comparison here: a
+	/// first-time rotation mints a FRESH random candidate key per call, so
+	/// two independent mints for the same target id are expected to
+	/// differ. A live retry IS genuinely possible: re-staging the SAME
+	/// candidate reuses the ALREADY-staged key (`existing.clientID ==
+	/// rotating`), not a fresh mint — this is `GroupKeySet.stage`'s own
+	/// documented idempotent no-op.
 	#if DEBUG
 		func testPrepareToEncryptLeafKeysSurviveAFaultAfterWriteBack() throws {
 			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -1221,10 +1227,10 @@ final class LeafKeysTests: XCTestCase {
 
 			let candidate = try XCTUnwrap(alice.rotationCandidate)
 			XCTAssertEqual(candidate.clientID, newID)
-			let recvPending = try XCTUnwrap(alice.leafKeys.recvClassical.pending[newID])
-			let sendPending = try XCTUnwrap(alice.leafKeys.sendClassical.pending[newID])
-			XCTAssertEqual(recvPending.signingKey.data, sendPending.signingKey.data)
-			XCTAssertEqual(recvPending.signatureKey, sendPending.signatureKey)
+			// Send-classical is never staged in advance — only
+			// recv-classical holds the candidate's key until it converges.
+			XCTAssertNotNil(alice.leafKeys.recvClassical.pending[newID])
+			XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
 
 			// A live retry (re-staging the same id) is the documented
 			// idempotent case, and completes the round.

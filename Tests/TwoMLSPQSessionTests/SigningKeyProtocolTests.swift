@@ -324,11 +324,8 @@ final class SigningKeyProtocolTests: XCTestCase {
 		// recv-classical (the return KP/invitation half) by construction —
 		// no longer gated on D3's still-open rotation gap.
 		XCTAssertNotEqual(bobKeysAfter.sendClassical, bobKeysAfter.recvClassical)
-		XCTExpectFailure(
-			"D3: a committing round must mint a fresh send-classical signature key"
-		) {
-			XCTAssertNotEqual(bobKeysBefore.sendClassical, bobKeysAfter.sendClassical)
-		}
+		// D3: a committing round mints a fresh send-classical signature key.
+		XCTAssertNotEqual(bobKeysBefore.sendClassical, bobKeysAfter.sendClassical)
 		XCTAssertEqual(bobKeysBefore.recvClassical, bobKeysAfter.recvClassical)
 		XCTAssertEqual(bobKeysBefore.sendPQ, bobKeysAfter.sendPQ)
 		XCTAssertEqual(bobKeysBefore.recvPQ, bobKeysAfter.recvPQ)
@@ -542,6 +539,106 @@ final class SigningKeyProtocolTests: XCTestCase {
 			of: XCTUnwrap(alice.recvGroup).classical
 		).signatureKey
 		XCTAssertEqual(presented.data, pendingKey.signatureKey.data)
+	}
+
+	/// Every committing round — a fold, a bind discharge, or a
+	/// catch-up — presents a FRESH send-classical key and leaves `pending`
+	/// empty afterward, never shared with another group. Kills: signing the
+	/// path with `current`; leaving `pending` populated.
+	func testEveryCommitPresentsAFreshSendClassicalKeyAndHoldsNoPending() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+
+		// A bare fold: alice approves bob's routine offer.
+		_ = try bob.prepareToEncrypt()
+		let bobOfferFrame = try bob.encrypt(Data("bob-offer".utf8)).frame
+		let bobOfferDecrypted = try alice.processIncomingDecrypted(bobOfferFrame)
+		_ = try alice.queueProposal(digest: bobOfferDecrypted.queuedProposal.digest)
+		let keyBeforeFold = try XCTUnwrap(alice.leafKeys.sendClassical.current)
+		let foldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let keyAfterFold = try XCTUnwrap(alice.leafKeys.sendClassical.current)
+		XCTAssertNotEqual(
+			keyAfterFold.signatureKey, keyBeforeFold.signatureKey,
+			"a bare fold must mint a fresh send-classical key too")
+		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
+
+		// A catch-up: alice rotates, bob folds it into recv-classical, and
+		// alice's own next committing round catches her send-classical leaf
+		// up to the new id.
+		let newID = Data("alice-v2".utf8)
+		_ = try alice.prepareToEncrypt(rotating: newID)
+		let rotateFrame = try alice.encrypt(Data("rotate".utf8)).frame
+		let rotateDecrypted = try bob.processIncomingDecrypted(rotateFrame)
+		_ = try bob.queueProposal(digest: rotateDecrypted.queuedProposal.digest)
+		let bobFoldPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(bobFoldPrepared.didCommit)
+		let bobFoldFrame = try bob.encrypt(Data("bob-fold".utf8)).frame
+		let aliceCanonicalized = try alice.processIncomingDecrypted(bobFoldFrame)
+		XCTAssertTrue(aliceCanonicalized.ownCredentialCanonicalized)
+
+		let catchUpPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(catchUpPrepared.didCommit)
+		let keyAfterCatchUp = try XCTUnwrap(alice.leafKeys.sendClassical.current)
+		XCTAssertNotEqual(keyAfterCatchUp.signatureKey, keyAfterFold.signatureKey)
+		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
+		XCTAssertNotEqual(
+			keyAfterCatchUp.signatureKey,
+			alice.leafKeys.recvClassical.current?.signatureKey,
+			"the send-classical catch-up key must not equal recv-classical's")
+		XCTAssertNotEqual(
+			keyAfterCatchUp.signatureKey, alice.leafKeys.sendPQ.current?.signatureKey)
+		XCTAssertNotEqual(
+			keyAfterCatchUp.signatureKey, alice.leafKeys.recvPQ.current?.signatureKey)
+	}
+
+	/// After a rotation converges on recv-classical, the send-classical
+	/// leaf's own later catch-up mints its OWN fresh key — it never reuses
+	/// the candidate's key recv-classical now presents. Kills: re-adding
+	/// the send-classical candidate staging this commit removed.
+	func testSendClassicalCatchUpNeverReusesTheCandidateKey() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let newID = Data("alice-v2".utf8)
+
+		_ = try alice.prepareToEncrypt(rotating: newID)
+		let frame1 = try alice.encrypt(Data("rotate-offer".utf8)).frame
+		let decrypted1 = try bob.processIncomingDecrypted(frame1)
+		_ = try bob.queueProposal(digest: decrypted1.queuedProposal.digest)
+		let prepared2 = try bob.prepareToEncrypt()
+		XCTAssertTrue(prepared2.didCommit)
+		let frame2 = try bob.encrypt(Data("bob-fold".utf8)).frame
+		let decrypted2 = try alice.processIncomingDecrypted(frame2)
+		XCTAssertTrue(decrypted2.ownCredentialCanonicalized)
+		let recvClassicalKey = try XCTUnwrap(alice.leafKeys.recvClassical.current)
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
+			alice.identity.clientID, "send-classical documentedly still lags here")
+
+		// Alice's own-leaf catch-up — the send-classical leaf's turn.
+		let prepared3 = try alice.prepareToEncrypt()
+		XCTAssertTrue(prepared3.didCommit)
+		let sendClassicalKey = try XCTUnwrap(alice.leafKeys.sendClassical.current)
+		XCTAssertNotEqual(sendClassicalKey.signatureKey, recvClassicalKey.signatureKey)
+		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
+	}
+
+	/// Restore rejects a non-empty send-classical `pending`, and both
+	/// mint paths drop a supplied one rather than carrying it through.
+	/// Kills: dropping the strict-empty check; the mint forwarding entries.
+	func testRestoreRejectsSendClassicalPending() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		alice.leafKeys.sendClassical.pending[Data("smuggled".utf8)] = LeafKey(
+			signingKey: signingKey, signatureKey: signatureKey)
+		let archive = try alice.makeSessionArchive(kind: .checkpoint)
+		XCTAssertThrowsError(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: archive,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
 	}
 
 	/// D3: a key-only move (a routine offer/fold, either direction) raises
