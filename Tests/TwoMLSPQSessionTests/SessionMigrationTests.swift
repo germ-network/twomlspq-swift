@@ -1259,6 +1259,30 @@ final class SessionMigrationTests: XCTestCase {
 		}
 	}
 
+	/// The id function's own coverage, directly: two windows differing only
+	/// in one offer's proposal bytes (same ref, epoch, group, sender leaf
+	/// index) must hash to different ids. The required A.10 mutation this
+	/// pins down is "the id function drops the proposal bytes or the
+	/// sort" — dropping the proposal bytes from the hash is exactly what
+	/// would make this assertion fail while leaving every mint-level test
+	/// (which also rejects the tampered proposal on STRUCTURAL grounds,
+	/// independent of the id) still passing.
+	func testTheIDFunctionCoversTheProposalBytes() throws {
+		let ref = Data(repeating: 0x11, count: 32)
+		let groupID = Data("group".utf8)
+		let offerA = OwnOfferWindow.SortedOffer(
+			ref: ref, proposal: Data("proposal-a".utf8),
+			leafSecret: SecretBytes(randomByteCount: 32))
+		let offerB = OwnOfferWindow.SortedOffer(
+			ref: ref, proposal: Data("proposal-b".utf8),
+			leafSecret: SecretBytes(randomByteCount: 32))
+		let idA = OwnOfferWindow.id(
+			epoch: 1, groupID: groupID, senderLeafIndex: 0, sorted: [offerA])
+		let idB = OwnOfferWindow.id(
+			epoch: 1, groupID: groupID, senderLeafIndex: 0, sorted: [offerB])
+		XCTAssertNotEqual(idA, idB)
+	}
+
 	/// A single flipped proposal byte changes the id (so a load elsewhere
 	/// fails `.archiveInvalid` on the recompute-and-compare) — the direct
 	/// negative for the id function actually covering the proposal bytes
