@@ -1141,3 +1141,62 @@ final class RotationTests: XCTestCase {
 		XCTAssertEqual(decrypted.newSender, aliceNewID)
 	}
 }
+
+// MARK: - Generalized catch-up retention
+
+@available(iOS 26, macOS 26, *)
+extension RotationTests {
+	/// Item 5: an §A.5 `pqRekeyApply` keeps `recvPQ.pending[mine.current]`
+	/// when the recv-PQ leaf STILL lags after the apply — the apply only
+	/// ever moved a DIFFERENT (send-PQ) leaf, so the retained catch-up key
+	/// for the still-lagging recv-PQ leaf must survive, not just the one
+	/// entry the apply itself touched.
+	func testRekeyApplyRetainsPQCatchUpKey() throws {
+		OracleCheck.allow([.recvPQ])
+		defer { OracleCheck.allow([]) }
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let c = Data("bob-rust-rotated".utf8)
+		let (sk, pk) = try TwoMLSIdentity.mintSignatureKeypair()
+		bob.auth.mine.history.append(c)
+		bob.leafKeys.recvPQ.pending[c] = LeafKey(signingKey: sk, signatureKey: pk)
+		alice.auth.theirs.history.append(c)
+		let upd = try bob.pqRekeyBegin().frame
+		let commit = try alice.pqRekeyRespond(upd).frame
+		_ = try bob.pqRekeyApply(commit)
+		XCTAssertNotEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq)).credential),
+			c, "the apply moved bob's SEND-PQ leaf, not the recv-PQ one")
+		XCTAssertEqual(
+			bob.leafKeys.recvPQ.pending[c]?.signatureKey, pk,
+			"the retained catch-up key")
+		XCTAssertEqual(bob.leafKeys.recvPQ.pending.count, 1)
+	}
+
+	/// Rotation staging must not wipe an already-retained
+	/// send-classical catch-up key for a DIFFERENT, still-outstanding
+	/// target. Bob's send-classical leaf already lags `mine.current`
+	/// (`c`, from an earlier Rust-won rotation), and — before ever
+	/// catching up to `c` — he authors ANOTHER native rotation (to `d`).
+	/// `pending[c]` must still be there afterward, alongside the new
+	/// candidate's own `pending[d]`.
+	func testRotationWhileSendLeafLagsKeepsTheCatchUpKey() throws {
+		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let c = Data("bob-send-lags".utf8)
+		let (csk, cpk) = try TwoMLSIdentity.mintSignatureKeypair()
+		bob.auth.mine.history.append(c)
+		bob.leafKeys.sendClassical.pending[c] = LeafKey(signingKey: csk, signatureKey: cpk)
+
+		let d = Data("bob-new-candidate".utf8)
+		let prepared = try bob.prepareToEncrypt(rotating: d)
+		XCTAssertFalse(prepared.didCommit, "a fresh candidate offer, not a fold")
+		XCTAssertEqual(
+			bob.leafKeys.sendClassical.pending[c]?.signatureKey, cpk,
+			"the pre-existing catch-up key for c survives the d candidate's own staging"
+		)
+		XCTAssertNotNil(
+			bob.leafKeys.sendClassical.pending[d],
+			"the new candidate's own key is staged too")
+		XCTAssertEqual(bob.rotationCandidate?.clientID, d)
+	}
+}

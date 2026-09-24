@@ -1327,6 +1327,38 @@ final class SessionMigrationTests: XCTestCase {
 				classicalProvider: SessionTestSupport.classicalProvider))
 	}
 
+	/// The other half of the id function's coverage: `canonicalOrder`'s own
+	/// sort. Minting the SAME set of offers in two different input orders
+	/// must produce the same window id and a byte-identical archive — the
+	/// id (and the wire shape) depends only on the offer SET, never on the
+	/// order a migrator happened to enumerate them in.
+	func testMintingTheSameOffersInDifferentInputOrdersProducesIdenticalWindows() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let g = try knownSecretOffers(3, in: bob)
+		let parts = try migratedParts(bob)
+		func mint(_ offers: [MigratedOwnOffer]) throws -> MintedOwnOfferWindow {
+			try SessionMigration.mintOwnOfferWindow(
+				MigratedOwnOfferWindow(
+					epoch: g.epoch, groupID: g.groupID, senderLeafIndex: g.leaf,
+					offers: offers),
+				parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider)
+		}
+		let forward = try mint(g.offers)
+		let reordered = [g.offers[2], g.offers[0], g.offers[1]]
+		let shuffled = try mint(reordered)
+
+		XCTAssertEqual(forward.id, shuffled.id)
+		let forwardBody = try forward.archive.decode(OwnOfferWindowArchive.self)
+		let shuffledBody = try shuffled.archive.decode(OwnOfferWindowArchive.self)
+		XCTAssertEqual(forwardBody.refs, shuffledBody.refs)
+		XCTAssertEqual(forwardBody.proposalLengths, shuffledBody.proposalLengths)
+		XCTAssertEqual(forwardBody.proposals, shuffledBody.proposals)
+		XCTAssertEqual(
+			forwardBody.leafSecrets.withUnsafeBytes { Data($0) },
+			shuffledBody.leafSecrets.withUnsafeBytes { Data($0) })
+	}
+
 	/// A.7 (generalized catch-up), `.mintSupplied`: every existing own leaf
 	/// whose credential lags `auth.mine.current` — classical AND PQ alike —
 	/// needs `pending[mine.current]` in that group, and a caller that
@@ -1476,5 +1508,302 @@ final class SessionMigrationTests: XCTestCase {
 		XCTAssertThrowsError(try restored.sendClassicalSigningKey()) { error in
 			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
 		}
+	}
+}
+
+// MARK: - Own-offer window sampling and cap edges
+
+@available(iOS 26, macOS 26, *)
+extension SessionMigrationTests {
+	private func knownSecretOffers(_ n: Int, in bob: TwoMLSSession) throws -> (
+		offers: [MigratedOwnOffer], epoch: UInt64, groupID: Data, leaf: UInt32
+	) {
+		var result: [MigratedOwnOffer] = []
+		var meta: (UInt64, Data, UInt32) = (0, Data(), 0)
+		for _ in 0..<n {
+			let o = try SessionTestSupport.knownSecretOwnOffer(in: bob)
+			// A fresh random ref per offer, not derived from the leaf: the
+			// SPI trial (`insertMigratedOwnUpdate`) never checks that a ref
+			// pairs with any particular leaf, so an arbitrary unique ref is
+			// as good as a genuine one for exercising sampling coverage.
+			result.append(
+				MigratedOwnOffer(
+					ref: SessionTestSupport.classicalProvider.randomBytes(32),
+					proposal: o.bareProposal, leafSecret: o.leafSecret))
+			meta = (o.epoch, o.groupID, o.senderLeafIndex)
+		}
+		return (result, meta.0, meta.1, meta.2)
+	}
+
+	private func withBadSecret(_ offer: MigratedOwnOffer) -> MigratedOwnOffer {
+		MigratedOwnOffer(
+			ref: offer.ref, proposal: offer.proposal,
+			leafSecret: try! SessionTestSupport.classicalProvider.hpkeGenerateKeyPair()
+				.0.data)
+	}
+
+	/// Items 6a/6b: the validator trials the first 64 offers PLUS 64 more
+	/// drawn by the seeded sample — never fewer, and never an unsampled
+	/// offer past the first 64. N = 200, all known-secret (the
+	/// caller-supplied branch, not group-written-back).
+	func testSamplingCoversSeededExtras() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let g = try knownSecretOffers(200, in: bob)
+		let sorted = try OwnOfferWindow.canonicalOrder(g.offers)
+		let id = OwnOfferWindow.id(
+			epoch: g.epoch, groupID: g.groupID, senderLeafIndex: g.leaf, sorted: sorted)
+		let sample = OwnOfferWindow.sampledOfferIndices(count: 200, idSeed: id)
+		XCTAssertEqual(sample.count, 128)
+		XCTAssertEqual(
+			Array(sample.prefix(64)), Array(0..<64), "the first 64 always sampled")
+		let extra = try XCTUnwrap(sample.dropFirst(64).first)
+		let unsampled = try XCTUnwrap((64..<200).first { !sample.contains($0) })
+
+		let parts = try migratedParts(bob)
+		func mint(_ offers: [MigratedOwnOffer]) throws -> MintedOwnOfferWindow {
+			try SessionMigration.mintOwnOfferWindow(
+				MigratedOwnOfferWindow(
+					epoch: g.epoch, groupID: g.groupID, senderLeafIndex: g.leaf,
+					offers: offers),
+				parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider)
+		}
+		XCTAssertEqual(try mint(g.offers).id, id, "control: the genuine window mints")
+
+		var badExtra = g.offers
+		badExtra[extra] = withBadSecret(badExtra[extra])
+		XCTAssertThrowsError(
+			try mint(badExtra), "a seeded extra (index \(extra)) must be trialed"
+		) {
+			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
+		}
+		var badFirst = g.offers
+		badFirst[10] = withBadSecret(badFirst[10])
+		XCTAssertThrowsError(try mint(badFirst), "an offer in the first 64 must be trialed")
+		{
+			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
+		}
+		var badUnsampled = g.offers
+		badUnsampled[unsampled] = withBadSecret(badUnsampled[unsampled])
+		XCTAssertNoThrow(
+			try mint(badUnsampled),
+			"the bounded sample never trials an unsampled offer (index \(unsampled))")
+	}
+
+	/// Items 7a/7b: `validate(cap:)`'s edge — the count equal to the cap is
+	/// accepted, one more than the cap is rejected.
+	func testWindowCapEdge() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let g = try knownSecretOffers(5, in: bob)
+		let group = try XCTUnwrap(bob.recvGroup).classical
+		func validate(_ n: Int, cap: Int) throws {
+			_ = try OwnOfferWindow.validate(
+				MigratedOwnOfferWindow(
+					epoch: g.epoch, groupID: g.groupID, senderLeafIndex: g.leaf,
+					offers: Array(g.offers.prefix(n))),
+				recvClassical: group, myLeafIndex: group.myLeafIndex, cap: cap,
+				provider: SessionTestSupport.classicalProvider)
+		}
+		XCTAssertNoThrow(try validate(4, cap: 4), "count == cap accepted")
+		XCTAssertThrowsError(try validate(5, cap: 4), "count == cap + 1 rejected") {
+			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	private func mintedWithWindow() throws -> (bob: TwoMLSSession, archive: SecretArchive) {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let g = try knownSecretOffers(1, in: bob)
+		let parts = try migratedParts(bob)
+		let archive = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider,
+			deployedState: MigratedDeployedState(
+				ownOffers: MigratedOwnOfferWindow(
+					epoch: g.epoch, groupID: g.groupID, senderLeafIndex: g.leaf,
+					offers: g.offers)))
+		return (bob, archive)
+	}
+
+	private func restorePatched(
+		_ archive: SecretArchive, _ patch: (inout OwnOfferWindowRecord) -> Void
+	) throws -> TwoMLSSession {
+		var body = try archive.decode(SessionArchive.self)
+		var record = try XCTUnwrap(body.deployedCarry?.ownOfferWindow)
+		patch(&record)
+		body.deployedCarry?.ownOfferWindow = record
+		return try TwoMLSSession.restore(
+			core: nil, checkpoint: try SecretArchive(encoding: body),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+	}
+
+	/// Items 7c/7d/8: restore's own window-record checks — the epoch must
+	/// match the rebuilt recv-classical group's own epoch exactly (neither
+	/// direction), and the count must be `<= maximumOfferCount`, not
+	/// `< maximumOfferCount` and not `<= maximumOfferCount + 1`.
+	func testRestoreRejectsBadWindowRecord() throws {
+		let m = try mintedWithWindow()
+		XCTAssertNotNil(try restorePatched(m.archive) { _ in }.ownOfferWindow, "control")
+		XCTAssertThrowsError(try restorePatched(m.archive) { $0.epoch += 1 }) {
+			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
+		}
+		XCTAssertThrowsError(try restorePatched(m.archive) { $0.epoch -= 1 }) {
+			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
+		}
+		XCTAssertNoThrow(
+			try restorePatched(m.archive) {
+				$0.count = UInt32(MigratedOwnOfferWindow.maximumOfferCount)
+			})
+		XCTAssertThrowsError(
+			try restorePatched(m.archive) {
+				$0.count = UInt32(MigratedOwnOfferWindow.maximumOfferCount) + 1
+			}
+		) {
+			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
+		}
+	}
+}
+
+// MARK: - Drop at import
+
+@available(iOS 26, macOS 26, *)
+extension SessionMigrationTests {
+	private func rekeyInitiatedBob() throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession, upd: Data
+	) {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		_ = try bob.pqRekeyBegin()
+		guard case .rekeyInitiated(let upd) = bob.pqInflight else {
+			XCTFail("expected .rekeyInitiated")
+			throw TwoMLSError.sessionNotReady
+		}
+		return (alice, bob, upd)
+	}
+
+	private func restoreMinted(_ parts: MigratedSession) throws -> TwoMLSSession {
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		return try TwoMLSSession.restore(
+			core: nil, checkpoint: minted,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+	}
+
+	/// Item 4b (plus 4c's `pendingSideBand`, asserted here too): a parked
+	/// `Upd′` that DOES verify against the restored recv-PQ group is kept
+	/// whole, `pendingSideBand` intact, and the round still completes.
+	func testValidParkedUpdIsKeptAtImport() throws {
+		var (alice, bob, upd) = try rekeyInitiatedBob()
+		let parts = try migratedParts(bob)
+		var restored = try restoreMinted(parts)
+		guard case .rekeyInitiated(let kept) = restored.pqInflight else {
+			return XCTFail("dropped a valid Upd′")
+		}
+		XCTAssertEqual(kept, upd)
+		XCTAssertEqual(restored.pendingSideBand, bob.pendingSideBand)
+		let updFrame = try restored.pqRekeyBegin().frame
+		let commit = try alice.pqRekeyRespond(updFrame).frame
+		XCTAssertNoThrow(try restored.pqRekeyApply(commit))
+		bob = restored
+	}
+
+	/// Item 4a (plus 4c's `pendingSideBand`, asserted here too): a parked
+	/// `Upd′` that fails to verify against the restored recv-PQ group is
+	/// dropped — `pqInflight` and `pendingSideBand` both cleared,
+	/// `pqTurnMine` left as supplied — and self-drive then opens a plain
+	/// A.4 (C.3) rather than silently stalling.
+	func testUnverifiableParkedUpdIsDroppedAtImport() throws {
+		let (_, bob, upd) = try rekeyInitiatedBob()
+		var tampered = upd
+		tampered[tampered.index(before: tampered.endIndex)] ^= 0xFF
+		var parts = try migratedParts(bob)
+		parts.pqInflight = .rekeyInitiated(updMessage: tampered)
+		parts.pendingSideBand = Frames.encodePQRekeyUpd(tampered)
+		var restored = try restoreMinted(parts)
+		XCTAssertNil(restored.pqInflight)
+		XCTAssertNil(restored.pendingSideBand)
+		XCTAssertTrue(restored.myPQTurn, "pqTurnMine left as supplied")
+
+		_ = try restored.prepareToEncrypt()
+		_ = try restored.encrypt(Data("x".utf8))
+		XCTAssertNotNil(restored.pendingSideBand)
+		XCTAssertEqual(restored.pendingSideBand?.first, Frames.pqEKTag)
+
+		// A present but nil sideband is fine; a mismatched one is
+		// `.archiveInvalid` (never silently repaired).
+		var partsNil = parts
+		partsNil.pendingSideBand = nil
+		XCTAssertNil(try restoreMinted(partsNil).pqInflight)
+		var partsBad = parts
+		partsBad.pendingSideBand = Frames.encodePQRekeyUpd(upd)
+		XCTAssertThrowsError(try restoreMinted(partsBad)) {
+			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// Item 4d: supplied `leafKeys` still carries the dropped round's
+	/// orphaned recv-PQ `pending` entry — it must be removed too, not just
+	/// `pqInflight`/`pendingSideBand`.
+	func testDroppedRoundPendingEntryIsRemoved() throws {
+		let (_, bob, upd) = try rekeyInitiatedBob()
+		var tampered = upd
+		tampered[tampered.index(before: tampered.endIndex)] ^= 0xFF
+		var parts = try migratedParts(bob)
+		parts.pqInflight = .rekeyInitiated(updMessage: tampered)
+		parts.pendingSideBand = nil
+		var lk = migratedLeafKeys(from: bob.leafKeys)
+		let (sk, pk) = try TwoMLSIdentity.mintSignatureKeypair()
+		lk.recvPQ = MigratedGroupKeys(
+			current: lk.recvPQ.current,
+			pending: [
+				MigratedPendingLeafKey(
+					target: bob.identity.clientID,
+					key: MigratedLeafKey(
+						signingKey: sk.data, signatureKey: pk.data))
+			])
+		parts.leafKeys = lk
+		let restored = try restoreMinted(parts)
+		XCTAssertNil(restored.leafKeys.recvPQ.pending[bob.identity.clientID])
+	}
+
+	/// Item 4e: the rule-7 exception — a dropped round's target that IS
+	/// `mine.current` of a still-lagging recv-PQ leaf must be KEPT, not
+	/// removed by the same pruning that discards 4d's orphan.
+	func testDroppedRoundKeepsTheRuleSevenKey() throws {
+		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let c = Data("bob-rust-rotated".utf8)
+		var mirror = try XCTUnwrap(bob.recvGroup)
+		let (fsk, fpk) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (message, _) = try mirror.pq!.proposeUpdate(
+			SessionTestSupport.pqProvider,
+			sign: MLS.RFC9420.signingClosure(
+				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),
+				new: fsk),
+			framing: .publicMessage,
+			newIdentity: MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: c), signatureKey: fpk))
+		var upd = try message.mlsEncoded()
+		upd[upd.index(before: upd.endIndex)] ^= 0xFF
+		var parts = try migratedParts(bob)
+		parts.auth.mine.history.append(c)
+		parts.pqInflight = .rekeyInitiated(updMessage: upd)
+		parts.pendingSideBand = nil
+		let pendingKey = MigratedLeafKey(signingKey: fsk.data, signatureKey: fpk.data)
+		let lk = migratedLeafKeys(from: bob.leafKeys)
+		func plus(_ g: MigratedGroupKeys) -> MigratedGroupKeys {
+			MigratedGroupKeys(
+				current: g.current,
+				pending: [MigratedPendingLeafKey(target: c, key: pendingKey)])
+		}
+		parts.leafKeys = MigratedLeafKeys(
+			sendClassical: plus(lk.sendClassical),
+			recvClassical: plus(lk.recvClassical),
+			sendPQ: plus(lk.sendPQ), recvPQ: plus(lk.recvPQ))
+		let restored = try restoreMinted(parts)
+		XCTAssertNil(restored.pqInflight)
+		XCTAssertEqual(restored.leafKeys.recvPQ.pending[c]?.signatureKey, fpk)
 	}
 }
