@@ -859,11 +859,33 @@ extension TwoMLSSession {
 				continue
 			}
 			let newID = try basicIdentifier(new.credential)
+			// Canonicalize only a credential NEW to the sequence — one
+			// neither already in `history` nor `pinned`. A leaf moving to
+			// an id that's already known is a legitimate catch-up (the
+			// same-id case is `commit`'s own no-op; landing on an already-
+			// canonical, non-head id, or on a pinned evicted-but-presented
+			// id, is a catch-up too), never something for `commit`'s own
+			// rollback check to see — `commit` stays strict, so calling it
+			// on an id it would treat as a rollback candidate is simply
+			// skipped here rather than caught after the fact.
+			// `AuthCore.validateSuccession` (run at `adjudicate`) remains
+			// the only rollback gate. The flags below are set regardless —
+			// a same-id signing-key-only change still canonicalizes
+			// nothing but is still a credential-replaced event worth
+			// surfacing.
 			if leaf == myLeaf {
-				try updated.mine.commit(newID)
+				if !(updated.mine.history.contains(newID)
+					|| updated.mine.pinned.contains(newID))
+				{
+					try updated.mine.commit(newID)
+				}
 				ownCredentialCanonicalized = true
 			} else {
-				try updated.theirs.commit(newID)
+				if !(updated.theirs.history.contains(newID)
+					|| updated.theirs.pinned.contains(newID))
+				{
+					try updated.theirs.commit(newID)
+				}
 				newSender = newID
 			}
 		}

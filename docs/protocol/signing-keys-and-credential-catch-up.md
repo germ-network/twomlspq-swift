@@ -177,7 +177,8 @@ says so.
 | Behavior | Accepted from a peer | Done ourselves | Basis |
 |---|---|---|---|
 | One signing key shared across a party's groups or halves | yes: nothing compares a peer's keys across groups | never | RFC 9420 §16.7 is per group; D1 |
-| Same-id signing-key change on any group | yes | on every own-leaf move | book `group-rules.md:160-161`; D3 |
+| Same-id signing-key change on any group | yes, including on a lagging leaf; canonicalizes nothing | on every own-leaf move | book `group-rules.md:160-161`; D3 |
+| A commit moving the committer's lagging leaf to an already-canonical, non-head id | accepted; canonicalizes nothing | own leaves catch up only to the current canonical id (the "An own leaf..." row below) | book `group-rules.md:149-152` |
 | A peer's offer that catches its leaf up to an already-canonical id | approved and folded | offered; converges once the peer folds it | book `group-rules.md:147-148`; D6 |
 | PQ leaf moving to a new credential id | only to an id already canonical in the AS | only to our own current canonical id | book `group-rules.md:149-152` |
 | A PQ leaf's id and key changing together in one A.5 | yes | yes, with a key freshly minted in that group only | book §A.5; D1 |

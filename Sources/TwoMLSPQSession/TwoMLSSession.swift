@@ -172,10 +172,13 @@ public struct DecryptResult: Sendable {
 	/// (`CredentialPresentation` is `Equatable` over both) — so a peer that
 	/// rotates only its signing key while keeping the SAME id still surfaces
 	/// here, with `newSender` equal to that unchanged id (not literally "a
-	/// different credential"); `canonicalize`'s underlying `PartySequence.
-	/// commit` is idempotent on a same-id re-commit, so this costs nothing
-	/// functionally, but callers should read `newSender` as "the peer's
-	/// current id after this apply," not as proof the id itself changed.
+	/// different credential") — including on a leaf that was already
+	/// lagging: `canonicalize` calls `PartySequence.commit` only for an id
+	/// genuinely new to the sequence, so landing on an already-known
+	/// (in-history or pinned) id canonicalizes nothing, yet `newSender`
+	/// still reports it. Callers should read `newSender` as "the peer's
+	/// current id after this apply," not as proof the id itself changed OR
+	/// that anything was newly canonicalized.
 	/// Also set (slice 11) for a Group_B join that adopts a dedicated
 	/// principal D: `didApplyRemoteCommit` stays `false` there (that Bool
 	/// means "applied a remote *commit*"; a join is not one) — `newSender`
