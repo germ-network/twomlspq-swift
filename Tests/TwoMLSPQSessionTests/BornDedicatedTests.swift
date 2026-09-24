@@ -256,6 +256,16 @@ final class BornDedicatedTests: XCTestCase {
 		// `pqRekeyRespond`, which owns that group as her `sendGroup.pq`,
 		// verifies it and reports the move.
 		let rekeyBegin = try bob.pqRekeyBegin()
+		// C1: the deployed-compatible profile announces the handed-off id.
+		let updBytes = try Frames.decodePQRekeyUpd(alice.openOrRaw(rekeyBegin.frame))
+		guard
+			case .publicMessage(let updPub) = try MLS.RFC9420.Message(
+				mlsEncoded: updBytes)
+		else {
+			return XCTFail("expected a publicMessage-framed Upd′")
+		}
+		XCTAssertEqual(updPub.content.authenticatedData, dedicatedClientID)
+
 		let rekeyRespond = try alice.pqRekeyRespond(rekeyBegin.frame)
 		XCTAssertEqual(rekeyRespond.rotatedCredential, dedicatedClientID)
 

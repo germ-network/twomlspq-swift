@@ -88,9 +88,9 @@ final class SigningKeyProtocolTests: XCTestCase {
 				credential: .basic(identity: newID), signatureKey: freshSignatureKey
 			))
 		proposer.recvGroup = mirror
-		// This hand-built Upd′ bypasses `pqRekeyBegin`, which never mints a
-		// rotating key itself today — stage the fresh key so
-		// `pqRekeyApply`'s promotion can find it when this move lands.
+		// This hand-built Upd′ bypasses `pqRekeyBegin`, which would mint and
+		// stage its own key — stage the fresh key here so `pqRekeyApply`'s
+		// promotion can find it when this move lands.
 		try proposer.leafKeys.recvPQ.stage(
 			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
 			for: newID)
@@ -98,49 +98,31 @@ final class SigningKeyProtocolTests: XCTestCase {
 		return (Frames.encodePQRekeyUpd(bytes), bytes)
 	}
 
-	/// `handBuildPQLeafMoveUpd`, but re-framed with `authenticatedData` — the
-	/// §4 C1 announced id. The leaf's own self-signature (`LeafNodeTBS`) never
-	/// covers `authenticatedData` (RFC 9420 §7.2), so the genuinely
-	/// ring-signed leaf `proposeUpdate` already produced carries over
-	/// unchanged; only the enclosing envelope needs a fresh signature over the
-	/// new authenticated data — built from public swift-mls framing
-	/// (`FramedContent` + `protectPublic`), since 0.1.3's `proposeUpdate` has
-	/// no `authenticatedData:` parameter of its own.
+	/// `handBuildPQLeafMoveUpd`, but with `authenticatedData` — the §4 C1
+	/// announced id, carried via swift-mls 0.1.6's own `proposeUpdate(…
+	/// authenticatedData:)` parameter.
 	private func handBuildPQLeafMoveUpdWithAD(
 		proposer: inout TwoMLSSession, newID: Data, authenticatedData: Data
 	) throws -> (frame: Data, bytes: Data) {
 		var mirror = try XCTUnwrap(proposer.recvGroup)
-		let currentSigningKey = try proposer.recvPQSigningKey()
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (rawMessage, _) = try mirror.pq!.proposeUpdate(
+		let (message, _) = try mirror.pq!.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider,
-				current: currentSigningKey, new: freshSigningKey),
+				current: try proposer.recvPQSigningKey(), new: freshSigningKey),
 			framing: .publicMessage,
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: newID), signatureKey: freshSignatureKey
-			))
-		guard case .publicMessage(let rawPub) = rawMessage else {
-			XCTFail("expected a publicMessage-framed Upd′")
-			throw TwoMLSError.malformedSideBandMessage
-		}
-		let reframed = MLS.RFC9420.FramedContent(
-			groupID: rawPub.content.groupID, epoch: rawPub.content.epoch,
-			sender: rawPub.content.sender, authenticatedData: authenticatedData,
-			content: rawPub.content.content)
-		let sealed = try MLS.RFC9420.protectPublic(
-			SessionTestSupport.pqProvider, content: reframed,
-			groupContext: mirror.pq!.context, confirmationTag: nil,
-			signingKey: currentSigningKey, membershipKey: mirror.pq!.epoch.membershipKey
-		)
+			),
+			authenticatedData: authenticatedData)
 		proposer.recvGroup = mirror
 		// Same reasoning as `handBuildPQLeafMoveUpd` — stage the fresh key
 		// so `pqRekeyApply`'s promotion can find it.
 		try proposer.leafKeys.recvPQ.stage(
 			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
 			for: newID)
-		let bytes = try MLS.RFC9420.Message.publicMessage(sealed).mlsEncoded()
+		let bytes = try message.mlsEncoded()
 		return (Frames.encodePQRekeyUpd(bytes), bytes)
 	}
 
@@ -1188,6 +1170,126 @@ final class SigningKeyProtocolTests: XCTestCase {
 		XCTAssertNil(alice.pqInflight)
 		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
 		XCTAssertEqual(alice.stateSeq, stateSeqBefore)
+	}
+
+	/// A same-id `Upd′` carrying its own (unchanged) id as the announced
+	/// value — the deployed engine's own anomaly-#1 shape, sent on every
+	/// same-id re-open while its send-PQ leaf lags — is accepted, and
+	/// reports no rotation (the leaf never moved). Kills: a cross-check
+	/// gated on an id change.
+	func testSameIDAnnouncedReceiveAcceptedWithNilRotatedCredential() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let bobID = bob.identity.clientID
+
+		let round = try handBuildPQLeafMoveUpdWithAD(
+			proposer: &bob, newID: bobID, authenticatedData: bobID)
+		let response = try alice.pqRekeyRespond(round.frame)
+		XCTAssertNil(response.rotatedCredential)
+	}
+
+	/// A same-id `Upd′` whose announced value disagrees with the leaf's
+	/// (unchanged) id is rejected, exactly like the id-changing mismatch
+	/// case. Kills: a cross-check that compares the announced value to
+	/// `mine`/`theirs.current` instead of the leaf's own presented/proposed
+	/// id.
+	func testSameIDAnnouncedReceiveWithDifferentIDIsRejected() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let bobID = bob.identity.clientID
+
+		let round = try handBuildPQLeafMoveUpdWithAD(
+			proposer: &bob, newID: bobID,
+			authenticatedData: Data("not-bobs-id".utf8))
+		XCTAssertThrowsError(try alice.pqRekeyRespond(round.frame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .rekeyProposalRejected)
+		}
+	}
+
+	// MARK: - §4 C1: the send side
+
+	/// The raw authenticated-data bytes a real `Upd′` frame carries,
+	/// verified against `group` (mirrors `handBuildPQLeafMoveUpd`'s
+	/// decode-only counterparts elsewhere).
+	private func announcedData(
+		inRekeyUpdFrame frame: Data, opener: TwoMLSSession,
+		verifyingAgainst group: MLS.RFC9420.Group
+	) throws -> Data {
+		let updBytes = try Frames.decodePQRekeyUpd(opener.openOrRaw(frame))
+		guard
+			case .publicMessage(let updPub) = try MLS.RFC9420.Message(
+				mlsEncoded: updBytes)
+		else {
+			XCTFail("expected a publicMessage-framed Upd′")
+			throw TwoMLSError.malformedSideBandMessage
+		}
+		_ = try group.verifying(SessionTestSupport.pqProvider, proposal: updPub)
+		return updPub.content.authenticatedData
+	}
+
+	/// A non-lagging `pqRekeyBegin` — the routine, key-only case — carries
+	/// no announcement, under the (default, deployed-compatible) profile.
+	/// Kills: always sending the announcement regardless of profile or id
+	/// change.
+	func testKeyOnlyUpdCarriesNoAnnouncement() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let begin = try bob.pqRekeyBegin()
+		let announced = try announcedData(
+			inRekeyUpdFrame: begin.frame, opener: alice,
+			verifyingAgainst: try XCTUnwrap(alice.sendGroup?.pq))
+		XCTAssertTrue(announced.isEmpty)
+	}
+
+	/// A rotated opener's real `pqRekeyBegin` announces its new id in the
+	/// `Upd′`'s authenticated data, opened and verified by the peer.
+	/// Kills: the AD argument dropped from `proposeUpdate`; the old id
+	/// announced instead of the new.
+	func testCatchUpUpdAnnouncesTheNewID() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let bob2ID = Data("bob-announces-catchup".utf8)
+
+		_ = try bob.prepareToEncrypt(rotating: bob2ID)
+		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
+		if case .initiating = bob.pqInflight {
+			bob.pqInflight = nil
+			bob.pendingSideBand = nil
+		}
+		let decryptedOffer = try alice.processIncomingDecrypted(offerFrame)
+		_ = try alice.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		let foldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
+		_ = try bob.processIncomingDecrypted(foldFrame)
+		XCTAssertEqual(bob.myPrincipalState, .sync(bob2ID))
+		XCTAssertTrue(bob.myPQTurn)
+
+		let begin = try bob.pqRekeyBegin()
+		let announced = try announcedData(
+			inRekeyUpdFrame: begin.frame, opener: alice,
+			verifyingAgainst: try XCTUnwrap(alice.sendGroup?.pq))
+		XCTAssertEqual(announced, bob2ID)
+	}
+
+	/// `TwoMLSSession.rekeyAnnouncement` (pure): the profile gate and the
+	/// same-id/id-changing split, both branches, without driving a real
+	/// session. Kills: ignoring the profile; announcing on key-only moves.
+	func testRekeyAnnouncementByProfile() throws {
+		let oldID = Data("old".utf8)
+		let newID = Data("new".utf8)
+		XCTAssertEqual(
+			TwoMLSSession.rekeyAnnouncement(
+				oldID: oldID, newID: newID, profile: .correct),
+			Data())
+		XCTAssertEqual(
+			TwoMLSSession.rekeyAnnouncement(
+				oldID: oldID, newID: newID, profile: .deployedCompatible),
+			newID)
+		XCTAssertEqual(
+			TwoMLSSession.rekeyAnnouncement(
+				oldID: oldID, newID: oldID, profile: .correct),
+			Data())
+		XCTAssertEqual(
+			TwoMLSSession.rekeyAnnouncement(
+				oldID: oldID, newID: oldID, profile: .deployedCompatible),
+			Data())
 	}
 
 	// MARK: - Committer-leaf move at apply (the live deployed-engine path)

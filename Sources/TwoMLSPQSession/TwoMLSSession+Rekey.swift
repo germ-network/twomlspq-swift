@@ -16,7 +16,8 @@ import MLSProfileRFC9420
 ///
 /// A §A.5 round re-keys ONE PQ group with a standalone `updatePath` Commit′,
 /// ending in the reused A.4/A.3 bind: the turn-holder (INITIATOR) proposes a
-/// plain self-Update into her `recvGroup.pq` mirror (`pqRekeyBegin`); the
+/// self-Update into her `recvGroup.pq` mirror that catches her leaf up to
+/// `auth.mine.current` under a fresh key (`pqRekeyBegin`); the
 /// peer (COMMITTER) folds it into an `includePath: true` commit on the
 /// group it actually owns — `sendGroup.pq` (`pqRekeyRespond`); the
 /// initiator applies that Commit′, exports `S` off the freshly-rekeyed
@@ -41,7 +42,9 @@ extension TwoMLSSession {
 	/// The initiator (whoever holds `pqTurnMine`) begins an §A.5 round:
 	/// propose a self-Update into `recvGroup.pq` — the peer's own PQ
 	/// group, mirrored here, and the one about to be re-keyed — carrying
-	/// our current canonical id whenever our own leaf there lags, and
+	/// our current canonical id whenever our own leaf there lags, with
+	/// that id also announced in the proposal's authenticated data under
+	/// the deployed-compatible profile (C1, `rekeyAnnouncement`), and
 	/// park it as a `0x1B` side-band frame. Idempotent while a begin
 	/// is already outstanding, like `pqBootstrapBegin`.
 	public mutating func pqRekeyBegin() throws -> SideBandResult {
@@ -84,7 +87,9 @@ extension TwoMLSSession {
 			framing: .publicMessage,
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: targetID),
-				signatureKey: freshKey.signatureKey))
+				signatureKey: freshKey.signatureKey),
+			authenticatedData: Self.rekeyAnnouncement(
+				oldID: ownPQID, newID: targetID, profile: profile))
 		recv.pq = recvPQ
 		recvGroup = recv
 		var updatedLeafKeys = leafKeys
@@ -125,7 +130,9 @@ extension TwoMLSSession {
 	/// result as a `0x1D` side-band frame. The proposer's leaf may keep its id
 	/// (any signature-key change) or catch up to an already-canonical one
 	/// (`validatePQLeafMove` against `auth.theirs`); the C1 announced id, when
-	/// present, is cross-checked against the proposed leaf's id. Every check
+	/// present, is cross-checked against the proposed leaf's id. The commit's
+	/// own path leaf moves this party's send-PQ leaf to `auth.mine.current`
+	/// under a freshly minted key. Every check
 	/// runs before any mutation, so a rejected round leaves `self` untouched.
 	/// Every export/write-back is deferred to the success point after the
 	/// commit lands (§13 M3): a throw above that discards the local

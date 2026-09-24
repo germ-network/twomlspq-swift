@@ -17,24 +17,17 @@ import XCTest
 /// turns red once that gap closes — mirrors `SigningKeyProtocolTests`'s and
 /// `LifecycleE2ETests`'s own convention.
 ///
-/// Three real-API gaps recur across these tests (each marker below cites
-/// whichever it hits):
-///  - the trigger (`TwoMLSSession+Ratchet.swift`'s `maybeStageNextRound`)
-///    never checks recv-PQ lag — its own doc comment: "the A.5
-///    `send_pq_leaf_lags` branch is deferred" — so it always opens A.4;
-///  - `pqRekeyBegin()` only ever proposes a same-id refresh (no
-///    `newIdentity:` arm), so a rotated opener can never announce its own
-///    new id;
-///  - `pqRekeyRespond()` never moves the COMMITTER's own leaf (no
-///    `newIdentity:` on its `committing` call), so the reciprocal
-///    catch-up's own half never happens on the wire.
-/// None of these are fabricated for these tests — `handBuildPQLeafMoveUpd`/
-/// `handBuildPQRekeyCommitWithCommitterMove` below hand-build exactly the
-/// content the real calls are missing, then drive the REST of the round
-/// through the real `pqRekeyRespond`/`pqRekeyApply`, which already accept
-/// it (SigningKeyProtocolTests §3) — so a plain assertion after a
-/// hand-built step documents that only the content/trigger is missing, not
-/// the accept/apply mechanics.
+/// One real-API gap recurs across these tests (each marker below cites it):
+/// the trigger (`TwoMLSSession+Ratchet.swift`'s `maybeStageNextRound`) never
+/// checks recv-PQ lag — its own doc comment: "the A.5 `send_pq_leaf_lags`
+/// branch is deferred" — so it always opens A.4, and the reciprocal round is
+/// never self-driven either. Both `pqRekeyBegin()` (a rotated opener's own
+/// id) and `pqRekeyRespond()` (the committer's own catch-up) already carry
+/// their moves for real. `handBuildPQLeafMoveUpd`/
+/// `handBuildPQRekeyCommitWithCommitterMove` below stay in use only to
+/// construct an out-of-order or otherwise non-natively-reachable state for a
+/// specific test's setup, never to paper over a missing gap in the two
+/// calls above.
 @available(iOS 26, macOS 26, *)
 final class ReciprocalCatchUpConformanceTests: XCTestCase {
 
@@ -131,16 +124,15 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	}
 
 	/// Hand-builds `proposer`'s own Upd′ into its recv-PQ mirror: `newID` as
-	/// the leaf's credential and a freshly minted PQ signature key — the
-	/// content a book-conformant `pqRekeyBegin()` would carry when the
-	/// opener itself is the rotated party (`protocol-flows.md:56`), which
-	/// the real call never produces. Copied from
-	/// `SigningKeyProtocolTests.handBuildPQLeafMoveUpd` (private to that
-	/// file) rather than shared, to keep edits to that file minimal.
-	/// This hand-built Upd′ bypasses `pqRekeyBegin`, which never mints a
-	/// rotating key itself today — stage the fresh key so `pqRekeyApply`'s
-	/// promotion can find it when this move lands, mirroring the stored-
-	/// signing-keys update this same helper got in `SigningKeyProtocolTests`.
+	/// the leaf's credential and a freshly minted PQ signature key —
+	/// `pqRekeyBegin()` now produces this content for real when `newID ==
+	/// auth.mine.current`; this helper stays for tests that need an
+	/// out-of-order or otherwise non-natively-reachable target instead.
+	/// Copied from `SigningKeyProtocolTests.handBuildPQLeafMoveUpd` (private
+	/// to that file) rather than shared, to keep edits to that file minimal.
+	/// Stages the fresh key so `pqRekeyApply`'s promotion can find it when
+	/// this move lands, mirroring the stored-signing-keys update this same
+	/// helper got in `SigningKeyProtocolTests`.
 	private func handBuildPQLeafMoveUpd(
 		proposer: inout TwoMLSSession, newID: Data
 	) throws -> (frame: Data, bytes: Data) {
@@ -165,12 +157,14 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 
 	/// Hand-builds the Commit′ that folds `updBytes` into `committer`'s
 	/// send-PQ AND moves the COMMITTER's own leaf to `committerNewID` —
-	/// the reciprocal catch-up's own half (`protocol-flows.md:696-708`),
-	/// which the real `pqRekeyRespond` never builds (no `newIdentity:` on
-	/// its `committing` call) — then APPLIES it onto `committer`'s own
-	/// `sendGroup.pq`, mirroring what the real call would do to `self`.
-	/// Unlike `SigningKeyProtocolTests`'s read-only sibling (which
-	/// deliberately leaves the committer's real state untouched so a
+	/// the reciprocal catch-up's own half (`protocol-flows.md:696-708`).
+	/// `pqRekeyRespond` now does this for real when `committerNewID ==
+	/// auth.mine.current`; this helper stays for tests that construct an
+	/// out-of-order state (e.g. the committer's leaf catching up before the
+	/// reciprocal round would naturally reach it) — then APPLIES it onto
+	/// `committer`'s own `sendGroup.pq`, mirroring what the real call would
+	/// do to `self`. Unlike `SigningKeyProtocolTests`'s read-only sibling
+	/// (which deliberately leaves the committer's real state untouched so a
 	/// later honest round can still use it), this one mutates `committer`
 	/// in place — these tests need to assert the committer's OWN
 	/// post-round state, not just the applier's acceptance of it.
@@ -1280,10 +1274,19 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		try driveOneA4Round(initiator: &bob, responder: &alice)
 		XCTAssertTrue(alice.myPQTurn)
 
-		// Alice opens an A.5 (native path — same-id today).
+		// Alice opens an A.5 — her leaf isn't lagging yet (she rotates
+		// below, AFTER this begin), so it's same-id, with empty AD.
 		let begin = try alice.pqRekeyBegin()
 		// PR2: opened via `bob` — the frame's addressee.
 		let originalUpdBytes = try Frames.decodePQRekeyUpd(bob.openOrRaw(begin.frame))
+		guard
+			case .publicMessage(let originalUpdPub) = try MLS.RFC9420.Message(
+				mlsEncoded: originalUpdBytes)
+		else {
+			XCTFail("expected a publicMessage-framed Upd′")
+			return
+		}
+		XCTAssertTrue(originalUpdPub.content.authenticatedData.isEmpty)
 		guard case .rekeyInitiated = alice.pqInflight else {
 			XCTFail("expected alice to hold .rekeyInitiated")
 			return
@@ -1318,8 +1321,10 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		}
 		XCTAssertEqual(updMessage, originalUpdBytes)
 
-		// It completes normally (same-id — real `pqRekeyBegin` can't
-		// carry the new id; see `testRotatedOpenerAnnouncesItsCurrentID`).
+		// It completes normally, still same-id — a rotation landing mid-
+		// flight never re-mints the round (see
+		// `testRotatedOpenerUpdCarriesCurrentIDAndStagesItsKey` for the
+		// case where the begin itself carries the moved id).
 		let commitFrame = try bob.pqRekeyRespond(begin.frame).frame
 		XCTAssertNoThrow(try alice.pqRekeyApply(commitFrame))
 		XCTAssertNil(alice.pqInflight)

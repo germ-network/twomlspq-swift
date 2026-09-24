@@ -369,10 +369,10 @@ extension TwoMLSSession {
 
 		// Check 7: any existing own leaf whose credential lags
 		// `auth.mine.current` needs `pending[mine.current]` in that group —
-		// recv-classical, in every mode; PQ, only in `.mintSupplied` (native
-		// sessions mint no per-move PQ catch-up key yet, and a migrated
-		// session converted through the temporary
-		// owner-keyed fallback can't always supply one either).
+		// recv-classical, in every mode; PQ, only in `.mintSupplied` (a native
+		// session mints its PQ catch-up key at the move itself, in
+		// `pqRekeyBegin`, and a migrated session converted through the
+		// temporary owner-keyed fallback can't always supply one).
 		// Send-classical is a strict-empty case instead (below): its own
 		// next committing round mints fresh for whatever id it then
 		// presents, so it never needs — or is allowed — a held catch-up key.
