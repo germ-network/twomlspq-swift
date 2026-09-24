@@ -180,7 +180,7 @@ extension TwoMLSSession {
 		return store
 	}
 
-	/// Step 3 (A.5): resolve `commit`'s by-reference own-Update proposals —
+	/// Resolve `commit`'s by-reference own-Update proposals —
 	/// the framed store (`rebuildStagedProposalStore`) first, then, only
 	/// for refs still missing, the caller's own `ownOfferWindow` blob,
 	/// cross-checked against this session's own persisted record
@@ -189,7 +189,7 @@ extension TwoMLSSession {
 	/// safe to run before any other consuming step in `applyFoldCommit`/
 	/// `applyBind`.
 	///
-	/// B-1: authenticates BEFORE ever demanding or loading anything. When
+	/// Authenticates BEFORE ever demanding or loading anything. When
 	/// refs are missing, a probe `validating` call — over the FRAMED store
 	/// ONLY (never the window: not loaded yet) and a PSK resolver that
 	/// always returns `nil` — resolves proposal references before PSKs
@@ -206,10 +206,9 @@ extension TwoMLSSession {
 	/// Returns the store the REAL `validating` call should use, and
 	/// whether a named ref still went unresolved (`windowLacked`) — the
 	/// caller maps a subsequent `unknownProposalReference` from that real
-	/// call to `.ownOfferUnavailable` ONLY when this is `true` (S-6/N-1:
-	/// every other `unknownProposalReference` propagates raw, matching
-	/// today's pre-step-3 behavior for a session with no window record at
-	/// all).
+	/// call to `.ownOfferUnavailable` ONLY when this is `true` — every
+	/// other `unknownProposalReference` propagates raw, matching prior
+	/// behavior for a session with no window record at all.
 	private func resolvingOwnProposals(
 		commit: MLS.RFC9420.PublicMessage, recv: APQGroup,
 		ownOfferWindow suppliedWindow: SecretArchive?
@@ -276,7 +275,7 @@ extension TwoMLSSession {
 		}
 	}
 
-	/// The own-leaf catch-up (§3c, slice 6; generalized by A.7 — step 3): does
+	/// The own-leaf catch-up (§3c; generalized catch-up): does
 	/// `send`'s own classical leaf "lag" — present an id other than
 	/// `mineCurrent` (`auth.mine.current`)? No candidate is needed to answer
 	/// that: `mine.current` only ever moves once SOME leaf has already
@@ -658,9 +657,9 @@ extension TwoMLSSession {
 				return false
 			}
 
-			// Step 3 (A.5): resolve own-Update by-reference proposals — the
+			// Resolve own-Update by-reference proposals — the
 			// framed store first, then (only for refs still missing) the
-			// own-offer window, authenticated first (B-1). Right after the
+			// own-offer window, authenticated first. Right after the
 			// commit decode and the epoch classification, before anything
 			// else consumes `send`/the ledgers — mirrors `applyBind`'s own
 			// placement.
@@ -695,7 +694,7 @@ extension TwoMLSSession {
 					proposals: proposalStore,
 					psk: store.resolver())
 			} catch MLS.RFC9420.GroupError.unknownProposalReference where windowLacked {
-				// Step 3: the supplied window lacked a named ref — terminal,
+				// The supplied window lacked a named ref — terminal,
 				// same authenticated-commit guarantee `resolvingOwnProposals`
 				// already established (its own probe ran this exact
 				// `validating` shape first).
@@ -745,7 +744,7 @@ extension TwoMLSSession {
 			sendAttachmentLedger = attachmentLedger
 			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
-			// Step 3: drain the own-offer window record — `recvGroup.
+			// Drain the own-offer window record — `recvGroup.
 			// classical`'s epoch just advanced, the only two sites it ever
 			// does (here and `applyBind`'s own success point below), and
 			// the host may delete its stored blob once this call's own
@@ -814,7 +813,7 @@ extension TwoMLSSession {
 	/// presents rather than depend on that AS-level event agreeing with it;
 	/// retention likewise runs regardless, since `stagedUpdates` goes stale
 	/// at every advance regardless of which leaf this particular commit
-	/// moved. Generalized by A.7 (step 3): the retained rule-4 target is
+	/// moved. Generalized catch-up: the retained rule-4 target is
 	/// `authCopy.mine.current` itself whenever the post-apply leaf still
 	/// lags it — subsumes the born-dedicated-only case (`recvLeafPrincipal`/
 	/// `identity` are no longer needed here: kept as unread records on
@@ -928,7 +927,7 @@ extension TwoMLSSession {
 				return false
 			}
 
-			// Step 3 (A.5): resolve own-Update by-reference proposals here,
+			// Resolve own-Update by-reference proposals here,
 			// EARLY — right after the commit decode, before anything in the
 			// PQ half below runs. Valid because the PQ half never touches
 			// `recv.classical` (only `recv.pq`), so this authenticates and
@@ -1051,7 +1050,7 @@ extension TwoMLSSession {
 					proposals: proposalStore,
 					psk: classicalResolver)
 			} catch MLS.RFC9420.GroupError.unknownProposalReference where windowLacked {
-				// Step 3: the supplied window lacked a named ref — terminal,
+				// The supplied window lacked a named ref — terminal,
 				// same authenticated-commit guarantee `resolvingOwnProposals`
 				// already established for this staple.
 				throw TwoMLSError.ownOfferUnavailable
@@ -1106,7 +1105,7 @@ extension TwoMLSSession {
 			sendAttachmentLedger = attachmentLedger
 			recvAttachmentLedger = recvAttachmentLedgerLocal
 			stagedUpdates = []
-			// Step 3: drain the own-offer window record — see
+			// Drain the own-offer window record — see
 			// `applyFoldCommit`'s own comment; this is the ONLY other site
 			// `recvGroup.classical`'s epoch advances.
 			self.ownOfferWindow = nil

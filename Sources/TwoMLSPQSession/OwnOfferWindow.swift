@@ -4,13 +4,13 @@ import MLSCodec
 @_spi(Migration) import MLSProfileRFC9420
 import SecretBytes
 
-// MARK: - The own-offer window: id, blob and rule-10 validation (step 3)
+// MARK: - The own-offer window: id, blob and rule-10 validation
 //
 // A `MigratedOwnOfferWindow` is minted into its OWN blob (`SessionMigration.
 // mintOwnOfferWindow`), never into the session archives — this file owns the
 // ONE shared window-id function both mints call (so they agree given the
 // same input), the blob's own columnar wire shape (O(1) `SecretArchive`
-// nodes regardless of offer count — §A.9 scale), and rule 10's validation
+// nodes regardless of offer count at scale), and rule 10's validation
 // (including the full swift-mls SPI trial on a bounded sample).
 
 @available(iOS 26, macOS 26, *)
@@ -45,8 +45,7 @@ enum OwnOfferWindow {
 
 	/// The ONE window-id function both mints call — SHA-256 (not the
 	/// cipher-suite hash: the id must not depend on the classical suite)
-	/// over a canonical, framed encoding of exactly the fields the shapes
-	/// doc names:
+	/// over a canonical, framed encoding of exactly these fields:
 	/// `"twomlspq-swift own-offer window v1" ‖ u64be(epoch) ‖
 	/// u32be(|groupID|) ‖ groupID ‖ u32be(senderLeafIndex) ‖ u32be(count) ‖
 	/// for each offer in ascending ref order: ref(32) ‖ u32be(|proposal|) ‖
@@ -83,7 +82,7 @@ enum OwnOfferWindow {
 	/// INPUT ORDER, plus up to 64 more drawn WITHOUT REPLACEMENT from the
 	/// rest, picked by a `SplitMix64` seeded on the window id's first 8
 	/// bytes (big-endian) — deterministic given the same `offers` array and
-	/// id, which is exactly what B.2 requires of both mints (N-5).
+	/// id, which both mints must agree on given the same input.
 	static func sampledOfferIndices(count: Int, idSeed: Data) -> [Int] {
 		let firstCount = min(64, count)
 		var indices = Array(0..<firstCount)
@@ -186,13 +185,13 @@ enum OwnOfferWindow {
 		return (id, targets)
 	}
 
-	// MARK: - Runtime load (step 3, A.5)
+	// MARK: - Runtime load
 
 	/// Decodes `archive`, checks its own shape (format, ascending unique
 	/// refs, matching lengths), and cross-checks the recomputed id and the
 	/// three hoisted fields against `record` — the session's own persisted
 	/// carry. Every failure is `.archiveInvalid`: a wrong or stale blob
-	/// reads exactly like a corrupt one (N-1).
+	/// reads exactly like a corrupt one.
 	static func loadAndVerify(
 		_ archive: SecretArchive, record: OwnOfferWindowRecord
 	) throws -> [SortedOffer] {
@@ -302,7 +301,7 @@ private struct SplitMix64 {
 // MARK: - The blob wire shape (`MintedOwnOfferWindow.archive`'s body)
 
 /// Columnar so the number of `SecretArchive` nodes stays O(1) regardless of
-/// offer count (§A.9): four flat fields instead of about one struct — and
+/// offer count: four flat fields instead of about one struct — and
 /// four `SecretArchive` nodes — per offer.
 struct OwnOfferWindowArchive: Codable, Sendable {
 	static let currentFormat: UInt64 = 1

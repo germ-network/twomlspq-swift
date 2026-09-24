@@ -105,7 +105,7 @@ struct OwedBind: Sendable, Codable {
 	}
 }
 
-/// Step 3: the persisted record of a session's own-offer window — hoisted
+/// The persisted record of a session's own-offer window — hoisted
 /// fields plus the count, NOT the window itself (which rides its own
 /// separate, host-owned blob — `MigratedOwnOfferWindow`/
 /// `MintedOwnOfferWindow`, never the session archives). `id` is what
@@ -619,7 +619,7 @@ public struct TwoMLSSession: Sendable {
 	/// `0x01` staple before the signed contract-26 handoff wraps it.
 	var owesEstablishmentEnvelope: Bool = false
 
-	// MARK: Migration inputs on stored per-group signing keys (step 3)
+	// MARK: Migration inputs on stored per-group signing keys
 
 	/// The migrated deployed engine's own-offer window record, when this
 	/// session was minted (or restored) with one — the window BLOB itself
@@ -644,19 +644,19 @@ public struct TwoMLSSession: Sendable {
 	/// it through `pendingOutbound()`.
 	var initialAppPayload: Data? = nil
 	/// The migrated deployed engine's set of groups this session presently
-	/// has no signing custody over — the owner-decided read-only query
-	/// (C.1), exposed as the raw set. Signing in such a group throws
+	/// has no signing custody over — a read-only query,
+	/// exposed as the raw set. Signing in such a group throws
 	/// `.leafCustodyUnavailable`; self-drive never opens a round that needs
 	/// one. Monotonically drained (never re-added) the moment a promotion
 	/// gives the group a `current` key (`StateUpdate.swift`'s choke point).
 	public internal(set) var noCustody: Set<MigratedGroupRole> = []
 
-	/// Owner-decided read-only query (C.1): whether a PQ side-band round
+	/// Read-only query: whether a PQ side-band round
 	/// has wedged past its point of no return. Never blocks owed-bind
 	/// discharge or classical messaging.
 	public var pqSideBandWedged: Bool { pqWedge != nil }
 
-	/// Owner-decided read-only query (C.1): true when both classical roles
+	/// Read-only query: true when both classical roles
 	/// currently have signing custody and the session is established — a
 	/// recv-classical no-custody session cannot even mint its own
 	/// `Upd(self)`.
@@ -665,7 +665,7 @@ public struct TwoMLSSession: Sendable {
 			&& !noCustody.contains(.recvClassical)
 	}
 
-	/// Step 3 (A.5): the id of this session's own-offer window record, if
+	/// The id of this session's own-offer window record, if
 	/// one is outstanding. Only ever moves from a value to `nil` (the drain
 	/// at every `recvGroup.classical` epoch advance) — never to a
 	/// DIFFERENT id. `nil` means the host may delete its stored blob once

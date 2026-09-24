@@ -9,8 +9,9 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// Step 3 runtime behavior: the own-offer window's detection/load/drain
-/// path (A.5), the PQ wedge doors (A.6), and the no-custody guards (A.6) —
+/// The migrated deployed-state runtime behavior: the own-offer window's
+/// detection/load/drain path, the PQ wedge doors, and the
+/// no-custody guards —
 /// driven directly on live (non-migrated) sessions via internal field
 /// manipulation (`@testable import`), which is exactly equivalent to what a
 /// migrated session's restored state presents to this same runtime code
@@ -19,7 +20,7 @@ import XCTest
 @available(iOS 26, macOS 26, *)
 final class DeployedStateTests: XCTestCase {
 
-	// MARK: - Own-offer window: detection, load, drain (A.5)
+	// MARK: - Own-offer window: detection, load, drain
 
 	/// Hand-builds a genuinely-signed, unframed own-Update offer against
 	/// `session.recvGroup.classical` (mirrors `RotationTests.
@@ -120,13 +121,13 @@ final class DeployedStateTests: XCTestCase {
 		return (record, blob)
 	}
 
-	/// The core A.5 round trip: a missing ref with no window supplied is
+	/// The core own-offer window round trip: a missing ref with no window supplied is
 	/// retryable and burns no state; supplying the window resolves it,
 	/// applies the fold, and drains the record.
 	func testMissingOwnOfferRefRequiresThenResolvesFromTheWindowAndDrains() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
-		// which the oracle's pre-step-3 resolvers can never explain.
+		// which the oracle's pre-existing resolvers can never explain.
 		OracleCheck.allow([.recvClassical])
 		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -171,7 +172,7 @@ final class DeployedStateTests: XCTestCase {
 	func testAMultiOfferWindowResolvesARefThatIsNotFirstInInputOrder() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
-		// which the oracle's pre-step-3 resolvers can never explain.
+		// which the oracle's pre-existing resolvers can never explain.
 		OracleCheck.allow([.recvClassical])
 		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -242,7 +243,7 @@ final class DeployedStateTests: XCTestCase {
 	func testCommittingRoundsSendSideWriteBackNeverDrainsTheWindow() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
-		// which the oracle's pre-step-3 resolvers can never explain.
+		// which the oracle's pre-existing resolvers can never explain.
 		OracleCheck.allow([.recvClassical])
 		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -297,7 +298,7 @@ final class DeployedStateTests: XCTestCase {
 	func testWindowLackingTheNamedRefIsTerminal() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
-		// which the oracle's pre-step-3 resolvers can never explain.
+		// which the oracle's pre-existing resolvers can never explain.
 		OracleCheck.allow([.recvClassical])
 		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -316,13 +317,13 @@ final class DeployedStateTests: XCTestCase {
 		}
 	}
 
-	/// B-1: a commit whose framing signature/membership tag fails to
+	/// A commit whose framing signature/membership tag fails to
 	/// verify must never reach `.ownOfferWindowRequired`/
 	/// `.ownOfferUnavailable` — authentication runs first, always.
 	func testForgedCommitSignatureNeverDemandsTheWindow() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
-		// which the oracle's pre-step-3 resolvers can never explain.
+		// which the oracle's pre-existing resolvers can never explain.
 		OracleCheck.allow([.recvClassical])
 		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -354,7 +355,7 @@ final class DeployedStateTests: XCTestCase {
 	func testTamperedWindowBlobFailsTheIDCheck() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
-		// which the oracle's pre-step-3 resolvers can never explain.
+		// which the oracle's pre-existing resolvers can never explain.
 		OracleCheck.allow([.recvClassical])
 		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -384,13 +385,13 @@ final class DeployedStateTests: XCTestCase {
 		}
 	}
 
-	// MARK: - PQ side-band wedge (A.6)
+	// MARK: - PQ side-band wedge
 
 	/// The three wedge doors — `pqBootstrapJoin`, `pqRatchetBind`,
 	/// `pqRekeyApply` — throw `.pqSideBandWedged` with no state change.
 	/// Exercised concretely for `pqRekeyApply`; the other two doors gate
 	/// with the identical `guard pqWedge == nil else { throw
-	/// .pqSideBandWedged }` placed right after their own decode (S-2), so
+	/// .pqSideBandWedged }` placed right after their own decode, so
 	/// the same proof generalizes.
 	func testWedgedSessionRejectsPQRekeyApplyWithNoStateChange() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
@@ -438,11 +439,11 @@ final class DeployedStateTests: XCTestCase {
 		XCTAssertNil(bob.pqInflight)
 	}
 
-	// MARK: - No-custody guards (A.6)
+	// MARK: - No-custody guards
 
 	/// The signing-key accessors: a nil `current` maps to
 	/// `.leafCustodyUnavailable` when the role is flagged `noCustody`, else
-	/// to the pre-step-3 `.credentialUnknown` (an unexpected/corrupt
+	/// to the original `.credentialUnknown` (an unexpected/corrupt
 	/// state). Exercised for `sendClassicalSigningKey`; the other three
 	/// accessors follow the identical pattern.
 	func testSigningKeyAccessorDistinguishesNoCustodyFromCredentialUnknown() throws {
@@ -525,7 +526,7 @@ final class DeployedStateTests: XCTestCase {
 			"drained once current is genuinely present")
 	}
 
-	// MARK: - Read-only queries (C.1)
+	// MARK: - Read-only queries
 
 	func testCanSendReflectsBothClassicalRolesAndEstablishment() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -565,7 +566,7 @@ extension DeployedStateTests {
 		return (record, try SecretArchive(encoding: body))
 	}
 
-	/// Item 6x: the caller-supplied `leafSecret` branch resolves end to end
+	/// The caller-supplied `leafSecret` branch resolves end to end
 	/// when no group-held pair exists for the offer at all
 	/// (`knownSecretOwnOffer` never writes back to the group).
 	func testSuppliedSecretResolvesAtRuntime() throws {
@@ -596,7 +597,7 @@ extension DeployedStateTests {
 		XCTAssertNil(bob.ownOfferWindow)
 	}
 
-	/// Item 6x: a supplied `leafSecret` that doesn't match the offer's own
+	/// A supplied `leafSecret` that doesn't match the offer's own
 	/// HPKE public key is unusable — the caller-supplied branch actually
 	/// runs, it isn't skipped.
 	func testWrongSuppliedSecretIsUnavailable() throws {
@@ -624,7 +625,7 @@ extension DeployedStateTests {
 		}
 	}
 
-	/// Item 2b: a verified FRAMED copy of an own Update always wins over a
+	/// A verified FRAMED copy of an own Update always wins over a
 	/// window entry naming the SAME ref with a different (but validly
 	/// shaped) proposal/secret — the framed store is never overwritten by
 	/// the window's copy.

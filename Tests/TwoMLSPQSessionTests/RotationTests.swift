@@ -1146,7 +1146,7 @@ final class RotationTests: XCTestCase {
 
 @available(iOS 26, macOS 26, *)
 extension RotationTests {
-	/// Item 5: an §A.5 `pqRekeyApply` keeps `recvPQ.pending[mine.current]`
+	/// An §A.5 `pqRekeyApply` keeps `recvPQ.pending[mine.current]`
 	/// when the recv-PQ leaf STILL lags after the apply — the apply only
 	/// ever moved a DIFFERENT (send-PQ) leaf, so the retained catch-up key
 	/// for the still-lagging recv-PQ leaf must survive, not just the one

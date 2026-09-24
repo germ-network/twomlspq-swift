@@ -348,11 +348,11 @@ public struct MigratedSession: Sendable {
 	public var initialTheirKP: (classical: Data, pq: Data)?
 	public var recvLeafPrincipal: MigratedRecvLeafPrincipal?
 	public var owesEstablishmentEnvelope: Bool
-	/// Step 3, rule 1: per-group signing keys — authoritative when present.
+	/// Rule 1: per-group signing keys — authoritative when present.
 	/// `nil` falls back to the temporary owner-keyed conversion
 	/// (`convertDeployedKeys`), deleted once every migrator supplies this.
 	public var leafKeys: MigratedLeafKeys?
-	/// Step 3, rule 9: non-empty only for a pre-join initiator. Stored and
+	/// Rule 9: non-empty only for a pre-join initiator. Stored and
 	/// validated only — there is no host accessor; a later step's envelope/
 	/// pre-establishment change consumes it through `pendingOutbound()`.
 	public var initialAppPayload: Data?
@@ -780,8 +780,8 @@ public enum SessionMigration {
 
 		// Rule 10 (the window), when `deployedState` carries one — shares
 		// the id function and validation with `mintOwnOfferWindow`, so the
-		// two calls' ids always agree given the same window (B.2 #1: same
-		// array, unchanged, to both).
+		// two calls' ids always agree given the same window (the same
+		// array, unchanged, goes to both).
 		var windowTargets: [(id: Data, signatureKey: MLS.SignaturePublicKey)] = []
 		var ownOfferWindowRecord: OwnOfferWindowRecord?
 		if let window = deployedState?.ownOffers {
@@ -1010,7 +1010,7 @@ public enum SessionMigration {
 	/// Mint the own-offer window into its OWN blob — never into the session
 	/// archives (`MigratedDeployedState.ownOffers`, consumed here rather
 	/// than by `mintArchive`, is what a migrator that also wants the record
-	/// on `mintArchive` passes to BOTH calls unchanged, per B.2 #1). Runs
+	/// on `mintArchive` passes to BOTH calls unchanged). Runs
 	/// the SAME `OwnOfferWindow.validate` (rule 10) `mintArchive` runs when
 	/// `deployedState.ownOffers` is present, so the two calls' ids always
 	/// agree given the same window.
@@ -1096,7 +1096,7 @@ public enum SessionMigration {
 		return secret
 	}
 
-	/// Rule 1's authoritative path (step 3): `migrated`, derive-checked and
+	/// Rule 1's authoritative path: `migrated`, derive-checked and
 	/// converted 1:1 to the native `LeafKeys` shape — no lookup, no search,
 	/// unlike `convertDeployedKeys` below (which this supersedes once every
 	/// migrator supplies real per-group keys of its own).
@@ -1213,7 +1213,7 @@ public enum SessionMigration {
 			throw TwoMLSError.archiveInvalid
 		}
 
-		// A.7 (step 3, generalized catch-up): "lags" means the leaf presents
+		// Generalized catch-up: "lags" means the leaf presents
 		// an id other than `mineCurrent`. This conversion can only supply a
 		// rule-7 `pending[mineCurrent]` entry when it actually holds a key
 		// for `mineCurrent` — the rotation candidate's, when outstanding, or
@@ -1239,7 +1239,7 @@ public enum SessionMigration {
 		}
 		// (b′) rule 4, generalized: a lagging SEND leaf under the identity's
 		// own canonical principal, when the candidate arm above doesn't
-		// already cover it — new relative to the pre-A.7 conversion, which
+		// already cover it — new relative to the prior conversion, which
 		// never gave the send side a rule-4 arm at all.
 		if let mineCurrent, parts.identity.clientID == mineCurrent,
 			sendOwnID != mineCurrent,
@@ -1265,7 +1265,7 @@ public enum SessionMigration {
 				recvClassicalSet.pending[candidate.clientID] = try lookupClassical(
 					candidate.signatureKey)
 			}
-			// (b) rule 4, generalized (A.7): a lagging RECV leaf under the
+			// (b) rule 4, generalized: a lagging RECV leaf under the
 			// identity's own canonical principal — subsumes the
 			// born-dedicated-only case (`recvLeafPrincipal` stays an unread
 			// record until step 5).

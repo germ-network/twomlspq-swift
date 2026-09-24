@@ -49,7 +49,7 @@ extension TwoMLSSession {
 		// `0x01` staple and make `installEstablishmentEnvelope` fail
 		// `.sessionNotReady` forever.
 		try ensureEstablishmentDelegated()
-		// Step 3: no-custody guard, before `committingRound()` — it writes
+		// No-custody guard, before `committingRound()` — it writes
 		// `recvGroup` even for a bare catch-up-only round
 		// (`TwoMLSSession+ClassicalCommit.swift`'s cross-party PSK export).
 		guard !noCustody.contains(.sendClassical), !noCustody.contains(.recvClassical)
@@ -72,7 +72,7 @@ extension TwoMLSSession {
 		// forever with no fold ever able to canonicalize it.
 		let myCurrentID = try basicIdentifier(Self.ownLeaf(of: recv.classical).credential)
 
-		// Slice 11 / step 3 (group-rules.md rule 4, generalized —
+		// Slice 11 (group-rules.md rule 4, generalized —
 		// protocol-flows.md:56): the recv-leaf catch-up — my own recv-leaf
 		// still "lags" (presents an id other than `auth.mine.current`),
 		// whatever put it there: the born-dedicated acceptor's Group_A leaf
@@ -192,7 +192,7 @@ extension TwoMLSSession {
 					// mint can never collide with a live target here);
 					// send-classical replaces every OTHER entry, since F2's
 					// one-generation cap means at most one candidate is ever
-					// outstanding for the whole party, but (A.7, generalized
+					// outstanding for the whole party, but (generalized
 					// catch-up) it KEEPS `pending[mine.current]` when the
 					// send leaf itself still lags — without this, a
 					// migrated session whose send-classical leaf lags after
@@ -362,7 +362,7 @@ extension TwoMLSSession {
 	/// also dispatches a STANDALONE `0x01`/`0x0B` frame (no `0x03` wrapper),
 	/// and PAUSES on a `0x0B` (stapled or standalone) while `recvGroup ==
 	/// nil` rather than joining — see `IncomingResult`.
-	/// `ownOfferWindow` (step 3, A.5): the caller's own-offer window blob,
+	/// `ownOfferWindow`: the caller's own-offer window blob,
 	/// supplied only on a retry after `.ownOfferWindowRequired` — `nil`
 	/// otherwise (the common case). Consulted ONLY when a staple's commit
 	/// references an own-Update by a ref this session's framed

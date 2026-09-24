@@ -402,7 +402,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// disagrees with it is discarded whole, never partially trusted.
 	case establishmentCreatorMismatch
 
-	// MARK: Migration inputs on stored per-group signing keys (step 3)
+	// MARK: Migration inputs on stored per-group signing keys
 
 	/// A staple's commit referenced an own-offer ref not in the framed
 	/// store, and no `ownOfferWindow` blob was supplied to resolve it.
