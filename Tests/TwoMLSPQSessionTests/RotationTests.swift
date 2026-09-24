@@ -218,7 +218,7 @@ final class RotationTests: XCTestCase {
 			SessionTestSupport.classicalProvider, proposals: [],
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.classicalProvider,
-				current: bob.identity.signingKey, new: freshSigningKey),
+				current: try bob.sendClassicalSigningKey(), new: freshSigningKey),
 			randomness: try .generate(SessionTestSupport.classicalProvider),
 			includePath: true, framing: .publicMessage,
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
@@ -684,7 +684,7 @@ final class RotationTests: XCTestCase {
 	/// presenting the NEW key, so the old signature does not verify.
 	func testOldKeyIsRejectedAfterRotation() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
-		let aliceOldSigningKey = alice.identity.signingKey
+		let aliceOldSigningKey = try alice.sendClassicalSigningKey()
 		let aliceNewID = Data("alice-old-key-test".utf8)
 
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
@@ -807,7 +807,8 @@ final class RotationTests: XCTestCase {
 					.reference(ref),
 					.proposal(.add(mallory.keyPackage.classical)),
 				],
-				proposalStore: proposalStore, signingKey: bob.identity.signingKey,
+				proposalStore: proposalStore,
+				signingKey: try bob.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
 				includePath: true, framing: .publicMessage)
 			return try transition.takeOutput().message.mlsEncoded()
@@ -863,7 +864,8 @@ final class RotationTests: XCTestCase {
 				proposals: [],
 				sign: MLS.RFC9420.signingClosure(
 					SessionTestSupport.classicalProvider,
-					current: bob.identity.signingKey, new: freshSigningKey),
+					current: try bob.sendClassicalSigningKey(),
+					new: freshSigningKey),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
 				includePath: true, framing: .publicMessage,
 				newIdentity: MLS.RFC9420.NewSigningIdentity(
@@ -966,7 +968,8 @@ final class RotationTests: XCTestCase {
 		let neverOfferedID = Data("mallory-bind-never-offered".utf8)
 
 		let (proposalMessage, _) = try recv.classical.proposeUpdate(
-			SessionTestSupport.classicalProvider, signingKey: aliceIdentity.signingKey,
+			SessionTestSupport.classicalProvider,
+			signingKey: try alice.recvClassicalSigningKey(),
 			framing: .publicMessage)
 		let proposalBytes = try proposalMessage.mlsEncoded()
 		let proposalHash = try SessionTestSupport.classicalProvider.hash(proposalBytes)
@@ -977,7 +980,7 @@ final class RotationTests: XCTestCase {
 					SessionTestSupport.classicalProvider, proposals: proposals,
 					sign: MLS.RFC9420.signingClosure(
 						SessionTestSupport.classicalProvider,
-						current: aliceIdentity.signingKey,
+						current: try alice.sendClassicalSigningKey(),
 						new: freshSigningKey),
 					randomness: try .generate(
 						SessionTestSupport.classicalProvider),

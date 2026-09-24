@@ -464,15 +464,59 @@ final class LeafKeysTests: XCTestCase {
 		}
 	}
 
+	/// A pre-A.3 acceptor's send-PQ holds no reservation: a smuggled
+	/// `current` is rejected, matching check 4's send-PQ arm.
+	func testRestoreRejectsAPreA3SendPQReservation() throws {
+		let bob = try SessionTestSupport.establishedAndExchanged().bob
+		XCTAssertNil(bob.sendGroup?.pq)
+		let archive = try bob.makeSessionArchive(kind: .checkpoint)
+		var body = try archive.decode(SessionArchive.self)
+		let smuggled = GroupKeySet(current: try freshKey())
+		body.leafKeys.sendPQ = GroupKeySetArchive(smuggled)
+		// Keep the manifest fingerprint honest about the smuggled value —
+		// otherwise `verifyManifestFingerprintsMatchRestoredLeafKeys` would
+		// catch this first, leaving check 4 itself unpinned.
+		body.sendPQKeysFingerprint = smuggled.fingerprint
+
+		XCTAssertThrowsError(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: try SecretArchive(encoding: body),
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// Twin of the above: the canonical present-but-empty shape restores
+	/// cleanly.
+	func testRestoreAcceptsAPreA3SendPQPresentButEmpty() throws {
+		let bob = try SessionTestSupport.establishedAndExchanged().bob
+		XCTAssertNil(bob.sendGroup?.pq)
+		let archive = try bob.makeSessionArchive(kind: .checkpoint)
+		let body = try archive.decode(SessionArchive.self)
+		let sendPQ = try XCTUnwrap(
+			body.leafKeys.sendPQ, "a Checkpoint always carries a present-but-empty set")
+		XCTAssertNil(sendPQ.current)
+		XCTAssertTrue(sendPQ.pending.isEmpty)
+
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: try SecretArchive(encoding: body),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		XCTAssertNil(restored.leafKeys.sendPQ.current)
+	}
+
 	/// Check 7 through the full restore path: a born-dedicated Bob still
 	/// lagging (his recv-classical leaf still presents the invitation's
 	/// id, not yet caught up to his own identity) must carry
 	/// `recvClassical.pending[identity.clientID]` — stripping it is
 	/// rejected.
 	func testRestoreRejectsCheck7ThroughTheFullPath() throws {
-		let bob = try SessionTestSupport.establishedDedicated(bob: "bob-d").bob
+		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
+		let bob = established.bob
 		XCTAssertNotNil(bob.recvLeafPrincipal)
-		let target = bob.identity.clientID
+		let target = established.dedicatedClientID
 		let archive = try bob.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
 		XCTAssertTrue(
@@ -518,7 +562,7 @@ final class LeafKeysTests: XCTestCase {
 		XCTAssertTrue(dischargeDecrypted.didApplyRemoteCommit)
 		XCTAssertFalse(dischargeDecrypted.ownCredentialCanonicalized)
 		XCTAssertNotNil(
-			bob.leafKeys.recvClassical.pending[bob.identity.clientID],
+			bob.leafKeys.recvClassical.pending[established.dedicatedClientID],
 			"rule-4 target must survive an advance that did not fold it")
 
 		let checkpoint = try bob.makeSessionArchive(kind: .checkpoint)
@@ -526,7 +570,8 @@ final class LeafKeysTests: XCTestCase {
 			core: nil, checkpoint: checkpoint,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertNotNil(restored.leafKeys.recvClassical.pending[restored.identity.clientID])
+		XCTAssertNotNil(
+			restored.leafKeys.recvClassical.pending[established.dedicatedClientID])
 
 		_ = try bob.prepareToEncrypt()
 		let offer = try bob.encrypt(Data("o".utf8)).frame
@@ -540,21 +585,29 @@ final class LeafKeysTests: XCTestCase {
 
 	// MARK: - Seeding tables: initiate / receive / born-dedicated receive
 
-	/// `initiate`'s seeding table: pre-join, all four groups reserve to
-	/// `identity`'s own two per-half keys (classical for both classical
-	/// sets, PQ for both PQ sets) — there is only one identity yet, so
-	/// send and recv agree exactly, and every `pending` is empty.
+	/// `initiate`'s seeding table: send-classical/send-PQ each present a
+	/// freshly minted founding leaf — never `identity`'s own KP halves,
+	/// which stay reserved for recv-classical (the return KP) and recv-PQ
+	/// (KP′). Every `pending` is empty pre-join.
 	func testInitiateSeedsAllFourSetsToIdentitysOwnKeys() throws {
 		let alice = try SessionTestSupport.established().alice
 		XCTAssertNil(alice.recvGroup)
 
 		XCTAssertEqual(
+			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.sendGroup?.classical))
+				.signatureKey,
+			alice.leafKeys.sendClassical.current?.signatureKey)
+		XCTAssertNotEqual(
 			alice.leafKeys.sendClassical.current?.signatureKey,
 			alice.identity.signatureKey)
 		XCTAssertEqual(
 			alice.leafKeys.recvClassical.current?.signatureKey,
 			alice.identity.signatureKey)
 		XCTAssertEqual(
+			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.sendGroup?.pq))
+				.signatureKey,
+			alice.leafKeys.sendPQ.current?.signatureKey)
+		XCTAssertNotEqual(
 			alice.leafKeys.sendPQ.current?.signatureKey, alice.identity.pqSignatureKey)
 		XCTAssertEqual(
 			alice.leafKeys.recvPQ.current?.signatureKey, alice.identity.pqSignatureKey)
@@ -566,21 +619,25 @@ final class LeafKeysTests: XCTestCase {
 		}
 	}
 
-	/// Plain (non-dedicated) `receive`'s seeding table: send and recv
-	/// classical agree (both the founder/invitation identity's own key —
-	/// there is no split, since nothing needs to catch up), and send/recv
-	/// PQ agree too (recv-PQ joins Group_A under the same identity that
-	/// founded Group_B's send side). No `recvLeafPrincipal`, no `pending`.
+	/// Plain (non-dedicated) `receive`'s seeding table: send-classical
+	/// presents a fresh founding leaf (credential = the invitation id);
+	/// recv-classical presents the invitation identity's own key (the
+	/// half this session actually joined Group_A with); send-PQ is empty
+	/// (not founded until A.3); recv-PQ presents the same invitation
+	/// identity's PQ half. No `recvLeafPrincipal`, no `pending`.
 	func testPlainReceiveSeedsSendAndRecvClassicalToTheSameIdentity() throws {
 		let bob = try SessionTestSupport.established().bob
 		XCTAssertNil(bob.recvLeafPrincipal)
 
 		XCTAssertEqual(
+			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.sendGroup?.classical))
+				.signatureKey,
+			bob.leafKeys.sendClassical.current?.signatureKey)
+		XCTAssertNotEqual(
 			bob.leafKeys.sendClassical.current?.signatureKey, bob.identity.signatureKey)
 		XCTAssertEqual(
 			bob.leafKeys.recvClassical.current?.signatureKey, bob.identity.signatureKey)
-		XCTAssertEqual(
-			bob.leafKeys.sendPQ.current?.signatureKey, bob.identity.pqSignatureKey)
+		XCTAssertNil(bob.leafKeys.sendPQ.current)
 		XCTAssertEqual(
 			bob.leafKeys.recvPQ.current?.signatureKey, bob.identity.pqSignatureKey)
 		for set in [
@@ -591,35 +648,45 @@ final class LeafKeysTests: XCTestCase {
 		}
 	}
 
-	/// Born-dedicated `receive`'s seeding table: `session.identity` is D
-	/// (the dedicated principal) throughout, so send-classical/send-PQ
-	/// present D's OWN keys from the moment Group_B is founded — but
-	/// recv-classical still presents the INVITATION identity (D has not
-	/// caught up there yet), with D's key staged at
-	/// `pending[D.clientID]` (rule 4's target), and recv-PQ joins under
-	/// the invitation identity's already-signed PQ leaf (also not yet D's).
+	/// Born-dedicated `receive`'s seeding table: `session.identity` stays
+	/// the INVITATION bundle throughout — D is a credential
+	/// id plus its own fresh founding leaf and catch-up key, never a
+	/// separate identity bundle. send-classical presents D's fresh
+	/// founding leaf from the moment Group_B is founded; recv-classical
+	/// still presents the invitation identity (D has not caught up
+	/// there yet), with D's fresh catch-up key staged at
+	/// `pending[D.clientID]` (rule 4's target); send-PQ is empty (not
+	/// founded until A.3); recv-PQ joins under the invitation identity's
+	/// already-signed PQ leaf (also not yet D's).
 	func testBornDedicatedReceiveSeedsSendToDAndRecvClassicalToTheInvitationWithDPending()
 		throws
 	{
 		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
 		let bob = established.bob
-		XCTAssertEqual(bob.identity.clientID, established.dedicatedClientID)
+		XCTAssertEqual(bob.identity.clientID, established.invitationClientID)
 		let invitationCustody = try XCTUnwrap(bob.recvLeafPrincipal)
 		XCTAssertEqual(invitationCustody.clientID, established.invitationClientID)
+		XCTAssertEqual(bob.myPrincipalState, .sync(established.dedicatedClientID))
 
+		let sendClassicalKey = try XCTUnwrap(bob.leafKeys.sendClassical.current)
 		XCTAssertEqual(
-			bob.leafKeys.sendClassical.current?.signatureKey, bob.identity.signatureKey,
-			"send-classical presents D from the moment Group_B is founded")
+			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.sendGroup?.classical))
+				.signatureKey, sendClassicalKey.signatureKey,
+			"send-classical presents D's fresh founding leaf from the moment Group_B is founded"
+		)
+		XCTAssertNotEqual(sendClassicalKey.signatureKey, bob.identity.signatureKey)
 		XCTAssertEqual(
 			bob.leafKeys.recvClassical.current?.signatureKey,
 			invitationCustody.signatureKey,
 			"recv-classical still presents the invitation identity, not yet D")
+		// The rule-4 catch-up key (book group-rules.md:143-158 rule 4) is
+		// minted separately from the founding leaf's key — never the same
+		// pair.
 		let recvPending = try XCTUnwrap(
 			bob.leafKeys.recvClassical.pending[established.dedicatedClientID])
-		XCTAssertEqual(recvPending.signatureKey, bob.identity.signatureKey)
+		XCTAssertNotEqual(recvPending.signatureKey, sendClassicalKey.signatureKey)
 
-		XCTAssertEqual(
-			bob.leafKeys.sendPQ.current?.signatureKey, bob.identity.pqSignatureKey)
+		XCTAssertNil(bob.leafKeys.sendPQ.current)
 		XCTAssertEqual(
 			bob.leafKeys.recvPQ.current?.signatureKey, invitationCustody.pqSignatureKey,
 			"recv-PQ joins Group_A under the invitation identity's PQ leaf")
@@ -1013,23 +1080,26 @@ final class LeafKeysTests: XCTestCase {
 	// MARK: - The oracle catches what nothing else in this call would
 
 	/// Proves the oracle does independent work, not merely duplicate a
-	/// check something else already makes: swaps `sendClassical.current`'s
+	/// check something else already makes: swaps `recvPQ.current`'s
 	/// SIGNING key for an unrelated one while leaving its SIGNATURE key
 	/// untouched (still matching the tree — `assertLeafKeysPresented`
 	/// passes; `LeafKey` enforces no derivation relationship between its
-	/// two fields). A plain `prepareToEncrypt()` here commits nothing (see
-	/// `testChokePointCorruptionOfEachSetFailsClosed`'s own reasoning) and
-	/// so does not throw — nothing else in this call ever reads, let alone
+	/// two fields). recv-PQ (KP′) is still `identity`'s own key, so it
+	/// stays inside the oracle's narrowed resolve scope, unlike
+	/// send-classical/send-PQ (always fresh founding leaves the frozen
+	/// oracle can never resolve). A plain classical `prepareToEncrypt()`
+	/// with the turn on the peer touches neither PQ group at all, so it
+	/// does not throw — nothing else in this call ever reads, let alone
 	/// verifies, this specific key. `OracleCheck.mismatches(in:)` is the
 	/// one thing that notices, and reports exactly this slot. Mutation-
 	/// tested: making `OracleCheck.run` a no-op (or `mismatches` itself
 	/// vacuous) leaves the entire suite green except this direct assertion.
 	func testOracleCatchesAMismatchedStoredKeyNothingElseInThisCallWouldNotice() throws {
-		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
-		let realSignatureKey = try XCTUnwrap(alice.leafKeys.sendClassical.current)
+		var (alice, _) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let realSignatureKey = try XCTUnwrap(alice.leafKeys.recvPQ.current)
 			.signatureKey
 		let (wrongSigningKey, _) = try TwoMLSIdentity.mintSignatureKeypair()
-		alice.leafKeys.sendClassical.current = LeafKey(
+		alice.leafKeys.recvPQ.current = LeafKey(
 			signingKey: wrongSigningKey, signatureKey: realSignatureKey)
 
 		// `withMissesIgnored` only silences the INSTALLED observer's own
@@ -1043,7 +1113,7 @@ final class LeafKeysTests: XCTestCase {
 			)
 		}
 		XCTAssertEqual(
-			OracleCheck.mismatches(in: alice), ["sendClassical.current: byte mismatch"],
+			OracleCheck.mismatches(in: alice), ["recvPQ.current: byte mismatch"],
 			"only the oracle's own comparison catches a signing/signature mismatch "
 				+ "nothing in this call signs with or verifies")
 	}
@@ -1349,6 +1419,28 @@ final class LeafKeysTests: XCTestCase {
 				pqProvider: SessionTestSupport.pqProvider)
 			_ = try restored.pqRekeyApply(commitFrame)
 			XCTAssertNotNil(restored.owedBind)
+		}
+
+		/// `pqBootstrapRespond` registers its founding key in the SAME
+		/// non-throwing block as the group write-back, before
+		/// `recordPQHeaderKey()` — a fault right after that write-back must
+		/// still leave `sendGroup.pq` founded AND `leafKeys.sendPQ.current`
+		/// already presenting its key, so the very next state-advancing
+		/// call's choke point (`assertLeafKeysPresented`) passes even though
+		/// this call itself threw.
+		func testPQBootstrapRespondRegistersTheFoundingKeyWithTheGroup() throws {
+			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+			let kpFrame = try alice.pqBootstrapBegin().frame
+
+			TwoMLSSessionTestHooks.armFault("pqBootstrapRespond.afterWriteBack")
+			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
+			XCTAssertThrowsError(try bob.pqBootstrapRespond(kpFrame))
+
+			let sendPQGroup = try XCTUnwrap(
+				bob.sendGroup?.pq, "the founded group survives the fault")
+			let presentedKey = try TwoMLSSession.ownLeaf(of: sendPQGroup).signatureKey
+			XCTAssertEqual(bob.leafKeys.sendPQ.current?.signatureKey, presentedKey)
+			try bob.assertLeafKeysPresented()
 		}
 	#endif
 

@@ -583,8 +583,7 @@ public enum SessionMigration {
 	///   (the 32-byte rules), `validateLeafKeys`'s own checks failing
 	///   against the converted parts (an own current-epoch
 	///   staged/pending/parked Update naming a key the converted
-	///   `leafKeys` doesn't hold, a reservation not matching `identity`,
-	///   or an outstanding rotation candidate / rule-4 catch-up target
+	///   `leafKeys` doesn't hold, or an outstanding rotation candidate / rule-4 catch-up target
 	///   incoherent with its expected `pending` entry), or any other
 	///   structural inconsistency the trial restore rejects.
 	public static func mintArchive(
@@ -780,7 +779,8 @@ public enum SessionMigration {
 		var leafKeys: LeafKeys
 		let mode: LeafKeysValidationMode
 		if let migratedLeafKeys = parts.leafKeys {
-			leafKeys = try nativeLeafKeys(migratedLeafKeys)
+			leafKeys = try nativeLeafKeys(
+				migratedLeafKeys, sendPQFounded: sendPQ != nil)
 			mode = .mintSupplied
 		} else {
 			leafKeys = try convertDeployedKeys(
@@ -1137,7 +1137,9 @@ public enum SessionMigration {
 	/// converted 1:1 to the native `LeafKeys` shape — no lookup, no search,
 	/// unlike `convertDeployedKeys` below (which this supersedes once every
 	/// migrator supplies real per-group keys of its own).
-	private static func nativeLeafKeys(_ migrated: MigratedLeafKeys) throws -> LeafKeys {
+	private static func nativeLeafKeys(
+		_ migrated: MigratedLeafKeys, sendPQFounded: Bool
+	) throws -> LeafKeys {
 		func convertKey(_ key: MigratedLeafKey) throws -> LeafKey {
 			guard key.signingKey.byteCount == 32, key.signatureKey.count == 32,
 				try InvitationMigration.derivedEd25519Public(from: key.signingKey)
@@ -1160,10 +1162,15 @@ public enum SessionMigration {
 			return GroupKeySet(
 				current: try groupKeys.current.map(convertKey), pending: pending)
 		}
+		// A pre-A.3 acceptor's supplied `sendPQ` (whatever shape it carries
+		// — a reservation, or the canonical present-but-empty set) is
+		// dropped, never thrown on: A.3 founding always mints its own fresh
+		// key, so nothing here needs it.
+		let sendPQSet = sendPQFounded ? try convertSet(migrated.sendPQ) : GroupKeySet()
 		return LeafKeys(
 			sendClassical: try convertSet(migrated.sendClassical),
 			recvClassical: try convertSet(migrated.recvClassical),
-			sendPQ: try convertSet(migrated.sendPQ),
+			sendPQ: sendPQSet,
 			recvPQ: try convertSet(migrated.recvPQ))
 	}
 
@@ -1344,9 +1351,10 @@ public enum SessionMigration {
 					try TwoMLSSession.ownLeaf(of: sendPQ).signatureKey.data)
 			)
 		} else {
-			// The pre-A.3 acceptor's reservation.
-			sendPQSet = GroupKeySet(
-				current: try lookupPQ(parts.identity.pqSignatureKey))
+			// A pre-A.3 acceptor holds no send-PQ reservation: A.3 founding
+			// mints its own fresh key, so nothing here needs to name one in
+			// advance.
+			sendPQSet = GroupKeySet()
 		}
 
 		var recvPQSet: GroupKeySet

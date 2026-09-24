@@ -188,6 +188,56 @@ final class InvitationTests: XCTestCase {
 		XCTAssertNotNil(invitation.combinerKeyPackage)
 	}
 
+	/// Two sessions accepted off ONE last-resort invitation each found their
+	/// own send group on their own fresh leaf: distinct send-classical keys
+	/// from the moment each is founded, and — once each independently runs
+	/// its own §A.3 — distinct send-PQ keys too. Their RECV keys are equal
+	/// by design: both join the SAME invitation KeyPackage, so recv-classical
+	/// and recv-PQ share the one published half.
+	func testLastResortInvitationSessionsShareNoSendGroupKey() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let carolPrincipal = try makePrincipal("carol")
+		let bobPrincipal = try makePrincipal("bob")
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+
+		var aliceRound = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
+		var carolRound = try acceptOneWelcome(from: carolPrincipal, into: &invitation)
+
+		let aliceBobSendKey = try XCTUnwrap(aliceRound.bob.leafKeys.sendClassical.current)
+		let carolBobSendKey = try XCTUnwrap(carolRound.bob.leafKeys.sendClassical.current)
+		XCTAssertNotEqual(aliceBobSendKey.signatureKey, carolBobSendKey.signatureKey)
+
+		// recv-classical (the invitation's own published classical half) IS
+		// shared, by design.
+		XCTAssertEqual(
+			aliceRound.bob.leafKeys.recvClassical.current?.signatureKey,
+			carolRound.bob.leafKeys.recvClassical.current?.signatureKey)
+
+		// Alice becomes established (and gains a `recvGroup` to run §A.3
+		// against) only once she processes bob's first inbound frame.
+		_ = try aliceRound.bob.prepareToEncrypt()
+		let aliceHello = try aliceRound.bob.encrypt(Data("hi".utf8)).frame
+		_ = try aliceRound.alice.processIncomingDecrypted(aliceHello)
+		_ = try carolRound.bob.prepareToEncrypt()
+		let carolHello = try carolRound.bob.encrypt(Data("hi".utf8)).frame
+		_ = try carolRound.alice.processIncomingDecrypted(carolHello)
+
+		// Each session independently runs its own §A.3.
+		let aliceKPFrame = try aliceRound.alice.pqBootstrapBegin().frame
+		_ = try aliceRound.bob.pqBootstrapRespond(aliceKPFrame)
+		let carolKPFrame = try carolRound.alice.pqBootstrapBegin().frame
+		_ = try carolRound.bob.pqBootstrapRespond(carolKPFrame)
+
+		let aliceBobSendPQKey = try XCTUnwrap(aliceRound.bob.leafKeys.sendPQ.current)
+		let carolBobSendPQKey = try XCTUnwrap(carolRound.bob.leafKeys.sendPQ.current)
+		XCTAssertNotEqual(aliceBobSendPQKey.signatureKey, carolBobSendPQKey.signatureKey)
+
+		// recv-PQ (the invitation's own published PQ half) is shared too.
+		XCTAssertEqual(
+			aliceRound.bob.leafKeys.recvPQ.current?.signatureKey,
+			carolRound.bob.leafKeys.recvPQ.current?.signatureKey)
+	}
+
 	// MARK: - Restore
 
 	func testAllFourTablesSurviveRestore() throws {

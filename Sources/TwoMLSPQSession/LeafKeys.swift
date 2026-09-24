@@ -239,9 +239,11 @@ extension TwoMLSSession {
 			}
 		}
 		if sendGroup?.pq == nil, sendGroup != nil {
-			guard leafKeys.sendPQ.pending.isEmpty,
-				leafKeys.sendPQ.current?.signatureKey
-					== identity.keyPackage.pq.leafNode.signatureKey
+			// A not-yet-founded send-PQ holds no reservation: `identity`'s
+			// PQ key no longer founds this group (a fresh leaf, minted at
+			// A.3, does), so there is nothing to compare a stored key
+			// against ahead of founding.
+			guard leafKeys.sendPQ.current == nil, leafKeys.sendPQ.pending.isEmpty
 			else { throw TwoMLSError.archiveInvalid }
 		}
 

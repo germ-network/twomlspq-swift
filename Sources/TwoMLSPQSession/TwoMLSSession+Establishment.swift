@@ -62,6 +62,30 @@ extension TwoMLSSession {
 		appBinding: Data? = nil,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> EstablishResult {
+		let classicalFounding = try TwoMLSIdentity.mintFoundingLeaf(
+			clientID: identity.clientID, provider: classicalProvider)
+		let pqFounding = try TwoMLSIdentity.mintFoundingLeaf(
+			clientID: identity.clientID, provider: pqProvider)
+		return try initiate(
+			identity: identity, their: their,
+			founding: (classical: classicalFounding, pq: pqFounding),
+			classicalProvider: classicalProvider, pqProvider: pqProvider,
+			appBinding: appBinding, codepoints: codepoints)
+	}
+
+	/// The `founding:` seam: every public/current entry point mints its own
+	/// fresh founding leaves and calls through here. Tests that need to
+	/// control the founding leaf directly (a deployed-shaped fixture, or an
+	/// injected capability-less rogue leaf) call this overload.
+	static func initiate(
+		identity: TwoMLSIdentity,
+		their: CombinerKeyPackage,
+		founding: (classical: FoundingLeaf, pq: FoundingLeaf),
+		classicalProvider: any MLS.CipherSuiteProvider,
+		pqProvider: any MLS.CipherSuiteProvider,
+		appBinding: Data? = nil,
+		codepoints: MLS.Combiner.Codepoints = .deployed
+	) throws -> EstablishResult {
 		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
 			pqProvider.cipherSuite == TwoMLSSuite.pq
 		else { throw TwoMLSError.cipherSuiteMismatch }
@@ -90,26 +114,20 @@ extension TwoMLSSession {
 		let auth = AuthCore(
 			mine: .seeded(identity.clientID), theirs: .seeded(theirClassicalID))
 
-		// Every leaf this identity occupies or will occupy — Group_A's
-		// founded classical+PQ leaves, and Group_B's classical leaf (once
-		// joined) plus KP′'s reservation — presents the SAME per-half key,
-		// minted once here so founding and the stored `leafKeys` below read
-		// the identical local value rather than re-deriving it from
-		// `identity` twice.
-		let classicalKey = LeafKey(
-			signingKey: identity.signingKey, signatureKey: identity.signatureKey)
-		let pqKey = LeafKey(
-			signingKey: identity.pqSigningKey, signatureKey: identity.pqSignatureKey)
-
+		// Group_A's classical and PQ halves are each founded on their own
+		// freshly minted leaf — never `identity`'s own KeyPackage leaves,
+		// which stay reserved for the return KP (recv-classical) and KP′
+		// (recv-PQ) below.
 		let classicalHalf = try halfCreation(
-			identity: identity, half: identity.keyPackage.classical,
-			leafSecretKey: identity.classicalLeafSecretKey,
-			signingKey: classicalKey.signingKey,
+			leafNode: founding.classical.leafNode,
+			leafSecretKey: founding.classical.leafSecretKey,
+			signingKey: founding.classical.key.signingKey,
 			peerKeyPackage: their.classical,
 			provider: classicalProvider)
 		let pqHalf = try halfCreation(
-			identity: identity, half: identity.keyPackage.pq,
-			leafSecretKey: identity.pqLeafSecretKey, signingKey: pqKey.signingKey,
+			leafNode: founding.pq.leafNode,
+			leafSecretKey: founding.pq.leafSecretKey,
+			signingKey: founding.pq.key.signingKey,
 			peerKeyPackage: their.pq,
 			provider: pqProvider)
 
@@ -136,12 +154,21 @@ extension TwoMLSSession {
 		// clears it in turn once THAT join completes.
 		let establishedIdentity = identity.clearingInitSecrets(classical: false, pq: true)
 
-		// The same two pairs minted above seed all four sets.
+		// send-classical/send-PQ present the fresh founding leaves; recv-
+		// classical/recv-PQ are reservations for the return KP and KP′ —
+		// `identity`'s own two per-half keys, which no group founds on
+		// anymore.
 		let leafKeys = LeafKeys(
-			sendClassical: GroupKeySet(current: classicalKey),
-			recvClassical: GroupKeySet(current: classicalKey),
-			sendPQ: GroupKeySet(current: pqKey),
-			recvPQ: GroupKeySet(current: pqKey))
+			sendClassical: GroupKeySet(current: founding.classical.key),
+			recvClassical: GroupKeySet(
+				current: LeafKey(
+					signingKey: identity.signingKey,
+					signatureKey: identity.signatureKey)),
+			sendPQ: GroupKeySet(current: founding.pq.key),
+			recvPQ: GroupKeySet(
+				current: LeafKey(
+					signingKey: identity.pqSigningKey,
+					signatureKey: identity.pqSignatureKey)))
 
 		var session = TwoMLSSession(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
@@ -241,6 +268,48 @@ extension TwoMLSSession {
 		expectedAppBinding: Data? = nil,
 		newClientID: Data? = nil
 	) throws -> EstablishResult {
+		// The founding leaf's credential is the dedicated id when one is
+		// requested, else the invitation identity's own id — minted here,
+		// before `newClientID` is even validated, so validation failures
+		// below simply discard it.
+		let founding = try TwoMLSIdentity.mintFoundingLeaf(
+			clientID: newClientID ?? identity.clientID, provider: classicalProvider)
+		let catchUpKey: LeafKey?
+		if let newClientID, newClientID != identity.clientID {
+			let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+			catchUpKey = LeafKey(signingKey: signingKey, signatureKey: signatureKey)
+		} else {
+			catchUpKey = nil
+		}
+		return try receive(
+			identity: identity, welcome: welcome,
+			theirClassicalKeyPackage: theirClassicalKeyPackage,
+			bootstrapKPCommitment: bootstrapKPCommitment, spawnToken: spawnToken,
+			founding: founding, catchUpKey: catchUpKey,
+			classicalProvider: classicalProvider, pqProvider: pqProvider,
+			codepoints: codepoints, expectedAppBinding: expectedAppBinding,
+			newClientID: newClientID)
+	}
+
+	/// The `founding:` seam: the current entry point above mints a fresh
+	/// founding leaf (and, for a dedicated session, a fresh catch-up key)
+	/// and calls through here. Tests that need to control either directly
+	/// (a deployed-shaped fixture, or an injected capability-less rogue
+	/// leaf) call this overload.
+	static func receive(
+		identity: TwoMLSIdentity,
+		welcome: Data,
+		theirClassicalKeyPackage: MLS.RFC9420.KeyPackage,
+		bootstrapKPCommitment: Data,
+		spawnToken: Data? = nil,
+		founding: FoundingLeaf,
+		catchUpKey: LeafKey?,
+		classicalProvider: any MLS.CipherSuiteProvider,
+		pqProvider: any MLS.CipherSuiteProvider,
+		codepoints: MLS.Combiner.Codepoints = .deployed,
+		expectedAppBinding: Data? = nil,
+		newClientID: Data? = nil
+	) throws -> EstablishResult {
 		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
 			pqProvider.cipherSuite == TwoMLSSuite.pq
 		else { throw TwoMLSError.cipherSuiteMismatch }
@@ -325,39 +394,22 @@ extension TwoMLSSession {
 		let verifiedAppBinding = try AppBinding.read(
 			fromExtensionsOf: groupA.classical.context)
 
-		// Mint the dedicated principal D ONLY when `newClientID` differs from
-		// the invitation identity (protocol-flows.md:420, credential-differ
-		// rule) — equal/nil
-		// degenerates to today's nil topology below. D founds Group_B under
-		// a completely fresh identity (fresh signing key, fresh classical+PQ
-		// leaves): a born-dedicated principal never joins, so both init
-		// secrets are cleared immediately (mirrors `clearingInitSecrets`'s
-		// "never separately read" reasoning at `initiate`/`receive`).
-		let dedicated: TwoMLSIdentity?
-		if let newClientID, newClientID != identity.clientID {
-			dedicated = try TwoMLSIdentity.generate(
-				clientID: newClientID, classicalProvider: classicalProvider,
-				pqProvider: pqProvider
-			).clearingInitSecrets(classical: true, pq: true)
-		} else {
-			dedicated = nil
-		}
-		let founderIdentity = dedicated ?? identity
-		// Minted once here so founding and the stored `leafKeys` below read
-		// the identical local value, rather than re-deriving it from
-		// `founderIdentity` twice.
-		let sendClassicalKey = LeafKey(
-			signingKey: founderIdentity.signingKey,
-			signatureKey: founderIdentity.signatureKey)
+		// A dedicated session is requested ONLY when `newClientID` differs
+		// from the invitation identity (protocol-flows.md:420,
+		// credential-differ rule) — equal/nil degenerates to today's nil
+		// topology below. D is a credential id plus its own fresh founding
+		// leaf and catch-up key (`founding`/`catchUpKey` above) — no
+		// separate identity bundle is minted; the session's own `identity`
+		// stays the invitation bundle throughout.
+		let isDedicated = newClientID != nil && newClientID != identity.clientID
 
 		let crossPSK = try MLS.Combiner.ExportedPsk.export(
 			from: &groupA.classical, classicalProvider,
 			componentID: crossPartyComponentID)
 
 		let founderHalf = try halfCreation(
-			identity: founderIdentity, half: founderIdentity.keyPackage.classical,
-			leafSecretKey: founderIdentity.classicalLeafSecretKey,
-			signingKey: sendClassicalKey.signingKey,
+			leafNode: founding.leafNode, leafSecretKey: founding.leafSecretKey,
+			signingKey: founding.key.signingKey,
 			peerKeyPackage: theirClassicalKeyPackage, provider: classicalProvider)
 		// Pre-allocated: Group_B's PQ half is not founded in slice 1 (A.3), but
 		// its `APQInfo` still names the eventual group id (a draft-02 PARTIAL).
@@ -382,8 +434,13 @@ extension TwoMLSSession {
 		// identity is the SAME published key package across every welcome
 		// it accepts, so a leaked (sealed) session archive must not also
 		// expose the still-published key package's init secret.
-		let establishedIdentity = identity.clearingInitSecrets(classical: true, pq: true)
-		let sessionIdentity = dedicated ?? establishedIdentity
+		// Both of `identity`'s init secrets are now spent — `groupA` was
+		// JOINED with them above, and `groupB` was FOUNDED on `founding`,
+		// not on `identity` at all — so `session.identity` stays this
+		// cleared copy of the invitation bundle for every acceptor session,
+		// dedicated or not (a born-dedicated D is a credential id plus its
+		// own fresh leaves, never a separate identity bundle).
+		let sessionIdentity = identity.clearingInitSecrets(classical: true, pq: true)
 
 		// AS both sides (Bob): with a dedicated principal, seed `mine`
 		// from the invitation identity then commit D — `.current == D`,
@@ -392,7 +449,7 @@ extension TwoMLSSession {
 		// is unchanged.
 		let auth: AuthCore
 		let recvLeafPrincipal: RecvLeafPrincipal?
-		if dedicated != nil, let newClientID {
+		if isDedicated, let newClientID {
 			var mine = PartySequence.seeded(identity.clientID)
 			try mine.commit(newClientID)
 			auth = AuthCore(mine: mine, theirs: .seeded(peerID))
@@ -406,38 +463,39 @@ extension TwoMLSSession {
 			recvLeafPrincipal = nil
 		}
 
-		// Send-classical/send-PQ present the FOUNDER identity (D when
-		// dedicated, else the invitation identity) from the moment Group_B
-		// is founded; recv-PQ always joins under the ORIGINAL invitation
-		// identity's already-signed PQ leaf (Group_A was joined above with
-		// `identity.classicalJoinCredentials`/`pqJoinCredentials`, before
-		// any dedicated principal exists). recv-classical is the one
-		// split: the degenerate topology joins under `identity` directly (no
+		// send-classical presents `founding`'s fresh key from the moment
+		// Group_B is founded. send-PQ is not founded yet — nothing is
+		// reserved for it; `pqBootstrapRespond` mints and registers its own
+		// founding key at A.3. recv-PQ always joins under the ORIGINAL
+		// invitation identity's already-signed PQ leaf (Group_A was joined
+		// above with `identity.classicalJoinCredentials`/`pqJoinCredentials`,
+		// before any dedicated founding leaf exists). recv-classical is the
+		// one split: the degenerate topology presents `identity` directly (no
 		// dedicated principal, nothing to catch up), while the born-dedicated
 		// topology's recv-classical leaf still presents the INVITATION
-		// identity, with D's key staged as the rule-4 target
+		// identity, with D's fresh catch-up key staged as the rule-4 target
 		// (group-rules.md rule 4) — written here, at the exact moment D is
 		// minted, matching the live `recvLeafPrincipal` custody this mirrors.
-		let sendPQKey = LeafKey(
-			signingKey: founderIdentity.pqSigningKey,
-			signatureKey: founderIdentity.pqSignatureKey)
 		let recvPQKey = LeafKey(
 			signingKey: identity.pqSigningKey, signatureKey: identity.pqSignatureKey)
 		let recvClassical: GroupKeySet
-		if let newClientID, dedicated != nil {
+		if isDedicated, let newClientID, let catchUpKey {
 			let invitationClassicalKey = LeafKey(
 				signingKey: identity.signingKey, signatureKey: identity.signatureKey
 			)
 			recvClassical = GroupKeySet(
 				current: invitationClassicalKey,
-				pending: [newClientID: sendClassicalKey])
+				pending: [newClientID: catchUpKey])
 		} else {
-			recvClassical = GroupKeySet(current: sendClassicalKey)
+			recvClassical = GroupKeySet(
+				current: LeafKey(
+					signingKey: identity.signingKey,
+					signatureKey: identity.signatureKey))
 		}
 		let leafKeys = LeafKeys(
-			sendClassical: GroupKeySet(current: sendClassicalKey),
+			sendClassical: GroupKeySet(current: founding.key),
 			recvClassical: recvClassical,
-			sendPQ: GroupKeySet(current: sendPQKey),
+			sendPQ: GroupKeySet(),
 			recvPQ: GroupKeySet(current: recvPQKey))
 
 		var session = TwoMLSSession(
@@ -453,7 +511,7 @@ extension TwoMLSSession {
 			// seeds there too.
 			lastCrossInjected: 1, spawnToken: spawnToken,
 			recvLeafPrincipal: recvLeafPrincipal,
-			owesEstablishmentEnvelope: dedicated != nil, leafKeys: leafKeys)
+			owesEstablishmentEnvelope: isDedicated, leafKeys: leafKeys)
 		// The send group (Group_B) exists from construction: capture its
 		// birth epoch's rendezvous address before minting the baseline
 		// archive (routing works from birth, book session-lifecycle.md).
@@ -547,16 +605,14 @@ extension TwoMLSSession {
 		return try MLS.RFC9420.LeafNode(mlsEncoded: entry.record.encoded)
 	}
 
-	/// A `HalfCreation` for `identity`'s own already-signed half adding `peer`,
-	/// with fresh randomness/group id — the founder side of either an
-	/// `establishFull` or an `establishClassicalOnly`. `signingKey` is a
-	/// REQUIRED param (D1, FIX3): under independent per-half signing keys
-	/// there is no single "the" identity signing key to default to — every
-	/// caller states which of `identity`'s two pairs signs this half
-	/// (classical → `identity.signingKey`, PQ → `identity.pqSigningKey`).
+	/// A `HalfCreation` founding on `leafNode`, adding `peer`, with fresh
+	/// randomness/group id — the founder side of either an `establishFull`
+	/// or an `establishClassicalOnly`. Takes the already-signed leaf
+	/// directly (never `identity`): every founding leaf, KP half or fresh
+	/// founding leaf alike, is minted once by its caller and threaded
+	/// through here unchanged.
 	private static func halfCreation(
-		identity: TwoMLSIdentity,
-		half: MLS.RFC9420.KeyPackage,
+		leafNode: MLS.RFC9420.LeafNode,
 		leafSecretKey: MLS.HpkeSecretKey,
 		signingKey: MLS.SignatureSecretKey,
 		peerKeyPackage: MLS.RFC9420.KeyPackage,
@@ -564,7 +620,7 @@ extension TwoMLSSession {
 	) throws -> MLS.Combiner.HalfCreation {
 		MLS.Combiner.HalfCreation(
 			groupID: provider.randomBytes(provider.hashSize),
-			leafNode: half.leafNode,
+			leafNode: leafNode,
 			leafSecretKey: leafSecretKey,
 			signingKey: signingKey,
 			epochSecret: SecretBytes(randomByteCount: provider.hashSize),

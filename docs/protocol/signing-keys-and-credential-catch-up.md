@@ -154,7 +154,8 @@ We don't carry that coupling over. Decisions:
       receiver checks that proposal against the same frame's digest. Nothing is keyed on the hash, so a repeat is fine.
 - **D4 — KeyPackage keys.** Every KeyPackage half gets a fresh signing key; there is no principal-wide signing key. We
   read "principal" as the credential. The book's "a credential-scoped signing identity" (`concepts.md:14`) is the
-  lockstep model's wording.
+  lockstep model's wording. Every group a party founds is founded on a freshly minted leaf; a KeyPackage half's key
+  lands only in the one group that half joins.
 - **D5 — superseded: the book now specifies the reciprocal A.5** (`protocol-flows.md:56`, `:704-708`;
   `group-rules.md:143-158` rule 4). The non-rotated peer's own next turn opens the catch-up for the rotated party's
   still-lagging leaf; there is no extra trigger left for us to add.

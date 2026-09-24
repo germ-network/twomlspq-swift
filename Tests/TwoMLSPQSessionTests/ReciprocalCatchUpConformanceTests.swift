@@ -1419,16 +1419,9 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	/// Reachable natively: the acceptor (Bob) can rotate classically
 	/// before the A.3 bootstrap ever runs — both classical halves are up
 	/// right after establishment, and A.3 is fully independent of them.
-	/// Real `pqBootstrapRespond` always founds off
-	/// `identity.keyPackage.pq.leafNode` — the session's FOUNDING
-	/// identity, fixed for the session's life — never re-reading whatever
-	/// `auth.mine.current` says by A.3 time, so a pre-A.3 rotation is
-	/// silently dropped from the founded leaf. This is exactly the kind of
-	/// state `testTriggerIgnoresSendPQLag`'s recv-PQ-only trigger must
-	/// still get right once it exists: a leaf minted presenting a stale,
-	/// non-current id is a lag by the book's own definition, whether it
-	/// got that way by falling behind after A.3 or — as here — by never
-	/// being current in the first place.
+	/// `pqBootstrapRespond` founds on a freshly minted leaf under
+	/// `auth.mine.current` at A.3 time, so a pre-A.3 rotation is already
+	/// reflected in the founded leaf.
 	func testA3MintedLeafBornUnderThenCanonicalID() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let bobNewID = Data("bob-then-canonical".utf8)
@@ -1452,11 +1445,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 
 		let foundedLeafID = try basicIdentifier(
 			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.sendGroup?.pq)).credential)
-		XCTExpectFailure(
-			"session-lifecycle.md:202-203 / group-rules.md:144-145 rule 4 — the A.3-founded leaf must present the acceptor's THEN-canonical id, not its founding one"
-		) {
-			XCTAssertEqual(foundedLeafID, bobNewID)
-		}
+		XCTAssertEqual(foundedLeafID, bobNewID)
 	}
 
 	// MARK: - C2: the reciprocal A.5 defers until the peer's own A.5 has landed

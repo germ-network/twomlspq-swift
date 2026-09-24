@@ -261,39 +261,19 @@ final class SigningKeyProtocolTests: XCTestCase {
 	/// be pairwise distinct.
 	func testD1OwnLeafSignatureKeysArePairwiseDistinct() throws {
 		let (initiator, plainAcceptor) = try RatchetTests.fullyEstablishedTurnOnBob()
-		try XCTExpectFailure(
-			"D1: the initiator's own four leaf keys must be pairwise distinct"
-		) {
-			try assertFourOwnLeafKeysPairwiseDistinct(initiator)
-		}
-		try XCTExpectFailure(
-			"D1: the plain acceptor's own four leaf keys must be pairwise distinct"
-		) {
-			try assertFourOwnLeafKeysPairwiseDistinct(plainAcceptor)
-		}
-		try XCTExpectFailure(
-			"D1: all eight own-leaf keys across the plain pair must be pairwise distinct"
-		) {
-			try assertEightOwnLeafKeysPairwiseDistinct(initiator, plainAcceptor)
-		}
+		try assertFourOwnLeafKeysPairwiseDistinct(initiator)
+		try assertFourOwnLeafKeysPairwiseDistinct(plainAcceptor)
+		try assertEightOwnLeafKeysPairwiseDistinct(initiator, plainAcceptor)
 
 		let (initiatorForDedicated, dedicatedAcceptor) = try fullyEstablishedDedicatedPair()
-		try XCTExpectFailure(
-			"D1: the initiator's own four leaf keys must be pairwise distinct"
-		) {
-			try assertFourOwnLeafKeysPairwiseDistinct(initiatorForDedicated)
-		}
+		try assertFourOwnLeafKeysPairwiseDistinct(initiatorForDedicated)
 		// The born-dedicated acceptor already keeps its own-identity pair
 		// (D's classical+PQ keys) separate from its retained
 		// invitation-identity pair, so its own four leaf keys are already
 		// pairwise distinct today.
 		try assertFourOwnLeafKeysPairwiseDistinct(dedicatedAcceptor)
-		try XCTExpectFailure(
-			"D1: all eight own-leaf keys across the dedicated pair must be pairwise distinct"
-		) {
-			try assertEightOwnLeafKeysPairwiseDistinct(
-				initiatorForDedicated, dedicatedAcceptor)
-		}
+		try assertEightOwnLeafKeysPairwiseDistinct(
+			initiatorForDedicated, dedicatedAcceptor)
 	}
 
 	private func assertFourOwnLeafKeysPairwiseDistinct(
@@ -339,11 +319,14 @@ final class SigningKeyProtocolTests: XCTestCase {
 		// regardless of D3's gap.
 		XCTAssertNotEqual(bobKeysAfter.sendClassical, bobKeysAfter.sendPQ)
 		XCTAssertNotEqual(bobKeysAfter.sendClassical, bobKeysAfter.recvPQ)
+		// D1: send-classical is always a fresh founding leaf, distinct from
+		// recv-classical (the return KP/invitation half) by construction —
+		// no longer gated on D3's still-open rotation gap.
+		XCTAssertNotEqual(bobKeysAfter.sendClassical, bobKeysAfter.recvClassical)
 		XCTExpectFailure(
 			"D3: a committing round must mint a fresh send-classical signature key"
 		) {
 			XCTAssertNotEqual(bobKeysBefore.sendClassical, bobKeysAfter.sendClassical)
-			XCTAssertNotEqual(bobKeysAfter.sendClassical, bobKeysAfter.recvClassical)
 		}
 		XCTAssertEqual(bobKeysBefore.recvClassical, bobKeysAfter.recvClassical)
 		XCTAssertEqual(bobKeysBefore.sendPQ, bobKeysAfter.sendPQ)
@@ -351,13 +334,14 @@ final class SigningKeyProtocolTests: XCTestCase {
 
 		XCTAssertNotEqual(aliceKeysAfter.recvClassical, aliceKeysAfter.sendPQ)
 		XCTAssertNotEqual(aliceKeysAfter.recvClassical, aliceKeysAfter.recvPQ)
+		// D1: recv-classical (the return KP) is always distinct from
+		// send-classical (a fresh founding leaf) by construction.
+		XCTAssertNotEqual(aliceKeysAfter.recvClassical, aliceKeysAfter.sendClassical)
 		XCTExpectFailure(
 			"D3: a folded routine Upd(self) must mint a fresh recv-classical signature key"
 		) {
 			XCTAssertNotEqual(
 				aliceKeysBefore.recvClassical, aliceKeysAfter.recvClassical)
-			XCTAssertNotEqual(
-				aliceKeysAfter.recvClassical, aliceKeysAfter.sendClassical)
 		}
 		XCTAssertEqual(aliceKeysBefore.sendClassical, aliceKeysAfter.sendClassical)
 		XCTAssertEqual(aliceKeysBefore.sendPQ, aliceKeysAfter.sendPQ)
@@ -955,5 +939,135 @@ final class SigningKeyProtocolTests: XCTestCase {
 			TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.recvGroup?.classical))
 				.credential)
 		XCTAssertEqual(bobRecvLeafID, established.dedicatedClientID)
+	}
+
+	// MARK: - D1: no own-leaf key is ever held by two groups at once
+
+	/// No `signatureKey` appears in TWO groups' `current ∪ pending` at
+	/// once, checked repeatedly across establishment, §A.3, restore, and two
+	/// full alternating §A.4 rounds, for both a plain and a born-dedicated
+	/// pair. Rotation is deliberately out of this fixture: a rotation
+	/// candidate's key legitimately stages into both classical sets at once
+	/// (see the type doc's own "Result" paragraph).
+	func testNoKeyHeldByTwoGroupsAcrossTheNativeLifecycle() throws {
+		try assertNoKeySharedThroughoutLifecycle(dedicatedClientID: nil, runA4Rounds: true)
+		try assertNoKeySharedThroughoutLifecycle(
+			dedicatedClientID: Data("d2-dedicated".utf8), runA4Rounds: true)
+	}
+
+	private func assertNoKeySharedThroughoutLifecycle(
+		dedicatedClientID: Data?, runA4Rounds: Bool
+	) throws {
+		var alice: TwoMLSSession
+		var bob: TwoMLSSession
+		if let dedicatedClientID {
+			let established = try SessionTestSupport.establishedDedicatedAndApproved(
+				dedicatedClientID: dedicatedClientID)
+			alice = established.alice
+			bob = established.bob
+		} else {
+			(alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		}
+		assertNoOwnLeafKeyIsHeldByTwoGroups(alice)
+		assertNoOwnLeafKeyIsHeldByTwoGroups(bob)
+
+		// §A.3.
+		let kpFrame = try alice.pqBootstrapBegin().frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
+		if dedicatedClientID != nil {
+			// `establishedDedicatedAndApproved` delivers no Bob→Alice frame, so
+			// Alice is unlicensed (`peerAppliedSendEpoch` is nil,
+			// `TwoMLSSession+ClassicalCommit.swift` ~:378-390) and her owed bind
+			// never discharges — `maybeStageNextRound`'s `owedBind == nil` guard
+			// (`TwoMLSSession+Ratchet.swift` ~:297) holds forever. That's
+			// evidence-gating (`protocol-flows.md`), not a bug: drive Bob's
+			// first frame — the rule-4 catch-up offer — before Alice's bind, so
+			// the round can actually discharge.
+			_ = try bob.prepareToEncrypt()
+			let hello = try bob.encrypt(Data("bob-hello".utf8)).frame
+			let dec = try alice.processIncomingDecrypted(hello)
+			try alice.queueProposal(digest: dec.queuedProposal.digest)
+			XCTAssertTrue(try alice.prepareToEncrypt().didCommit)
+			let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
+			XCTAssertTrue(
+				try bob.processIncomingDecrypted(boundFrame).didApplyRemoteCommit)
+		} else {
+			_ = try alice.prepareToEncrypt()
+			let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
+			_ = try bob.processIncomingDecrypted(boundFrame)
+		}
+		assertNoOwnLeafKeyIsHeldByTwoGroups(alice)
+		assertNoOwnLeafKeyIsHeldByTwoGroups(bob)
+
+		// Two full §A.4 rounds, each driven by whichever side currently
+		// holds the turn.
+		for round in 0..<(runA4Rounds ? 2 : 0) {
+			if bob.myPQTurn {
+				_ = try bob.prepareToEncrypt()
+				_ = try bob.encrypt(Data("m-\(round)".utf8))
+				let ekFrame = try XCTUnwrap(
+					bob.pqPendingOutbound(), "round \(round), bob's turn")
+				let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
+				_ = try bob.pqRatchetBind(ctFrame)
+				let prepared = try bob.prepareToEncrypt()
+				XCTAssertTrue(prepared.didCommit)
+				let roundBoundFrame = try bob.encrypt(Data("bound-\(round)".utf8))
+					.frame
+				_ = try alice.processIncomingDecrypted(roundBoundFrame)
+			} else {
+				XCTAssertTrue(alice.myPQTurn)
+				_ = try alice.prepareToEncrypt()
+				_ = try alice.encrypt(Data("m-\(round)".utf8))
+				let ekFrame = try XCTUnwrap(
+					alice.pqPendingOutbound(), "round \(round), alice's turn")
+				let ctFrame = try bob.pqRatchetRespond(ekFrame).frame
+				_ = try alice.pqRatchetBind(ctFrame)
+				let prepared = try alice.prepareToEncrypt()
+				XCTAssertTrue(prepared.didCommit)
+				let roundBoundFrame = try alice.encrypt(Data("bound-\(round)".utf8))
+					.frame
+				_ = try bob.processIncomingDecrypted(roundBoundFrame)
+			}
+			assertNoOwnLeafKeyIsHeldByTwoGroups(alice)
+			assertNoOwnLeafKeyIsHeldByTwoGroups(bob)
+		}
+
+		let aliceRestored = try TwoMLSSession.restore(
+			core: nil, checkpoint: try alice.makeSessionArchive(kind: .checkpoint),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let bobRestored = try TwoMLSSession.restore(
+			core: nil, checkpoint: try bob.makeSessionArchive(kind: .checkpoint),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		assertNoOwnLeafKeyIsHeldByTwoGroups(aliceRestored)
+		assertNoOwnLeafKeyIsHeldByTwoGroups(bobRestored)
+	}
+
+	private func assertNoOwnLeafKeyIsHeldByTwoGroups(
+		_ session: TwoMLSSession, file: StaticString = #filePath, line: UInt = #line
+	) {
+		func allKeys(_ set: GroupKeySet) -> Set<Data> {
+			var keys = Set<Data>()
+			if let current = set.current { keys.insert(current.signatureKey.data) }
+			for (_, key) in set.pending { keys.insert(key.signatureKey.data) }
+			return keys
+		}
+		let sets: [(name: String, keys: Set<Data>)] = [
+			("sendClassical", allKeys(session.leafKeys.sendClassical)),
+			("recvClassical", allKeys(session.leafKeys.recvClassical)),
+			("sendPQ", allKeys(session.leafKeys.sendPQ)),
+			("recvPQ", allKeys(session.leafKeys.recvPQ)),
+		]
+		for i in 0..<sets.count {
+			for j in (i + 1)..<sets.count {
+				let shared = sets[i].keys.intersection(sets[j].keys)
+				XCTAssertTrue(
+					shared.isEmpty,
+					"\(sets[i].name) and \(sets[j].name) share a key: \(shared)",
+					file: file, line: line)
+			}
+		}
 	}
 }

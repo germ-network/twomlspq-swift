@@ -51,8 +51,11 @@ public struct MigratedGroupKeys: Sendable {
 }
 
 /// The four groups' own stored key sets, migrated — mirrors `LeafKeys`'s
-/// shape exactly. All four are required: a not-yet-existing group still
-/// carries its reservation (rule 4).
+/// shape exactly. All four are required. A not-yet-founded send-PQ (a
+/// pre-A.3 acceptor) carries the canonical empty shape `{current: nil,
+/// pending: []}`: A.3 founding always mints its own fresh key, so nothing
+/// is reserved for it in advance — a non-nil `current` supplied here is
+/// accepted and dropped, never thrown on.
 @available(iOS 26, macOS 26, *)
 public struct MigratedLeafKeys: Sendable {
 	public var sendClassical: MigratedGroupKeys
