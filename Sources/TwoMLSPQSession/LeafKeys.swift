@@ -10,9 +10,9 @@ import MLSProfileRFC9420
 // recv-PQ) owns a stored key set: `current` is the key its own leaf
 // presents right now, `pending[target]` is a key minted for a credential id
 // that leaf does not present YET. This is the ONLY source of a group's
-// signing secrets — signing reads the slot directly, never identity, a
-// rotation candidate, or the retained recv-leaf custody, which stay for
-// persistence/migration/the test oracle only (see TwoMLSSession.swift).
+// signing secrets — signing reads the slot directly, never `identity` or a
+// rotation candidate's own bookkeeping fields, which stay for persistence
+// and migration only (see TwoMLSSession.swift).
 
 /// One leaf's own signing keypair.
 struct LeafKey: Sendable {
@@ -176,7 +176,6 @@ extension TwoMLSSession {
 		pendingProposal: (proposing: Data, message: Data, hash: Data)?,
 		pqInflight: PQInflight?,
 		rotationCandidate: RotationCandidate?,
-		recvLeafPrincipal: RecvLeafPrincipal?,
 		auth: AuthCore,
 		mode: LeafKeysValidationMode = .restore,
 		noCustody: Set<MigratedGroupRole> = [],
@@ -372,8 +371,7 @@ extension TwoMLSSession {
 		// `authorizedNext` may outlive its candidate (see the type's own
 		// doc, `CredentialAuthentication.swift`).
 		if mode == .mintSupplied {
-			try requireMintSuppliedRotationShape(
-				leafKeys, auth: auth, rotationCandidate: rotationCandidate)
+			try requireMintSuppliedRotationShape(leafKeys, auth: auth)
 		}
 
 		// Check 7: any existing own leaf whose credential lags
@@ -426,8 +424,9 @@ extension TwoMLSSession {
 	/// `group`'s tree) lag `mineCurrent`? If so and `required`, it must hold
 	/// `pending[mineCurrent]`; if so and NOT `required`, nothing is enforced
 	/// (a native or `.mintConverted`/`.restore` PQ session may simply have
-	/// no catch-up key yet — step 5's self-drive is what would consume one
-	/// if supplied). A leaf that does not lag needs nothing here regardless.
+	/// no catch-up key yet — a later self-drive change is what would consume
+	/// one if supplied). A leaf that does not lag needs nothing here
+	/// regardless.
 	private static func requireCatchUpTargetIfLagging(
 		_ set: GroupKeySet, in group: MLS.RFC9420.Group, mineCurrent: Data?, required: Bool
 	) throws {
@@ -438,9 +437,13 @@ extension TwoMLSSession {
 	}
 
 	/// The `.mintSupplied`-only companion to check 8 — see that check's
-	/// call site for the exact rule. CLASSICAL sets only.
+	/// call site for the exact rule. CLASSICAL sets only. The candidate's
+	/// own supplied signature key is cross-checked by the mint itself,
+	/// beside its derive check, against the caller-supplied
+	/// `MigratedRotationCandidate` — this function only sees the native
+	/// `RotationCandidate`, which carries no key of its own.
 	private static func requireMintSuppliedRotationShape(
-		_ leafKeys: LeafKeys, auth: AuthCore, rotationCandidate: RotationCandidate?
+		_ leafKeys: LeafKeys, auth: AuthCore
 	) throws {
 		guard let mineCurrent = auth.mine.current else { throw TwoMLSError.archiveInvalid }
 		let allowedTargets = Set(auth.mine.authorizedNext).union([mineCurrent])
@@ -462,11 +465,6 @@ extension TwoMLSSession {
 				let recvKey = recvCandidates[target]?.signatureKey,
 				sendKey == recvKey
 			else { throw TwoMLSError.archiveInvalid }
-			if let rotationCandidate, rotationCandidate.clientID == target {
-				guard rotationCandidate.signatureKey == sendKey else {
-					throw TwoMLSError.archiveInvalid
-				}
-			}
 		}
 	}
 

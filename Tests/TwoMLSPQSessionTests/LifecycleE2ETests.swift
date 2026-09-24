@@ -396,7 +396,6 @@ final class LifecycleE2ETests: XCTestCase {
 			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
 		}
 
-		let invitationClientID = Data("bob".utf8)
 		let dedicatedClientID = Data("bob-dedicated".utf8)
 		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
 		let receivedResult = try bobInvitation.receive(
@@ -420,7 +419,7 @@ final class LifecycleE2ETests: XCTestCase {
 		}
 
 		XCTAssertTrue(bob.session.owesEstablishmentEnvelope)
-		XCTAssertEqual(bob.session.recvLeafPrincipal?.clientID, invitationClientID)
+		XCTAssertNotNil(bob.session.leafKeys.recvClassical.pending[dedicatedClientID])
 
 		let envelope = Data("fake-signed-handoff".utf8)
 		bob.persist(try bob.session.installEstablishmentEnvelope(envelope))

@@ -76,8 +76,8 @@ enum SessionTestSupport {
 	/// the contract-26 handoff envelope. `invitationClientID` is Bob's
 	/// invitation identity's own clientID (== `bobName`, `TwoMLSIdentity.
 	/// generate`'s `clientID` param passed straight through by
-	/// `Principal.generateInvitation`) — the id `bob.recvLeafPrincipal`
-	/// should carry until the recv-leaf catch-up.
+	/// `Principal.generateInvitation`) — the id `bob.leafKeys.recvClassical`
+	/// still presents as `current` until the recv-leaf catch-up.
 	static func establishedDedicated(
 		alice aliceName: String = "alice", bob bobName: String = "bob",
 		dedicatedClientID: Data = Data("bob-dedicated".utf8)

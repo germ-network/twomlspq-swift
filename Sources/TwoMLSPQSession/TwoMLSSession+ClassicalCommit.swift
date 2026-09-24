@@ -804,14 +804,6 @@ extension TwoMLSSession {
 			self.ownOfferWindow = nil
 			auth = authCopy
 			leafKeys = updatedLeafKeys
-			// Slice 11 (group-rules.md rule 4): `recvLeafPrincipal` is NOT retired here even
-			// when `ownCanonicalized` reports the CLASSICAL leaf converged —
-			// `leafKeys.recvPQ.current` still holds the retained invitation
-			// PQ pair for `recvGroup.pq`'s leaf, which keeps presenting the
-			// invitation identity until a later slice's PQ catch-up ("Chunk
-			// 2", out of scope here). A stale-but-unused custody entry is
-			// harmless (mirrors `rotationCandidate`'s own "a stale candidate
-			// is harmless" reasoning).
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)
@@ -909,9 +901,7 @@ extension TwoMLSSession {
 	/// at every advance regardless of which leaf this particular commit
 	/// moved. Generalized catch-up: the retained rule-4 target is
 	/// `authCopy.mine.current` itself whenever the post-apply leaf still
-	/// lags it — subsumes the born-dedicated-only case (`recvLeafPrincipal`/
-	/// `identity` are no longer needed here: kept as unread records on
-	/// `TwoMLSSession` until a later step retires them).
+	/// lags it — subsumes the born-dedicated-only case.
 	private static func updateRecvClassicalKeys(
 		_ leafKeys: LeafKeys, classical: MLS.RFC9420.Group,
 		authCopy: AuthCore, rotationCandidateID: Data?
@@ -1212,9 +1202,6 @@ extension TwoMLSSession {
 			}
 			auth = authCopy
 			leafKeys = updatedLeafKeys
-			// Slice 11 (group-rules.md rule 4): `recvLeafPrincipal` is retained here too — see
-			// `applyFoldCommit`'s own comment on why classical convergence
-			// alone must not clear it.
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)

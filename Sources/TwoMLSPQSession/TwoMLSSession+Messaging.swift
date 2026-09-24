@@ -158,8 +158,6 @@ extension TwoMLSSession {
 					candidateKey = existingKey
 					candidate = RotationCandidate(
 						clientID: existing.clientID,
-						signingKey: existing.signingKey,
-						signatureKey: existing.signatureKey,
 						proposedAtRecvEpoch: recv.classical.context.epoch)
 				} else {
 					if let existing = rotationCandidate {
@@ -189,8 +187,7 @@ extension TwoMLSSession {
 					let (signingKey, signatureKey) =
 						try TwoMLSIdentity.mintSignatureKeypair()
 					candidate = RotationCandidate(
-						clientID: rotating, signingKey: signingKey,
-						signatureKey: signatureKey,
+						clientID: rotating,
 						proposedAtRecvEpoch: recv.classical.context.epoch)
 					candidateKey = LeafKey(
 						signingKey: signingKey, signatureKey: signatureKey)

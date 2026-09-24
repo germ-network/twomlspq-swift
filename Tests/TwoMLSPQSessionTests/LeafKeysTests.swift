@@ -515,7 +515,7 @@ final class LeafKeysTests: XCTestCase {
 	func testRestoreRejectsCheck7ThroughTheFullPath() throws {
 		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
 		let bob = established.bob
-		XCTAssertNotNil(bob.recvLeafPrincipal)
+		XCTAssertNotNil(bob.leafKeys.recvClassical.pending[established.dedicatedClientID])
 		let target = established.dedicatedClientID
 		let archive = try bob.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
@@ -624,10 +624,10 @@ final class LeafKeysTests: XCTestCase {
 	/// recv-classical presents the invitation identity's own key (the
 	/// half this session actually joined Group_A with); send-PQ is empty
 	/// (not founded until A.3); recv-PQ presents the same invitation
-	/// identity's PQ half. No `recvLeafPrincipal`, no `pending`.
+	/// identity's PQ half. No recv-leaf custody, no `pending`.
 	func testPlainReceiveSeedsSendAndRecvClassicalToTheSameIdentity() throws {
 		let bob = try SessionTestSupport.established().bob
-		XCTAssertNil(bob.recvLeafPrincipal)
+		XCTAssertTrue(bob.leafKeys.recvClassical.pending.isEmpty)
 
 		XCTAssertEqual(
 			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.sendGroup?.classical))
@@ -664,8 +664,6 @@ final class LeafKeysTests: XCTestCase {
 		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
 		let bob = established.bob
 		XCTAssertEqual(bob.identity.clientID, established.invitationClientID)
-		let invitationCustody = try XCTUnwrap(bob.recvLeafPrincipal)
-		XCTAssertEqual(invitationCustody.clientID, established.invitationClientID)
 		XCTAssertEqual(bob.myPrincipalState, .sync(established.dedicatedClientID))
 
 		let sendClassicalKey = try XCTUnwrap(bob.leafKeys.sendClassical.current)
@@ -677,7 +675,7 @@ final class LeafKeysTests: XCTestCase {
 		XCTAssertNotEqual(sendClassicalKey.signatureKey, bob.identity.signatureKey)
 		XCTAssertEqual(
 			bob.leafKeys.recvClassical.current?.signatureKey,
-			invitationCustody.signatureKey,
+			bob.identity.signatureKey,
 			"recv-classical still presents the invitation identity, not yet D")
 		// The rule-4 catch-up key (book group-rules.md:143-158 rule 4) is
 		// minted separately from the founding leaf's key — never the same
@@ -688,7 +686,7 @@ final class LeafKeysTests: XCTestCase {
 
 		XCTAssertNil(bob.leafKeys.sendPQ.current)
 		XCTAssertEqual(
-			bob.leafKeys.recvPQ.current?.signatureKey, invitationCustody.pqSignatureKey,
+			bob.leafKeys.recvPQ.current?.signatureKey, bob.identity.pqSignatureKey,
 			"recv-PQ joins Group_A under the invitation identity's PQ leaf")
 		XCTAssertTrue(bob.leafKeys.sendClassical.pending.isEmpty)
 		XCTAssertTrue(bob.leafKeys.sendPQ.pending.isEmpty)
@@ -702,10 +700,10 @@ final class LeafKeysTests: XCTestCase {
 	/// `prepareToEncrypt(rotating:)`'s own mint, `Bootstrap.swift`'s
 	/// PQ-half founding), signing never reads `identity` again. Replaces `alice.identity` with an unrelated bogus
 	/// identity, keeping only `clientID` (rule 4 reads
-	/// `pending[identity.clientID]`), clears `rotationCandidate`/
-	/// `recvLeafPrincipal` too (this session is already converged, so both
-	/// are already unused — clearing them removes any doubt), then drives:
-	/// a routine send (which also discharges the owed PQ bind —
+	/// `pending[identity.clientID]`), clears `rotationCandidate` too (this
+	/// session is already converged, so it is already unused — clearing it
+	/// removes any doubt), then drives: a routine send (which also
+	/// discharges the owed PQ bind —
 	/// `sendClassicalSigningKey`); two mechanical §A.5 rounds, one each
 	/// direction (`recvPQSigningKey` via alice's own `pqRekeyBegin`,
 	/// `sendPQSigningKey` via her `pqRekeyRespond`/discharge as the other
@@ -729,7 +727,6 @@ final class LeafKeysTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 		alice.identity = bogus
 		alice.rotationCandidate = nil
-		alice.recvLeafPrincipal = nil
 
 		// Routine send + the owed PQ bind's classical discharge commit
 		// (`sendClassicalSigningKey`).
@@ -831,7 +828,7 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
 				rotationCandidate: alice.rotationCandidate,
-				recvLeafPrincipal: alice.recvLeafPrincipal, auth: alice.auth,
+				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		) { error in
@@ -848,7 +845,7 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
 				rotationCandidate: alice.rotationCandidate,
-				recvLeafPrincipal: alice.recvLeafPrincipal, auth: alice.auth,
+				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider))
 		_ = bob
@@ -895,7 +892,6 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: withUntrackedUpdate.pendingProposal,
 				pqInflight: withUntrackedUpdate.pqInflight,
 				rotationCandidate: withUntrackedUpdate.rotationCandidate,
-				recvLeafPrincipal: withUntrackedUpdate.recvLeafPrincipal,
 				auth: withUntrackedUpdate.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -913,7 +909,7 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
 				rotationCandidate: alice.rotationCandidate,
-				recvLeafPrincipal: alice.recvLeafPrincipal, auth: alice.auth,
+				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider))
 		_ = mirror
@@ -942,7 +938,6 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: withStrayPending.pendingProposal,
 				pqInflight: withStrayPending.pqInflight,
 				rotationCandidate: withStrayPending.rotationCandidate,
-				recvLeafPrincipal: withStrayPending.recvLeafPrincipal,
 				auth: withStrayPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -960,7 +955,7 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
 				rotationCandidate: alice.rotationCandidate,
-				recvLeafPrincipal: alice.recvLeafPrincipal, auth: alice.auth,
+				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider))
 	}
@@ -999,7 +994,6 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: withUntrackedPending.pendingProposal,
 				pqInflight: withUntrackedPending.pqInflight,
 				rotationCandidate: withUntrackedPending.rotationCandidate,
-				recvLeafPrincipal: withUntrackedPending.recvLeafPrincipal,
 				auth: withUntrackedPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -1027,7 +1021,6 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: withStrayPending.pendingProposal,
 				pqInflight: withStrayPending.pqInflight,
 				rotationCandidate: withStrayPending.rotationCandidate,
-				recvLeafPrincipal: withStrayPending.recvLeafPrincipal,
 				auth: withStrayPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -1211,10 +1204,8 @@ final class LeafKeysTests: XCTestCase {
 			XCTAssertEqual(candidate.clientID, newID)
 			let recvPending = try XCTUnwrap(alice.leafKeys.recvClassical.pending[newID])
 			let sendPending = try XCTUnwrap(alice.leafKeys.sendClassical.pending[newID])
-			for pending in [recvPending, sendPending] {
-				XCTAssertEqual(pending.signingKey.data, candidate.signingKey.data)
-				XCTAssertEqual(pending.signatureKey, candidate.signatureKey)
-			}
+			XCTAssertEqual(recvPending.signingKey.data, sendPending.signingKey.data)
+			XCTAssertEqual(recvPending.signatureKey, sendPending.signatureKey)
 
 			// A live retry (re-staging the same id) is the documented
 			// idempotent case, and completes the round.
@@ -1645,6 +1636,220 @@ final class LeafKeysTests: XCTestCase {
 		XCTAssertTrue(foldDecrypted.ownCredentialCanonicalized)
 		bobTracker.record(foldDecrypted.update)
 		try assertRestoreEqualsLive(bob, using: bobTracker)
+	}
+}
+
+/// `RotationCandidateArchive`'s pre-retirement shape (keys 0-3, keys 1/2
+/// the now-dropped signing/signature key) — encoding-only, so this test can
+/// build a body that still carries them.
+@available(iOS 26, macOS 26, *)
+private struct WideRotationCandidateArchive: Encodable {
+	var clientID: Data
+	var signingKey: Data
+	var signatureKey: Data
+	var proposedAtRecvEpoch: UInt64
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case clientID = 0
+		case signingKey = 1
+		case signatureKey = 2
+		case proposedAtRecvEpoch = 3
+	}
+}
+
+/// `RecvLeafPrincipalArchive`'s pre-retirement shape (archive key 40 in
+/// `SessionArchive`) — encoding-only, standing in for a field this engine no
+/// longer even declares.
+@available(iOS 26, macOS 26, *)
+private struct OldRecvLeafPrincipalArchive: Encodable {
+	var clientID: Data
+	var signingKey: Data
+	var signatureKey: Data
+	var pqSigningKey: Data
+	var pqSignatureKey: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case clientID = 0
+		case signingKey = 1
+		case signatureKey = 2
+		case pqSigningKey = 3
+		case pqSignatureKey = 4
+	}
+}
+
+/// A `SessionArchive` body, encoding-only, at the exact same coding keys as
+/// the live type — EXCEPT `rotationCandidate` (key 31) carries its retired
+/// keys 1/2 and an extra `recvLeafPrincipal` (key 40) rides along, neither
+/// of which the live `SessionArchive`/`RotationCandidateArchive` declare any
+/// more. Proves an archive body shaped like a pre-retirement one (a real
+/// migrator input, or a dev archive written before this change) still
+/// decodes and restores: synthesized `Decodable` ignores unknown integer
+/// keys.
+@available(iOS 26, macOS 26, *)
+private struct WideSessionArchive: Encodable {
+	var version: UInt64
+	var classicalSuite: UInt16
+	var pqSuite: UInt16
+	var kind: BlobKind
+	var stateSeq: UInt64
+	var sendPQEpoch: UInt64?
+	var recvPQEpoch: UInt64?
+	var sendClassicalGroupID: Data?
+	var recvClassicalGroupID: Data?
+	var identity: IdentityArchive
+	var auth: AuthCore
+	var sendGroup: GroupEntry?
+	var recvGroup: GroupEntry?
+	var currentStaple: Data
+	var pendingProposal: PendingProposalArchive?
+	var joinedWelcomeDigest: Data?
+	var initiated: Bool
+	var bootstrapKPSecret: BootstrapKPSecretArchive?
+	var expectedBootstrapKPCommitment: Data?
+	var pqTurnMine: Bool
+	var owedBind: OwedBind?
+	var pqInflight: PQInflightArchive?
+	var pendingSideBand: Data?
+	var peerAppliedSendEpoch: UInt64?
+	var lastCrossInjected: UInt64?
+	var lastCrossInjectedPQ: UInt64?
+	var lastSendPQExported: UInt64?
+	var offeredProposal: DigestedProposalArchive?
+	var queuedProposal: DigestedProposalArchive?
+	var stagedUpdates: [StagedUpdateArchive]
+	var sendCrossPSKLedger: ArchiveIntegerKeyedMap<ExportedPskArchive>
+	var rotationCandidate: WideRotationCandidateArchive?
+	var spawnToken: Data?
+	var listenRendezvous: ArchiveIntegerKeyedMap<Data>?
+	var recvHeaderKeys: ArchiveIntegerKeyedMap<Data>?
+	var recvHeaderKeysPQ: ArchiveIntegerKeyedMap<Data>?
+	var initialTheirKP: CombinerKeyPackageArchive?
+	var sendAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
+	var recvAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
+	var owesEstablishmentEnvelope: Bool?
+	var recvLeafPrincipal: OldRecvLeafPrincipalArchive?
+	var leafKeys: LeafKeysArchive
+	var sendPQKeysFingerprint: GroupKeySetFingerprint
+	var recvPQKeysFingerprint: GroupKeySetFingerprint
+	var deployedCarry: DeployedCarryArchive?
+	var initialAppPayload: Data?
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case version = 0
+		case classicalSuite = 1
+		case pqSuite = 2
+		case kind = 3
+		case stateSeq = 4
+		case sendPQEpoch = 5
+		case recvPQEpoch = 6
+		case sendClassicalGroupID = 7
+		case recvClassicalGroupID = 8
+		case identity = 9
+		case auth = 10
+		case sendGroup = 11
+		case recvGroup = 12
+		case currentStaple = 13
+		case pendingProposal = 14
+		case joinedWelcomeDigest = 15
+		case initiated = 16
+		case bootstrapKPSecret = 17
+		case expectedBootstrapKPCommitment = 18
+		case pqTurnMine = 19
+		case owedBind = 20
+		case pqInflight = 21
+		case pendingSideBand = 22
+		case peerAppliedSendEpoch = 23
+		case lastCrossInjected = 24
+		case lastCrossInjectedPQ = 25
+		case lastSendPQExported = 26
+		case offeredProposal = 27
+		case queuedProposal = 28
+		case stagedUpdates = 29
+		case sendCrossPSKLedger = 30
+		case rotationCandidate = 31
+		case spawnToken = 32
+		case listenRendezvous = 33
+		case recvHeaderKeys = 34
+		case recvHeaderKeysPQ = 35
+		case initialTheirKP = 36
+		case sendAttachmentLedger = 37
+		case recvAttachmentLedger = 38
+		case owesEstablishmentEnvelope = 39
+		case recvLeafPrincipal = 40
+		case leafKeys = 41
+		case sendPQKeysFingerprint = 42
+		case recvPQKeysFingerprint = 43
+		case deployedCarry = 44
+		case initialAppPayload = 45
+	}
+}
+
+@available(iOS 26, macOS 26, *)
+extension LeafKeysTests {
+	/// Test 14: a body shaped like a pre-retirement archive — carrying
+	/// `RotationCandidateArchive`'s retired keys 1/2 and a `recvLeafPrincipal`
+	/// at key 40 — still decodes and restores, because a synthesized
+	/// `Decodable` ignores unknown integer keys. Kills a strict decoder that
+	/// rejects an archive body it doesn't recognize every key of.
+	func testArchiveWithRetiredKeyFieldsStillDecodes() throws {
+		var alice = try SessionTestSupport.establishedAndExchanged().alice
+		_ = try alice.prepareToEncrypt(rotating: Data("alice-retired-fields".utf8))
+		let real = try alice.makeSessionArchive(kind: .checkpoint).decode(
+			SessionArchive.self)
+		let realCandidate = try XCTUnwrap(real.rotationCandidate)
+
+		let wide = WideSessionArchive(
+			version: real.version, classicalSuite: real.classicalSuite,
+			pqSuite: real.pqSuite, kind: real.kind, stateSeq: real.stateSeq,
+			sendPQEpoch: real.sendPQEpoch, recvPQEpoch: real.recvPQEpoch,
+			sendClassicalGroupID: real.sendClassicalGroupID,
+			recvClassicalGroupID: real.recvClassicalGroupID, identity: real.identity,
+			auth: real.auth, sendGroup: real.sendGroup, recvGroup: real.recvGroup,
+			currentStaple: real.currentStaple, pendingProposal: real.pendingProposal,
+			joinedWelcomeDigest: real.joinedWelcomeDigest, initiated: real.initiated,
+			bootstrapKPSecret: real.bootstrapKPSecret,
+			expectedBootstrapKPCommitment: real.expectedBootstrapKPCommitment,
+			pqTurnMine: real.pqTurnMine, owedBind: real.owedBind,
+			pqInflight: real.pqInflight, pendingSideBand: real.pendingSideBand,
+			peerAppliedSendEpoch: real.peerAppliedSendEpoch,
+			lastCrossInjected: real.lastCrossInjected,
+			lastCrossInjectedPQ: real.lastCrossInjectedPQ,
+			lastSendPQExported: real.lastSendPQExported,
+			offeredProposal: real.offeredProposal, queuedProposal: real.queuedProposal,
+			stagedUpdates: real.stagedUpdates,
+			sendCrossPSKLedger: real.sendCrossPSKLedger,
+			rotationCandidate: WideRotationCandidateArchive(
+				clientID: realCandidate.clientID,
+				signingKey: Data(repeating: 0x11, count: 32),
+				signatureKey: Data(repeating: 0x22, count: 32),
+				proposedAtRecvEpoch: realCandidate.proposedAtRecvEpoch),
+			spawnToken: real.spawnToken, listenRendezvous: real.listenRendezvous,
+			recvHeaderKeys: real.recvHeaderKeys,
+			recvHeaderKeysPQ: real.recvHeaderKeysPQ,
+			initialTheirKP: real.initialTheirKP,
+			sendAttachmentLedger: real.sendAttachmentLedger,
+			recvAttachmentLedger: real.recvAttachmentLedger,
+			owesEstablishmentEnvelope: real.owesEstablishmentEnvelope,
+			recvLeafPrincipal: OldRecvLeafPrincipalArchive(
+				clientID: Data("retired-principal".utf8),
+				signingKey: Data(repeating: 0x33, count: 32),
+				signatureKey: Data(repeating: 0x44, count: 32),
+				pqSigningKey: Data(repeating: 0x55, count: 32),
+				pqSignatureKey: Data(repeating: 0x66, count: 32)),
+			leafKeys: real.leafKeys, sendPQKeysFingerprint: real.sendPQKeysFingerprint,
+			recvPQKeysFingerprint: real.recvPQKeysFingerprint,
+			deployedCarry: real.deployedCarry, initialAppPayload: real.initialAppPayload
+		)
+
+		let archive = try SecretArchive(encoding: wide)
+		let decoded = try archive.decode(SessionArchive.self)
+		XCTAssertEqual(decoded.rotationCandidate?.clientID, realCandidate.clientID)
+
+		XCTAssertNoThrow(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: archive,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider))
 	}
 }
 

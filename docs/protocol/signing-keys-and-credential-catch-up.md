@@ -152,10 +152,12 @@ We don't carry that coupling over. Decisions:
     - Hosts bind the per-round proposal hash into each message (`session-lifecycle.md:117`, `:139`), so consecutive
       messages in one epoch carry the same hash. The host we checked signs it into a per-message proposal, and the
       receiver checks that proposal against the same frame's digest. Nothing is keyed on the hash, so a repeat is fine.
-- **D4 — KeyPackage keys.** Every KeyPackage half gets a fresh signing key; there is no principal-wide signing key. We
-  read "principal" as the credential. The book's "a credential-scoped signing identity" (`concepts.md:14`) is the
-  lockstep model's wording. Every group a party founds is founded on a freshly minted leaf; a KeyPackage half's key
-  lands only in the one group that half joins.
+- **D4 — KeyPackage keys.** Every KeyPackage half gets a fresh signing key; there is no principal-wide signing key.
+  The book (`concepts.md:14-20`) itself says the principal is "a credential-scoped identity (one MLS Basic
+  Credential)" and that "a principal may use one signing key for every half it mints, or a fresh key per half; both
+  conform" — our per-half minting is the second of those two conforming shapes, not a departure from it. Every group
+  a party founds is founded on a freshly minted leaf; a KeyPackage half's key lands only in the one group that half
+  joins.
 - **D5 — superseded: the book now specifies the reciprocal A.5** (`protocol-flows.md:56`, `:704-708`;
   `group-rules.md:143-158` rule 4). The non-rotated peer's own next turn opens the catch-up for the rotated party's
   still-lagging leaf; there is no extra trigger left for us to add.
