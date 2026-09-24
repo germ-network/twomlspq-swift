@@ -61,10 +61,57 @@ extension TwoMLSSession {
 
 		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
 
-		let message: MLS.RFC9420.Message
+		let proposalBytes: Data
 		let proposing: Data
 		var mintedCandidate: RotationCandidate?
 		var mintedLeafKeys: LeafKeys?
+		var reusedThisCall = false
+
+		// At most one offer per (recv epoch, target) — `stagedUpdates` is
+		// current-epoch by construction (drained at every recv-classical
+		// epoch advance), so a target match here is always this epoch's own
+		// prior offer for it. Repeats the identical proposal bytes rather
+		// than minting/appending again.
+		//
+		// Search `stagedUpdates` ONLY, never `pendingProposal`: the
+		// epoch-advance sites (`applyFoldCommit`, `applyBind`) drain
+		// `stagedUpdates` on every recv-classical epoch move but leave
+		// `pendingProposal` untouched when it was never consumed by
+		// `encrypt` — a `prepareToEncrypt` with no matching `encrypt`,
+		// followed by a peer commit that moves the epoch, followed by
+		// another `prepareToEncrypt`, would otherwise reuse dead-epoch
+		// bytes whose staged key was just pruned. Every `pendingProposal`
+		// this call sets is also appended to `stagedUpdates` below (unless
+		// itself a reuse), so `stagedUpdates` alone already covers every
+		// message `pendingProposal` could name.
+		func reuseOffer(for target: Data) -> Data? {
+			for entry in stagedUpdates.reversed() {
+				if Self.offerTarget(entry.message) == target {
+					return entry.message
+				}
+			}
+			return nil
+		}
+
+		// D3: every new offer for `target` mints a fresh key and replaces
+		// whatever `pending[target]` held, EXCEPT while a migrated
+		// own-offer window record is outstanding and already names this
+		// target — its held key must be reused (a window offer may name
+		// it), not replaced out from under it. Once the window's epoch
+		// moves, `ownOfferWindow` is cleared and the next offer mints
+		// fresh again.
+		func mintTargetKey(for target: Data) throws -> LeafKey {
+			var staged = mintedLeafKeys ?? leafKeys
+			if ownOfferWindow != nil, let held = staged.recvClassical.pending[target] {
+				mintedLeafKeys = staged
+				return held
+			}
+			let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+			let key = LeafKey(signingKey: signingKey, signatureKey: signatureKey)
+			staged.recvClassical.replace(key, for: target)
+			mintedLeafKeys = staged
+			return key
+		}
 
 		// CODE FIX 2: rotating "to" the id already occupying my own
 		// recv-leaf can never converge — `PartySequence.commit(current)`
@@ -78,30 +125,34 @@ extension TwoMLSSession {
 		// whatever put it there: the born-dedicated acceptor's Group_A leaf
 		// presenting the invitation identity while `auth.mine.current` is
 		// already D, or a migrated session's leaf presenting a Rust-era id.
-		// The target key always lives at `recvClassical.pending[mine.
-		// current]` — rule 7 requires it to be there for any lagging own
-		// leaf, native or migrated alike. Explicit `rotating:` wins over
-		// this implicit arm (checked first, below) UNLESS it names
-		// `auth.mine.current` itself — closing the `rotating ==
-		// auth.mine.current` hole (Messaging:65-99 would otherwise mint a
-		// 2nd keypair and leak `authorize(mine.current)` into
-		// `authorizedNext` forever, since `PartySequence.commit`'s own
+		// The target key is minted fresh at `recvClassical.pending[mine.
+		// current]` per D3 (`mintTargetKey`, above), except while an
+		// outstanding own-offer window already holds one there. Explicit
+		// `rotating:` wins over this implicit arm (checked first, below)
+		// UNLESS it names `auth.mine.current` itself — closing the
+		// `rotating == auth.mine.current` hole (Messaging:65-99 would
+		// otherwise mint a 2nd keypair and leak `authorize(mine.current)`
+		// into `authorizedNext` forever, since `PartySequence.commit`'s own
 		// `current == id` early return never canonicalizes a no-op).
 		if rotating == nil, let mineCurrent = auth.mine.current, myCurrentID != mineCurrent
 		{
-			guard let target = leafKeys.recvClassical.pending[mineCurrent] else {
-				throw TwoMLSError.credentialUnknown
+			if let reused = reuseOffer(for: mineCurrent) {
+				proposalBytes = reused
+				reusedThisCall = true
+			} else {
+				let target = try mintTargetKey(for: mineCurrent)
+				let (catchUpMessage, _) = try recv.classical.proposeUpdate(
+					classicalProvider,
+					sign: MLS.RFC9420.signingClosure(
+						classicalProvider,
+						current: try recvClassicalSigningKey(),
+						new: target.signingKey),
+					framing: .publicMessage,
+					newIdentity: MLS.RFC9420.NewSigningIdentity(
+						credential: .basic(identity: mineCurrent),
+						signatureKey: target.signatureKey))
+				proposalBytes = try catchUpMessage.mlsEncoded()
 			}
-			let (catchUpMessage, _) = try recv.classical.proposeUpdate(
-				classicalProvider,
-				sign: MLS.RFC9420.signingClosure(
-					classicalProvider, current: try recvClassicalSigningKey(),
-					new: target.signingKey),
-				framing: .publicMessage,
-				newIdentity: MLS.RFC9420.NewSigningIdentity(
-					credential: .basic(identity: mineCurrent),
-					signatureKey: target.signatureKey))
-			message = catchUpMessage
 			proposing = mineCurrent
 		} else if let rotating {
 			guard !rotating.isEmpty else { throw TwoMLSError.credentialUnknown }
@@ -121,21 +172,28 @@ extension TwoMLSSession {
 				// on `rotating` itself since it already equals `mine.current`;
 				// else there is nothing to catch up AND no legitimate
 				// rotation target here either.
-				guard let target = leafKeys.recvClassical.pending[rotating] else {
-					throw TwoMLSError.credentialUnknown
-				}
-				let (catchUpMessage, _) = try recv.classical.proposeUpdate(
-					classicalProvider,
-					sign: MLS.RFC9420.signingClosure(
+				if let reused = reuseOffer(for: rotating) {
+					proposalBytes = reused
+					reusedThisCall = true
+				} else {
+					let target = try mintTargetKey(for: rotating)
+					let (catchUpMessage, _) = try recv.classical.proposeUpdate(
 						classicalProvider,
-						current: try recvClassicalSigningKey(),
-						new: target.signingKey),
-					framing: .publicMessage,
-					newIdentity: MLS.RFC9420.NewSigningIdentity(
-						credential: .basic(identity: rotating),
-						signatureKey: target.signatureKey))
-				message = catchUpMessage
+						sign: MLS.RFC9420.signingClosure(
+							classicalProvider,
+							current: try recvClassicalSigningKey(),
+							new: target.signingKey),
+						framing: .publicMessage,
+						newIdentity: MLS.RFC9420.NewSigningIdentity(
+							credential: .basic(identity: rotating),
+							signatureKey: target.signatureKey))
+					proposalBytes = try catchUpMessage.mlsEncoded()
+				}
 				proposing = rotating
+			} else if let reused = reuseOffer(for: rotating) {
+				proposalBytes = reused
+				proposing = rotating
+				reusedThisCall = true
 			} else {
 				let candidate: RotationCandidate
 				let candidateKey: LeafKey
@@ -158,8 +216,6 @@ extension TwoMLSSession {
 					candidateKey = existingKey
 					candidate = RotationCandidate(
 						clientID: existing.clientID,
-						signingKey: existing.signingKey,
-						signatureKey: existing.signatureKey,
 						proposedAtRecvEpoch: recv.classical.context.epoch)
 				} else {
 					if let existing = rotationCandidate {
@@ -170,12 +226,15 @@ extension TwoMLSSession {
 						// (`recvGroup.classical`'s epoch has moved past the
 						// epoch it was staged at). A candidate that DID
 						// converge means a rotation already landed on this
-						// leaf; replacing it here would drop the very key both
-						// classical leaves may already present, bricking every
-						// later `encrypt`/`prepareToEncrypt` — so a second
-						// rotation on a converged leaf is rejected outright
-						// (F2's one-generation cap) until a later slice's PQ
-						// catch-up.
+						// leaf, so a second rotation on a converged leaf is
+						// rejected outright (F2's one-generation cap) until a
+						// later slice's PQ catch-up — lifting the cap is a
+						// separate policy call, not merely a consequence of
+						// send-classical no longer holding a candidate
+						// key that could be stranded. It also keeps at most two targets
+						// (routine + one candidate) ever outstanding per
+						// epoch, bounding `stagedUpdates`/`recvClassical.
+						// pending` the same way.
 						guard
 							isRotationCandidateOutstanding(
 								existing.clientID,
@@ -189,39 +248,18 @@ extension TwoMLSSession {
 					let (signingKey, signatureKey) =
 						try TwoMLSIdentity.mintSignatureKeypair()
 					candidate = RotationCandidate(
-						clientID: rotating, signingKey: signingKey,
-						signatureKey: signatureKey,
+						clientID: rotating,
 						proposedAtRecvEpoch: recv.classical.context.epoch)
 					candidateKey = LeafKey(
 						signingKey: signingKey, signatureKey: signatureKey)
-					// Stage the fresh key into BOTH classical sets — recv-
-					// classical via `stage` (idempotent-safe, though a fresh
-					// mint can never collide with a live target here);
-					// send-classical replaces every OTHER entry, since F2's
-					// one-generation cap means at most one candidate is ever
-					// outstanding for the whole party, but (generalized
-					// catch-up) it KEEPS `pending[mine.current]` when the
-					// send leaf itself still lags — without this, a
-					// migrated session whose send-classical leaf lags after
-					// a rotation Rust won, and which then rotates again
-					// natively, would lose its catch-up key and brick. A
-					// candidate this replaces leaves its own dead
-					// `pending[C_old]` entry behind on recv-classical ONLY —
-					// harmless: no signing site ever reads a target that
-					// isn't the current `rotating` or the retained
-					// catch-up.
+					// Stage the fresh key into recv-classical only, via `stage`
+					// (idempotent-safe, though a fresh mint can never collide
+					// with a live target here). Send-classical never holds
+					// a `pending` entry any more — its own next committing
+					// round mints fresh for whatever id it then presents, so
+					// there is nothing to stage there in advance.
 					try stagedLeafKeys.recvClassical.stage(
 						candidateKey, for: rotating)
-					var sendPending: [Data: LeafKey] = [:]
-					if let mineCurrent = auth.mine.current,
-						let catchUpKey = stagedLeafKeys.sendClassical
-							.pending[
-								mineCurrent]
-					{
-						sendPending[mineCurrent] = catchUpKey
-					}
-					sendPending[rotating] = candidateKey
-					stagedLeafKeys.sendClassical.pending = sendPending
 				}
 				mintedLeafKeys = stagedLeafKeys
 
@@ -241,7 +279,7 @@ extension TwoMLSSession {
 					newIdentity: MLS.RFC9420.NewSigningIdentity(
 						credential: .basic(identity: candidate.clientID),
 						signatureKey: candidateKey.signatureKey))
-				message = rotatingMessage
+				proposalBytes = try rotatingMessage.mlsEncoded()
 				proposing = candidate.clientID
 				mintedCandidate = candidate
 			}
@@ -249,11 +287,27 @@ extension TwoMLSSession {
 			// §3b: after `canonicalized_own`, my recv-leaf presents the NEW
 			// credential, and a routine (non-rotating) `Upd` must sign under
 			// it — read straight off the tree rather than trusting bookkeeping.
-			proposing = try basicIdentifier(Self.ownLeaf(of: recv.classical).credential)
-			let (routineMessage, _) = try recv.classical.proposeUpdate(
-				classicalProvider, signingKey: try recvClassicalSigningKey(),
-				framing: .publicMessage)
-			message = routineMessage
+			// D3: a routine offer is a key move too — it mints a fresh key
+			// under the SAME id via `NewSigningIdentity`, same as a catch-up.
+			let ownID = try basicIdentifier(Self.ownLeaf(of: recv.classical).credential)
+			proposing = ownID
+			if let reused = reuseOffer(for: ownID) {
+				proposalBytes = reused
+				reusedThisCall = true
+			} else {
+				let target = try mintTargetKey(for: ownID)
+				let (routineMessage, _) = try recv.classical.proposeUpdate(
+					classicalProvider,
+					sign: MLS.RFC9420.signingClosure(
+						classicalProvider,
+						current: try recvClassicalSigningKey(),
+						new: target.signingKey),
+					framing: .publicMessage,
+					newIdentity: MLS.RFC9420.NewSigningIdentity(
+						credential: .basic(identity: ownID),
+						signatureKey: target.signatureKey))
+				proposalBytes = try routineMessage.mlsEncoded()
+			}
 		}
 
 		// MF4: value semantics — every throwing call above ran on the LOCAL
@@ -281,17 +335,21 @@ extension TwoMLSSession {
 					name: "prepareToEncrypt.afterWriteBackBeforeEncode")
 			}
 		#endif
-		let proposalBytes = try message.mlsEncoded()
 		// `sha256` for the deployed classical suite (curve25519ChaCha), matching
 		// the book's fixed sha256 for `proposal_hash`.
 		let proposalHash = try classicalProvider.hash(proposalBytes)
 		pendingProposal = (
 			proposing: proposing, message: proposalBytes, hash: proposalHash
 		)
-		// §11 MF3: retain every Upd(self) staged this recv epoch — not just the
-		// latest — so a `0x00`/`0x05` staple that folds an earlier one by
-		// reference can still resolve it.
-		stagedUpdates.append((digest: proposalHash, message: proposalBytes))
+		// §11 MF3: retain every DISTINCT Upd(self) staged this
+		// recv epoch — not just the latest — so a `0x00`/`0x05` staple that
+		// folds an earlier one by reference can still resolve it. A reused
+		// offer repeats an entry already here, so it is not appended again
+		// — `stagedUpdates` stays bounded by the number of DISTINCT targets
+		// used this epoch, not the number of `prepareToEncrypt` calls.
+		if !reusedThisCall {
+			stagedUpdates.append((digest: proposalHash, message: proposalBytes))
+		}
 
 		// Return cadence (slice 8a): classical-only mutation → `.core`. `didCommit`
 		// installed a fresh `currentStaple` (`committingRound`'s success

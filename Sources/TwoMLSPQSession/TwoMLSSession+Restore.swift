@@ -378,8 +378,7 @@ extension TwoMLSSession {
 		let identity = try body.identity.restore()
 		let bootstrapKPSecret = try body.bootstrapKPSecret?.restore()
 		let pqInflight = try body.pqInflight?.restore()
-		let rotationCandidate = try body.rotationCandidate?.restore()
-		let recvLeafPrincipal = try body.recvLeafPrincipal?.restore()
+		let rotationCandidate = body.rotationCandidate?.restore()
 		// `LeafKeysArchive.restore()` runs the archive-level checks (every
 		// key derives; every pending target non-empty/unique, and — since
 		// the splice above already ran — the PQ sets are present);
@@ -402,7 +401,7 @@ extension TwoMLSSession {
 			stagedUpdates: body.stagedUpdates.map { $0.asTuple },
 			pendingProposal: body.pendingProposal?.asTuple,
 			pqInflight: pqInflight, rotationCandidate: rotationCandidate,
-			recvLeafPrincipal: recvLeafPrincipal, auth: body.auth,
+			auth: body.auth,
 			mode: .restore, noCustody: noCustody,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
 		try validatePQPins(body.auth, sendPQ: sendGroup?.pq, recvPQ: recvGroup?.pq)
@@ -429,7 +428,6 @@ extension TwoMLSSession {
 			lastCrossInjectedPQ: body.lastCrossInjectedPQ,
 			lastSendPQExported: body.lastSendPQExported,
 			spawnToken: body.spawnToken,
-			recvLeafPrincipal: recvLeafPrincipal,
 			owesEstablishmentEnvelope: body.owesEstablishmentEnvelope ?? false,
 			ownOfferWindow: ownOfferWindowRecord,
 			pqWedge: pqWedge,

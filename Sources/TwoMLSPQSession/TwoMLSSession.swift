@@ -167,18 +167,14 @@ public struct DecryptResult: Sendable {
 	/// The peer's current credential id, whenever this apply moved the PEER's
 	/// leaf in this recv group to a new presentation (their own-leaf rotation
 	/// catch-up, or the first fold of their rotating `Upd`) — `nil` otherwise.
-	/// Slice 6. NOTE (D4/NIT6): swift-mls's `.credentialReplaced` effect fires
-	/// on EITHER the credential id or the presented signing key changing
-	/// (`CredentialPresentation` is `Equatable` over both) — so a peer that
-	/// rotates only its signing key while keeping the SAME id still surfaces
-	/// here, with `newSender` equal to that unchanged id (not literally "a
-	/// different credential") — including on a leaf that was already
-	/// lagging: `canonicalize` calls `PartySequence.commit` only for an id
-	/// genuinely new to the sequence, so landing on an already-known
-	/// (in-history or pinned) id canonicalizes nothing, yet `newSender`
-	/// still reports it. Callers should read `newSender` as "the peer's
-	/// current id after this apply," not as proof the id itself changed OR
-	/// that anything was newly canonicalized.
+	/// Slice 6. swift-mls's `.credentialReplaced` effect fires on EITHER the
+	/// credential id or the presented signing key changing
+	/// (`CredentialPresentation` is `Equatable` over both), but `canonicalize`
+	/// filters that down to an id change only: every own-leaf move now mints
+	/// a fresh signature key under the SAME id (a routine offer, a catch-up,
+	/// a commit's path leaf), so a same-id key-only move raises neither
+	/// `newSender` nor `ownCredentialCanonicalized`. `newSender` fires only
+	/// when the peer's id genuinely changes.
 	/// Also set (slice 11) for a Group_B join that adopts a dedicated
 	/// principal D: `didApplyRemoteCommit` stays `false` there (that Bool
 	/// means "applied a remote *commit*"; a join is not one) — `newSender`
@@ -285,15 +281,15 @@ public enum PrincipalState: Sendable, Equatable {
 
 /// A minted classical successor, held while a rotation is in flight (a
 /// single candidate at a time) — bookkeeping only: the actual signing key
-/// this candidate names lives in `leafKeys.sendClassical.pending`/
-/// `recvClassical.pending`, seeded from the SAME mint (`prepareToEncrypt
-/// (rotating:)`). Its `.basic(clientID)` + `signatureKey` is what
-/// `NewSigningIdentity` carries when authoring the rotation or catching up
-/// the lagging leaf.
+/// this candidate names lives in `leafKeys.recvClassical.pending` alone,
+/// seeded from the SAME mint (`prepareToEncrypt(rotating:)`). Send-classical
+/// never holds a copy: our own commit mints its own fresh key straight into
+/// `current` on apply, independent of any recv-classical candidate. Its
+/// `.basic(clientID)` is what `NewSigningIdentity` carries (with the stored
+/// recv-classical key) when authoring the rotation or catching up the
+/// lagging leaf.
 struct RotationCandidate: Sendable {
 	let clientID: Data
-	let signingKey: MLS.SignatureSecretKey
-	let signatureKey: MLS.SignaturePublicKey
 	/// The `recvGroup.classical` epoch this candidate's rotating `Upd(self)`
 	/// was staged at — `prepareToEncrypt(rotating:)`'s wedge relaxation
 	/// compares this against that group's LIVE epoch: once it has moved on,
@@ -306,31 +302,6 @@ struct RotationCandidate: Sendable {
 	/// wrongly qualify for the wedge relaxation and silently strand this
 	/// candidate's own key.
 	let proposedAtRecvEpoch: UInt64
-}
-
-/// Slice 11 (contract-26): the born-dedicated acceptor's
-/// retained custody over the INVITATION identity's two independent per-half
-/// signing keys (D1) — distinct from `rotationCandidate` (a
-/// classical-principal-rotation concept; the one-generation rotation budget
-/// stays untouched by this). Bob's `identity` becomes the dedicated
-/// principal D at `receive`, but his `recvGroup` (Group_A) was joined under
-/// the invitation identity's leaves, so he must keep signing `Upd(self)`
-/// there under them: the classical half (`signingKey`/`signatureKey`) until
-/// the recv-leaf catch-up (group-rules.md rule 4) converges inv → D, and the
-/// PQ half (`pqSigningKey`/`pqSignatureKey`) independently until a later
-/// slice's PQ catch-up ("Chunk 2") does the same — this slice never retires
-/// either (see the field's own doc). The retained keys ARE the invitation
-/// Principal's long-term signing keys — their exposure here is no wider than
-/// the non-dedicated baseline (the same keys already live in `identity` for
-/// the lifetime of any session that never mints a dedicated principal at
-/// all); the PQ-catch-up slice removes the PQ pair from this struct, and
-/// hence from the archive, once it retires that field.
-struct RecvLeafPrincipal: Sendable {
-	let clientID: Data
-	let signingKey: MLS.SignatureSecretKey
-	let signatureKey: MLS.SignaturePublicKey
-	let pqSigningKey: MLS.SignatureSecretKey
-	let pqSignatureKey: MLS.SignaturePublicKey
 }
 
 /// `handleStaple`'s internal result — `applyFoldCommit`/`applyBind` widened
@@ -593,27 +564,6 @@ public struct TwoMLSSession: Sendable {
 
 	// MARK: Born-dedicated principal + contract-26 handoff (slice 11)
 
-	/// Retained custody over the invitation identity's per-half signing keys
-	/// (classical AND PQ), while Bob's `recvGroup` leaves still present them —
-	/// see `RecvLeafPrincipal`'s own doc. `nil` for every session except a
-	/// born-dedicated acceptor (and for the degenerate `newClientID ==
-	/// nil`/`== invitation id` topology, which never mints one at all). NOT
-	/// cleared when the CLASSICAL recv-leaf catch-up (group-rules.md rule 4) converges —
-	/// `recvGroup.pq`'s leaf keeps presenting the invitation identity
-	/// independently, until a later slice's PQ catch-up ("Chunk 2", out of
-	/// scope here) converges it too; `leafKeys.recvPQ.current` needs the
-	/// retained PQ pair until then (`leafKeys.recvClassical.current` moves
-	/// to the classical pair at rule-4 convergence). A stale
-	/// entry once both converge would be harmless (mirrors
-	/// `rotationCandidate`'s own reasoning), but nothing in this slice ever
-	/// proves that condition, so retirement is left to that later slice.
-	/// Archive exposure: this struct carries the invitation Principal's own
-	/// long-term per-half signing keys, so it rides the sealed session archive
-	/// like any other live credential material — no wider than the exposure the
-	/// non-dedicated baseline already accepts for `identity`. The PQ-catch-up
-	/// slice's retirement of this field also removes those keys from the
-	/// archive, not just from live memory.
-	var recvLeafPrincipal: RecvLeafPrincipal? = nil
 	/// The non-emittable gate: `true` from the moment a
 	/// dedicated principal is minted (`receive(newClientID:)`) until
 	/// `installEstablishmentEnvelope` succeeds. `ensureEstablishmentDelegated()`
@@ -679,9 +629,8 @@ public struct TwoMLSSession: Sendable {
 
 	/// The four groups' own stored signing-key sets — the ONLY source of a
 	/// group's signing secrets (`LeafKeys.swift`). `identity`/
-	/// `rotationCandidate`/`recvLeafPrincipal` stay for seeding, persistence,
-	/// the migration mint, and the test oracle only; no signing site reads
-	/// them directly any more.
+	/// `rotationCandidate` stay for seeding, persistence and the migration
+	/// mint only; no signing site reads them directly any more.
 	var leafKeys: LeafKeys
 
 	// MARK: Return cadence (slice 8a)
@@ -874,7 +823,6 @@ public struct TwoMLSSession: Sendable {
 		lastCrossInjectedPQ: UInt64? = nil,
 		lastSendPQExported: UInt64? = nil,
 		spawnToken: Data? = nil,
-		recvLeafPrincipal: RecvLeafPrincipal? = nil,
 		owesEstablishmentEnvelope: Bool = false,
 		ownOfferWindow: OwnOfferWindowRecord? = nil,
 		pqWedge: MigratedPQWedge? = nil,
@@ -905,7 +853,6 @@ public struct TwoMLSSession: Sendable {
 		self.lastCrossInjectedPQ = lastCrossInjectedPQ
 		self.lastSendPQExported = lastSendPQExported
 		self.spawnToken = spawnToken
-		self.recvLeafPrincipal = recvLeafPrincipal
 		self.owesEstablishmentEnvelope = owesEstablishmentEnvelope
 		self.ownOfferWindow = ownOfferWindow
 		self.pqWedge = pqWedge

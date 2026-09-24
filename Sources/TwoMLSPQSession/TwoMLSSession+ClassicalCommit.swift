@@ -402,19 +402,23 @@ extension TwoMLSSession {
 			? try Self.ownLeafCatchUpTarget(
 				send: sendGroup, mineCurrent: auth.mine.current)
 			: nil
-		// The pending-key lookup runs only when there IS a catch-up target
-		// — never unconditionally — and is captured now, on `self.leafKeys`,
-		// before anything in this round mutates state.
-		let catchUpKey: LeafKey? = try catchUpTargetID.map { target in
-			guard let key = leafKeys.sendClassical.pending[target] else {
-				throw TwoMLSError.credentialUnknown
-			}
-			return key
-		}
 		guard folded != nil || willDischargeBind || catchUpTargetID != nil else {
 			return (false, nil)
 		}
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
+
+		// D3: every committing round presents a FRESH send-classical
+		// key — the catch-up id when one is licensed, else the leaf's own
+		// current id (a same-id key-only move). No `pending` entry is ever
+		// read here any more: a migrated session missing a send-classical
+		// catch-up key now heals, minting fresh instead of throwing
+		// `.credentialUnknown`.
+		let pathID =
+			try catchUpTargetID
+			?? basicIdentifier(Self.ownLeaf(of: send.classical).credential)
+		let (freshSigningKey, freshSignatureKey) =
+			try TwoMLSIdentity.mintSignatureKeypair()
+		let freshKey = LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey)
 
 		return try withDeployedWireConventions {
 			var proposalStore = MLS.RFC9420.ProposalStore()
@@ -543,20 +547,12 @@ extension TwoMLSSession {
 			// sender leaf; `.leafNode`/`.groupInfo` route to the candidate's
 			// NEW key. Absent a catch-up, the single-key sugar over the
 			// resolved current key suffices (identical to CP0/CP1).
-			let sign: MLS.RFC9420.SigningClosure
-			let newIdentity: MLS.RFC9420.NewSigningIdentity?
-			if let catchUpTargetID, let catchUpKey {
-				sign = MLS.RFC9420.signingClosure(
-					classicalProvider, current: try sendClassicalSigningKey(),
-					new: catchUpKey.signingKey)
-				newIdentity = MLS.RFC9420.NewSigningIdentity(
-					credential: .basic(identity: catchUpTargetID),
-					signatureKey: catchUpKey.signatureKey)
-			} else {
-				sign = MLS.RFC9420.signingClosure(
-					classicalProvider, try sendClassicalSigningKey())
-				newIdentity = nil
-			}
+			let sign = MLS.RFC9420.signingClosure(
+				classicalProvider, current: try sendClassicalSigningKey(),
+				new: freshKey.signingKey)
+			let newIdentity = MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: pathID),
+				signatureKey: freshKey.signatureKey)
 
 			let transition = try send.classical.committing(
 				classicalProvider, proposals: proposals,
@@ -587,15 +583,13 @@ extension TwoMLSSession {
 				// construction bug on the send side just as fast.
 				try TwoPartyRules.ensureTwoParty(send.classical)
 
-				// The catch-up's target key is now what `send.classical`'s
-				// own leaf presents — promote it, on a local copy, right
-				// after the apply that actually moved it.
+				// D3: the leaf now presents the fresh key this round just
+				// minted — go straight to `current`, on a local copy, right
+				// after the apply that actually moved it. Send-classical
+				// never holds a `pending` entry any more: the round applies
+				// immediately, so there is nothing left to stage.
 				var updatedLeafKeys = leafKeys
-				if let catchUpTargetID, let catchUpKey {
-					try updatedLeafKeys.sendClassical.promoted(
-						presenting: catchUpKey.signatureKey,
-						id: catchUpTargetID)
-				}
+				updatedLeafKeys.sendClassical = GroupKeySet(current: freshKey)
 
 				// MF4: also remember the newly-landed epoch, so a crossed peer
 				// commit referencing it still resolves even if this session
@@ -804,14 +798,6 @@ extension TwoMLSSession {
 			self.ownOfferWindow = nil
 			auth = authCopy
 			leafKeys = updatedLeafKeys
-			// Slice 11 (group-rules.md rule 4): `recvLeafPrincipal` is NOT retired here even
-			// when `ownCanonicalized` reports the CLASSICAL leaf converged —
-			// `leafKeys.recvPQ.current` still holds the retained invitation
-			// PQ pair for `recvGroup.pq`'s leaf, which keeps presenting the
-			// invitation identity until a later slice's PQ catch-up ("Chunk
-			// 2", out of scope here). A stale-but-unused custody entry is
-			// harmless (mirrors `rotationCandidate`'s own "a stale candidate
-			// is harmless" reasoning).
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)
@@ -856,10 +842,15 @@ extension TwoMLSSession {
 		var newSender: Data?
 		var ownCredentialCanonicalized = false
 		for event in effects.events {
-			guard case .credentialReplaced(let leaf, _, let new) = event else {
+			guard case .credentialReplaced(let leaf, let old, let new) = event else {
 				continue
 			}
 			let newID = try basicIdentifier(new.credential)
+			// Every own-leaf move now changes the signature key (D3), so a
+			// same-id move is no longer rare — it is the routine case. Only
+			// an id change is worth surfacing to the host; a same-id
+			// key-only move canonicalizes nothing and sets neither flag.
+			let idChanged = try basicIdentifier(old.credential) != newID
 			// Canonicalize only a credential NEW to the sequence — one
 			// neither already in `history` nor `pinned`. A leaf moving to
 			// an id that's already known is a legitimate catch-up (the
@@ -870,10 +861,8 @@ extension TwoMLSSession {
 			// on an id it would treat as a rollback candidate is simply
 			// skipped here rather than caught after the fact.
 			// `AuthCore.validateSuccession` (run at `adjudicate`) remains
-			// the only rollback gate. The flags below are set regardless —
-			// a same-id signing-key-only change still canonicalizes
-			// nothing but is still a credential-replaced event worth
-			// surfacing.
+			// the only rollback gate.
+			guard idChanged else { continue }
 			if leaf == myLeaf {
 				if !(updated.mine.history.contains(newID)
 					|| updated.mine.pinned.contains(newID))
@@ -909,9 +898,7 @@ extension TwoMLSSession {
 	/// at every advance regardless of which leaf this particular commit
 	/// moved. Generalized catch-up: the retained rule-4 target is
 	/// `authCopy.mine.current` itself whenever the post-apply leaf still
-	/// lags it — subsumes the born-dedicated-only case (`recvLeafPrincipal`/
-	/// `identity` are no longer needed here: kept as unread records on
-	/// `TwoMLSSession` until a later step retires them).
+	/// lags it — subsumes the born-dedicated-only case.
 	private static func updateRecvClassicalKeys(
 		_ leafKeys: LeafKeys, classical: MLS.RFC9420.Group,
 		authCopy: AuthCore, rotationCandidateID: Data?
@@ -1212,9 +1199,6 @@ extension TwoMLSSession {
 			}
 			auth = authCopy
 			leafKeys = updatedLeafKeys
-			// Slice 11 (group-rules.md rule 4): `recvLeafPrincipal` is retained here too — see
-			// `applyFoldCommit`'s own comment on why classical convergence
-			// alone must not clear it.
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)

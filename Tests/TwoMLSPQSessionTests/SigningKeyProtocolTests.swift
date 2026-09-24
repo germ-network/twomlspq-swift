@@ -2,6 +2,7 @@ import Foundation
 import MLSCodec
 import MLSCrypto
 import MLSProfileRFC9420
+import SecretBytes
 import XCTest
 
 @testable import TwoMLSPQSession
@@ -87,9 +88,9 @@ final class SigningKeyProtocolTests: XCTestCase {
 				credential: .basic(identity: newID), signatureKey: freshSignatureKey
 			))
 		proposer.recvGroup = mirror
-		// This hand-built Upd′ bypasses `pqRekeyBegin`, which never mints a
-		// rotating key itself today — stage the fresh key so
-		// `pqRekeyApply`'s promotion can find it when this move lands.
+		// This hand-built Upd′ bypasses `pqRekeyBegin`, which would mint and
+		// stage its own key — stage the fresh key here so `pqRekeyApply`'s
+		// promotion can find it when this move lands.
 		try proposer.leafKeys.recvPQ.stage(
 			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
 			for: newID)
@@ -97,49 +98,31 @@ final class SigningKeyProtocolTests: XCTestCase {
 		return (Frames.encodePQRekeyUpd(bytes), bytes)
 	}
 
-	/// `handBuildPQLeafMoveUpd`, but re-framed with `authenticatedData` — the
-	/// §4 C1 announced id. The leaf's own self-signature (`LeafNodeTBS`) never
-	/// covers `authenticatedData` (RFC 9420 §7.2), so the genuinely
-	/// ring-signed leaf `proposeUpdate` already produced carries over
-	/// unchanged; only the enclosing envelope needs a fresh signature over the
-	/// new authenticated data — built from public swift-mls framing
-	/// (`FramedContent` + `protectPublic`), since 0.1.3's `proposeUpdate` has
-	/// no `authenticatedData:` parameter of its own.
+	/// `handBuildPQLeafMoveUpd`, but with `authenticatedData` — the §4 C1
+	/// announced id, carried via swift-mls 0.1.6's own `proposeUpdate(…
+	/// authenticatedData:)` parameter.
 	private func handBuildPQLeafMoveUpdWithAD(
 		proposer: inout TwoMLSSession, newID: Data, authenticatedData: Data
 	) throws -> (frame: Data, bytes: Data) {
 		var mirror = try XCTUnwrap(proposer.recvGroup)
-		let currentSigningKey = try proposer.recvPQSigningKey()
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (rawMessage, _) = try mirror.pq!.proposeUpdate(
+		let (message, _) = try mirror.pq!.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider,
-				current: currentSigningKey, new: freshSigningKey),
+				current: try proposer.recvPQSigningKey(), new: freshSigningKey),
 			framing: .publicMessage,
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: newID), signatureKey: freshSignatureKey
-			))
-		guard case .publicMessage(let rawPub) = rawMessage else {
-			XCTFail("expected a publicMessage-framed Upd′")
-			throw TwoMLSError.malformedSideBandMessage
-		}
-		let reframed = MLS.RFC9420.FramedContent(
-			groupID: rawPub.content.groupID, epoch: rawPub.content.epoch,
-			sender: rawPub.content.sender, authenticatedData: authenticatedData,
-			content: rawPub.content.content)
-		let sealed = try MLS.RFC9420.protectPublic(
-			SessionTestSupport.pqProvider, content: reframed,
-			groupContext: mirror.pq!.context, confirmationTag: nil,
-			signingKey: currentSigningKey, membershipKey: mirror.pq!.epoch.membershipKey
-		)
+			),
+			authenticatedData: authenticatedData)
 		proposer.recvGroup = mirror
 		// Same reasoning as `handBuildPQLeafMoveUpd` — stage the fresh key
 		// so `pqRekeyApply`'s promotion can find it.
 		try proposer.leafKeys.recvPQ.stage(
 			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
 			for: newID)
-		let bytes = try MLS.RFC9420.Message.publicMessage(sealed).mlsEncoded()
+		let bytes = try message.mlsEncoded()
 		return (Frames.encodePQRekeyUpd(bytes), bytes)
 	}
 
@@ -323,11 +306,8 @@ final class SigningKeyProtocolTests: XCTestCase {
 		// recv-classical (the return KP/invitation half) by construction —
 		// no longer gated on D3's still-open rotation gap.
 		XCTAssertNotEqual(bobKeysAfter.sendClassical, bobKeysAfter.recvClassical)
-		XCTExpectFailure(
-			"D3: a committing round must mint a fresh send-classical signature key"
-		) {
-			XCTAssertNotEqual(bobKeysBefore.sendClassical, bobKeysAfter.sendClassical)
-		}
+		// D3: a committing round mints a fresh send-classical signature key.
+		XCTAssertNotEqual(bobKeysBefore.sendClassical, bobKeysAfter.sendClassical)
 		XCTAssertEqual(bobKeysBefore.recvClassical, bobKeysAfter.recvClassical)
 		XCTAssertEqual(bobKeysBefore.sendPQ, bobKeysAfter.sendPQ)
 		XCTAssertEqual(bobKeysBefore.recvPQ, bobKeysAfter.recvPQ)
@@ -337,12 +317,9 @@ final class SigningKeyProtocolTests: XCTestCase {
 		// D1: recv-classical (the return KP) is always distinct from
 		// send-classical (a fresh founding leaf) by construction.
 		XCTAssertNotEqual(aliceKeysAfter.recvClassical, aliceKeysAfter.sendClassical)
-		XCTExpectFailure(
-			"D3: a folded routine Upd(self) must mint a fresh recv-classical signature key"
-		) {
-			XCTAssertNotEqual(
-				aliceKeysBefore.recvClassical, aliceKeysAfter.recvClassical)
-		}
+		// D3: a folded routine Upd(self) mints a fresh recv-classical
+		// signature key.
+		XCTAssertNotEqual(aliceKeysBefore.recvClassical, aliceKeysAfter.recvClassical)
 		XCTAssertEqual(aliceKeysBefore.sendClassical, aliceKeysAfter.sendClassical)
 		XCTAssertEqual(aliceKeysBefore.sendPQ, aliceKeysAfter.sendPQ)
 		XCTAssertEqual(aliceKeysBefore.recvPQ, aliceKeysAfter.recvPQ)
@@ -402,22 +379,17 @@ final class SigningKeyProtocolTests: XCTestCase {
 		XCTAssertEqual(bobKeysBefore.recvPQ, bobKeysAfter.recvPQ)
 	}
 
-	// MARK: - D3: one proposed Update offer per peer epoch
+	// MARK: - D3: one Update offer per peer epoch
 
-	/// D3 (proposed): frames within one epoch of the peer's group must
-	/// repeat the identical Update offer.
+	/// D3: frames within one epoch of the peer's group repeat the
+	/// identical Update offer.
 	func testD3OnePrepareToEncryptOfferPerPeerEpoch() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		let firstPrepared = try alice.prepareToEncrypt()
 		_ = try alice.encrypt(Data("first".utf8))
 		let secondPrepared = try alice.prepareToEncrypt()
-		XCTExpectFailure(
-			"D3: proposed — one Update offer per peer epoch, repeated across frames"
-		) {
-			XCTAssertEqual(
-				firstPrepared.proposalMessage, secondPrepared.proposalMessage)
-		}
+		XCTAssertEqual(firstPrepared.proposalMessage, secondPrepared.proposalMessage)
 
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decrypted = try bob.processIncomingDecrypted(offerFrame)
@@ -431,6 +403,464 @@ final class SigningKeyProtocolTests: XCTestCase {
 		// legitimately differs — true today and under D3 alike.
 		let thirdPrepared = try alice.prepareToEncrypt()
 		XCTAssertNotEqual(secondPrepared.proposalMessage, thirdPrepared.proposalMessage)
+	}
+
+	/// 100 frames within one epoch, no peer commit: every offer repeats the
+	/// first one's exact bytes, `stagedUpdates` stays at one entry, and the
+	/// sealed Core archive stays essentially flat (only a `stateSeq` counter
+	/// widening by a couple of bytes, not per-frame growth). Kills: minting
+	/// a fresh offer (or appending a new `stagedUpdates` entry) on every
+	/// `prepareToEncrypt` call instead of reusing the one already staged
+	/// this epoch — that mutation grows the archive by roughly the offer's
+	/// own size on every one of the 99 extra frames, not by a few bytes
+	/// total.
+	func testFramesWithinOneEpochRepeatTheIdenticalOffer() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		let testKey = SecretBytes(randomByteCount: 32)
+		let testAAD = Data("signing-key-protocol-tests".utf8)
+
+		let first = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("0".utf8))
+		let firstCoreSize = try alice.makeSessionArchive(kind: .core)
+			.seal(with: testKey, aad: testAAD).count
+
+		for frame in 1..<100 {
+			let prepared = try alice.prepareToEncrypt()
+			XCTAssertEqual(prepared.proposalMessage, first.proposalMessage)
+			_ = try alice.encrypt(Data("\(frame)".utf8))
+		}
+
+		XCTAssertEqual(alice.stagedUpdates.count, 1)
+		let lastCoreSize = try alice.makeSessionArchive(kind: .core)
+			.seal(with: testKey, aad: testAAD).count
+		XCTAssertLessThan(lastCoreSize - firstCoreSize, 16)
+	}
+
+	/// A rotation candidate gets its own offer, distinct from — and
+	/// coexisting with — the routine offer; a plain frame after it still
+	/// repeats the ROUTINE offer, not the candidate's. Kills: latest-wins
+	/// reuse (one slot for the whole epoch instead of per target);
+	/// re-minting a repeated rotation offer.
+	func testRotationGetsItsOwnOfferAndPlainFramesKeepTheRoutineOffer() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let aliceRotated = Data("alice-rotated-in-epoch".utf8)
+
+		let routineFirst = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("r0".utf8))
+		let rotationFirst = try alice.prepareToEncrypt(rotating: aliceRotated)
+		_ = try alice.encrypt(Data("c0".utf8))
+		XCTAssertNotEqual(routineFirst.proposalMessage, rotationFirst.proposalMessage)
+
+		let routineAgain = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("r1".utf8))
+		XCTAssertEqual(routineAgain.proposalMessage, routineFirst.proposalMessage)
+
+		let rotationAgain = try alice.prepareToEncrypt(rotating: aliceRotated)
+		let rotationFrame = try alice.encrypt(Data("c1".utf8)).frame
+		XCTAssertEqual(rotationAgain.proposalMessage, rotationFirst.proposalMessage)
+
+		// D3: the routine offer is a key move too, so it stages its own
+		// `pending` entry alongside the candidate's.
+		let aliceOwnID = try XCTUnwrap(alice.auth.mine.current)
+		XCTAssertEqual(alice.stagedUpdates.count, 2)
+		XCTAssertEqual(
+			Set(alice.leafKeys.recvClassical.pending.keys), [aliceOwnID, aliceRotated])
+
+		// The peer folds the candidate's (already-sent) offer; it
+		// promotes, and the candidate's `pending` entry is pruned.
+		_ = try bob.processIncomingDecrypted(rotationFrame)
+		_ = try bob.queueProposal(digest: rotationAgain.proposalHash)
+		let foldPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
+		_ = try alice.processIncomingDecrypted(foldFrame)
+		XCTAssertNil(alice.leafKeys.recvClassical.pending[aliceRotated])
+	}
+
+	/// D3: a routine offer mints a fresh key in recv-classical only — never
+	/// a same-key refresh, and never leaked into another group. Kills: a
+	/// routine offer signed without `newIdentity`.
+	func testRoutineOfferPresentsAFreshKeyInRecvClassicalOnly() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let ownID = try XCTUnwrap(alice.auth.mine.current)
+		let beforeKey = try TwoMLSSession.ownLeaf(
+			of: XCTUnwrap(alice.recvGroup).classical
+		).signatureKey
+
+		_ = try alice.prepareToEncrypt()
+		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
+
+		let pendingKey = try XCTUnwrap(alice.leafKeys.recvClassical.pending[ownID])
+		XCTAssertNotEqual(pendingKey.signatureKey.data, beforeKey.data)
+		XCTAssertNotEqual(
+			alice.leafKeys.recvClassical.current?.signatureKey.data,
+			pendingKey.signatureKey.data)
+		XCTAssertNotEqual(
+			alice.leafKeys.sendClassical.current?.signatureKey.data,
+			pendingKey.signatureKey.data)
+		XCTAssertNil(alice.leafKeys.sendClassical.pending[ownID])
+		XCTAssertNotEqual(
+			alice.leafKeys.sendPQ.current?.signatureKey.data,
+			pendingKey.signatureKey.data)
+		XCTAssertNotEqual(
+			alice.leafKeys.recvPQ.current?.signatureKey.data,
+			pendingKey.signatureKey.data)
+
+		let decrypted = try bob.processIncomingDecrypted(offerFrame)
+		_ = try bob.queueProposal(digest: decrypted.queuedProposal.digest)
+		let foldPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
+		_ = try alice.processIncomingDecrypted(foldFrame)
+
+		XCTAssertEqual(
+			alice.leafKeys.recvClassical.current?.signatureKey.data,
+			pendingKey.signatureKey.data)
+		XCTAssertNil(alice.leafKeys.recvClassical.pending[ownID])
+		let presented = try TwoMLSSession.ownLeaf(
+			of: XCTUnwrap(alice.recvGroup).classical
+		).signatureKey
+		XCTAssertEqual(presented.data, pendingKey.signatureKey.data)
+	}
+
+	/// Every committing round — a fold, a bind discharge, or a
+	/// catch-up — presents a FRESH send-classical key and leaves `pending`
+	/// empty afterward, never shared with another group. Kills: signing the
+	/// path with `current`; leaving `pending` populated.
+	func testEveryCommitPresentsAFreshSendClassicalKeyAndHoldsNoPending() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+
+		// A bare fold: alice approves bob's routine offer.
+		_ = try bob.prepareToEncrypt()
+		let bobOfferFrame = try bob.encrypt(Data("bob-offer".utf8)).frame
+		let bobOfferDecrypted = try alice.processIncomingDecrypted(bobOfferFrame)
+		_ = try alice.queueProposal(digest: bobOfferDecrypted.queuedProposal.digest)
+		let keyBeforeFold = try XCTUnwrap(alice.leafKeys.sendClassical.current)
+		let foldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let keyAfterFold = try XCTUnwrap(alice.leafKeys.sendClassical.current)
+		XCTAssertNotEqual(
+			keyAfterFold.signatureKey, keyBeforeFold.signatureKey,
+			"a bare fold must mint a fresh send-classical key too")
+		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
+
+		// A catch-up: alice rotates, bob folds it into recv-classical, and
+		// alice's own next committing round catches her send-classical leaf
+		// up to the new id.
+		let newID = Data("alice-v2".utf8)
+		_ = try alice.prepareToEncrypt(rotating: newID)
+		let rotateFrame = try alice.encrypt(Data("rotate".utf8)).frame
+		let rotateDecrypted = try bob.processIncomingDecrypted(rotateFrame)
+		_ = try bob.queueProposal(digest: rotateDecrypted.queuedProposal.digest)
+		let bobFoldPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(bobFoldPrepared.didCommit)
+		let bobFoldFrame = try bob.encrypt(Data("bob-fold".utf8)).frame
+		let aliceCanonicalized = try alice.processIncomingDecrypted(bobFoldFrame)
+		XCTAssertTrue(aliceCanonicalized.ownCredentialCanonicalized)
+
+		let catchUpPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(catchUpPrepared.didCommit)
+		let keyAfterCatchUp = try XCTUnwrap(alice.leafKeys.sendClassical.current)
+		XCTAssertNotEqual(keyAfterCatchUp.signatureKey, keyAfterFold.signatureKey)
+		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
+		XCTAssertNotEqual(
+			keyAfterCatchUp.signatureKey,
+			alice.leafKeys.recvClassical.current?.signatureKey,
+			"the send-classical catch-up key must not equal recv-classical's")
+		XCTAssertNotEqual(
+			keyAfterCatchUp.signatureKey, alice.leafKeys.sendPQ.current?.signatureKey)
+		XCTAssertNotEqual(
+			keyAfterCatchUp.signatureKey, alice.leafKeys.recvPQ.current?.signatureKey)
+	}
+
+	/// After a rotation converges on recv-classical, the send-classical
+	/// leaf's own later catch-up mints its OWN fresh key — it never reuses
+	/// the candidate's key recv-classical now presents. Kills: re-adding
+	/// the send-classical candidate staging this commit removed.
+	func testSendClassicalCatchUpNeverReusesTheCandidateKey() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let newID = Data("alice-v2".utf8)
+
+		_ = try alice.prepareToEncrypt(rotating: newID)
+		let frame1 = try alice.encrypt(Data("rotate-offer".utf8)).frame
+		let decrypted1 = try bob.processIncomingDecrypted(frame1)
+		_ = try bob.queueProposal(digest: decrypted1.queuedProposal.digest)
+		let prepared2 = try bob.prepareToEncrypt()
+		XCTAssertTrue(prepared2.didCommit)
+		let frame2 = try bob.encrypt(Data("bob-fold".utf8)).frame
+		let decrypted2 = try alice.processIncomingDecrypted(frame2)
+		XCTAssertTrue(decrypted2.ownCredentialCanonicalized)
+		let recvClassicalKey = try XCTUnwrap(alice.leafKeys.recvClassical.current)
+		XCTAssertEqual(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
+			alice.identity.clientID, "send-classical documentedly still lags here")
+
+		// Alice's own-leaf catch-up — the send-classical leaf's turn.
+		let prepared3 = try alice.prepareToEncrypt()
+		XCTAssertTrue(prepared3.didCommit)
+		let sendClassicalKey = try XCTUnwrap(alice.leafKeys.sendClassical.current)
+		XCTAssertNotEqual(sendClassicalKey.signatureKey, recvClassicalKey.signatureKey)
+		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
+	}
+
+	/// Restore rejects a non-empty send-classical `pending`, and both
+	/// mint paths drop a supplied one rather than carrying it through.
+	/// Kills: dropping the strict-empty check; the mint forwarding entries.
+	func testRestoreRejectsSendClassicalPending() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		alice.leafKeys.sendClassical.pending[Data("smuggled".utf8)] = LeafKey(
+			signingKey: signingKey, signatureKey: signatureKey)
+		let archive = try alice.makeSessionArchive(kind: .checkpoint)
+		XCTAssertThrowsError(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: archive,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
+
+	/// D3: a key-only move (a routine offer/fold, either direction) raises
+	/// no host event — a rotation still does. Kills: flags firing on every
+	/// `.credentialReplaced`, not just an id change.
+	func testKeyOnlyMovesRaiseNoHostEvent() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+
+		// alice → bob: alice's routine offer, bob folds it.
+		_ = try alice.prepareToEncrypt()
+		let aliceOfferFrame = try alice.encrypt(Data("a-offer".utf8)).frame
+		let bobSawOffer = try bob.processIncomingDecrypted(aliceOfferFrame)
+		_ = try bob.queueProposal(digest: bobSawOffer.queuedProposal.digest)
+		let bobFoldPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(bobFoldPrepared.didCommit)
+		let bobFoldFrame = try bob.encrypt(Data("b-fold".utf8)).frame
+		let aliceSawFold = try alice.processIncomingDecrypted(bobFoldFrame)
+		XCTAssertNil(aliceSawFold.newSender)
+		XCTAssertFalse(aliceSawFold.ownCredentialCanonicalized)
+
+		// bob → alice: bob's routine offer, alice folds it.
+		_ = try bob.prepareToEncrypt()
+		let bobOfferFrame = try bob.encrypt(Data("b-offer".utf8)).frame
+		let aliceSawOffer = try alice.processIncomingDecrypted(bobOfferFrame)
+		_ = try alice.queueProposal(digest: aliceSawOffer.queuedProposal.digest)
+		let aliceFoldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(aliceFoldPrepared.didCommit)
+		let aliceFoldFrame = try alice.encrypt(Data("a-fold".utf8)).frame
+		let bobSawFold = try bob.processIncomingDecrypted(aliceFoldFrame)
+		XCTAssertNil(bobSawFold.newSender)
+		XCTAssertFalse(bobSawFold.ownCredentialCanonicalized)
+
+		// A genuine rotation (an id change) still fires
+		// `ownCredentialCanonicalized` for the leaf that moved.
+		let aliceNewID = Data("alice-rotated-host-event".utf8)
+		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
+		let rotationOfferFrame = try alice.encrypt(Data("rotate-offer".utf8)).frame
+		let bobSawRotationOffer = try bob.processIncomingDecrypted(rotationOfferFrame)
+		_ = try bob.queueProposal(digest: bobSawRotationOffer.queuedProposal.digest)
+		let bobFoldRotationPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(bobFoldRotationPrepared.didCommit)
+		let bobFoldRotationFrame = try bob.encrypt(Data("rotate-fold".utf8)).frame
+		let aliceSawRotationFold = try alice.processIncomingDecrypted(bobFoldRotationFrame)
+		XCTAssertNil(aliceSawRotationFold.newSender)
+		XCTAssertTrue(aliceSawRotationFold.ownCredentialCanonicalized)
+	}
+
+	/// A host-relied invariant: folding a peer's same-id key-only commit
+	/// (a routine offer, approved and folded) still reports
+	/// `didApplyRemoteCommit == true` — a real commit landed, moving the
+	/// epoch — alongside `newSender == nil`, since the id itself never
+	/// changed. Hosts that gate other state on `didApplyRemoteCommit`
+	/// must see it fire here exactly as it does for an id-changing fold.
+	/// Kills: `applied`/`didApplyRemoteCommit` depending on whether the
+	/// credential id changed, rather than on whether a commit was folded.
+	func testSameIDKeyMoveFoldStillAppliesTheRemoteCommit() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+
+		_ = try alice.prepareToEncrypt()
+		let offerFrame = try alice.encrypt(Data("routine-offer".utf8)).frame
+		let bobSawOffer = try bob.processIncomingDecrypted(offerFrame)
+		_ = try bob.queueProposal(digest: bobSawOffer.queuedProposal.digest)
+
+		let bobFoldPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(bobFoldPrepared.didCommit)
+		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
+		let aliceSawFold = try alice.processIncomingDecrypted(foldFrame)
+
+		XCTAssertTrue(
+			aliceSawFold.didApplyRemoteCommit,
+			"a same-id key-only commit is still a real applied commit")
+		XCTAssertNil(aliceSawFold.newSender, "the id never changed")
+	}
+
+	/// A `prepareToEncrypt` whose `pendingProposal` is never consumed by
+	/// `encrypt` (the offer never left the local session), followed by a
+	/// peer commit that moves the recv epoch, followed by another
+	/// `prepareToEncrypt`. The second prepare must re-propose at the NEW
+	/// epoch, not repeat the dead-epoch bytes — `reuseOffer` must key off
+	/// `stagedUpdates` alone, since the epoch-advance sites drain
+	/// `stagedUpdates` (and prune the stale key) but never touch
+	/// `pendingProposal` directly. Kills: `reuseOffer` consulting
+	/// `pendingProposal` before/instead of `stagedUpdates`.
+	func testUnconsumedOfferIsNotReusedAcrossAnEpochMove() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let ownID = try XCTUnwrap(alice.auth.mine.current)
+
+		// Bob's A.4 legs first (alice's responder leg refuses while she
+		// holds a pending proposal), then alice prepares but never encrypts.
+		_ = try bob.prepareToEncrypt()
+		_ = try bob.encrypt(Data("m".utf8))
+		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
+		_ = try bob.pqRatchetBind(ctFrame)
+
+		let stale = try alice.prepareToEncrypt()
+		XCTAssertNotNil(alice.pendingProposal)
+		let staleKey = try XCTUnwrap(alice.leafKeys.recvClassical.pending[ownID])
+
+		// Bob discharges the bind alone; alice's offer never reached him.
+		let bobPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(bobPrepared.didCommit)
+		let bindFrame = try bob.encrypt(Data("bind-only".utf8)).frame
+		let epochBefore = try XCTUnwrap(alice.recvGroup?.classical.context.epoch)
+		_ = try alice.processIncomingDecrypted(bindFrame)
+		XCTAssertNotEqual(alice.recvGroup?.classical.context.epoch, epochBefore)
+		XCTAssertTrue(alice.stagedUpdates.isEmpty)
+		XCTAssertNil(alice.leafKeys.recvClassical.pending[ownID], "stale key pruned")
+
+		let fresh = try alice.prepareToEncrypt()
+		XCTAssertNotEqual(
+			fresh.proposalMessage, stale.proposalMessage,
+			"a dead-epoch offer must not be repeated after the epoch moved")
+		let freshKey = alice.leafKeys.recvClassical.pending[ownID]
+		XCTAssertNotNil(freshKey, "the new offer must stage its own key")
+		XCTAssertNotEqual(freshKey?.signatureKey.data, staleKey.signatureKey.data)
+
+		// And the peer must be able to fold what alice now sends.
+		let frame = try alice.encrypt(Data("offer".utf8)).frame
+		let decrypted = try bob.processIncomingDecrypted(frame)
+		XCTAssertNoThrow(try bob.queueProposal(digest: decrypted.queuedProposal.digest))
+		XCTAssertTrue(try bob.prepareToEncrypt().didCommit)
+	}
+
+	/// The peer's epoch can move without ever folding our own routine
+	/// offer — here, a bind discharge alone. The stale offer's `pending`
+	/// entry and `stagedUpdates` record both go, and the next offer mints
+	/// a genuinely different key. Kills: reuse across epochs; retention
+	/// keeping a stale routine key.
+	func testEpochMoveWithoutOurFoldMintsANewOfferAndPrunesTheStaleKey() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let ownID = try XCTUnwrap(alice.auth.mine.current)
+
+		_ = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("stale-offer".utf8))
+		let staleKey = try XCTUnwrap(alice.leafKeys.recvClassical.pending[ownID])
+		XCTAssertEqual(alice.stagedUpdates.count, 1)
+
+		// Bob owes a PQ bind and discharges it alone — alice's offer above
+		// was never delivered/queued to him, so nothing of hers folds.
+		_ = try bob.prepareToEncrypt()
+		_ = try bob.encrypt(Data("m".utf8))
+		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
+		_ = try bob.pqRatchetBind(ctFrame)
+		XCTAssertNotNil(bob.owedBind)
+
+		let bobPrepared = try bob.prepareToEncrypt()
+		XCTAssertTrue(bobPrepared.didCommit)
+		XCTAssertNil(bobPrepared.committedRemoteClientID, "nothing of alice's folded")
+		let bindFrame = try bob.encrypt(Data("bind-only".utf8)).frame
+
+		let recvEpochBefore = try XCTUnwrap(alice.recvGroup?.classical.context.epoch)
+		_ = try alice.processIncomingDecrypted(bindFrame)
+		XCTAssertNotEqual(alice.recvGroup?.classical.context.epoch, recvEpochBefore)
+
+		XCTAssertTrue(alice.stagedUpdates.isEmpty)
+		XCTAssertNil(alice.leafKeys.recvClassical.pending[ownID])
+
+		_ = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("fresh-offer".utf8))
+		let freshKey = try XCTUnwrap(alice.leafKeys.recvClassical.pending[ownID])
+		XCTAssertNotEqual(freshKey.signatureKey.data, staleKey.signatureKey.data)
+	}
+
+	/// A new offer for a target reuses the HELD key while an own-offer
+	/// window is outstanding — never replaces it, since a window offer may
+	/// still name it — but a DIFFERENT target with no held key still mints
+	/// fresh, and once the window closes (its epoch moves), the next offer
+	/// for the SAME target mints fresh too. Kills: overwriting `pending[T]`
+	/// while the window is outstanding.
+	func testMigratedWindowEpochProposesUnderTheHeldKey() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		let ownID = try XCTUnwrap(alice.auth.mine.current)
+		let recv = try XCTUnwrap(alice.recvGroup)
+
+		let (heldSigningKey, heldSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let heldKey = LeafKey(signingKey: heldSigningKey, signatureKey: heldSignatureKey)
+		alice.leafKeys.recvClassical.pending[ownID] = heldKey
+		alice.ownOfferWindow = OwnOfferWindowRecord(
+			id: SessionTestSupport.classicalProvider.randomBytes(32),
+			epoch: recv.classical.context.epoch,
+			groupID: recv.classical.context.groupID,
+			senderLeafIndex: recv.classical.myLeafIndex.value, count: 1)
+
+		// (a) the held key is reused, not replaced.
+		_ = try alice.prepareToEncrypt()
+		XCTAssertEqual(
+			alice.leafKeys.recvClassical.pending[ownID]?.signatureKey.data,
+			heldKey.signatureKey.data)
+
+		// (b) a target the window does NOT name — alice's own leaf now
+		// "lags" a different id, with no held key for it — still mints
+		// fresh even though the window is outstanding.
+		let otherID = Data("window-other-target".utf8)
+		try alice.auth.mine.commit(otherID)
+		// Also lags send-classical now (the shared identity sequence) —
+		// `committingRound`'s own catch-up needs SOME pending key there to
+		// proceed; unrelated to what this test checks (recv-classical's
+		// `mintTargetKey`), so any valid key satisfies it.
+		let (dummySigningKey, dummySignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		alice.leafKeys.sendClassical.pending[otherID] = LeafKey(
+			signingKey: dummySigningKey, signatureKey: dummySignatureKey)
+		_ = try alice.prepareToEncrypt()
+		let otherKey = try XCTUnwrap(alice.leafKeys.recvClassical.pending[otherID])
+		XCTAssertNotEqual(otherKey.signatureKey.data, heldKey.signatureKey.data)
+		XCTAssertEqual(
+			alice.leafKeys.recvClassical.pending[ownID]?.signatureKey.data,
+			heldKey.signatureKey.data, "the held target is untouched by the other mint")
+
+		// (c) once the window closes (its epoch moved — modeled directly,
+		// since a real fold also drains `stagedUpdates`/`pendingProposal`),
+		// the SAME target's (`otherID`'s) next offer mints fresh, not
+		// whatever `pending` still holds from before the window closed.
+		alice.stagedUpdates = []
+		alice.pendingProposal = nil
+		alice.ownOfferWindow = nil
+		_ = try alice.prepareToEncrypt()
+		let afterWindowKey = try XCTUnwrap(alice.leafKeys.recvClassical.pending[otherID])
+		XCTAssertNotEqual(afterWindowKey.signatureKey.data, otherKey.signatureKey.data)
+	}
+
+	/// A restore mid-epoch (after prepare + encrypt but before the peer's
+	/// fold) still repeats the identical offer bytes on the next prepare —
+	/// the reuse cache is `stagedUpdates`/`pendingProposal`, both durable
+	/// archive fields, not transient, unpersisted call-local state. Kills:
+	/// reuse keyed on something that does not survive a restore.
+	func testRestoreMidEpochRepeatsTheSameOffer() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		let prepared = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("offer".utf8))
+
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: try alice.makeSessionArchive(kind: .checkpoint),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		var restoredMutable = restored
+		let restoredPrepared = try restoredMutable.prepareToEncrypt()
+		XCTAssertEqual(restoredPrepared.proposalMessage, prepared.proposalMessage)
 	}
 
 	// MARK: - §3: same-id, key-only PQ Upd′
@@ -455,8 +885,6 @@ final class SigningKeyProtocolTests: XCTestCase {
 		// The PQ resolver has no rotation-candidate arm (a PQ leaf move is
 		// not a rotation), so the hand-built catch-up target below can never
 		// resolve there by construction.
-		OracleCheck.allow([.recvPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		XCTAssertTrue(bob.myPQTurn)
 		let bobNewID = Data("bob-canonical-catchup".utf8)
@@ -590,8 +1018,6 @@ final class SigningKeyProtocolTests: XCTestCase {
 		// Same reason as `testSection3PQLeafCatchUpToAnAlreadyCanonicalID`:
 		// the hand-built stuck-heal target has no rotation-candidate arm to
 		// resolve through.
-		OracleCheck.allow([.recvPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		XCTAssertTrue(bob.myPQTurn)
 		let bobNewID = Data("bob-stuck-heal".utf8)
@@ -744,6 +1170,126 @@ final class SigningKeyProtocolTests: XCTestCase {
 		XCTAssertNil(alice.pqInflight)
 		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
 		XCTAssertEqual(alice.stateSeq, stateSeqBefore)
+	}
+
+	/// A same-id `Upd′` carrying its own (unchanged) id as the announced
+	/// value — the deployed engine's own anomaly-#1 shape, sent on every
+	/// same-id re-open while its send-PQ leaf lags — is accepted, and
+	/// reports no rotation (the leaf never moved). Kills: a cross-check
+	/// gated on an id change.
+	func testSameIDAnnouncedReceiveAcceptedWithNilRotatedCredential() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let bobID = bob.identity.clientID
+
+		let round = try handBuildPQLeafMoveUpdWithAD(
+			proposer: &bob, newID: bobID, authenticatedData: bobID)
+		let response = try alice.pqRekeyRespond(round.frame)
+		XCTAssertNil(response.rotatedCredential)
+	}
+
+	/// A same-id `Upd′` whose announced value disagrees with the leaf's
+	/// (unchanged) id is rejected, exactly like the id-changing mismatch
+	/// case. Kills: a cross-check that compares the announced value to
+	/// `mine`/`theirs.current` instead of the leaf's own presented/proposed
+	/// id.
+	func testSameIDAnnouncedReceiveWithDifferentIDIsRejected() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let bobID = bob.identity.clientID
+
+		let round = try handBuildPQLeafMoveUpdWithAD(
+			proposer: &bob, newID: bobID,
+			authenticatedData: Data("not-bobs-id".utf8))
+		XCTAssertThrowsError(try alice.pqRekeyRespond(round.frame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .rekeyProposalRejected)
+		}
+	}
+
+	// MARK: - §4 C1: the send side
+
+	/// The raw authenticated-data bytes a real `Upd′` frame carries,
+	/// verified against `group` (mirrors `handBuildPQLeafMoveUpd`'s
+	/// decode-only counterparts elsewhere).
+	private func announcedData(
+		inRekeyUpdFrame frame: Data, opener: TwoMLSSession,
+		verifyingAgainst group: MLS.RFC9420.Group
+	) throws -> Data {
+		let updBytes = try Frames.decodePQRekeyUpd(opener.openOrRaw(frame))
+		guard
+			case .publicMessage(let updPub) = try MLS.RFC9420.Message(
+				mlsEncoded: updBytes)
+		else {
+			XCTFail("expected a publicMessage-framed Upd′")
+			throw TwoMLSError.malformedSideBandMessage
+		}
+		_ = try group.verifying(SessionTestSupport.pqProvider, proposal: updPub)
+		return updPub.content.authenticatedData
+	}
+
+	/// A non-lagging `pqRekeyBegin` — the routine, key-only case — carries
+	/// no announcement, under the (default, deployed-compatible) profile.
+	/// Kills: always sending the announcement regardless of profile or id
+	/// change.
+	func testKeyOnlyUpdCarriesNoAnnouncement() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let begin = try bob.pqRekeyBegin()
+		let announced = try announcedData(
+			inRekeyUpdFrame: begin.frame, opener: alice,
+			verifyingAgainst: try XCTUnwrap(alice.sendGroup?.pq))
+		XCTAssertTrue(announced.isEmpty)
+	}
+
+	/// A rotated opener's real `pqRekeyBegin` announces its new id in the
+	/// `Upd′`'s authenticated data, opened and verified by the peer.
+	/// Kills: the AD argument dropped from `proposeUpdate`; the old id
+	/// announced instead of the new.
+	func testCatchUpUpdAnnouncesTheNewID() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let bob2ID = Data("bob-announces-catchup".utf8)
+
+		_ = try bob.prepareToEncrypt(rotating: bob2ID)
+		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
+		if case .initiating = bob.pqInflight {
+			bob.pqInflight = nil
+			bob.pendingSideBand = nil
+		}
+		let decryptedOffer = try alice.processIncomingDecrypted(offerFrame)
+		_ = try alice.queueProposal(digest: decryptedOffer.queuedProposal.digest)
+		let foldPrepared = try alice.prepareToEncrypt()
+		XCTAssertTrue(foldPrepared.didCommit)
+		let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
+		_ = try bob.processIncomingDecrypted(foldFrame)
+		XCTAssertEqual(bob.myPrincipalState, .sync(bob2ID))
+		XCTAssertTrue(bob.myPQTurn)
+
+		let begin = try bob.pqRekeyBegin()
+		let announced = try announcedData(
+			inRekeyUpdFrame: begin.frame, opener: alice,
+			verifyingAgainst: try XCTUnwrap(alice.sendGroup?.pq))
+		XCTAssertEqual(announced, bob2ID)
+	}
+
+	/// `TwoMLSSession.rekeyAnnouncement` (pure): the profile gate and the
+	/// same-id/id-changing split, both branches, without driving a real
+	/// session. Kills: ignoring the profile; announcing on key-only moves.
+	func testRekeyAnnouncementByProfile() throws {
+		let oldID = Data("old".utf8)
+		let newID = Data("new".utf8)
+		XCTAssertEqual(
+			TwoMLSSession.rekeyAnnouncement(
+				oldID: oldID, newID: newID, profile: .correct),
+			Data())
+		XCTAssertEqual(
+			TwoMLSSession.rekeyAnnouncement(
+				oldID: oldID, newID: newID, profile: .deployedCompatible),
+			newID)
+		XCTAssertEqual(
+			TwoMLSSession.rekeyAnnouncement(
+				oldID: oldID, newID: oldID, profile: .correct),
+			Data())
+		XCTAssertEqual(
+			TwoMLSSession.rekeyAnnouncement(
+				oldID: oldID, newID: oldID, profile: .deployedCompatible),
+			Data())
 	}
 
 	// MARK: - Committer-leaf move at apply (the live deployed-engine path)
@@ -1069,5 +1615,55 @@ final class SigningKeyProtocolTests: XCTestCase {
 					file: file, line: line)
 			}
 		}
+	}
+
+	// MARK: - A.5 legs mint fresh keys in their own group only
+
+	/// D3: both A.5 legs are key-only moves in their own group — the
+	/// initiator's `pqRekeyBegin` stages a fresh recv-PQ key and
+	/// `pqRekeyApply` promotes it; the committer's `pqRekeyRespond` gives a
+	/// fresh send-PQ `current` directly. Every classical key, and the
+	/// other party's own-leaf keys, stay byte-identical throughout. Kills:
+	/// either leg signing with `current` (no key change).
+	func testA5LegsMintFreshKeysInTheirOwnGroupOnly() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		XCTAssertTrue(bob.myPQTurn)
+
+		let bobKeysBefore = try ownLeafSignatureKeys(of: bob)
+		let aliceKeysBefore = try ownLeafSignatureKeys(of: alice)
+
+		let begin = try bob.pqRekeyBegin()
+		let bobOwnRecvPQID = try basicIdentifier(
+			TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.recvGroup?.pq)).credential)
+		let stagedKey = try XCTUnwrap(bob.leafKeys.recvPQ.pending[bobOwnRecvPQID])
+		XCTAssertNotEqual(stagedKey.signatureKey, bobKeysBefore.recvPQ)
+		// Not yet promoted: the leaf still presents its old key until the
+		// committer's Commit′ is applied.
+		XCTAssertEqual(
+			try ownLeafSignatureKeys(of: bob).recvPQ, bobKeysBefore.recvPQ)
+
+		let commit = try alice.pqRekeyRespond(begin.frame)
+		let aliceKeysAfterRespond = try ownLeafSignatureKeys(of: alice)
+		// D3: the committer's own send-PQ leaf mints fresh at `pqRekeyRespond`
+		// itself — no `pending` stage-then-promote needed, since the commit
+		// applies immediately.
+		XCTAssertNotEqual(aliceKeysAfterRespond.sendPQ, aliceKeysBefore.sendPQ)
+		XCTAssertTrue(alice.leafKeys.sendPQ.pending.isEmpty)
+
+		_ = try bob.pqRekeyApply(commit.frame)
+		let bobKeysAfter = try ownLeafSignatureKeys(of: bob)
+		XCTAssertEqual(bobKeysAfter.recvPQ, stagedKey.signatureKey)
+		XCTAssertNotEqual(bobKeysAfter.recvPQ, bobKeysBefore.recvPQ)
+		XCTAssertTrue(bob.leafKeys.recvPQ.pending.isEmpty)
+
+		// Every classical key, on both sides, is untouched by either leg.
+		XCTAssertEqual(bobKeysAfter.sendClassical, bobKeysBefore.sendClassical)
+		XCTAssertEqual(bobKeysAfter.recvClassical, bobKeysBefore.recvClassical)
+		let aliceKeysAfter = try ownLeafSignatureKeys(of: alice)
+		XCTAssertEqual(aliceKeysAfter.sendClassical, aliceKeysBefore.sendClassical)
+		XCTAssertEqual(aliceKeysAfter.recvClassical, aliceKeysBefore.recvClassical)
+		// The other party's own-leaf key in the SAME PQ half is untouched too.
+		XCTAssertEqual(aliceKeysAfter.recvPQ, aliceKeysBefore.recvPQ)
+		XCTAssertEqual(bobKeysAfter.sendPQ, bobKeysBefore.sendPQ)
 	}
 }

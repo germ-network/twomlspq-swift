@@ -567,17 +567,18 @@ extension ExportedPskArchive {
 	}
 }
 
-/// `RotationCandidate`, archived.
+/// `RotationCandidate`, archived. Keys 1 and 2 (the candidate's own
+/// signing/signature key) are retired: the candidate's key now lives only
+/// in `leafKeys`, so an older archive that still carries them decodes fine
+/// (synthesized `Decodable` ignores unknown integer keys) and a new one
+/// simply never writes them.
 struct RotationCandidateArchive: Codable, Sendable {
 	var clientID: Data
-	@SecretField var signingKey: SecretBytes
-	var signatureKey: Data
 	var proposedAtRecvEpoch: UInt64
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case clientID = 0
-		case signingKey = 1
-		case signatureKey = 2
+		// 1, 2: retired — the candidate's own signing/signature key.
 		case proposedAtRecvEpoch = 3
 	}
 }
@@ -585,65 +586,13 @@ struct RotationCandidateArchive: Codable, Sendable {
 extension RotationCandidateArchive {
 	init(_ candidate: RotationCandidate) {
 		self.init(
-			clientID: candidate.clientID, signingKey: candidate.signingKey.data,
-			signatureKey: candidate.signatureKey.data,
+			clientID: candidate.clientID,
 			proposedAtRecvEpoch: candidate.proposedAtRecvEpoch)
 	}
 
-	func restore() throws -> RotationCandidate {
-		let derivedSignatureKey = try derivedSignaturePublicKey(from: signingKey)
-		guard derivedSignatureKey.data == signatureKey else {
-			throw TwoMLSError.archiveInvalid
-		}
-		return RotationCandidate(
-			clientID: clientID, signingKey: try MLS.SignatureSecretKey(signingKey),
-			signatureKey: derivedSignatureKey, proposedAtRecvEpoch: proposedAtRecvEpoch)
-	}
-}
-
-/// `RecvLeafPrincipal`, archived (slice 11, §E) — same shape/pattern as
-/// `RotationCandidateArchive` minus the epoch field, widened (D1) to carry
-/// the retained custody's PQ pair alongside the classical one — both
-/// NON-optional, mirroring the live `RecvLeafPrincipal`.
-struct RecvLeafPrincipalArchive: Codable, Sendable {
-	var clientID: Data
-	@SecretField var signingKey: SecretBytes
-	var signatureKey: Data
-	@SecretField var pqSigningKey: SecretBytes
-	var pqSignatureKey: Data
-
-	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
-		case clientID = 0
-		case signingKey = 1
-		case signatureKey = 2
-		case pqSigningKey = 3
-		case pqSignatureKey = 4
-	}
-}
-
-extension RecvLeafPrincipalArchive {
-	init(_ principal: RecvLeafPrincipal) {
-		self.init(
-			clientID: principal.clientID, signingKey: principal.signingKey.data,
-			signatureKey: principal.signatureKey.data,
-			pqSigningKey: principal.pqSigningKey.data,
-			pqSignatureKey: principal.pqSignatureKey.data)
-	}
-
-	func restore() throws -> RecvLeafPrincipal {
-		let derivedSignatureKey = try derivedSignaturePublicKey(from: signingKey)
-		guard derivedSignatureKey.data == signatureKey else {
-			throw TwoMLSError.archiveInvalid
-		}
-		let derivedPQSignatureKey = try derivedSignaturePublicKey(from: pqSigningKey)
-		guard derivedPQSignatureKey.data == pqSignatureKey else {
-			throw TwoMLSError.archiveInvalid
-		}
-		return RecvLeafPrincipal(
-			clientID: clientID, signingKey: try MLS.SignatureSecretKey(signingKey),
-			signatureKey: derivedSignatureKey,
-			pqSigningKey: try MLS.SignatureSecretKey(pqSigningKey),
-			pqSignatureKey: derivedPQSignatureKey)
+	func restore() -> RotationCandidate {
+		RotationCandidate(
+			clientID: clientID, proposedAtRecvEpoch: proposedAtRecvEpoch)
 	}
 }
 
@@ -663,9 +612,8 @@ extension LeafKeyArchive {
 		self.init(signingKey: key.signingKey.data, signatureKey: key.signatureKey.data)
 	}
 
-	/// Derive-checks the secret against its claimed public — the same
-	/// check `RotationCandidateArchive.restore` runs for its own key: every
-	/// key in the archive, not just the identity's, must derive.
+	/// Derive-checks the secret against its claimed public: every key in
+	/// the archive, not just the identity's, must derive.
 	func restore() throws -> LeafKey {
 		let derived = try derivedSignaturePublicKey(from: signingKey)
 		guard derived.data == signatureKey else { throw TwoMLSError.archiveInvalid }
@@ -872,10 +820,6 @@ struct SessionArchive: Codable, Sendable {
 	/// non-emittable gate's live state, so a RESTORED owed-but-not-installed
 	/// Bob still owes.
 	var owesEstablishmentEnvelope: Bool?
-	/// Slice 11, §E — Optional, `nil` for every pre-slice-11 archive and
-	/// every non-dedicated session: the recv-leaf catch-up custody, so a
-	/// restored Bob mid-catch-up still holds it.
-	var recvLeafPrincipal: RecvLeafPrincipalArchive?
 	/// REQUIRED, unlike every other field added since v1: this format never
 	/// shipped before this field existed, so there is no legacy archive to
 	/// tolerate its absence for, and no fallback reconstruction path. A
@@ -936,7 +880,7 @@ struct SessionArchive: Codable, Sendable {
 		case sendAttachmentLedger = 37
 		case recvAttachmentLedger = 38
 		case owesEstablishmentEnvelope = 39
-		case recvLeafPrincipal = 40
+		// 40: retired — the born-dedicated recv-leaf catch-up custody.
 		case leafKeys = 41
 		case sendPQKeysFingerprint = 42
 		case recvPQKeysFingerprint = 43
@@ -1049,7 +993,6 @@ extension TwoMLSSession {
 			recvAttachmentLedger: ArchiveIntegerKeyedMap(
 				recvAttachmentLedger.mapValues { SecretField(wrappedValue: $0) }),
 			owesEstablishmentEnvelope: owesEstablishmentEnvelope,
-			recvLeafPrincipal: recvLeafPrincipal.map(RecvLeafPrincipalArchive.init),
 			leafKeys: LeafKeysArchive(leafKeys, kind: kind),
 			sendPQKeysFingerprint: leafKeys.sendPQ.fingerprint,
 			recvPQKeysFingerprint: leafKeys.recvPQ.fingerprint,

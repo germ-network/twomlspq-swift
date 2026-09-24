@@ -453,19 +453,12 @@ extension TwoMLSSession {
 		// custody arm (`myPrincipalState == .sync(D)`). Degenerate topology
 		// is unchanged.
 		let auth: AuthCore
-		let recvLeafPrincipal: RecvLeafPrincipal?
 		if isDedicated, let newClientID {
 			var mine = PartySequence.seeded(identity.clientID)
 			try mine.commit(newClientID)
 			auth = AuthCore(mine: mine, theirs: .seeded(peerID))
-			recvLeafPrincipal = RecvLeafPrincipal(
-				clientID: identity.clientID, signingKey: identity.signingKey,
-				signatureKey: identity.signatureKey,
-				pqSigningKey: identity.pqSigningKey,
-				pqSignatureKey: identity.pqSignatureKey)
 		} else {
 			auth = AuthCore(mine: .seeded(identity.clientID), theirs: .seeded(peerID))
-			recvLeafPrincipal = nil
 		}
 
 		// send-classical presents `founding`'s fresh key from the moment
@@ -479,8 +472,8 @@ extension TwoMLSSession {
 		// dedicated principal, nothing to catch up), while the born-dedicated
 		// topology's recv-classical leaf still presents the INVITATION
 		// identity, with D's fresh catch-up key staged as the rule-4 target
-		// (group-rules.md rule 4) — written here, at the exact moment D is
-		// minted, matching the live `recvLeafPrincipal` custody this mirrors.
+		// (group-rules.md rule 4), written here at the exact moment D is
+		// minted.
 		let recvPQKey = LeafKey(
 			signingKey: identity.pqSigningKey, signatureKey: identity.pqSignatureKey)
 		let recvClassical: GroupKeySet
@@ -515,7 +508,6 @@ extension TwoMLSSession {
 			// Bob's freshly-joined copy is already at epoch 1, so the watermark
 			// seeds there too.
 			lastCrossInjected: 1, spawnToken: spawnToken,
-			recvLeafPrincipal: recvLeafPrincipal,
 			owesEstablishmentEnvelope: isDedicated, leafKeys: leafKeys)
 		// The send group (Group_B) exists from construction: capture its
 		// birth epoch's rendezvous address before minting the baseline

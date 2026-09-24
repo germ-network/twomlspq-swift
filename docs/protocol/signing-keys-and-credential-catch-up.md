@@ -129,7 +129,7 @@ We don't carry that coupling over. Decisions:
     credential, so there is no sync point between groups.
   - A key a leaf starts with (from an invitation KeyPackage, or carried in from a migrated archive) is replaced by the
     same rule at that leaf's next move.
-  - *Proposed:* one Update offer per epoch of the peer's group.
+  - One Update offer per epoch of the peer's group.
     - Frames within that epoch repeat the identical proposal, because the frame requires one and it is the ack (§1).
       The proposal section stays mandatory: it is our new key, stapled onto every frame until the peer takes it.
     - A new leaf node is minted only when that epoch moves (our offer was folded, or went stale), or to announce a
@@ -140,7 +140,8 @@ We don't carry that coupling over. Decisions:
       - Neither the book nor the code says why. The book only says "every round stages one"
         (`session-lifecycle.md:121-122`).
       - The cost is that the sender keeps every one of those secrets until the epoch moves, because the peer may fold
-        any of them. Today's Swift engine does the same (`TwoMLSSession+Messaging.swift:235-237`).
+        any of them. This engine instead reuses the same offer bytes for the epoch's own target
+        (`TwoMLSSession+Messaging.swift`'s `prepareToEncrypt`), so it never grows that per-frame cost.
     - The deployed engine accepts a repeated offer:
       - it validates each offer without keeping state and skips the work once the epoch is already licensed
         (`messaging.rs:1625-1655`, `:599-640`: "safe to repeat");
@@ -152,10 +153,12 @@ We don't carry that coupling over. Decisions:
     - Hosts bind the per-round proposal hash into each message (`session-lifecycle.md:117`, `:139`), so consecutive
       messages in one epoch carry the same hash. The host we checked signs it into a per-message proposal, and the
       receiver checks that proposal against the same frame's digest. Nothing is keyed on the hash, so a repeat is fine.
-- **D4 — KeyPackage keys.** Every KeyPackage half gets a fresh signing key; there is no principal-wide signing key. We
-  read "principal" as the credential. The book's "a credential-scoped signing identity" (`concepts.md:14`) is the
-  lockstep model's wording. Every group a party founds is founded on a freshly minted leaf; a KeyPackage half's key
-  lands only in the one group that half joins.
+- **D4 — KeyPackage keys.** Every KeyPackage half gets a fresh signing key; there is no principal-wide signing key.
+  The book (`concepts.md:14-20`) itself says the principal is "a credential-scoped identity (one MLS Basic
+  Credential)" and that "a principal may use one signing key for every half it mints, or a fresh key per half; both
+  conform" — our per-half minting is the second of those two conforming shapes, not a departure from it. Every group
+  a party founds is founded on a freshly minted leaf; a KeyPackage half's key lands only in the one group that half
+  joins.
 - **D5 — superseded: the book now specifies the reciprocal A.5** (`protocol-flows.md:56`, `:704-708`;
   `group-rules.md:143-158` rule 4). The non-rotated peer's own next turn opens the catch-up for the rotated party's
   still-lagging leaf; there is no extra trigger left for us to add.
@@ -188,7 +191,8 @@ says so.
 | An old key kept on a lagging send-PQ leaf (one-sided rotation, peer never opens an A.5) | yes | yes, whenever the book's trigger leaves that leaf unmoved | book `group-rules.md:154-155`; `session-lifecycle.md:269-273` anomaly #1 |
 | Reciprocal A.5 opened before the peer's own A.5 has landed | never, ourselves — see C2 | never | C2 |
 | Upd′ authenticated data | absent, or equal to the leaf's new id; any other value is rejected | deployed-compatible: C1; correct: never sent | C1 |
-| An own leaf (any group, any cause — a rotation, a born-dedicated acceptor's recv leaf, or a migrated session's stored key set) presenting an id other than the current canonical principal | n/a (own-leaf only) | catches up via that group's own `pending[current canonical id]`, once such a key is held | book `group-rules.md:143-158` rule 4 |
+| An own leaf (any group, any cause — a rotation, a born-dedicated acceptor's recv leaf, or a migrated session's stored key set) presenting an id other than the current canonical principal | n/a (own-leaf only) | catches up: recv-classical and recv-PQ mint a fresh key into that group's own `pending[current canonical id]` at the next offer, held until the peer folds it; send-classical and send-PQ mint fresh at their next commit and go straight to `current` — neither ever holds a `pending` catch-up key | book `group-rules.md:143-158` rule 4; `protocol-flows.md:696-708` |
+| Carrying the id-changing move even when a strict deployed validator would refuse it (the lagging leaf's old id evicted from the peer's history and not an A.3 founding pin) | n/a | always carried, on both A.5 legs, exactly as the deployed responder itself does; a refusal there is retriable and leaves the classical ratchet unaffected, but the refused leg is re-served until the peer accepts it, so that session's PQ ratchet stalls meanwhile | book `group-rules.md:152-154` rule 4 |
 | A peer leaf that does not advertise `APQInfo` (`0xF0A1`) and `AppDataUpdate` (`0x0008`) | rejected (`leafCapabilityUnadvertised`) at offer approval and fold, at establishment and A.3 founding and joins, at A.5 respond, and at the migration mint. Known gap: not yet checked on the path leaf of a peer's commit applied to a receive group | our leaves always advertise both | book `wire-format.md:302-304` |
 | A PQ leaf presenting a credential evicted from the history window | accepted as a move's predecessor while any live PQ leaf still presents it; pinned while presented, retired once no live PQ leaf presents it any longer; a migrated session's pins are derived at the mint (§4) rather than carried over from the deployed engine's own pins | same | book `group-rules.md:152-154` rule 4 |
 
@@ -230,8 +234,9 @@ shares a key across its groups, and nothing compares a peer's keys across groups
 - **Migrated sessions.** A session migrated from the deployed engine carries four inputs beyond its key layout:
   - **Per-group signing keys.** The authoritative form is one stored key set per group (send-classical, recv-classical,
     send-PQ, recv-PQ) — a `current` key plus zero or more `pending[target id]` keys, exactly this engine's own D1
-    shape. Until a migrator supplies these directly, mint falls back to a temporary conversion from the deployed
-    engine's owner-keyed parts.
+    shape, EXCEPT send-classical: its own commit mints fresh and applies immediately, so it carries `current` only —
+    the mint drops any supplied send-classical `pending` entries rather than converting them. Until a migrator
+    supplies these directly, mint falls back to a temporary conversion from the deployed engine's owner-keyed parts.
   - **Pinned credentials.** The mint derives each party's pinned set itself, from the ids that party's live PQ leaves
     present in the restored trees — the deployed engine pins only the A.3 founding ids, so its own supplied pins are
     ignored rather than carried over.

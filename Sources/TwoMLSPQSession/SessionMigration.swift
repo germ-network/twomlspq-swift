@@ -248,7 +248,13 @@ public struct MigratedExportedPsk: Sendable {
 	}
 }
 
-/// Raw parts of the internal `RotationCandidateArchive`.
+/// A migrator-supplied classical rotation candidate: the caller-side input
+/// the mint derive-checks and cross-checks against the supplied
+/// recv-classical `pending` entry for the same target. Not a mirror of the
+/// internal `RotationCandidateArchive`, which carries no key of its own —
+/// the native `RotationCandidate` keeps only `clientID`/
+/// `proposedAtRecvEpoch`, and its signing secret lives solely in
+/// `leafKeys.recvClassical.pending`.
 @available(iOS 26, macOS 26, *)
 public struct MigratedRotationCandidate: Sendable {
 	public var clientID: Data
@@ -268,9 +274,11 @@ public struct MigratedRotationCandidate: Sendable {
 	}
 }
 
-/// Raw parts of the internal `RecvLeafPrincipalArchive` — the retained
-/// recv-leaf custody's classical AND PQ pairs (both non-optional, mirroring
-/// the live `RecvLeafPrincipal`).
+/// A migrator's retained recv-leaf custody: the born-dedicated acceptor's
+/// classical AND PQ pairs for the invitation identity its recv leaves still
+/// present (both non-optional). Feeds only the mint's derive check and
+/// `convertDeployedKeys`'s temporary conversion — the mint no longer
+/// archives it as its own record.
 @available(iOS 26, macOS 26, *)
 public struct MigratedRecvLeafPrincipal: Sendable {
 	public var clientID: Data
@@ -711,6 +719,24 @@ public enum SessionMigration {
 		{
 			throw TwoMLSError.archiveInvalid
 		}
+		// The native `RotationCandidate` carries no key of its own (the
+		// signing secret lives only in `leafKeys`), so `validateLeafKeys`
+		// can no longer cross-check a `.mintSupplied` candidate's key
+		// against it. Do that check here instead, against the caller-
+		// supplied RECV-classical pending entry for the same target — the
+		// entry the mint actually keeps (send-classical pending is always
+		// discarded, never carried into native `leafKeys`) — when one is
+		// supplied. `validateLeafKeys`'s own check 8 separately enforces
+		// whether a recv-classical entry must be supplied at all.
+		if let candidate = parts.rotationCandidate, let migratedLeafKeys = parts.leafKeys,
+			let supplied = migratedLeafKeys.recvClassical.pending.first(where: {
+				$0.target == candidate.clientID
+			})
+		{
+			guard supplied.key.signatureKey == candidate.signatureKey else {
+				throw TwoMLSError.archiveInvalid
+			}
+		}
 		if let recvLeaf = parts.recvLeafPrincipal {
 			guard
 				try InvitationMigration.derivedEd25519Public(
@@ -791,10 +817,9 @@ public enum SessionMigration {
 				classicalProvider: classicalProvider, pqProvider: pqProvider)
 			mode = .mintConverted
 		}
-		// A.2 step 2, continued: drop the dropped round's now-orphaned
-		// recv-PQ pending entry, UNLESS it is the rule-7 catch-up key step
-		// 7's self-drive needs (`t == auth.mine.current` and the recv-PQ
-		// leaf still lags).
+		// Drop the dropped round's now-orphaned recv-PQ pending entry,
+		// UNLESS it is the rule-7 catch-up key a later self-drive change
+		// needs (`t == auth.mine.current` and the recv-PQ leaf still lags).
 		if let droppedRekeyTarget {
 			let mineCurrent = parts.auth.mine.history.last
 			let recvPQLags: Bool = {
@@ -888,20 +913,10 @@ public enum SessionMigration {
 				($0.proposing, $0.message, $0.hash)
 			},
 			pqInflight: try effectivePqInflight.map(Self.nativePQInflight),
-			rotationCandidate: try parts.rotationCandidate.map {
+			rotationCandidate: parts.rotationCandidate.map {
 				RotationCandidate(
 					clientID: $0.clientID,
-					signingKey: try MLS.SignatureSecretKey($0.signingKey),
-					signatureKey: MLS.SignaturePublicKey($0.signatureKey),
 					proposedAtRecvEpoch: $0.proposedAtRecvEpoch)
-			},
-			recvLeafPrincipal: try parts.recvLeafPrincipal.map {
-				RecvLeafPrincipal(
-					clientID: $0.clientID,
-					signingKey: try MLS.SignatureSecretKey($0.signingKey),
-					signatureKey: MLS.SignaturePublicKey($0.signatureKey),
-					pqSigningKey: try MLS.SignatureSecretKey($0.pqSigningKey),
-					pqSignatureKey: MLS.SignaturePublicKey($0.pqSignatureKey))
 			},
 			auth: mintedAuth,
 			mode: mode,
@@ -983,8 +998,7 @@ public enum SessionMigration {
 				}),
 			rotationCandidate: parts.rotationCandidate.map {
 				RotationCandidateArchive(
-					clientID: $0.clientID, signingKey: $0.signingKey,
-					signatureKey: $0.signatureKey,
+					clientID: $0.clientID,
 					proposedAtRecvEpoch: $0.proposedAtRecvEpoch)
 			},
 			spawnToken: parts.spawnToken,
@@ -1003,13 +1017,6 @@ public enum SessionMigration {
 					SecretField(wrappedValue: $0)
 				}),
 			owesEstablishmentEnvelope: parts.owesEstablishmentEnvelope,
-			recvLeafPrincipal: parts.recvLeafPrincipal.map {
-				RecvLeafPrincipalArchive(
-					clientID: $0.clientID, signingKey: $0.signingKey,
-					signatureKey: $0.signatureKey,
-					pqSigningKey: $0.pqSigningKey,
-					pqSignatureKey: $0.pqSignatureKey)
-			},
 			leafKeys: LeafKeysArchive(leafKeys, kind: kind),
 			sendPQKeysFingerprint: leafKeys.sendPQ.fingerprint,
 			recvPQKeysFingerprint: leafKeys.recvPQ.fingerprint,
@@ -1167,8 +1174,13 @@ public enum SessionMigration {
 		// dropped, never thrown on: A.3 founding always mints its own fresh
 		// key, so nothing here needs it.
 		let sendPQSet = sendPQFounded ? try convertSet(migrated.sendPQ) : GroupKeySet()
+		// A supplied send-classical `pending` entry is dropped, not
+		// converted — the leaf's own next committing round mints fresh for
+		// whatever id it then presents, so nothing here needs one in
+		// advance, and restore rejects a non-empty one.
 		return LeafKeys(
-			sendClassical: try convertSet(migrated.sendClassical),
+			sendClassical: GroupKeySet(
+				current: try migrated.sendClassical.current.map(convertKey)),
 			recvClassical: try convertSet(migrated.recvClassical),
 			sendPQ: sendPQSet,
 			recvPQ: try convertSet(migrated.recvPQ))
@@ -1268,30 +1280,13 @@ public enum SessionMigration {
 		// temporary owner-keyed conversion, not a new gap.
 		let mineCurrent = parts.auth.mine.history.last
 
+		// Send-classical converts `current` only — its own next
+		// committing round mints fresh for whatever id it then presents
+		// (the candidate's, or the identity's own lagging principal), so
+		// this conversion stages nothing into `pending` in advance.
 		let sendOwnLeaf = try TwoMLSSession.ownLeaf(of: sendClassical)
-		let sendOwnID = try basicIdentifier(sendOwnLeaf.credential)
-		var sendClassicalSet = GroupKeySet(
+		let sendClassicalSet = GroupKeySet(
 			current: try lookupClassical(sendOwnLeaf.signatureKey.data))
-		var sendHasCandidateEntry = false
-		if let candidate = parts.rotationCandidate {
-			let sendPresentsCandidate = sendOwnID == candidate.clientID
-			if !sendPresentsCandidate {
-				sendClassicalSet.pending[candidate.clientID] = try lookupClassical(
-					candidate.signatureKey)
-				sendHasCandidateEntry = true
-			}
-		}
-		// (b′) rule 4, generalized: a lagging SEND leaf under the identity's
-		// own canonical principal, when the candidate arm above doesn't
-		// already cover it — new relative to the prior conversion, which
-		// never gave the send side a rule-4 arm at all.
-		if let mineCurrent, parts.identity.clientID == mineCurrent,
-			sendOwnID != mineCurrent,
-			!sendHasCandidateEntry
-		{
-			sendClassicalSet.pending[mineCurrent] = try lookupClassical(
-				parts.identity.signatureKey)
-		}
 
 		var recvClassicalSet: GroupKeySet
 		if let recvClassical {
@@ -1311,8 +1306,7 @@ public enum SessionMigration {
 			}
 			// (b) rule 4, generalized: a lagging RECV leaf under the
 			// identity's own canonical principal — subsumes the
-			// born-dedicated-only case (`recvLeafPrincipal` stays an unread
-			// record until step 5).
+			// born-dedicated-only case.
 			if let mineCurrent, parts.identity.clientID == mineCurrent,
 				recvOwnID != mineCurrent
 			{

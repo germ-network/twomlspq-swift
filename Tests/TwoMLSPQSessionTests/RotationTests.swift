@@ -263,12 +263,10 @@ final class RotationTests: XCTestCase {
 		XCTAssertTrue(decrypted.didApplyRemoteCommit)
 		XCTAssertFalse(decrypted.ownCredentialCanonicalized)
 
-		// NIT6: `canonicalize` (+ClassicalCommit.swift) sets `newSender`
-		// whenever the PEER's leaf moves to a new PRESENTATION — id and/or
-		// key — so it fires here too, equal to the (unchanged) id; see
-		// `DecryptResult.newSender`'s own doc for why this is the intended
-		// reading, not a bug.
-		XCTAssertEqual(decrypted.newSender, sameID)
+		// D3: `canonicalize` (+ClassicalCommit.swift) sets `newSender` only
+		// on an id change — a same-id key-only refresh is accepted and
+		// canonicalizes nothing.
+		XCTAssertNil(decrypted.newSender)
 		XCTAssertEqual(alice.theirPrincipalState, .sync(sameID))
 	}
 
@@ -1150,40 +1148,43 @@ final class RotationTests: XCTestCase {
 @available(iOS 26, macOS 26, *)
 extension RotationTests {
 	/// An §A.5 `pqRekeyApply` keeps `recvPQ.pending[mine.current]`
-	/// when the recv-PQ leaf STILL lags after the apply — the apply only
-	/// ever moved a DIFFERENT (send-PQ) leaf, so the retained catch-up key
-	/// for the still-lagging recv-PQ leaf must survive, not just the one
-	/// entry the apply itself touched.
+	/// when the recv-PQ leaf STILL lags after the apply. The in-flight
+	/// race: bob's own begin is minted key-only FIRST, against his
+	/// then-current id; only AFTER that does `c` become canonical, with a
+	/// held catch-up key supplied out of band (as a migrated session's
+	/// mint would). The apply promotes the round's own (same-id) key, and
+	/// must retain the now-lagging `pending[c]` it never touched.
 	func testRekeyApplyRetainsPQCatchUpKey() throws {
-		OracleCheck.allow([.recvPQ])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		let upd = try bob.pqRekeyBegin().frame
+
 		let c = Data("bob-rust-rotated".utf8)
 		let (sk, pk) = try TwoMLSIdentity.mintSignatureKeypair()
 		bob.auth.mine.history.append(c)
 		bob.leafKeys.recvPQ.pending[c] = LeafKey(signingKey: sk, signatureKey: pk)
 		alice.auth.theirs.history.append(c)
-		let upd = try bob.pqRekeyBegin().frame
+
 		let commit = try alice.pqRekeyRespond(upd).frame
 		_ = try bob.pqRekeyApply(commit)
 		XCTAssertNotEqual(
 			try basicIdentifier(
 				TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq)).credential),
-			c, "the apply moved bob's SEND-PQ leaf, not the recv-PQ one")
+			c, "the apply promoted the round's own (same-id) key, not c")
 		XCTAssertEqual(
 			bob.leafKeys.recvPQ.pending[c]?.signatureKey, pk,
 			"the retained catch-up key")
 		XCTAssertEqual(bob.leafKeys.recvPQ.pending.count, 1)
 	}
 
-	/// Rotation staging must not wipe an already-retained
-	/// send-classical catch-up key for a DIFFERENT, still-outstanding
-	/// target. Bob's send-classical leaf already lags `mine.current`
-	/// (`c`, from an earlier Rust-won rotation), and — before ever
-	/// catching up to `c` — he authors ANOTHER native rotation (to `d`).
-	/// `pending[c]` must still be there afterward, alongside the new
-	/// candidate's own `pending[d]`.
-	func testRotationWhileSendLeafLagsKeepsTheCatchUpKey() throws {
+	/// Rotation staging never touches send-classical at all — its own
+	/// next committing round mints fresh for whatever id it then presents,
+	/// so there is nothing to stage there in advance and nothing for a new
+	/// candidate's own recv-classical staging to disturb. Bob's
+	/// send-classical leaf already lags `mine.current` (`c`, from an
+	/// earlier Rust-won rotation, hand-set here); authoring ANOTHER native
+	/// rotation (to `d`) leaves that entry exactly as it was, and stages
+	/// nothing send-side for `d` either.
+	func testRotationWhileSendLeafLagsLeavesSendClassicalPendingUntouched() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		let c = Data("bob-send-lags".utf8)
 		let (csk, cpk) = try TwoMLSIdentity.mintSignatureKeypair()
@@ -1195,11 +1196,12 @@ extension RotationTests {
 		XCTAssertFalse(prepared.didCommit, "a fresh candidate offer, not a fold")
 		XCTAssertEqual(
 			bob.leafKeys.sendClassical.pending[c]?.signatureKey, cpk,
-			"the pre-existing catch-up key for c survives the d candidate's own staging"
+			"a hand-set send-classical entry is left untouched by recv-side staging"
 		)
-		XCTAssertNotNil(
+		XCTAssertNil(
 			bob.leafKeys.sendClassical.pending[d],
-			"the new candidate's own key is staged too")
+			"the new candidate's key is staged in recv-classical only")
+		XCTAssertEqual(bob.leafKeys.sendClassical.pending.count, 1)
 		XCTAssertEqual(bob.rotationCandidate?.clientID, d)
 	}
 }

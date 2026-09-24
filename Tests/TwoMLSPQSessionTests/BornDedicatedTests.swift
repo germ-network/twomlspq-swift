@@ -58,7 +58,7 @@ final class BornDedicatedTests: XCTestCase {
 		XCTAssertTrue(bob.owesEstablishmentEnvelope)
 		XCTAssertEqual(bob.identity.clientID, invitationClientID)
 		XCTAssertEqual(bob.myPrincipalState, .sync(dedicatedClientID))
-		XCTAssertEqual(bob.recvLeafPrincipal?.clientID, invitationClientID)
+		XCTAssertNotNil(bob.leafKeys.recvClassical.pending[dedicatedClientID])
 		XCTAssertEqual(bob.currentStaple.first, Frames.apqWelcomeTag)
 
 		let envelope = fakeEnvelope()
@@ -135,7 +135,7 @@ final class BornDedicatedTests: XCTestCase {
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
 			spawnToken: spawnToken, newClientID: Data("bob".utf8))
 		XCTAssertFalse(received.session.owesEstablishmentEnvelope)
-		XCTAssertNil(received.session.recvLeafPrincipal)
+		XCTAssertTrue(received.session.leafKeys.recvClassical.pending.isEmpty)
 		XCTAssertEqual(received.session.currentStaple.first, Frames.apqWelcomeTag)
 		XCTAssertEqual(received.session.identity.clientID, Data("bob".utf8))
 	}
@@ -143,7 +143,7 @@ final class BornDedicatedTests: XCTestCase {
 	func testNilNewClientIDMatchesInvitationIsUnchanged() throws {
 		let (_, bob, _, _, _, _) = try SessionTestSupport.established()
 		XCTAssertFalse(bob.owesEstablishmentEnvelope)
-		XCTAssertNil(bob.recvLeafPrincipal)
+		XCTAssertTrue(bob.leafKeys.recvClassical.pending.isEmpty)
 		XCTAssertEqual(bob.currentStaple.first, Frames.apqWelcomeTag)
 	}
 
@@ -154,13 +154,13 @@ final class BornDedicatedTests: XCTestCase {
 	/// catch-up (§C.4), Alice approves+folds it, and Bob's own apply of
 	/// that fold canonicalizes his leaf — a no-op-safe `mine.commit`, since
 	/// `auth.mine` was already D from `receive` (Fable traced this as
-	/// admitting cleanly). `recvLeafPrincipal` is NOT retired by this alone:
+	/// admitting cleanly). recv-PQ is NOT caught up by this alone:
 	/// `recvGroup.pq`'s leaf still independently presents the invitation
 	/// identity until a later slice's PQ catch-up.
 	func testRecvLeafCatchUpConvergesInvToD() throws {
 		var (alice, bob, invitationClientID, dedicatedClientID, _) =
 			try fullyEstablishedDedicated()
-		XCTAssertEqual(bob.recvLeafPrincipal?.clientID, invitationClientID)
+		XCTAssertNotNil(bob.leafKeys.recvClassical.pending[dedicatedClientID])
 		XCTAssertEqual(bob.myPrincipalState, .sync(dedicatedClientID))
 		let leafBefore = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
 		XCTAssertEqual(try basicIdentifier(leafBefore.credential), invitationClientID)
@@ -180,7 +180,8 @@ final class BornDedicatedTests: XCTestCase {
 		XCTAssertTrue(bobDecrypted.didApplyRemoteCommit)
 		XCTAssertTrue(bobDecrypted.ownCredentialCanonicalized)
 
-		XCTAssertNotNil(bob.recvLeafPrincipal)
+		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(recvPQLeaf.credential), invitationClientID)
 		let leafAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
 		XCTAssertEqual(try basicIdentifier(leafAfter.credential), dedicatedClientID)
 	}
@@ -199,14 +200,19 @@ final class BornDedicatedTests: XCTestCase {
 		XCTAssertEqual(try basicIdentifier(creatorLeaf.credential), dedicatedClientID)
 	}
 
-	// MARK: - Accept 7: PQ signing resolver correctness
+	// MARK: - Accept 7: PQ signing resolver correctness, and the recv-PQ catch-up
 
 	/// Bob's `pqRekeyBegin` proposes into `recvGroup.pq` (Group_A.pq, still
-	/// presenting the invitation identity pre-PQ-catch-up) — the PQ custody
-	/// resolver (`recvPQSigningKey`) must sign under the retained invitation
-	/// key so Alice's `pqRekeyRespond` verifies it.
-	func testBobPQRekeyBeginVerifiesAtAliceAfterBornDedicated() throws {
-		var (alice, bob, _, _, _) = try fullyEstablishedDedicated()
+	/// presenting the invitation identity I pre-PQ-catch-up) — the PQ
+	/// custody resolver (`recvPQSigningKey`) must sign under the retained
+	/// invitation key so Alice's `pqRekeyRespond` verifies it. His own
+	/// `auth.mine.current` is already D (the classical side converged at
+	/// approval), so the Upd′ now moves the leaf I→D directly — the native
+	/// twin of the TwoMLSPQ cross-engine flip. Kills: targeting the
+	/// presented id (I) instead of `mine.current` (D); pins not retiring.
+	func testBornDedicatedAcceptorRecvPQCatchesUpToDedicatedID() throws {
+		var (alice, bob, invitationClientID, dedicatedClientID, _) =
+			try fullyEstablishedDedicated()
 
 		// License Alice + drive Bob's recv-leaf catch-up in one stroke,
 		// mirroring `RatchetTests.fullyEstablishedTurnOnBob()`'s own
@@ -240,21 +246,43 @@ final class BornDedicatedTests: XCTestCase {
 		_ = try bob.processIncomingDecrypted(boundFrame)
 		XCTAssertTrue(bob.myPQTurn)
 
-		// Bob's Upd′ proposes into `recvGroup.pq` (Group_A.pq) — still
-		// presenting the invitation identity (the PQ catch-up is Chunk 2,
-		// out of scope here). `leafKeys.recvPQ.current` still holds the
-		// retained invitation key, so Bob signs under it, and Alice's
-		// `pqRekeyRespond` — which owns that group as her `sendGroup.pq` —
-		// verifies it.
+		XCTAssertEqual(bob.auth.mine.current, dedicatedClientID)
+		let recvPQBefore = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(recvPQBefore.credential), invitationClientID)
+
+		// Bob's Upd′ proposes into `recvGroup.pq` (Group_A.pq), signed
+		// under the retained invitation key `leafKeys.recvPQ.current`
+		// still holds, and carries D as the leaf's new credential — Alice's
+		// `pqRekeyRespond`, which owns that group as her `sendGroup.pq`,
+		// verifies it and reports the move.
 		let rekeyBegin = try bob.pqRekeyBegin()
+		// C1: the deployed-compatible profile announces the handed-off id.
+		let updBytes = try Frames.decodePQRekeyUpd(alice.openOrRaw(rekeyBegin.frame))
+		guard
+			case .publicMessage(let updPub) = try MLS.RFC9420.Message(
+				mlsEncoded: updBytes)
+		else {
+			return XCTFail("expected a publicMessage-framed Upd′")
+		}
+		XCTAssertEqual(updPub.content.authenticatedData, dedicatedClientID)
+
 		let rekeyRespond = try alice.pqRekeyRespond(rekeyBegin.frame)
-		XCTAssertNotNil(rekeyRespond.frame)
+		XCTAssertEqual(rekeyRespond.rotatedCredential, dedicatedClientID)
+
+		XCTAssertNoThrow(try bob.pqRekeyApply(rekeyRespond.frame))
+		let recvPQAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(recvPQAfter.credential), dedicatedClientID)
+
+		// Neither side still pins I: bob's send-PQ was founded under D
+		// already, and his recv-PQ has now caught up too.
+		XCTAssertFalse(bob.auth.mine.pinned.contains(invitationClientID))
+		XCTAssertFalse(alice.auth.theirs.pinned.contains(invitationClientID))
 	}
 
 	// MARK: - Accept 8: rotation still available post-born-dedicated
 
 	func testBobCanStillRotateAfterBornDedicated() throws {
-		var (alice, bob, _, _, _) = try fullyEstablishedDedicated()
+		var (alice, bob, invitationClientID, _, _) = try fullyEstablishedDedicated()
 		// Drive the recv-leaf catch-up to completion first (own-leaf
 		// presentation must reach D before a FURTHER rotation is legitimate
 		// — rotating away from an in-flight catch-up is out of scope here).
@@ -265,9 +293,10 @@ final class BornDedicatedTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let aliceFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 		_ = try bob.processIncomingDecrypted(aliceFrame)
-		// The CLASSICAL leaf has converged, but `recvLeafPrincipal` stays
-		// (the PQ leaf still needs it — see `testRecvLeafCatchUpConvergesInvToD`).
-		XCTAssertNotNil(bob.recvLeafPrincipal)
+		// The CLASSICAL leaf has converged, but the PQ leaf still presents
+		// the invitation identity (see `testRecvLeafCatchUpConvergesInvToD`).
+		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
+		XCTAssertEqual(try basicIdentifier(recvPQLeaf.credential), invitationClientID)
 
 		// Now a genuinely NEW rotation must still work — no stale
 		// `.rotationInFlight` left over from the catch-up mechanism (which
@@ -329,7 +358,7 @@ final class BornDedicatedTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		XCTAssertTrue(restored.owesEstablishmentEnvelope)
-		XCTAssertEqual(restored.recvLeafPrincipal?.clientID, invitationClientID)
+		XCTAssertNotNil(restored.leafKeys.recvClassical.pending[dedicatedClientID])
 		XCTAssertEqual(restored.identity.clientID, invitationClientID)
 		XCTAssertEqual(restored.myPrincipalState, .sync(dedicatedClientID))
 		XCTAssertEqual(restored.currentStaple.first, Frames.apqWelcomeTag)
@@ -776,21 +805,15 @@ final class BornDedicatedTests: XCTestCase {
 		}
 	}
 
-	// MARK: - The generalized trigger without `recvLeafPrincipal`
+	// MARK: - The generalized trigger
 
 	/// The generalized rule-4 trigger (Messaging.swift's `recvClassical.
-	/// pending[mine.current]` predicate) fires even with
-	/// `recvLeafPrincipal == nil` — the shape a migrated session's restored
-	/// state presents (the field is archived but never consulted for keys
-	/// once `leafKeys` is supplied). Kills a revert to the
-	/// born-dedicated-only `recvLeafPrincipal`-keyed trigger the rule-4
-	/// pin depends on.
-	func testGeneralizedCatchUpWithoutRecvLeafPrincipal() throws {
-		OracleCheck.allow([.recvClassical, .recvPQ])
-		defer { OracleCheck.allow([]) }
+	/// pending[mine.current]` predicate) reads only `leafKeys`, never any
+	/// born-dedicated-only custody record. Kills a revert to a trigger keyed
+	/// on some other live field the rule-4 pin would depend on.
+	func testGeneralizedCatchUpReadsOnlyLeafKeys() throws {
 		var (alice, bob, invitationClientID, dedicatedClientID, _) =
 			try SessionTestSupport.establishedDedicatedAndApproved()
-		bob.recvLeafPrincipal = nil
 		let leafBefore = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
 		XCTAssertEqual(try basicIdentifier(leafBefore.credential), invitationClientID)
 

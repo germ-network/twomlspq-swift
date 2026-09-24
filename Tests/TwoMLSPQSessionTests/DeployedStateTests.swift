@@ -49,10 +49,13 @@ final class DeployedStateTests: XCTestCase {
 		// stages the fresh key itself — stage it so a later fold's
 		// `promoted()` can find it (mirrors `RotationTests.
 		// authorRotatingUpd`'s own PQ analogue,
-		// `SigningKeyProtocolTests.handBuildPQLeafMoveUpd`).
-		try session.leafKeys.recvClassical.stage(
-			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),
-			for: session.identity.clientID)
+		// `SigningKeyProtocolTests.handBuildPQLeafMoveUpd`). Assigned
+		// directly, not via `stage`: a routine offer now mints fresh too
+		// (D3), so an earlier real offer from establishment may already
+		// hold a DIFFERENT key at this same target, and this hand-built
+		// offer's key must replace it, not collide with it.
+		session.leafKeys.recvClassical.pending[session.identity.clientID] =
+			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey)
 		guard case .publicMessage(let updatePub) = message else {
 			XCTFail("expected a publicMessage-framed Update")
 			throw TwoMLSError.malformedSideBandMessage
@@ -128,8 +131,6 @@ final class DeployedStateTests: XCTestCase {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let round = try foldedButUnframedOwnOfferRound(proposer: &bob, approver: &alice)
 		let fixture = try windowFixture(
@@ -173,8 +174,6 @@ final class DeployedStateTests: XCTestCase {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let round = try foldedButUnframedOwnOfferRound(proposer: &bob, approver: &alice)
 		let targetRef = round.ref
@@ -241,8 +240,6 @@ final class DeployedStateTests: XCTestCase {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let built = try handBuiltUnframedOwnOffer(in: &bob)
 		let fixture = try windowFixture(
@@ -296,8 +293,6 @@ final class DeployedStateTests: XCTestCase {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let round = try foldedButUnframedOwnOfferRound(proposer: &bob, approver: &alice)
 		// A window shaped for the RIGHT epoch/group/leaf, but naming some
@@ -321,8 +316,6 @@ final class DeployedStateTests: XCTestCase {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let round = try foldedButUnframedOwnOfferRound(proposer: &bob, approver: &alice)
 
@@ -353,8 +346,6 @@ final class DeployedStateTests: XCTestCase {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let round = try foldedButUnframedOwnOfferRound(proposer: &bob, approver: &alice)
 		let fixture = try windowFixture(
@@ -567,8 +558,6 @@ extension DeployedStateTests {
 	/// when no group-held pair exists for the offer at all
 	/// (`knownSecretOwnOffer` never writes back to the group).
 	func testSuppliedSecretResolvesAtRuntime() throws {
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let built = try SessionTestSupport.knownSecretOwnOffer(in: bob)
 		let digest = try SessionTestSupport.classicalProvider.hash(built.framedMessage)
@@ -598,8 +587,6 @@ extension DeployedStateTests {
 	/// HPKE public key is unusable — the caller-supplied branch actually
 	/// runs, it isn't skipped.
 	func testWrongSuppliedSecretIsUnavailable() throws {
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let built = try SessionTestSupport.knownSecretOwnOffer(in: bob)
 		let digest = try SessionTestSupport.classicalProvider.hash(built.framedMessage)
@@ -627,8 +614,6 @@ extension DeployedStateTests {
 	/// shaped) proposal/secret — the framed store is never overwritten by
 	/// the window's copy.
 	func testFramedCopyWinsOverWindow() throws {
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try alice.prepareToEncrypt()
 		_ = try bob.processIncomingDecrypted(try alice.encrypt(Data("a".utf8)).frame)
@@ -681,8 +666,6 @@ extension DeployedStateTests {
 	/// the window first — a window-missing failure never gets masked by,
 	/// or reordered after, the PQ half's own failure.
 	func testBindDetectionPrecedesPQHalf() throws {
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
@@ -746,8 +729,6 @@ extension DeployedStateTests {
 	/// isn't reachable only on the happy path where the rest of the commit
 	/// is otherwise valid.
 	func testFoldDetectionPrecedesInlineProposalValidation() throws {
-		OracleCheck.allow([.recvClassical])
-		defer { OracleCheck.allow([]) }
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let built = try handBuiltUnframedOwnOffer(in: &bob)
 		let digest = try SessionTestSupport.classicalProvider.hash(built.framedMessage)

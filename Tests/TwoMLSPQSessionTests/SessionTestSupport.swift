@@ -14,21 +14,8 @@ import XCTest
 /// `member(...)`/`establishedPair(...)` shape one layer up.
 @available(iOS 26, macOS 26, *)
 enum SessionTestSupport {
-	/// The differential oracle's observer, installed exactly once —
-	/// piggybacked on `classicalProvider`'s own lazy `static let`
-	/// initializer (Swift's once-guarantee), since every test that touches
-	/// a session touches this provider first. A test that expects a miss
-	/// opts in for itself via `OracleCheck.allow(_:)` rather than this
-	/// install site tracking which test is live.
-	private static let installOracleObserverOnce: Void = {
-		#if DEBUG
-			TwoMLSSessionTestHooks.observer = { session in OracleCheck.run(session) }
-		#endif
-	}()
-
 	static let classicalProvider: any MLS.CipherSuiteProvider = {
-		_ = installOracleObserverOnce
-		return SwiftCryptoProvider().cipherSuiteProvider(for: .curve25519ChaCha)!
+		SwiftCryptoProvider().cipherSuiteProvider(for: .curve25519ChaCha)!
 	}()
 	static let pqProvider = MLKEM768CipherSuiteProvider()
 
@@ -89,8 +76,8 @@ enum SessionTestSupport {
 	/// the contract-26 handoff envelope. `invitationClientID` is Bob's
 	/// invitation identity's own clientID (== `bobName`, `TwoMLSIdentity.
 	/// generate`'s `clientID` param passed straight through by
-	/// `Principal.generateInvitation`) — the id `bob.recvLeafPrincipal`
-	/// should carry until the recv-leaf catch-up.
+	/// `Principal.generateInvitation`) — the id `bob.leafKeys.recvClassical`
+	/// still presents as `current` until the recv-leaf catch-up.
 	static func establishedDedicated(
 		alice aliceName: String = "alice", bob bobName: String = "bob",
 		dedicatedClientID: Data = Data("bob-dedicated".utf8)

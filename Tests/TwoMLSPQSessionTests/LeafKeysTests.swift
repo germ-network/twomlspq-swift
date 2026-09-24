@@ -319,15 +319,15 @@ final class LeafKeysTests: XCTestCase {
 
 	// MARK: - Archive round-trip with pending entries
 
-	/// Stages a live rotation (so `leafKeys.recvClassical`/`sendClassical`
-	/// both carry a `pending` entry, not just `current`), round-trips
-	/// through `makeSessionArchive`/`restore`, and checks the restored
-	/// `leafKeys` matches the live one field for field.
+	/// Stages a live rotation (so `leafKeys.recvClassical` carries a
+	/// `pending` entry, not just `current` — send-classical never does),
+	/// round-trips through `makeSessionArchive`/`restore`, and checks the
+	/// restored `leafKeys` matches the live one field for field.
 	func testArchiveRoundTripPreservesPendingEntries() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try alice.prepareToEncrypt(rotating: Data("alice-v2".utf8))
 		XCTAssertFalse(alice.leafKeys.recvClassical.pending.isEmpty)
-		XCTAssertFalse(alice.leafKeys.sendClassical.pending.isEmpty)
+		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
 
 		let checkpoint = try alice.stateUpdate(kind: .checkpoint).archive
 		let restored = try TwoMLSSession.restore(
@@ -515,7 +515,7 @@ final class LeafKeysTests: XCTestCase {
 	func testRestoreRejectsCheck7ThroughTheFullPath() throws {
 		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
 		let bob = established.bob
-		XCTAssertNotNil(bob.recvLeafPrincipal)
+		XCTAssertNotNil(bob.leafKeys.recvClassical.pending[established.dedicatedClientID])
 		let target = established.dedicatedClientID
 		let archive = try bob.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
@@ -624,10 +624,10 @@ final class LeafKeysTests: XCTestCase {
 	/// recv-classical presents the invitation identity's own key (the
 	/// half this session actually joined Group_A with); send-PQ is empty
 	/// (not founded until A.3); recv-PQ presents the same invitation
-	/// identity's PQ half. No `recvLeafPrincipal`, no `pending`.
+	/// identity's PQ half. No recv-leaf custody, no `pending`.
 	func testPlainReceiveSeedsSendAndRecvClassicalToTheSameIdentity() throws {
 		let bob = try SessionTestSupport.established().bob
-		XCTAssertNil(bob.recvLeafPrincipal)
+		XCTAssertTrue(bob.leafKeys.recvClassical.pending.isEmpty)
 
 		XCTAssertEqual(
 			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.sendGroup?.classical))
@@ -664,8 +664,6 @@ final class LeafKeysTests: XCTestCase {
 		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
 		let bob = established.bob
 		XCTAssertEqual(bob.identity.clientID, established.invitationClientID)
-		let invitationCustody = try XCTUnwrap(bob.recvLeafPrincipal)
-		XCTAssertEqual(invitationCustody.clientID, established.invitationClientID)
 		XCTAssertEqual(bob.myPrincipalState, .sync(established.dedicatedClientID))
 
 		let sendClassicalKey = try XCTUnwrap(bob.leafKeys.sendClassical.current)
@@ -677,7 +675,7 @@ final class LeafKeysTests: XCTestCase {
 		XCTAssertNotEqual(sendClassicalKey.signatureKey, bob.identity.signatureKey)
 		XCTAssertEqual(
 			bob.leafKeys.recvClassical.current?.signatureKey,
-			invitationCustody.signatureKey,
+			bob.identity.signatureKey,
 			"recv-classical still presents the invitation identity, not yet D")
 		// The rule-4 catch-up key (book group-rules.md:143-158 rule 4) is
 		// minted separately from the founding leaf's key — never the same
@@ -688,7 +686,7 @@ final class LeafKeysTests: XCTestCase {
 
 		XCTAssertNil(bob.leafKeys.sendPQ.current)
 		XCTAssertEqual(
-			bob.leafKeys.recvPQ.current?.signatureKey, invitationCustody.pqSignatureKey,
+			bob.leafKeys.recvPQ.current?.signatureKey, bob.identity.pqSignatureKey,
 			"recv-PQ joins Group_A under the invitation identity's PQ leaf")
 		XCTAssertTrue(bob.leafKeys.sendClassical.pending.isEmpty)
 		XCTAssertTrue(bob.leafKeys.sendPQ.pending.isEmpty)
@@ -702,27 +700,20 @@ final class LeafKeysTests: XCTestCase {
 	/// `prepareToEncrypt(rotating:)`'s own mint, `Bootstrap.swift`'s
 	/// PQ-half founding), signing never reads `identity` again. Replaces `alice.identity` with an unrelated bogus
 	/// identity, keeping only `clientID` (rule 4 reads
-	/// `pending[identity.clientID]`), clears `rotationCandidate`/
-	/// `recvLeafPrincipal` too (this session is already converged, so both
-	/// are already unused — clearing them removes any doubt), then drives:
-	/// a routine send (which also discharges the owed PQ bind —
+	/// `pending[identity.clientID]`), clears `rotationCandidate` too (this
+	/// session is already converged, so it is already unused — clearing it
+	/// removes any doubt), then drives: a routine send (which also
+	/// discharges the owed PQ bind —
 	/// `sendClassicalSigningKey`); two mechanical §A.5 rounds, one each
 	/// direction (`recvPQSigningKey` via alice's own `pqRekeyBegin`,
 	/// `sendPQSigningKey` via her `pqRekeyRespond`/discharge as the other
 	/// round's committer); and a full classical rotation round (author/
 	/// approve/fold/catch-up, exercising both classical accessors) — all
 	/// while `bob`, who never sees `identity` at all, keeps verifying every
-	/// frame. Once `identity` is swapped, this test's own frames are no
-	/// longer oracle-resolvable by design — this test allows all four
-	/// groups via `OracleCheck.allow(_:)`.
+	/// frame.
 	func testIdentityNotConsultedOnceEveryKeyPackageStepIsBehindUs() throws {
 		// Every group's `current` still traces back to the ORIGINAL identity
-		// until each group's own next mechanism replaces it, so the oracle
-		// — which still reads `identity` — is EXPECTED to miss on all four
-		// groups for the rest of this test; that miss is the point, not a
-		// bug.
-		OracleCheck.allow([.sendClassical, .recvClassical, .sendPQ, .recvPQ])
-		defer { OracleCheck.allow([]) }
+		// until each group's own next mechanism replaces it.
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let begin = try alice.pqBootstrapBegin()
 		let respond = try bob.pqBootstrapRespond(begin.frame)
@@ -736,7 +727,6 @@ final class LeafKeysTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 		alice.identity = bogus
 		alice.rotationCandidate = nil
-		alice.recvLeafPrincipal = nil
 
 		// Routine send + the owed PQ bind's classical discharge commit
 		// (`sendClassicalSigningKey`).
@@ -794,18 +784,18 @@ final class LeafKeysTests: XCTestCase {
 		XCTAssertEqual(finalDecrypted.applicationMessage, Data("post-rotation".utf8))
 	}
 
-	// MARK: - Check 6: a canonical candidate whose send leaf still lags
+	// MARK: - Check 7: send-classical `pending` must be strictly empty
 
-	/// Check 6 requires `sendClassical.pending[C]` whenever
-	/// the send leaf doesn't yet present the candidate, REGARDLESS of
-	/// whether the candidate has already canonicalized — not just while
-	/// it's still uncanonical. Reaches the exact intermediate state (recv-
-	/// leaf converged, send-leaf still lagging, `sendClassical.pending[C]`
-	/// still populated) `testFullClassicalRotationRoundTripsBothLeavesAndPrincipalStates`
-	/// documents between its steps 4 and 5, then strips that one entry and
-	/// confirms `validateLeafKeys` rejects it.
-	func
-		testValidateLeafKeysRejectsACanonicalCandidateWhoseSendLeafStillLagsWithNoPendingEntry()
+	/// Send-classical never holds a `pending` entry — its own next
+	/// committing round mints fresh for whatever id it then presents, so
+	/// restore/mint reject any non-empty `pending` outright, even while a
+	/// canonical candidate's send leaf still genuinely lags. Reaches the
+	/// exact intermediate state (recv-leaf converged, send-leaf still
+	/// lagging) `testFullClassicalRotationRoundTripsBothLeavesAndPrincipalStates`
+	/// documents between its steps 4 and 5, confirms `leafKeys` is
+	/// naturally empty there, then pollutes it with an entry and confirms
+	/// `validateLeafKeys` rejects it.
+	func testValidateLeafKeysRejectsANonEmptySendClassicalPendingEvenWhileACandidateLags()
 		throws
 	{
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -824,28 +814,31 @@ final class LeafKeysTests: XCTestCase {
 				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
 			alice.identity.clientID, "send-classical documentedly still lags here")
 		let candidate = try XCTUnwrap(alice.rotationCandidate)
-		XCTAssertNotNil(alice.leafKeys.sendClassical.pending[candidate.clientID])
+		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
 
-		var strippedLeafKeys = alice.leafKeys
-		strippedLeafKeys.sendClassical.pending[candidate.clientID] = nil
+		let (pollutedSigningKey, pollutedSignatureKey) =
+			try TwoMLSIdentity.mintSignatureKeypair()
+		var polluted = alice.leafKeys
+		polluted.sendClassical.pending[candidate.clientID] = LeafKey(
+			signingKey: pollutedSigningKey, signatureKey: pollutedSignatureKey)
 
 		XCTAssertThrowsError(
 			try TwoMLSSession.validateLeafKeys(
-				strippedLeafKeys, sendGroup: alice.sendGroup,
+				polluted, sendGroup: alice.sendGroup,
 				recvGroup: alice.recvGroup,
 				identity: alice.identity, bootstrapKPSecret: nil,
 				stagedUpdates: alice.stagedUpdates,
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
 				rotationCandidate: alice.rotationCandidate,
-				recvLeafPrincipal: alice.recvLeafPrincipal, auth: alice.auth,
+				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		) { error in
 			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 
-		// The unmodified `leafKeys` (still carrying the entry) passes.
+		// The unmodified `leafKeys` (strictly empty send-classical `pending`) passes.
 		XCTAssertNoThrow(
 			try TwoMLSSession.validateLeafKeys(
 				alice.leafKeys, sendGroup: alice.sendGroup,
@@ -855,7 +848,7 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
 				rotationCandidate: alice.rotationCandidate,
-				recvLeafPrincipal: alice.recvLeafPrincipal, auth: alice.auth,
+				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider))
 		_ = bob
@@ -902,7 +895,6 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: withUntrackedUpdate.pendingProposal,
 				pqInflight: withUntrackedUpdate.pqInflight,
 				rotationCandidate: withUntrackedUpdate.rotationCandidate,
-				recvLeafPrincipal: withUntrackedUpdate.recvLeafPrincipal,
 				auth: withUntrackedUpdate.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -920,7 +912,7 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
 				rotationCandidate: alice.rotationCandidate,
-				recvLeafPrincipal: alice.recvLeafPrincipal, auth: alice.auth,
+				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider))
 		_ = mirror
@@ -949,7 +941,6 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: withStrayPending.pendingProposal,
 				pqInflight: withStrayPending.pqInflight,
 				rotationCandidate: withStrayPending.rotationCandidate,
-				recvLeafPrincipal: withStrayPending.recvLeafPrincipal,
 				auth: withStrayPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -967,7 +958,7 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
 				rotationCandidate: alice.rotationCandidate,
-				recvLeafPrincipal: alice.recvLeafPrincipal, auth: alice.auth,
+				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider))
 	}
@@ -1006,7 +997,6 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: withUntrackedPending.pendingProposal,
 				pqInflight: withUntrackedPending.pqInflight,
 				rotationCandidate: withUntrackedPending.rotationCandidate,
-				recvLeafPrincipal: withUntrackedPending.recvLeafPrincipal,
 				auth: withUntrackedPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -1034,7 +1024,6 @@ final class LeafKeysTests: XCTestCase {
 				pendingProposal: withStrayPending.pendingProposal,
 				pqInflight: withStrayPending.pqInflight,
 				rotationCandidate: withStrayPending.rotationCandidate,
-				recvLeafPrincipal: withStrayPending.recvLeafPrincipal,
 				auth: withStrayPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -1063,59 +1052,12 @@ final class LeafKeysTests: XCTestCase {
 		let recvPQEpochBefore = alice.recvGroup?.pq?.context.epoch
 		alice.leafKeys.recvPQ.pending[Data("fingerprint-probe".utf8)] = try freshKey()
 
-		// The injected entry is a store-only probe the oracle can never
-		// resolve (nothing it corresponds to on the wire) — not a signing
-		// change, so it's exempted here rather than allowlisting the whole
-		// test.
-		let update = try OracleCheck.withMissesIgnored {
-			try alice.stateUpdate(kind: .core)
-		}
+		let update = try alice.stateUpdate(kind: .core)
 		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
 		XCTAssertEqual(alice.recvGroup?.pq?.context.epoch, recvPQEpochBefore)
 		XCTAssertEqual(
 			update.kind, .checkpoint,
 			"a PQ key-set change must upgrade a .core request even with no epoch move")
-	}
-
-	// MARK: - The oracle catches what nothing else in this call would
-
-	/// Proves the oracle does independent work, not merely duplicate a
-	/// check something else already makes: swaps `recvPQ.current`'s
-	/// SIGNING key for an unrelated one while leaving its SIGNATURE key
-	/// untouched (still matching the tree — `assertLeafKeysPresented`
-	/// passes; `LeafKey` enforces no derivation relationship between its
-	/// two fields). recv-PQ (KP′) is still `identity`'s own key, so it
-	/// stays inside the oracle's narrowed resolve scope, unlike
-	/// send-classical/send-PQ (always fresh founding leaves the frozen
-	/// oracle can never resolve). A plain classical `prepareToEncrypt()`
-	/// with the turn on the peer touches neither PQ group at all, so it
-	/// does not throw — nothing else in this call ever reads, let alone
-	/// verifies, this specific key. `OracleCheck.mismatches(in:)` is the
-	/// one thing that notices, and reports exactly this slot. Mutation-
-	/// tested: making `OracleCheck.run` a no-op (or `mismatches` itself
-	/// vacuous) leaves the entire suite green except this direct assertion.
-	func testOracleCatchesAMismatchedStoredKeyNothingElseInThisCallWouldNotice() throws {
-		var (alice, _) = try RatchetTests.fullyEstablishedTurnOnBob()
-		let realSignatureKey = try XCTUnwrap(alice.leafKeys.recvPQ.current)
-			.signatureKey
-		let (wrongSigningKey, _) = try TwoMLSIdentity.mintSignatureKeypair()
-		alice.leafKeys.recvPQ.current = LeafKey(
-			signingKey: wrongSigningKey, signatureKey: realSignatureKey)
-
-		// `withMissesIgnored` only silences the INSTALLED observer's own
-		// `XCTFail` for this deliberate corruption — `mismatches(in:)`
-		// right after, called directly and outside that scope, still
-		// makes the real, unsuppressed assertion below.
-		try OracleCheck.withMissesIgnored {
-			XCTAssertNoThrow(
-				try alice.prepareToEncrypt(),
-				"an idle call reads/verifies neither field of a stored key it never signs with"
-			)
-		}
-		XCTAssertEqual(
-			OracleCheck.mismatches(in: alice), ["recvPQ.current: byte mismatch"],
-			"only the oracle's own comparison catches a signing/signature mismatch "
-				+ "nothing in this call signs with or verifies")
 	}
 
 	// MARK: - Fault injection: write-back is write-back-only-on-success
@@ -1199,6 +1141,8 @@ final class LeafKeysTests: XCTestCase {
 			// A separate peer copy for the restore-continuation check — never
 			// touched by the faulted `alice`'s own (never-delivered) frame.
 			var bobForRestoreCheck = bob
+			let recvClassicalBeforeThisCall = alice.leafKeys.recvClassical
+			let sendClassicalBeforeThisCall = alice.leafKeys.sendClassical
 
 			TwoMLSSessionTestHooks.armFault(
 				"committingRound.afterWriteBackBeforeRendezvous")
@@ -1207,11 +1151,35 @@ final class LeafKeysTests: XCTestCase {
 			try alice.assertLeafKeysPresented()
 
 			_ = try aliceControl.prepareToEncrypt()
-			XCTAssertEqual(
-				LeafKeysArchive(alice.leafKeys, kind: .checkpoint),
-				LeafKeysArchive(aliceControl.leafKeys, kind: .checkpoint),
-				"the write-back landed the SAME leafKeys value the unfaulted round would have"
+			// The fault fires inside `committingRound` — the send-side half
+			// of `prepareToEncrypt`. Send-classical mints its key AT the
+			// commit itself (system randomness), so — unlike sendPQ/recvPQ
+			// below, which this round never touches — the faulted call and
+			// the unfaulted control mint INDEPENDENT keys and can never
+			// match byte for byte. What must still hold: the write-back
+			// left `current` set to something new (the mint ran), and
+			// `pending` empty (nothing is ever staged there in advance).
+			// D3's fresh routine-offer mint is the RECV-side half, reached
+			// only after `committingRound` returns; the faulted call never
+			// gets there, so `recvClassical` stays exactly as it was going
+			// into this call, not what the control's own (freshly minted,
+			// randomized) offer left it as.
+			XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
+			XCTAssertNotEqual(
+				alice.leafKeys.sendClassical.current?.signatureKey,
+				sendClassicalBeforeThisCall.current?.signatureKey,
+				"the write-back must have minted and promoted a new send-classical key"
 			)
+			XCTAssertEqual(
+				GroupKeySetArchive(alice.leafKeys.sendPQ),
+				GroupKeySetArchive(aliceControl.leafKeys.sendPQ))
+			XCTAssertEqual(
+				GroupKeySetArchive(alice.leafKeys.recvPQ),
+				GroupKeySetArchive(aliceControl.leafKeys.recvPQ))
+			XCTAssertEqual(
+				GroupKeySetArchive(alice.leafKeys.recvClassical),
+				GroupKeySetArchive(recvClassicalBeforeThisCall),
+				"the recv-side offer mint never ran — recvClassical is untouched")
 
 			// Restoring from the last blob persisted BEFORE this call continues
 			// normally — a durable-but-behind record is not stuck, even though
@@ -1234,17 +1202,13 @@ final class LeafKeysTests: XCTestCase {
 	/// (`leafKeys = mintedLeafKeys`) followed by a fault right before
 	/// `message.mlsEncoded()` — the newly-staged candidate must already be
 	/// in `leafKeys.recvClassical.pending` even though the proposal never
-	/// gets encoded. Unlike the other three sites, an unfaulted TWIN is
-	/// not the right comparison here: a first-time rotation mints a FRESH
-	/// random candidate key per call, so two independent mints for the
-	/// same target id are expected to differ. The full-value check instead
-	/// confirms the write-back's own internal consistency — the SAME key
-	/// landed in both `sendClassical.pending`/`recvClassical.pending` and
-	/// `rotationCandidate`, exactly as the source comment documents ("stage
-	/// the fresh key into BOTH classical sets"). A live retry IS genuinely
-	/// possible: re-staging the SAME candidate reuses the ALREADY-staged
-	/// key (`existing.clientID == rotating`), not a fresh mint — this is
-	/// `GroupKeySet.stage`'s own documented idempotent no-op.
+	/// gets encoded. An unfaulted TWIN is not the right comparison here: a
+	/// first-time rotation mints a FRESH random candidate key per call, so
+	/// two independent mints for the same target id are expected to
+	/// differ. A live retry IS genuinely possible: re-staging the SAME
+	/// candidate reuses the ALREADY-staged key (`existing.clientID ==
+	/// rotating`), not a fresh mint — this is `GroupKeySet.stage`'s own
+	/// documented idempotent no-op.
 	#if DEBUG
 		func testPrepareToEncryptLeafKeysSurviveAFaultAfterWriteBack() throws {
 			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -1263,12 +1227,10 @@ final class LeafKeysTests: XCTestCase {
 
 			let candidate = try XCTUnwrap(alice.rotationCandidate)
 			XCTAssertEqual(candidate.clientID, newID)
-			let recvPending = try XCTUnwrap(alice.leafKeys.recvClassical.pending[newID])
-			let sendPending = try XCTUnwrap(alice.leafKeys.sendClassical.pending[newID])
-			for pending in [recvPending, sendPending] {
-				XCTAssertEqual(pending.signingKey.data, candidate.signingKey.data)
-				XCTAssertEqual(pending.signatureKey, candidate.signatureKey)
-			}
+			// Send-classical is never staged in advance — only
+			// recv-classical holds the candidate's key until it converges.
+			XCTAssertNotNil(alice.leafKeys.recvClassical.pending[newID])
+			XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
 
 			// A live retry (re-staging the same id) is the documented
 			// idempotent case, and completes the round.
@@ -1352,8 +1314,6 @@ final class LeafKeysTests: XCTestCase {
 			// Same reason as `SigningKeyProtocolTests`'s §3 catch-up tests:
 			// the hand-built renaming Upd′ has no rotation-candidate arm to
 			// resolve through.
-			OracleCheck.allow([.recvPQ])
-			defer { OracleCheck.allow([]) }
 			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 			// A routine (non-hand-built) mechanical round never renames the
 			// credential, so `promoted` would be a no-op and this fault
@@ -1441,6 +1401,56 @@ final class LeafKeysTests: XCTestCase {
 			let presentedKey = try TwoMLSSession.ownLeaf(of: sendPQGroup).signatureKey
 			XCTAssertEqual(bob.leafKeys.sendPQ.current?.signatureKey, presentedKey)
 			try bob.assertLeafKeysPresented()
+		}
+
+		/// `pqRekeyBegin` registers its fresh recv-PQ key in the SAME
+		/// non-throwing block as `recvGroup`'s own write-back, before
+		/// `sealSideBand` — a fault right after that write-back must still
+		/// leave `leafKeys.recvPQ.pending` holding the fresh key even though
+		/// `pqInflight` was never set. A live retry IS possible here (unlike
+		/// `pqRekeyApply`): `pqInflight` stays nil, so the guard admits a
+		/// second call, which mints again (D3: always fresh, never reused).
+		func testPqRekeyBeginRegistersTheFreshKeyWithTheGroup() throws {
+			var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+			XCTAssertTrue(bob.myPQTurn)
+			let ownID = try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.recvGroup?.pq))
+					.credential)
+			let currentKeyBefore = bob.leafKeys.recvPQ.current
+
+			TwoMLSSessionTestHooks.armFault("pqRekeyBegin.afterWriteBack")
+			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
+			XCTAssertThrowsError(try bob.pqRekeyBegin())
+
+			XCTAssertNil(bob.pqInflight, "the fault landed before pqInflight was set")
+			let pendingKey = try XCTUnwrap(bob.leafKeys.recvPQ.pending[ownID])
+			XCTAssertNotEqual(pendingKey.signatureKey, currentKeyBefore?.signatureKey)
+			XCTAssertEqual(
+				bob.leafKeys.recvPQ.current?.signatureKey,
+				currentKeyBefore?.signatureKey)
+			try bob.assertLeafKeysPresented()
+		}
+
+		/// `pqRekeyRespond` registers its fresh send-PQ key in the SAME
+		/// non-throwing block as `sendGroup`'s own write-back, before
+		/// `recordPQHeaderKey()` — a fault right after that write-back must
+		/// still leave the rekeyed group's fresh key already promoted into
+		/// `leafKeys.sendPQ.current`, matching `pqBootstrapRespond`'s own
+		/// precedent above.
+		func testPqRekeyRespondRegistersTheFreshKeyWithTheGroup() throws {
+			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+			let begin = try bob.pqRekeyBegin()
+
+			TwoMLSSessionTestHooks.armFault("pqRekeyRespond.afterWriteBack")
+			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
+			XCTAssertThrowsError(try alice.pqRekeyRespond(begin.frame))
+
+			XCTAssertNil(alice.pqInflight, "the fault landed before pqInflight was set")
+			let presentedKey = try TwoMLSSession.ownLeaf(
+				of: try XCTUnwrap(alice.sendGroup?.pq)
+			).signatureKey
+			XCTAssertEqual(alice.leafKeys.sendPQ.current?.signatureKey, presentedKey)
+			try alice.assertLeafKeysPresented()
 		}
 	#endif
 
@@ -1701,6 +1711,220 @@ final class LeafKeysTests: XCTestCase {
 		XCTAssertTrue(foldDecrypted.ownCredentialCanonicalized)
 		bobTracker.record(foldDecrypted.update)
 		try assertRestoreEqualsLive(bob, using: bobTracker)
+	}
+}
+
+/// `RotationCandidateArchive`'s pre-retirement shape (keys 0-3, keys 1/2
+/// the now-dropped signing/signature key) — encoding-only, so this test can
+/// build a body that still carries them.
+@available(iOS 26, macOS 26, *)
+private struct WideRotationCandidateArchive: Encodable {
+	var clientID: Data
+	var signingKey: Data
+	var signatureKey: Data
+	var proposedAtRecvEpoch: UInt64
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case clientID = 0
+		case signingKey = 1
+		case signatureKey = 2
+		case proposedAtRecvEpoch = 3
+	}
+}
+
+/// `RecvLeafPrincipalArchive`'s pre-retirement shape (archive key 40 in
+/// `SessionArchive`) — encoding-only, standing in for a field this engine no
+/// longer even declares.
+@available(iOS 26, macOS 26, *)
+private struct OldRecvLeafPrincipalArchive: Encodable {
+	var clientID: Data
+	var signingKey: Data
+	var signatureKey: Data
+	var pqSigningKey: Data
+	var pqSignatureKey: Data
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case clientID = 0
+		case signingKey = 1
+		case signatureKey = 2
+		case pqSigningKey = 3
+		case pqSignatureKey = 4
+	}
+}
+
+/// A `SessionArchive` body, encoding-only, at the exact same coding keys as
+/// the live type — EXCEPT `rotationCandidate` (key 31) carries its retired
+/// keys 1/2 and an extra `recvLeafPrincipal` (key 40) rides along, neither
+/// of which the live `SessionArchive`/`RotationCandidateArchive` declare any
+/// more. Proves an archive body shaped like a pre-retirement one (a real
+/// migrator input, or a dev archive written before this change) still
+/// decodes and restores: synthesized `Decodable` ignores unknown integer
+/// keys.
+@available(iOS 26, macOS 26, *)
+private struct WideSessionArchive: Encodable {
+	var version: UInt64
+	var classicalSuite: UInt16
+	var pqSuite: UInt16
+	var kind: BlobKind
+	var stateSeq: UInt64
+	var sendPQEpoch: UInt64?
+	var recvPQEpoch: UInt64?
+	var sendClassicalGroupID: Data?
+	var recvClassicalGroupID: Data?
+	var identity: IdentityArchive
+	var auth: AuthCore
+	var sendGroup: GroupEntry?
+	var recvGroup: GroupEntry?
+	var currentStaple: Data
+	var pendingProposal: PendingProposalArchive?
+	var joinedWelcomeDigest: Data?
+	var initiated: Bool
+	var bootstrapKPSecret: BootstrapKPSecretArchive?
+	var expectedBootstrapKPCommitment: Data?
+	var pqTurnMine: Bool
+	var owedBind: OwedBind?
+	var pqInflight: PQInflightArchive?
+	var pendingSideBand: Data?
+	var peerAppliedSendEpoch: UInt64?
+	var lastCrossInjected: UInt64?
+	var lastCrossInjectedPQ: UInt64?
+	var lastSendPQExported: UInt64?
+	var offeredProposal: DigestedProposalArchive?
+	var queuedProposal: DigestedProposalArchive?
+	var stagedUpdates: [StagedUpdateArchive]
+	var sendCrossPSKLedger: ArchiveIntegerKeyedMap<ExportedPskArchive>
+	var rotationCandidate: WideRotationCandidateArchive?
+	var spawnToken: Data?
+	var listenRendezvous: ArchiveIntegerKeyedMap<Data>?
+	var recvHeaderKeys: ArchiveIntegerKeyedMap<Data>?
+	var recvHeaderKeysPQ: ArchiveIntegerKeyedMap<Data>?
+	var initialTheirKP: CombinerKeyPackageArchive?
+	var sendAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
+	var recvAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
+	var owesEstablishmentEnvelope: Bool?
+	var recvLeafPrincipal: OldRecvLeafPrincipalArchive?
+	var leafKeys: LeafKeysArchive
+	var sendPQKeysFingerprint: GroupKeySetFingerprint
+	var recvPQKeysFingerprint: GroupKeySetFingerprint
+	var deployedCarry: DeployedCarryArchive?
+	var initialAppPayload: Data?
+
+	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
+		case version = 0
+		case classicalSuite = 1
+		case pqSuite = 2
+		case kind = 3
+		case stateSeq = 4
+		case sendPQEpoch = 5
+		case recvPQEpoch = 6
+		case sendClassicalGroupID = 7
+		case recvClassicalGroupID = 8
+		case identity = 9
+		case auth = 10
+		case sendGroup = 11
+		case recvGroup = 12
+		case currentStaple = 13
+		case pendingProposal = 14
+		case joinedWelcomeDigest = 15
+		case initiated = 16
+		case bootstrapKPSecret = 17
+		case expectedBootstrapKPCommitment = 18
+		case pqTurnMine = 19
+		case owedBind = 20
+		case pqInflight = 21
+		case pendingSideBand = 22
+		case peerAppliedSendEpoch = 23
+		case lastCrossInjected = 24
+		case lastCrossInjectedPQ = 25
+		case lastSendPQExported = 26
+		case offeredProposal = 27
+		case queuedProposal = 28
+		case stagedUpdates = 29
+		case sendCrossPSKLedger = 30
+		case rotationCandidate = 31
+		case spawnToken = 32
+		case listenRendezvous = 33
+		case recvHeaderKeys = 34
+		case recvHeaderKeysPQ = 35
+		case initialTheirKP = 36
+		case sendAttachmentLedger = 37
+		case recvAttachmentLedger = 38
+		case owesEstablishmentEnvelope = 39
+		case recvLeafPrincipal = 40
+		case leafKeys = 41
+		case sendPQKeysFingerprint = 42
+		case recvPQKeysFingerprint = 43
+		case deployedCarry = 44
+		case initialAppPayload = 45
+	}
+}
+
+@available(iOS 26, macOS 26, *)
+extension LeafKeysTests {
+	/// Test 14: a body shaped like a pre-retirement archive — carrying
+	/// `RotationCandidateArchive`'s retired keys 1/2 and a `recvLeafPrincipal`
+	/// at key 40 — still decodes and restores, because a synthesized
+	/// `Decodable` ignores unknown integer keys. Kills a strict decoder that
+	/// rejects an archive body it doesn't recognize every key of.
+	func testArchiveWithRetiredKeyFieldsStillDecodes() throws {
+		var alice = try SessionTestSupport.establishedAndExchanged().alice
+		_ = try alice.prepareToEncrypt(rotating: Data("alice-retired-fields".utf8))
+		let real = try alice.makeSessionArchive(kind: .checkpoint).decode(
+			SessionArchive.self)
+		let realCandidate = try XCTUnwrap(real.rotationCandidate)
+
+		let wide = WideSessionArchive(
+			version: real.version, classicalSuite: real.classicalSuite,
+			pqSuite: real.pqSuite, kind: real.kind, stateSeq: real.stateSeq,
+			sendPQEpoch: real.sendPQEpoch, recvPQEpoch: real.recvPQEpoch,
+			sendClassicalGroupID: real.sendClassicalGroupID,
+			recvClassicalGroupID: real.recvClassicalGroupID, identity: real.identity,
+			auth: real.auth, sendGroup: real.sendGroup, recvGroup: real.recvGroup,
+			currentStaple: real.currentStaple, pendingProposal: real.pendingProposal,
+			joinedWelcomeDigest: real.joinedWelcomeDigest, initiated: real.initiated,
+			bootstrapKPSecret: real.bootstrapKPSecret,
+			expectedBootstrapKPCommitment: real.expectedBootstrapKPCommitment,
+			pqTurnMine: real.pqTurnMine, owedBind: real.owedBind,
+			pqInflight: real.pqInflight, pendingSideBand: real.pendingSideBand,
+			peerAppliedSendEpoch: real.peerAppliedSendEpoch,
+			lastCrossInjected: real.lastCrossInjected,
+			lastCrossInjectedPQ: real.lastCrossInjectedPQ,
+			lastSendPQExported: real.lastSendPQExported,
+			offeredProposal: real.offeredProposal, queuedProposal: real.queuedProposal,
+			stagedUpdates: real.stagedUpdates,
+			sendCrossPSKLedger: real.sendCrossPSKLedger,
+			rotationCandidate: WideRotationCandidateArchive(
+				clientID: realCandidate.clientID,
+				signingKey: Data(repeating: 0x11, count: 32),
+				signatureKey: Data(repeating: 0x22, count: 32),
+				proposedAtRecvEpoch: realCandidate.proposedAtRecvEpoch),
+			spawnToken: real.spawnToken, listenRendezvous: real.listenRendezvous,
+			recvHeaderKeys: real.recvHeaderKeys,
+			recvHeaderKeysPQ: real.recvHeaderKeysPQ,
+			initialTheirKP: real.initialTheirKP,
+			sendAttachmentLedger: real.sendAttachmentLedger,
+			recvAttachmentLedger: real.recvAttachmentLedger,
+			owesEstablishmentEnvelope: real.owesEstablishmentEnvelope,
+			recvLeafPrincipal: OldRecvLeafPrincipalArchive(
+				clientID: Data("retired-principal".utf8),
+				signingKey: Data(repeating: 0x33, count: 32),
+				signatureKey: Data(repeating: 0x44, count: 32),
+				pqSigningKey: Data(repeating: 0x55, count: 32),
+				pqSignatureKey: Data(repeating: 0x66, count: 32)),
+			leafKeys: real.leafKeys, sendPQKeysFingerprint: real.sendPQKeysFingerprint,
+			recvPQKeysFingerprint: real.recvPQKeysFingerprint,
+			deployedCarry: real.deployedCarry, initialAppPayload: real.initialAppPayload
+		)
+
+		let archive = try SecretArchive(encoding: wide)
+		let decoded = try archive.decode(SessionArchive.self)
+		XCTAssertEqual(decoded.rotationCandidate?.clientID, realCandidate.clientID)
+
+		XCTAssertNoThrow(
+			try TwoMLSSession.restore(
+				core: nil, checkpoint: archive,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider))
 	}
 }
 

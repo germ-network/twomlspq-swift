@@ -154,9 +154,6 @@ extension TwoMLSSession {
 			lastCheckpointedManifest = pqEpochManifest
 		}
 		let update = StateUpdate(kind: kind, stateSeq: stateSeq, archive: archive)
-		#if DEBUG
-			TwoMLSSessionTestHooks.notifyStateUpdate(self)
-		#endif
 		return update
 	}
 }

@@ -16,7 +16,8 @@ import MLSProfileRFC9420
 ///
 /// A §A.5 round re-keys ONE PQ group with a standalone `updatePath` Commit′,
 /// ending in the reused A.4/A.3 bind: the turn-holder (INITIATOR) proposes a
-/// plain self-Update into her `recvGroup.pq` mirror (`pqRekeyBegin`); the
+/// self-Update into her `recvGroup.pq` mirror that catches her leaf up to
+/// `auth.mine.current` under a fresh key (`pqRekeyBegin`); the
 /// peer (COMMITTER) folds it into an `includePath: true` commit on the
 /// group it actually owns — `sendGroup.pq` (`pqRekeyRespond`); the
 /// initiator applies that Commit′, exports `S` off the freshly-rekeyed
@@ -39,9 +40,12 @@ import MLSProfileRFC9420
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
 	/// The initiator (whoever holds `pqTurnMine`) begins an §A.5 round:
-	/// propose a plain (non-rotating) self-Update into `recvGroup.pq` — the
-	/// peer's own PQ group, mirrored here, and the one about to be re-keyed
-	/// — and park it as a `0x1B` side-band frame. Idempotent while a begin
+	/// propose a self-Update into `recvGroup.pq` — the peer's own PQ
+	/// group, mirrored here, and the one about to be re-keyed — carrying
+	/// our current canonical id whenever our own leaf there lags, with
+	/// that id also announced in the proposal's authenticated data under
+	/// the deployed-compatible profile (C1, `rekeyAnnouncement`), and
+	/// park it as a `0x1B` side-band frame. Idempotent while a begin
 	/// is already outstanding, like `pqBootstrapBegin`.
 	public mutating func pqRekeyBegin() throws -> SideBandResult {
 		// Slice 11: the non-emittable gate.
@@ -65,16 +69,48 @@ extension TwoMLSSession {
 			throw TwoMLSError.leafCustodyUnavailable
 		}
 
+		// D3: the Upd′ carries our current canonical id, minted with a
+		// fresh signature key — a catch-up when our leaf lags, and
+		// otherwise the SAME id the leaf already presents (a key-only
+		// move, mirroring the classical routine offer's own shape). The
+		// fresh key is staged under `targetID` until the peer's Commit′
+		// applies it (`pqRekeyApply`'s promotion).
+		let ownPQID = try basicIdentifier(Self.ownLeaf(of: recvPQ).credential)
+		let targetID = auth.mine.current ?? ownPQID
+		let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let freshKey = LeafKey(signingKey: signingKey, signatureKey: signatureKey)
 		let (message, _) = try recvPQ.proposeUpdate(
-			pqProvider, signingKey: try recvPQSigningKey(), framing: .publicMessage)
+			pqProvider,
+			sign: MLS.RFC9420.signingClosure(
+				pqProvider, current: try recvPQSigningKey(),
+				new: freshKey.signingKey),
+			framing: .publicMessage,
+			newIdentity: MLS.RFC9420.NewSigningIdentity(
+				credential: .basic(identity: targetID),
+				signatureKey: freshKey.signatureKey),
+			authenticatedData: Self.rekeyAnnouncement(
+				oldID: ownPQID, newID: targetID, profile: profile))
 		recv.pq = recvPQ
 		recvGroup = recv
+		var updatedLeafKeys = leafKeys
+		updatedLeafKeys.recvPQ.replace(freshKey, for: targetID)
+		leafKeys = updatedLeafKeys
+
+		// (DEBUG only): a fault point AFTER the write-back above but
+		// before the next throwing call — proves a fault here leaves
+		// `recvGroup`/`leafKeys` fully written back.
+		#if DEBUG
+			if TwoMLSSessionTestHooks.shouldFault("pqRekeyBegin.afterWriteBack") {
+				throw InjectedTestFault(name: "pqRekeyBegin.afterWriteBack")
+			}
+		#endif
 
 		let updBytes = try message.mlsEncoded()
 		let frame = Frames.encodePQRekeyUpd(updBytes)
-		// A future path that drops this parked Upd′ instead of letting
-		// `pqRekeyApply` fold it must also drop any `recvPQ.pending` entry
-		// staged for it — nothing does either today.
+		// The mint's own drop of a parked Upd′ (`SessionMigration.swift`'s
+		// `droppedRekeyTarget` handling) already clears any `recvPQ.pending`
+		// entry staged for it, unless it is a still-lagging leaf's rule-7
+		// catch-up key.
 		pqInflight = .rekeyInitiated(updMessage: updBytes)
 		pendingSideBand = frame
 		let sealed = try sealSideBand(frame)
@@ -94,7 +130,9 @@ extension TwoMLSSession {
 	/// result as a `0x1D` side-band frame. The proposer's leaf may keep its id
 	/// (any signature-key change) or catch up to an already-canonical one
 	/// (`validatePQLeafMove` against `auth.theirs`); the C1 announced id, when
-	/// present, is cross-checked against the proposed leaf's id. Every check
+	/// present, is cross-checked against the proposed leaf's id. The commit's
+	/// own path leaf moves this party's send-PQ leaf to `auth.mine.current`
+	/// under a freshly minted key. Every check
 	/// runs before any mutation, so a rejected round leaves `self` untouched.
 	/// Every export/write-back is deferred to the success point after the
 	/// commit lands (§13 M3): a throw above that discards the local
@@ -204,11 +242,26 @@ extension TwoMLSSession {
 				crossInjectedEpoch = recvPQEpoch
 			}
 
+			// D3: the committer's own send-PQ path leaf mints a fresh key
+			// too, straight onto `mine.current` — this is where our own
+			// leaf catches up when it lags (`protocol-flows.md:696-708`).
+			// When it doesn't lag, `pathID` is just the id the leaf already
+			// presents, so the move stays key-only, as before.
+			let ownSendPQID = try basicIdentifier(Self.ownLeaf(of: sendPQ).credential)
+			let pathID = auth.mine.current ?? ownSendPQID
+			let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+			let freshKey = LeafKey(signingKey: signingKey, signatureKey: signatureKey)
 			let transition = try sendPQ.committing(
 				pqProvider, proposals: proposals, proposalStore: proposalStore,
-				signingKey: try sendPQSigningKey(),
+				sign: MLS.RFC9420.signingClosure(
+					pqProvider, current: try sendPQSigningKey(),
+					new: freshKey.signingKey),
 				randomness: try .generate(pqProvider),
-				includePath: true, framing: .publicMessage, psk: pskStore.resolver()
+				includePath: true, framing: .publicMessage,
+				psk: pskStore.resolver(),
+				newIdentity: MLS.RFC9420.NewSigningIdentity(
+					credential: .basic(identity: pathID),
+					signatureKey: freshKey.signatureKey)
 			)
 			return try withTransitionHandoff(transition) { adopted, sent in
 				let commitBytes = try sent.message.mlsEncoded()
@@ -218,7 +271,7 @@ extension TwoMLSSession {
 				// `.credentialReplaced` this Commit′ ACTUALLY carries, on LOCAL
 				// copies, before any write-back — the proposer's leaf against
 				// `theirs`, and this session's own (committer's) leaf against
-				// `mine`. Today our own leaf never changes here; see
+				// `mine`, which now moves here whenever it lags; see
 				// `adjudicatePQRekeyEffects`.
 				try Self.adjudicatePQRekeyEffects(
 					pending.effects, myLeaf: sendPQ.myLeafIndex, auth: auth)
@@ -226,11 +279,31 @@ extension TwoMLSSession {
 				sendPQ = advanced.group
 				try TwoPartyRules.ensureTwoParty(sendPQ)
 
-				// Only the group's epoch/tree moves here — the committer's
-				// own send-PQ leaf never changes in this path, so `leafKeys`
-				// is untouched.
+				// D3: the committer's own send-PQ leaf just moved to the
+				// fresh key this round minted — go straight to `current`.
+				// Our own commit applies in this same call, so there is no
+				// window where the leaf could still lag afterward, and so
+				// no `pending` entry to retain (contrast the opener's own
+				// leaf, which stages under `pending` until the peer's
+				// Commit′ applies).
+				var updatedLeafKeys = leafKeys
+				updatedLeafKeys.sendPQ = GroupKeySet(current: freshKey)
+
 				send.pq = sendPQ
 				sendGroup = send
+				leafKeys = updatedLeafKeys
+
+				// (DEBUG only): a fault point AFTER the write-back above but
+				// before the next throwing call — proves a fault here leaves
+				// `sendGroup`/`leafKeys` fully written back.
+				#if DEBUG
+					if TwoMLSSessionTestHooks.shouldFault(
+						"pqRekeyRespond.afterWriteBack")
+					{
+						throw InjectedTestFault(
+							name: "pqRekeyRespond.afterWriteBack")
+					}
+				#endif
 				// The committer's own advance of `sendGroup.pq` (PR2) — a second,
 				// independent commit from the initiator's later `owePQBind` one.
 				try recordPQHeaderKey()
@@ -366,10 +439,10 @@ extension TwoMLSSession {
 			recvPQ = transition.group
 			try TwoPartyRules.ensureTwoParty(recvPQ)
 
-			// Promote my own recv-PQ leaf's key if this
-			// Commit′ moved its presentation (a hand-built/migrated Upd′
-			// carrying a `newIdentity`; the routine self-driven proposal
-			// never does) — a same-key apply is `promoted`'s own no-op.
+			// Promote my own recv-PQ leaf's key — `pqRekeyBegin` always
+			// stages one under `targetID` (its own current canonical id,
+			// whether or not that moves the leaf's presentation); a
+			// same-id apply is `promoted`'s own no-op.
 			// Generalized catch-up: retain `pending[mine.current]` when
 			// the recv-PQ leaf still lags it after this apply — the PQ half of rule 7,
 			// which a migrated/lagging session needs for a later self-drive
