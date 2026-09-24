@@ -60,7 +60,7 @@ extension TwoMLSSession {
 		guard var recv = recvGroup, var recvPQ = recv.pq else {
 			throw TwoMLSError.notEstablished
 		}
-		// Step 3: no-custody guard, before anything is consumed.
+		// No-custody guard, before anything is consumed.
 		guard !noCustody.contains(.recvPQ) else {
 			throw TwoMLSError.leafCustodyUnavailable
 		}
@@ -109,7 +109,7 @@ extension TwoMLSSession {
 		guard var recv = recvGroup, recv.pq != nil else {
 			throw TwoMLSError.notEstablished
 		}
-		// Step 3: no-custody guard, before anything is consumed — this
+		// No-custody guard, before anything is consumed — this
 		// door commits `sendGroup.pq`.
 		guard !noCustody.contains(.sendPQ) else {
 			throw TwoMLSError.leafCustodyUnavailable
@@ -272,7 +272,7 @@ extension TwoMLSSession {
 		let frame = openOrRaw(inbound)
 
 		return try withDeployedWireConventions {
-			// S-2 (step 3): decode first, then the fatal name, then every
+			// Decode first, then the fatal name, then every
 			// state-shape guard — mirrors Rust's own PQ-door order
 			// (`check_not_wedged` runs before the `pq_inflight`/etc. shape
 			// checks at every door, `mod.rs`). This moves the guards that
@@ -297,7 +297,7 @@ extension TwoMLSSession {
 				throw TwoMLSError.notEstablished
 			}
 			guard let sendPQ = sendGroup?.pq else { throw TwoMLSError.notEstablished }
-			// Step 3: no-custody guard, before anything is consumed — this
+			// No-custody guard, before anything is consumed — this
 			// door's `owePQBind` commits `sendGroup.pq`.
 			guard !noCustody.contains(.sendPQ) else {
 				throw TwoMLSError.leafCustodyUnavailable
@@ -365,8 +365,8 @@ extension TwoMLSSession {
 			// Commit′ moved its presentation (a hand-built/migrated Upd′
 			// carrying a `newIdentity`; the routine self-driven proposal
 			// never does) — a same-key apply is `promoted`'s own no-op.
-			// A.7 (step 3): retain `pending[mine.current]` when the recv-PQ
-			// leaf still lags it after this apply — the PQ half of rule 7,
+			// Generalized catch-up: retain `pending[mine.current]` when
+			// the recv-PQ leaf still lags it after this apply — the PQ half of rule 7,
 			// which a migrated/lagging session needs for a later self-drive
 			// to consume; every other pending entry is still dropped, same
 			// as before.

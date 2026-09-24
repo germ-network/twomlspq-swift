@@ -79,7 +79,7 @@ extension TwoMLSSession {
 		}
 		guard pendingProposal == nil else { throw TwoMLSError.sessionNotReady }
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
-		// Step 3: no-custody guard, before `processA4Leg`'s write-back —
+		// No-custody guard, before `processA4Leg`'s write-back —
 		// this responder frames its `0x19` reply on `send.classical`.
 		guard !noCustody.contains(.sendClassical) else {
 			throw TwoMLSError.leafCustodyUnavailable
@@ -129,7 +129,7 @@ extension TwoMLSSession {
 		let msg = try MLS.RFC9420.Message(mlsEncoded: messageBytes)
 		guard case .privateMessage(let pm) = msg else { throw TwoMLSError.decryptionFailed }
 
-		// S-2 (step 3): the fatal name at every PQ door, right after the
+		// The fatal name check, at every PQ door, right after the
 		// untrusted decode — mirrors Rust's `pq_ratchet_bind`
 		// (decode, then `check_not_wedged`, then its state-shape guards).
 		guard pqWedge == nil else { throw TwoMLSError.pqSideBandWedged }
@@ -144,13 +144,13 @@ extension TwoMLSSession {
 		guard var send = sendGroup, let sendPQ = send.pq else {
 			throw TwoMLSError.notEstablished
 		}
-		// Step 3: no-custody guard, before anything is consumed — this
+		// No-custody guard, before anything is consumed — this
 		// door's `owePQBind` commits `sendGroup.pq`.
 		guard !noCustody.contains(.sendPQ) else {
 			throw TwoMLSError.leafCustodyUnavailable
 		}
 
-		// S-1 (step 3): DUAL-FORM, matching Rust's own `pq_ratchet_bind` —
+		// DUAL-FORM, matching Rust's own `pq_ratchet_bind` —
 		// a responder whose round predates the classical carriers may only
 		// be able to re-send the LEGACY, PQ-carried form of its CT (the
 		// payload is MLS-encrypted to us, so it can't rebuild the classical
@@ -233,7 +233,7 @@ extension TwoMLSSession {
 			case .privateMessage(let pm) = message
 		else { return }
 
-		// S-1 (step 3): classify the parked leg by its OWN `group_id` —
+		// Classify the parked leg by its OWN `group_id` —
 		// exactly Rust's `leg_carrier` — never by comparing a PQ epoch to a
 		// classical one. Classical → due once `send.classical`'s epoch has
 		// moved past the wrap (the steady-state case). PQ + EK → due
@@ -286,7 +286,7 @@ extension TwoMLSSession {
 	/// Self-drive (A.4 arm only — the A.5 `send_pq_leaf_lags` branch is
 	/// deferred). No-op unless it's my turn, both halves are established, and
 	/// nothing else is outstanding (an inflight round, an owed bind, or an
-	/// already-parked side-band leg). Step 3: also skips while
+	/// already-parked side-band leg). Also skips while
 	/// `sendClassical`/`sendPQ` is in `noCustody` — `stageRatchet` would
 	/// fail anyway (it signs on `sendClassical`), but a wedged/no-custody
 	/// session's auto-driver must never even attempt to open a round it

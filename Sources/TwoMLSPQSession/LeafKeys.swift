@@ -74,8 +74,8 @@ extension TwoMLSSession {
 	/// The live choke-point check (`StateUpdate.swift`'s `stateUpdate(kind:)`
 	/// choke point): every EXISTING group's own leaf must currently present
 	/// its stored key set's `current` — fail-closed, `.credentialUnknown`,
-	/// UNLESS its role is in `noCustody` (step 3), in which case a nil
-	/// `current` is tolerated. Step 3: first runs the monotone `noCustody`
+	/// UNLESS its role is in `noCustody`, in which case a nil
+	/// `current` is tolerated. First runs the monotone `noCustody`
 	/// drain — any role whose set now genuinely has a `current` (a
 	/// promotion since the flag was set, at any of the several promotion
 	/// call sites, none of which touch `noCustody` themselves) is dropped
@@ -126,9 +126,9 @@ extension TwoMLSSession {
 	}
 }
 
-/// Which caller context is validating `leafKeys` — step 3 widens
+/// Which caller context is validating `leafKeys` — widens
 /// `validateLeafKeys` (previously restore-only) to also run at mint, where
-/// two further modes apply. `.restore` is the default so every pre-step-3
+/// two further modes apply. `.restore` is the default so every pre-existing
 /// call site (and every existing test) keeps its exact prior behavior.
 enum LeafKeysValidationMode: Equatable {
 	/// `TwoMLSSession.restore`.
@@ -155,13 +155,13 @@ extension TwoMLSSession {
 	/// non-`.update` entry — a verification failure also transparently
 	/// skips a stale-epoch entry, since `verifying` itself is epoch-checked.
 	///
-	/// Step 3 additions: `mode`/`noCustody` widen check 3 (an existing
+	/// `mode`/`noCustody` widen check 3 (an existing
 	/// group's `current` may legitimately be `nil` when its role is in
 	/// `noCustody`) and generalize check 7 (any lagging own leaf, not only a
 	/// rotation candidate or the retained born-dedicated custody, needs
 	/// `pending[mine.current]` — see `isRotationCandidateOutstanding`'s
 	/// sibling doc, `TwoMLSSession+ClassicalCommit.swift`'s
-	/// `ownLeafCatchUpTarget`). All three default to the pre-step-3 shape
+	/// `ownLeafCatchUpTarget`). All three default to the original shape
 	/// (`.restore`, empty `noCustody`) so no other call site changes.
 	static func validateLeafKeys(
 		_ leafKeys: LeafKeys,
@@ -185,7 +185,7 @@ extension TwoMLSSession {
 		pqProvider: any MLS.CipherSuiteProvider
 	) throws {
 		// Check 3: every EXISTING group presents its own `current`, UNLESS
-		// its role is in `noCustody` (step 3) — in which case `current` must
+		// its role is in `noCustody` — in which case `current` must
 		// be `nil`. `noCustody` must name exactly the existing groups whose
 		// `current` is nil: a role listed there whose `current` is actually
 		// present is as inconsistent as an un-listed group with a nil one
@@ -277,7 +277,7 @@ extension TwoMLSSession {
 				else { throw TwoMLSError.archiveInvalid }
 			}
 			if let recvPQGroup = recv.pq {
-				// Step 3 (generalized rule 7, PQ arm): a lagging recv-PQ own
+				// Generalized rule 7, PQ arm: a lagging recv-PQ own
 				// leaf's `pending[mine.current]` is allowed independent of
 				// `pqInflight` — the retained catch-up entry
 				// (`TwoMLSSession+Rekey.swift`'s post-apply retention)
@@ -313,7 +313,7 @@ extension TwoMLSSession {
 			}
 		}
 		// send-PQ's own pending is never meaningful except the same
-		// generalized rule-7 catch-up entry (step 3) — PQ has no
+		// generalized rule-7 catch-up entry — PQ has no
 		// rotation-candidate arm of its own, so any OTHER entry is a
 		// leftover or a smuggled, unresolvable key.
 		if let send = sendGroup, let sendPQGroup = send.pq {
@@ -359,9 +359,9 @@ extension TwoMLSSession {
 				}
 			}
 		}
-		// S-3 (step 3, `.mintSupplied` only — CLASSICAL only, never PQ: a
+		// `.mintSupplied` only — CLASSICAL only, never PQ: a
 		// recv-PQ pending target may legitimately be a historical id the
-		// classical AS no longer tracks, per check 6 above): every classical
+		// classical AS no longer tracks, per check 6 above. Every classical
 		// pending target is plausible (`{mine.current} ∪ authorizedNext`),
 		// and every candidate target (a pending target ≠ `mine.current`)
 		// carries the SAME key in both classical sets, matching
@@ -435,7 +435,7 @@ extension TwoMLSSession {
 		guard set.pending[mineCurrent] != nil else { throw TwoMLSError.archiveInvalid }
 	}
 
-	/// S-3's `.mintSupplied`-only companion to check 8 — see that check's
+	/// The `.mintSupplied`-only companion to check 8 — see that check's
 	/// call site for the exact rule. CLASSICAL sets only.
 	private static func requireMintSuppliedRotationShape(
 		_ leafKeys: LeafKeys, auth: AuthCore, rotationCandidate: RotationCandidate?

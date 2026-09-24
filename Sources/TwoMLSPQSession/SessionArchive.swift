@@ -770,7 +770,7 @@ extension LeafKeysArchive {
 	}
 }
 
-/// Archive key 44 — the deployed engine's migration carry (step 3):
+/// Archive key 44 — the deployed engine's migration carry:
 /// omitted when there's nothing to carry; present-but-empty (every
 /// sub-field absent/empty) is `.archiveInvalid` — there's never a reason to
 /// encode one that way, so one surviving decode is corrupt or adversarial.
@@ -889,9 +889,9 @@ struct SessionArchive: Codable, Sendable {
 	var leafKeys: LeafKeysArchive
 	var sendPQKeysFingerprint: GroupKeySetFingerprint
 	var recvPQKeysFingerprint: GroupKeySetFingerprint
-	/// Step 3, archive key 44 — see `DeployedCarryArchive`'s own doc.
+	/// Archive key 44 — see `DeployedCarryArchive`'s own doc.
 	var deployedCarry: DeployedCarryArchive?
-	/// Step 3, archive key 45 — core state, not carry: rule 9's stored,
+	/// Archive key 45 — core state, not carry: rule 9's stored,
 	/// validated-only pre-establishment app payload.
 	var initialAppPayload: Data?
 
@@ -1053,7 +1053,7 @@ extension TwoMLSSession {
 		return try SecretArchive(encoding: body)
 	}
 
-	/// Step 3, archive key 44's live encode — `O(1)`, the record only, never
+	/// Archive key 44's live encode — `O(1)`, the record only, never
 	/// the window blob itself (which the host owns separately). `nil` when
 	/// there's nothing to carry, matching the archive's own "omitted when
 	/// empty" contract.

@@ -310,7 +310,7 @@ extension TwoMLSSession {
 		let leafKeys = try body.leafKeys.restore()
 		try verifyManifestFingerprintsMatchRestoredLeafKeys(body, leafKeys: leafKeys)
 
-		// Step 3 (archive keys 44/45): decode + validate the deployed
+		// Archive keys 44/45: decode + validate the deployed
 		// carry, before `validateLeafKeys` — rule 3's `noCustody` and check
 		// 6/7's window-shaped state both need it in hand first.
 		let (pqWedge, noCustody, ownOfferWindowRecord) = try decodeDeployedCarry(
@@ -427,7 +427,7 @@ extension TwoMLSSession {
 		return session
 	}
 
-	/// Step 3, archive key 44: decode + validate the deployed carry against
+	/// Archive key 44: decode + validate the deployed carry against
 	/// the rebuilt groups. Every failure is `.archiveInvalid`. `noCustody`'s
 	/// own set-equality against the rebuilt groups' `current` state is
 	/// `validateLeafKeys`'s check 3, not duplicated here — this only

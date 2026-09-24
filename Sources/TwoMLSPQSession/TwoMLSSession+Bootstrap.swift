@@ -145,7 +145,7 @@ extension TwoMLSSession {
 		else {
 			throw TwoMLSError.malformedSideBandMessage
 		}
-		// S-2 (step 3): the fatal name at every PQ door, checked right
+		// The fatal name check, at every PQ door, checked right
 		// after the untrusted decode and before any state-shape guard —
 		// mirrors Rust's own `pq_bootstrap_bind` (decode, then
 		// `check_not_wedged`, then its state-shape guards, `mod.rs`).
@@ -153,7 +153,7 @@ extension TwoMLSSession {
 		guard pendingProposal == nil else { throw TwoMLSError.sessionNotReady }
 		guard let secret = bootstrapKPSecret else { throw TwoMLSError.sessionNotReady }
 		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
-		// Step 3: no-custody guard, before anything is consumed — this
+		// No-custody guard, before anything is consumed — this
 		// door's `owePQBind` commits `sendGroup.pq`.
 		guard !noCustody.contains(.sendPQ) else {
 			throw TwoMLSError.leafCustodyUnavailable

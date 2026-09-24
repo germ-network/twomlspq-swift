@@ -1117,7 +1117,7 @@ final class SessionMigrationTests: XCTestCase {
 		}
 	}
 
-	// MARK: - Step 3: migration inputs on stored per-group signing keys
+	// MARK: - Migration inputs on stored per-group signing keys
 
 	/// Converts a LIVE `leafKeys` value 1:1 to `MigratedLeafKeys` — used
 	/// only by tests that hand-stage a key `convertDeployedKeys` could
@@ -1196,7 +1196,7 @@ final class SessionMigrationTests: XCTestCase {
 		)
 	}
 
-	/// Rule 10/N-5: `mintArchive(deployedState:)` and `mintOwnOfferWindow`
+	/// Rule 10: `mintArchive(deployedState:)` and `mintOwnOfferWindow`
 	/// must agree on the window id given the SAME window array, unchanged —
 	/// they share the one `OwnOfferWindow.id` function.
 	func testMintArchiveAndMintOwnOfferWindowAgreeOnTheWindowID() throws {
@@ -1261,9 +1261,9 @@ final class SessionMigrationTests: XCTestCase {
 
 	/// The id function's own coverage, directly: two windows differing only
 	/// in one offer's proposal bytes (same ref, epoch, group, sender leaf
-	/// index) must hash to different ids. The required A.10 mutation this
-	/// pins down is "the id function drops the proposal bytes or the
-	/// sort" — dropping the proposal bytes from the hash is exactly what
+	/// index) must hash to different ids. What this pins down is "the id
+	/// function drops the proposal bytes or the sort" — dropping the
+	/// proposal bytes from the hash is exactly what
 	/// would make this assertion fail while leaving every mint-level test
 	/// (which also rejects the tampered proposal on STRUCTURAL grounds,
 	/// independent of the id) still passing.
@@ -1285,8 +1285,7 @@ final class SessionMigrationTests: XCTestCase {
 
 	/// A single flipped proposal byte changes the id (so a load elsewhere
 	/// fails `.archiveInvalid` on the recompute-and-compare) — the direct
-	/// negative for the id function actually covering the proposal bytes
-	/// (one of the required A.10 mutations).
+	/// negative for the id function actually covering the proposal bytes.
 	func testFlippingAProposalByteChangesTheWindowID() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		let built = try handBuiltOwnOffer(in: &bob)
@@ -1359,14 +1358,14 @@ final class SessionMigrationTests: XCTestCase {
 			shuffledBody.leafSecrets.withUnsafeBytes { Data($0) })
 	}
 
-	/// A.7 (generalized catch-up), `.mintSupplied`: every existing own leaf
+	/// Generalized catch-up, `.mintSupplied`: every existing own leaf
 	/// whose credential lags `auth.mine.current` — classical AND PQ alike —
 	/// needs `pending[mine.current]` in that group, and a caller that
-	/// supplies it is accepted (subsuming the pre-A.7, rotation/born-
+	/// supplies it is accepted (subsuming the prior rotation/born-
 	/// dedicated-only cases).
 	func testMintSuppliedLeafKeysSatisfyTheGeneralizedCatchUpRuleAcrossAllFourGroups() throws {
-		// Needs both PQ halves genuinely established (not the pre-A.3
-		// reservation shape, which requires an EMPTY pending) so a
+		// Needs both PQ halves genuinely established (not the reservation
+		// shape from before A.3, which requires an EMPTY pending) so a
 		// non-empty PQ `pending` is check 3's "existing group" arm, not
 		// rule 4's reservation arm.
 		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
@@ -1516,8 +1515,8 @@ final class SessionMigrationTests: XCTestCase {
 				.credential), c)
 	}
 
-	/// A.7's `.mintSupplied`-only PQ enforcement: a born-dedicated bob
-	/// pre-A.3 has `recvGroup.pq` (Group_A is the standard pair, so it
+	/// The generalized catch-up's `.mintSupplied`-only PQ enforcement: a born-dedicated bob
+	/// before A.3 has `recvGroup.pq` (Group_A is the standard pair, so it
 	/// exists from birth) still presenting the INVITATION identity's PQ
 	/// key while `auth.mine.current` is already D — a PQ lag
 	/// `.mintConverted` tolerates (native sessions mint no PQ catch-up key
@@ -1574,8 +1573,8 @@ final class SessionMigrationTests: XCTestCase {
 	}
 
 	/// Archive keys 44/45 round-trip a no-custody classical role and a PQ
-	/// wedge through restore, and the three owner-decided read-only queries
-	/// (C.1) read them back correctly.
+	/// wedge through restore, and the three read-only queries
+	/// read them back correctly.
 	func testDeployedCarryRoundTripsNoCustodyAndWedgeThroughRestore() throws {
 		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		var parts = try migratedParts(bob)
@@ -1792,7 +1791,7 @@ extension SessionMigrationTests {
 			pqProvider: SessionTestSupport.pqProvider)
 	}
 
-	/// Item 4b (plus 4c's `pendingSideBand`, asserted here too): a parked
+	/// `pendingSideBand` is asserted here too: a parked
 	/// `Upd′` that DOES verify against the restored recv-PQ group is kept
 	/// whole, `pendingSideBand` intact, and the round still completes.
 	func testValidParkedUpdIsKeptAtImport() throws {
@@ -1810,11 +1809,11 @@ extension SessionMigrationTests {
 		bob = restored
 	}
 
-	/// Item 4a (plus 4c's `pendingSideBand`, asserted here too): a parked
+	/// `pendingSideBand` is asserted here too: a parked
 	/// `Upd′` that fails to verify against the restored recv-PQ group is
 	/// dropped — `pqInflight` and `pendingSideBand` both cleared,
 	/// `pqTurnMine` left as supplied — and self-drive then opens a plain
-	/// A.4 (C.3) rather than silently stalling.
+	/// A.4 rather than silently stalling.
 	func testUnverifiableParkedUpdIsDroppedAtImport() throws {
 		let (_, bob, upd) = try rekeyInitiatedBob()
 		var tampered = upd
@@ -1844,7 +1843,7 @@ extension SessionMigrationTests {
 		}
 	}
 
-	/// Item 4d: supplied `leafKeys` still carries the dropped round's
+	/// Supplied `leafKeys` still carries the dropped round's
 	/// orphaned recv-PQ `pending` entry — it must be removed too, not just
 	/// `pqInflight`/`pendingSideBand`.
 	func testDroppedRoundPendingEntryIsRemoved() throws {
@@ -1869,7 +1868,7 @@ extension SessionMigrationTests {
 		XCTAssertNil(restored.leafKeys.recvPQ.pending[bob.identity.clientID])
 	}
 
-	/// Item 4e: the rule-7 exception — a dropped round's target that IS
+	/// The rule-7 exception — a dropped round's target that IS
 	/// `mine.current` of a still-lagging recv-PQ leaf must be KEPT, not
 	/// removed by the same pruning that discards 4d's orphan.
 	func testDroppedRoundKeepsTheRuleSevenKey() throws {
