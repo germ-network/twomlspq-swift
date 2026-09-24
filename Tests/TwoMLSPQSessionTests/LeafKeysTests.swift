@@ -1402,6 +1402,56 @@ final class LeafKeysTests: XCTestCase {
 			XCTAssertEqual(bob.leafKeys.sendPQ.current?.signatureKey, presentedKey)
 			try bob.assertLeafKeysPresented()
 		}
+
+		/// `pqRekeyBegin` registers its fresh recv-PQ key in the SAME
+		/// non-throwing block as `recvGroup`'s own write-back, before
+		/// `sealSideBand` — a fault right after that write-back must still
+		/// leave `leafKeys.recvPQ.pending` holding the fresh key even though
+		/// `pqInflight` was never set. A live retry IS possible here (unlike
+		/// `pqRekeyApply`): `pqInflight` stays nil, so the guard admits a
+		/// second call, which mints again (D3: always fresh, never reused).
+		func testPqRekeyBeginRegistersTheFreshKeyWithTheGroup() throws {
+			var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+			XCTAssertTrue(bob.myPQTurn)
+			let ownID = try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.recvGroup?.pq))
+					.credential)
+			let currentKeyBefore = bob.leafKeys.recvPQ.current
+
+			TwoMLSSessionTestHooks.armFault("pqRekeyBegin.afterWriteBack")
+			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
+			XCTAssertThrowsError(try bob.pqRekeyBegin())
+
+			XCTAssertNil(bob.pqInflight, "the fault landed before pqInflight was set")
+			let pendingKey = try XCTUnwrap(bob.leafKeys.recvPQ.pending[ownID])
+			XCTAssertNotEqual(pendingKey.signatureKey, currentKeyBefore?.signatureKey)
+			XCTAssertEqual(
+				bob.leafKeys.recvPQ.current?.signatureKey,
+				currentKeyBefore?.signatureKey)
+			try bob.assertLeafKeysPresented()
+		}
+
+		/// `pqRekeyRespond` registers its fresh send-PQ key in the SAME
+		/// non-throwing block as `sendGroup`'s own write-back, before
+		/// `recordPQHeaderKey()` — a fault right after that write-back must
+		/// still leave the rekeyed group's fresh key already promoted into
+		/// `leafKeys.sendPQ.current`, matching `pqBootstrapRespond`'s own
+		/// precedent above.
+		func testPqRekeyRespondRegistersTheFreshKeyWithTheGroup() throws {
+			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+			let begin = try bob.pqRekeyBegin()
+
+			TwoMLSSessionTestHooks.armFault("pqRekeyRespond.afterWriteBack")
+			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
+			XCTAssertThrowsError(try alice.pqRekeyRespond(begin.frame))
+
+			XCTAssertNil(alice.pqInflight, "the fault landed before pqInflight was set")
+			let presentedKey = try TwoMLSSession.ownLeaf(
+				of: try XCTUnwrap(alice.sendGroup?.pq)
+			).signatureKey
+			XCTAssertEqual(alice.leafKeys.sendPQ.current?.signatureKey, presentedKey)
+			try alice.assertLeafKeysPresented()
+		}
 	#endif
 
 	// MARK: - Restore equals live, driven across the whole lifecycle

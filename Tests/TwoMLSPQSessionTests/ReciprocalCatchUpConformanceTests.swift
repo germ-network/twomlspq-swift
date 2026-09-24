@@ -475,9 +475,9 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 			"protocol-flows.md:704-708 — pqRekeyRespond never catches the committer's own leaf up"
 		) {
 			XCTAssertEqual(realAliceSendPQID, alice2ID)
-			// D3: fresh key.
-			XCTAssertNotEqual(realAliceSendPQKey, aliceSendPQKeyBefore)
 		}
+		// D3: fresh key — this half is no longer a gap.
+		XCTAssertNotEqual(realAliceSendPQKey, aliceSendPQKeyBefore)
 
 		// Hand-build what a conformant Commit′ carries — mutates `alice`
 		// in place, mirroring what `pqRekeyRespond` would do to `self`
@@ -1297,9 +1297,11 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	}
 
 	/// A responder whose rotation staple hasn't applied answers with a
-	/// no-move `Commit′`. `protocol-flows.md:56`: "a responder whose own
-	/// rotation staple has not yet applied answers with a Commit′ that
-	/// moves nothing." Bob has ALREADY folded (committed) Alice's
+	/// no-credential-move `Commit′`. `protocol-flows.md:56`: "a responder
+	/// whose own rotation staple has not yet applied answers with a
+	/// Commit′ that moves nothing" — read as no CREDENTIAL move; the path
+	/// leaf's signature key still mints fresh (D3), same as any other
+	/// commit. Bob has ALREADY folded (committed) Alice's
 	/// rotation — his own view of her is canonical — but that fold's
 	/// staple hasn't reached Alice yet, so HER OWN AS still shows her old
 	/// id as canonical when Bob's A.5 asks her to respond.
@@ -1341,9 +1343,11 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		XCTAssertEqual(
 			try basicIdentifier(aliceSendPQLeafAfter.credential),
 			alice.identity.clientID,
-			"protocol-flows.md:56 — \"a Commit′ that moves nothing\": her own leaf must still present her founding id here"
+			"protocol-flows.md:56 — \"a Commit′ that moves nothing\" means no CREDENTIAL move: her own leaf must still present her founding id here"
 		)
-		XCTAssertEqual(aliceSendPQLeafAfter.signatureKey, aliceSendPQKeyBefore)
+		// D3: every Commit′ path leaf mints a fresh key regardless, so "moves
+		// nothing" never meant the key too.
+		XCTAssertNotEqual(aliceSendPQLeafAfter.signatureKey, aliceSendPQKeyBefore)
 		XCTAssertNoThrow(try bob.pqRekeyApply(response.frame))
 		XCTAssertNil(bob.pqInflight)
 		XCTAssertNotNil(bob.owedBind)

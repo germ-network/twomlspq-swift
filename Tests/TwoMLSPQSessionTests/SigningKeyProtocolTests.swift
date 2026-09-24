@@ -1514,4 +1514,54 @@ final class SigningKeyProtocolTests: XCTestCase {
 			}
 		}
 	}
+
+	// MARK: - A.5 legs mint fresh keys in their own group only
+
+	/// D3: both A.5 legs are key-only moves in their own group — the
+	/// initiator's `pqRekeyBegin` stages a fresh recv-PQ key and
+	/// `pqRekeyApply` promotes it; the committer's `pqRekeyRespond` gives a
+	/// fresh send-PQ `current` directly. Every classical key, and the
+	/// other party's own-leaf keys, stay byte-identical throughout. Kills:
+	/// either leg signing with `current` (no key change).
+	func testA5LegsMintFreshKeysInTheirOwnGroupOnly() throws {
+		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+		XCTAssertTrue(bob.myPQTurn)
+
+		let bobKeysBefore = try ownLeafSignatureKeys(of: bob)
+		let aliceKeysBefore = try ownLeafSignatureKeys(of: alice)
+
+		let begin = try bob.pqRekeyBegin()
+		let bobOwnRecvPQID = try basicIdentifier(
+			TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.recvGroup?.pq)).credential)
+		let stagedKey = try XCTUnwrap(bob.leafKeys.recvPQ.pending[bobOwnRecvPQID])
+		XCTAssertNotEqual(stagedKey.signatureKey, bobKeysBefore.recvPQ)
+		// Not yet promoted: the leaf still presents its old key until the
+		// committer's Commit′ is applied.
+		XCTAssertEqual(
+			try ownLeafSignatureKeys(of: bob).recvPQ, bobKeysBefore.recvPQ)
+
+		let commit = try alice.pqRekeyRespond(begin.frame)
+		let aliceKeysAfterRespond = try ownLeafSignatureKeys(of: alice)
+		// D3: the committer's own send-PQ leaf mints fresh at `pqRekeyRespond`
+		// itself — no `pending` stage-then-promote needed, since the commit
+		// applies immediately.
+		XCTAssertNotEqual(aliceKeysAfterRespond.sendPQ, aliceKeysBefore.sendPQ)
+		XCTAssertTrue(alice.leafKeys.sendPQ.pending.isEmpty)
+
+		_ = try bob.pqRekeyApply(commit.frame)
+		let bobKeysAfter = try ownLeafSignatureKeys(of: bob)
+		XCTAssertEqual(bobKeysAfter.recvPQ, stagedKey.signatureKey)
+		XCTAssertNotEqual(bobKeysAfter.recvPQ, bobKeysBefore.recvPQ)
+		XCTAssertTrue(bob.leafKeys.recvPQ.pending.isEmpty)
+
+		// Every classical key, on both sides, is untouched by either leg.
+		XCTAssertEqual(bobKeysAfter.sendClassical, bobKeysBefore.sendClassical)
+		XCTAssertEqual(bobKeysAfter.recvClassical, bobKeysBefore.recvClassical)
+		let aliceKeysAfter = try ownLeafSignatureKeys(of: alice)
+		XCTAssertEqual(aliceKeysAfter.sendClassical, aliceKeysBefore.sendClassical)
+		XCTAssertEqual(aliceKeysAfter.recvClassical, aliceKeysBefore.recvClassical)
+		// The other party's own-leaf key in the SAME PQ half is untouched too.
+		XCTAssertEqual(aliceKeysAfter.recvPQ, aliceKeysBefore.recvPQ)
+		XCTAssertEqual(bobKeysAfter.sendPQ, bobKeysBefore.sendPQ)
+	}
 }

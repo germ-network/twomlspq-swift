@@ -2390,7 +2390,7 @@ extension SessionMigrationTests {
 	/// whole, `pendingSideBand` intact, and the round still completes.
 	func testValidParkedUpdIsKeptAtImport() throws {
 		var (alice, bob, upd) = try rekeyInitiatedBob()
-		let parts = try migratedParts(bob)
+		let parts = try migratedParts(bob, suppliedLeafKeys: true)
 		var restored = try restoreMinted(parts)
 		guard case .rekeyInitiated(let kept) = restored.pqInflight else {
 			return XCTFail("dropped a valid Upd′")
