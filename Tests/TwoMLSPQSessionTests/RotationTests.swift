@@ -184,7 +184,7 @@ final class RotationTests: XCTestCase {
 	/// code change (`.credentialReplaced` fires on a signature-key-only
 	/// change too, `CredentialPresentation` being `Equatable` over both
 	/// credential AND key; `TwoPartyRules.validateTwoPartyUpdateCommit`
-	/// counts it as an ordinary moved leaf; `AuthCore.validSuccessor`'s
+	/// counts it as an ordinary moved leaf; `PartySequence.validSuccessor`'s
 	/// `pred == succ` clause trivially licenses a same-id "successor"). This
 	/// is a TEST that pins that tolerance.
 	///

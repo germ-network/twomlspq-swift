@@ -342,6 +342,43 @@ final class SessionMigrationTests: XCTestCase {
 		try assertMintedMatchesNative(minted, native, kind: .core)
 	}
 
+	/// The deployed Rust engine pins only the A.3 founding ids (book
+	/// group-rules.md rule 4's own example, not its full rule) — a strict
+	/// subset of what the live engine's normal form actually needs. Rust-
+	/// shaped parts here supply an unrelated, stale legacy pin; the mint
+	/// must ignore it and derive the minted archive's pins itself, from
+	/// what the RESTORED PQ trees actually present. Mutation: copying
+	/// `parts.auth.mine.pinned`/`parts.auth.theirs.pinned` straight through
+	/// (instead of deriving via `livePQPresentedIDs`/`AuthCore.withPQPins`)
+	/// makes this fail.
+	func testMintDerivesPinsFromRestoredPQTreesAndDropsAStaleLegacyPin() throws {
+		let (alice, _) = try fullyEstablishedPair()
+		let aliceID = alice.identity.clientID
+		var parts = try migratedParts(alice)
+		parts.auth.mine.pinned = [Data("legacy-rust-founding-pin-only".utf8)]
+		parts.auth.theirs.pinned = [Data("legacy-rust-founding-pin-only".utf8)]
+
+		let minted = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let mintedBody = try minted.decode(SessionArchive.self)
+
+		XCTAssertEqual(mintedBody.auth.mine.pinned, [aliceID])
+		XCTAssertFalse(
+			mintedBody.auth.mine.pinned.contains(
+				Data("legacy-rust-founding-pin-only".utf8)))
+
+		// The minted archive must still restore and keep messaging — proves
+		// the derived pins are themselves well-formed, not merely present.
+		var restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: minted,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		_ = try restored.prepareToEncrypt()
+		_ = try restored.encrypt(Data("post-mint".utf8))
+	}
+
 	/// A mid-rotation session — an outstanding `rotationCandidate` plus its
 	/// still-staged classical Upd(self) in `stagedUpdates` — must convert
 	/// to matching `recvClassical`/`sendClassical` `pending` entries, not
@@ -739,6 +776,75 @@ final class SessionMigrationTests: XCTestCase {
 	}
 
 	// MARK: - AC 3: mutation-verify
+
+	/// Book `wire-format.md`: every occupied leaf of the restored trees —
+	/// and either half of a retained `initialTheirKP` — must advertise the
+	/// `APQInfo` extension and the `AppDataUpdate` proposal, or mint
+	/// refuses with `.archiveInvalid`.
+	private func rogueKeyPackage(
+		named name: String, capabilities: MLS.RFC9420.Capabilities
+	) throws -> MLS.RFC9420.KeyPackage {
+		let provider = SessionTestSupport.classicalProvider
+		let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (_, leafPublicKey) = try provider.hpkeGenerateKeyPair()
+		let (_, initPublicKey) = try provider.hpkeGenerateKeyPair()
+		var leaf = MLS.RFC9420.LeafNode(
+			encryptionKey: leafPublicKey, signatureKey: signatureKey,
+			credential: .basic(identity: Data(name.utf8)), capabilities: capabilities,
+			source: .keyPackage(.init(notBefore: 0, notAfter: .max)), extensions: [],
+			signature: Data())
+		leaf.signature = try MLS.signWithLabel(
+			provider, privateKey: signingKey, label: "LeafNodeTBS",
+			content: try leaf.toBeSigned(placement: .keyPackage))
+		var keyPackage = MLS.RFC9420.KeyPackage(
+			version: .mls10, cipherSuite: provider.cipherSuite, initKey: initPublicKey,
+			leafNode: leaf, extensions: [], signature: Data())
+		keyPackage.signature = try MLS.signWithLabel(
+			provider, privateKey: signingKey, label: "KeyPackageTBS",
+			content: try keyPackage.toBeSigned())
+		return keyPackage
+	}
+
+	private static let rogueCapabilities = MLS.RFC9420.Capabilities(
+		versions: [.mls10], cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
+		extensions: [], proposals: [], credentials: [MLS.RFC9420.CredentialType(.basic)])
+
+	/// Each half checked independently: a rogue CLASSICAL half with a
+	/// well-capable PQ one still throws, and vice versa.
+	func testCapabilityLessInitialTheirKPIsRejectedAtMint() throws {
+		let (alice, _) = try fullyEstablishedPair()
+		let wellCapableKP = try rogueKeyPackage(
+			named: "well-capable-their-kp",
+			capabilities: TwoMLSIdentity.leafCapabilities)
+		let rogueKP = try rogueKeyPackage(
+			named: "rogue-their-kp", capabilities: Self.rogueCapabilities)
+
+		var classicalRogueParts = try migratedParts(alice)
+		classicalRogueParts.initialTheirKP = (
+			classical: try rogueKP.mlsEncoded(), pq: try wellCapableKP.mlsEncoded()
+		)
+		XCTAssertThrowsError(
+			try SessionMigration.mintArchive(
+				kind: .checkpoint, parts: classicalRogueParts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+
+		var pqRogueParts = try migratedParts(alice)
+		pqRogueParts.initialTheirKP = (
+			classical: try wellCapableKP.mlsEncoded(), pq: try rogueKP.mlsEncoded()
+		)
+		XCTAssertThrowsError(
+			try SessionMigration.mintArchive(
+				kind: .checkpoint, parts: pqRogueParts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
+	}
 
 	func testCorruptedClassicalSigningKeyIsRejectedAtMint() throws {
 		let (alice, _) = try fullyEstablishedPair()
@@ -1904,5 +2010,77 @@ extension SessionMigrationTests {
 		let restored = try restoreMinted(parts)
 		XCTAssertNil(restored.pqInflight)
 		XCTAssertEqual(restored.leafKeys.recvPQ.pending[c]?.signatureKey, fpk)
+	}
+}
+
+@available(iOS 26, macOS 26, *)
+extension SessionMigrationTests {
+	/// A rogue initiator whose own classical leaf does not advertise 0xF0A1
+	/// completes `initiate` on its own side; the mint's four-tree capability
+	/// check must still refuse the resulting restored trees.
+	func testMintRefusesARogueOccupiedLeafInARestoredTree() throws {
+		let clientID = Data("rogue-initiator".utf8)
+		let classicalProvider = SessionTestSupport.classicalProvider
+		let pqProvider = SessionTestSupport.pqProvider
+		let rogueCaps = MLS.RFC9420.Capabilities(
+			versions: [.mls10], cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
+			extensions: [], proposals: [MLS.RFC9420.ProposalType(.appDataUpdate)],
+			credentials: [MLS.RFC9420.CredentialType(.basic)])
+		func kp(
+			suite: MLS.CipherSuite, provider: any MLS.CipherSuiteProvider,
+			signingKey: MLS.SignatureSecretKey, signatureKey: MLS.SignaturePublicKey,
+			leafPublicKey: MLS.HpkePublicKey, initPublicKey: MLS.HpkePublicKey,
+			caps: MLS.RFC9420.Capabilities
+		) throws -> MLS.RFC9420.KeyPackage {
+			var leaf = MLS.RFC9420.LeafNode(
+				encryptionKey: leafPublicKey, signatureKey: signatureKey,
+				credential: .basic(identity: clientID), capabilities: caps,
+				source: .keyPackage(.init(notBefore: 0, notAfter: .max)),
+				extensions: [], signature: Data())
+			leaf.signature = try MLS.signWithLabel(
+				provider, privateKey: signingKey, label: "LeafNodeTBS",
+				content: try leaf.toBeSigned(placement: .keyPackage))
+			var keyPackage = MLS.RFC9420.KeyPackage(
+				version: .mls10, cipherSuite: suite, initKey: initPublicKey,
+				leafNode: leaf, extensions: [], signature: Data())
+			keyPackage.signature = try MLS.signWithLabel(
+				provider, privateKey: signingKey, label: "KeyPackageTBS",
+				content: try keyPackage.toBeSigned())
+			return keyPackage
+		}
+		let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (pqSigningKey, pqSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
+		let (cLeafSK, cLeafPK) = try classicalProvider.hpkeGenerateKeyPair()
+		let (cInitSK, cInitPK) = try classicalProvider.hpkeGenerateKeyPair()
+		let (pLeafSK, pLeafPK) = try pqProvider.hpkeGenerateKeyPair()
+		let (pInitSK, pInitPK) = try pqProvider.hpkeGenerateKeyPair()
+		let classicalKP = try kp(
+			suite: TwoMLSSuite.classical, provider: classicalProvider,
+			signingKey: signingKey, signatureKey: signatureKey, leafPublicKey: cLeafPK,
+			initPublicKey: cInitPK, caps: rogueCaps)
+		let pqKP = try kp(
+			suite: MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID),
+			provider: pqProvider, signingKey: pqSigningKey,
+			signatureKey: pqSignatureKey,
+			leafPublicKey: pLeafPK, initPublicKey: pInitPK,
+			caps: TwoMLSIdentity.leafCapabilities)
+		let rogueAlice = TwoMLSIdentity(
+			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
+			pqSigningKey: pqSigningKey, pqSignatureKey: pqSignatureKey,
+			classicalLeafSecretKey: cLeafSK, classicalInitSecretKey: cInitSK,
+			pqLeafSecretKey: pLeafSK, pqInitSecretKey: pInitSK,
+			keyPackage: CombinerKeyPackage(classical: classicalKP, pq: pqKP))
+		let bob = try SessionTestSupport.identity("honest-bob-for-rogue-mint")
+		let initiated = try TwoMLSSession.initiate(
+			identity: rogueAlice, their: bob.keyPackage,
+			classicalProvider: classicalProvider, pqProvider: pqProvider)
+		let parts = try migratedParts(initiated.session)
+		XCTAssertThrowsError(
+			try SessionMigration.mintArchive(
+				kind: .checkpoint, parts: parts,
+				classicalProvider: classicalProvider, pqProvider: pqProvider)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		}
 	}
 }

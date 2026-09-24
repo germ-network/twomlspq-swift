@@ -495,11 +495,18 @@ final class CredentialAuthenticationTests: XCTestCase {
 		// Accept: the rotated id was authorized in the AS beforehand. Also
 		// exercises `adjudicate`'s `.added` arm (`validateMember(presentation:)`)
 		// against the founding commit's real `CredentialPresentation`.
+		// `myLeaf` = alice's own leaf index (`acceptingAuth`/etc.'s `mine`
+		// is seeded from `alice.identity`): bob's leaf (the one that
+		// actually moves, `bobLeaf`) is never it, so every `adjudicate`
+		// call below correctly routes to `theirs`.
+		let myLeaf = aliceGroup.myLeafIndex
+		XCTAssertNotEqual(myLeaf, bobLeaf)
+
 		var acceptingAuth = AuthCore(
 			mine: .seeded(alice.identity), theirs: .seeded(bob.identity))
 		acceptingAuth.theirs.authorize(rotated.identity)
-		XCTAssertNoThrow(try acceptingAuth.adjudicate(foundingEffects))
-		XCTAssertNoThrow(try acceptingAuth.adjudicate(rotationEffects))
+		XCTAssertNoThrow(try acceptingAuth.adjudicate(foundingEffects, myLeaf: myLeaf))
+		XCTAssertNoThrow(try acceptingAuth.adjudicate(rotationEffects, myLeaf: myLeaf))
 
 		// Reject: a fresh AS that never authorized (or caught up to) the
 		// rotated id — the profile already rejects a forged credential
@@ -507,7 +514,31 @@ final class CredentialAuthenticationTests: XCTestCase {
 		// this AS's state never admits, not tampered bytes.
 		let rejectingAuth = AuthCore(
 			mine: .seeded(alice.identity), theirs: .seeded(bob.identity))
-		XCTAssertThrowsError(try rejectingAuth.adjudicate(rotationEffects)) { error in
+		XCTAssertThrowsError(try rejectingAuth.adjudicate(rotationEffects, myLeaf: myLeaf))
+		{
+			error in
+			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		}
+
+		// Per-party adjudication: the moved leaf is BOB's (`theirs`), which
+		// never authorized the rotated id — even though `mine` (alice, who
+		// never even presents a leaf in this effect) DOES. Mutation:
+		// restoring the old cross-party-OR check (`mine.validSuccessor(...)
+		// || theirs.validSuccessor(...)`) makes this wrongly accept, since
+		// `mine`'s own authorization would leak into a check that should
+		// only ever consult the party whose leaf actually moved.
+		var crossAuth = AuthCore(
+			mine: .seeded(alice.identity), theirs: .seeded(bob.identity))
+		// `mine.validSuccessor` gates its authorized-`succ` branch behind
+		// `pred` being known to THAT sequence first — pristine sequences
+		// never overlap in practice (each starts from its own owner's
+		// distinct id), so this also hand-seeds `mine.history` with bob's
+		// OLD (pre-rotation) id, standing in for however such overlap
+		// could arise, to prove the isolation holds even then.
+		crossAuth.mine.history.append(bob.identity)
+		crossAuth.mine.authorize(rotated.identity)
+		XCTAssertThrowsError(try crossAuth.adjudicate(rotationEffects, myLeaf: myLeaf)) {
+			error in
 			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
 
@@ -527,7 +558,8 @@ final class CredentialAuthenticationTests: XCTestCase {
 		// turning the `.added` case into `break` makes ONLY this assertion fail.
 		let strangerAuth = AuthCore(
 			mine: .seeded(alice.identity), theirs: .seeded(Data("not-bob".utf8)))
-		XCTAssertThrowsError(try strangerAuth.adjudicate(foundingEffects)) { error in
+		XCTAssertThrowsError(try strangerAuth.adjudicate(foundingEffects, myLeaf: myLeaf)) {
+			error in
 			XCTAssertEqual(error as? TwoMLSError, .unknownIdentity)
 		}
 
@@ -547,6 +579,52 @@ final class CredentialAuthenticationTests: XCTestCase {
 		) {
 			error in XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
-		XCTAssertNoThrow(try movedOn.validateSuccession(old: old, new: new))
+		XCTAssertNoThrow(
+			try movedOn.validateSuccession(old: old, new: new, party: movedOn.theirs))
+	}
+
+	// MARK: - pins(forPresented:) normal form (book group-rules.md rule 4)
+
+	/// A presented id already in `history` is included in the pin set —
+	/// behavior-neutral (`commit`/`validSuccessor` both special-case an
+	/// in-history id ahead of ever consulting `pinned`), but the normal form
+	/// includes it regardless, rather than special-casing it out. Mutation:
+	/// subtracting `history` from `presented` (instead of only the candidate
+	/// set) makes this fail.
+	func testPinsForPresentedIncludesAnInHistoryID() throws {
+		var sequence = PartySequence.seeded(id("a"))
+		try sequence.commit(id("b"))
+		XCTAssertEqual(sequence.pins(forPresented: [id("a")]), [id("a")])
+	}
+
+	/// A presented id that is an authorized-but-not-yet-canonical candidate
+	/// is EXCLUDED — pinning it would make `commit` reject its own
+	/// canonicalization as a rollback. Mutation: dropping the
+	/// `.subtracting(candidates)` step makes this fail.
+	func testPinsForPresentedExcludesAnAuthorizedCandidate() throws {
+		var sequence = PartySequence.seeded(id("a"))
+		sequence.authorize(id("candidate"))
+		XCTAssertEqual(sequence.pins(forPresented: [id("candidate")]), [])
+	}
+
+	/// An id nobody presents is never in the pin set, even if it was pinned
+	/// before — the normal form is a pure function of `presented`, not an
+	/// incremental update. Mutation: unioning with the sequence's own prior
+	/// `pinned` (instead of deriving purely from `presented`) makes this
+	/// fail.
+	func testPinsForPresentedDropsAnIDNoLongerPresented() throws {
+		var sequence = PartySequence.seeded(id("a"))
+		sequence.pin(id("stale"))
+		XCTAssertEqual(sequence.pins(forPresented: []), [])
+	}
+
+	/// Sorted (lexicographic bytes) and deduplicated — the exact shape
+	/// `SessionMigrationTests`'s minted-vs-native comparison relies on.
+	/// Mutation: returning `Array(presented)` unsorted makes this fail
+	/// (order-dependent on `Set`'s unspecified iteration).
+	func testPinsForPresentedIsSortedAndDeduplicated() throws {
+		let sequence = PartySequence.seeded(id("z"))
+		let result = sequence.pins(forPresented: [id("z"), id("m"), id("a")])
+		XCTAssertEqual(result, [id("a"), id("m"), id("z")])
 	}
 }

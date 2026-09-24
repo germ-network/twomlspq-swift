@@ -258,6 +258,42 @@ extension TwoMLSSession {
 		}
 	}
 
+	// MARK: - Pin safety check (book group-rules.md rule 4)
+
+	/// A safety check, not exact equality (a pre-fix archive's empty
+	/// `pinned` still passes; the next `stateUpdate` normalizes it to the
+	/// true normal form — `pqPinnedAuth()`). For each owner o, given P(o) =
+	/// what o's live PQ leaves actually present (`livePQPresentedIDs`),
+	/// H(o) = `history`, A(o) = `authorizedNext`: (a) no duplicate ids in
+	/// `pinned`; (b) `pinned` ⊆ P(o) ∖ (A(o) ∖ H(o)) — no stale pin, no
+	/// pinned candidate; (c) P(o) ⊆ H(o) ∪ `pinned` ∪ A(o) — every presented
+	/// id is covered by something. `.archiveInvalid` on any violation.
+	private static func validatePQPins(
+		_ auth: AuthCore, sendPQ: MLS.RFC9420.Group?, recvPQ: MLS.RFC9420.Group?
+	) throws {
+		guard
+			let presented = try? livePQPresentedIDs(sendPQ: sendPQ, recvPQ: recvPQ)
+		else { throw TwoMLSError.archiveInvalid }
+		try validatePQPins(auth.mine, presented: presented.mine)
+		try validatePQPins(auth.theirs, presented: presented.theirs)
+	}
+
+	private static func validatePQPins(_ sequence: PartySequence, presented: Set<Data>) throws {
+		guard Set(sequence.pinned).count == sequence.pinned.count else {
+			throw TwoMLSError.archiveInvalid
+		}
+		let candidates = Set(sequence.authorizedNext).subtracting(sequence.history)
+		let allowedPins = presented.subtracting(candidates)
+		guard Set(sequence.pinned).isSubset(of: allowedPins) else {
+			throw TwoMLSError.archiveInvalid
+		}
+		let covered =
+			Set(sequence.history).union(sequence.pinned).union(sequence.authorizedNext)
+		guard presented.isSubset(of: covered) else {
+			throw TwoMLSError.archiveInvalid
+		}
+	}
+
 	// MARK: - Steps 6-7: rebuild groups + pair verification
 
 	private static func buildSession(
@@ -327,6 +363,7 @@ extension TwoMLSSession {
 			recvLeafPrincipal: recvLeafPrincipal, auth: body.auth,
 			mode: .restore, noCustody: noCustody,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
+		try validatePQPins(body.auth, sendPQ: sendGroup?.pq, recvPQ: recvGroup?.pq)
 
 		// `.deployed` is hard-coded, never archived: the port only ever
 		// constructs a session under the deployed codepoints

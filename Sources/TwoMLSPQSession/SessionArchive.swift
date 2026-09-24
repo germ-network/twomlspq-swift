@@ -1011,7 +1011,12 @@ extension TwoMLSSession {
 			recvClassicalGroupID: recvGroup?.classical.context.groupID,
 			identity: try IdentityArchive(
 				identity, includeInitSecrets: recvGroup == nil),
-			auth: auth,
+			// `stateUpdate(kind:)` already normalizes `auth` before ever
+			// calling this — production archives come only from there. This
+			// recompute is cheap and covers the direct-archive path (tests,
+			// injected-fault probes) that calls this method without going
+			// through that choke point first.
+			auth: pqPinnedAuth(),
 			sendGroup: try sendGroup?.makeGroupEntry(kind: kind),
 			recvGroup: try recvGroup?.makeGroupEntry(kind: kind),
 			currentStaple: currentStaple,

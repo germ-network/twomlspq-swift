@@ -106,6 +106,13 @@ extension TwoMLSSession {
 		} else if let rotating {
 			guard !rotating.isEmpty else { throw TwoMLSError.credentialUnknown }
 			guard rotating != myCurrentID else { throw TwoMLSError.credentialUnknown }
+			// Reject a rotation naming one of the PEER's own known ids
+			// outright — never a legitimate rotation of MINE (mirrors
+			// `validateOfferedUpdate`'s own same-shaped guard against the
+			// peer naming one of my own known ids).
+			guard !auth.theirs.knownIDs.contains(rotating) else {
+				throw TwoMLSError.invalidSuccession
+			}
 
 			if rotating == auth.mine.current {
 				// Naming the identity already canonical isn't a NEW
@@ -786,6 +793,8 @@ extension TwoMLSSession {
 		try verifyAppBinding(groupB.classical, expected: ownAppBinding)
 		try verifyPQHalfUnbound(groupB.pq)
 		let creatorLeaf = try Self.joinedCreatorLeaf(of: groupB.classical)
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			creatorLeaf, codepoints: codepoints)
 		if ownAppBinding != nil {
 			try ensureAppBindingCreatorLeafAdvert(creatorLeaf)
 		}

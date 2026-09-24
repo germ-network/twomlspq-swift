@@ -783,16 +783,14 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 
 	/// `group-rules.md:143-158` (rule 4): "A credential that a live PQ
 	/// leaf still presents stays admissible past window eviction until
-	/// that leaf catches up." `PartySequence.pin`/`.unpin`'s own mechanics
-	/// (pinned-predecessor ordering, `validatePQLeafMove`'s pin/unpin
-	/// cases) are already covered by
+	/// that leaf catches up." `PartySequence.validSuccessor`'s own
+	/// pinned-predecessor mechanics are already covered by
 	/// `CredentialAuthenticationTests.testValidatePQLeafMove`
 	/// (`CredentialAuthenticationTests.swift:346-406`); nothing here
-	/// duplicates that. What's untested there — and unimplemented in the
-	/// engine — is the session-level wiring: nothing calls
-	/// `.pin()`/`.unpin()` automatically (`grep -rn "\.pin(\|\.unpin("
-	/// Sources/` finds only their own definitions in
-	/// `CredentialAuthentication.swift`). Bob has TWO live PQ leaves (his
+	/// duplicates that. This exercises the session-level wiring instead:
+	/// `pinned` is recomputed automatically at every state update from what
+	/// this session's live PQ leaves actually present — never hand-set.
+	/// Bob has TWO live PQ leaves (his
 	/// send-PQ, Group_B.pq, and his recv-PQ mirror, Group_A.pq); rule 4's
 	/// pin must stay held as long as EITHER still presents an evicted id,
 	/// and retire only once BOTH have moved.
@@ -911,7 +909,12 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		XCTAssertEqual(bob.auth.mine.current, currentID)
 		XCTAssertFalse(alice.auth.theirs.history.contains(id0))
 		XCTAssertFalse(bob.auth.mine.history.contains(id0))
-		XCTAssertFalse(alice.auth.theirs.pinned.contains(id0))
+		XCTAssertTrue(
+			alice.auth.theirs.pinned.contains(id0),
+			"evicted from history but still presented by bob's live PQ leaves")
+		XCTAssertTrue(
+			bob.auth.mine.pinned.contains(id0),
+			"bob's own view of himself pins the same evicted-but-presented id")
 		// Only the PQ leaves still present id0 past the eviction — the
 		// premise the rest of this test exercises.
 		XCTAssertEqual(
@@ -925,36 +928,32 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 
 		// Bob's leaf in Group_A.pq (alice's send group, his recv-PQ
 		// mirror) still genuinely presents id0 — hand-build his catch-up
-		// Upd′ and try the real `pqRekeyRespond`.
+		// Upd′ and try the real `pqRekeyRespond`. The engine already pins
+		// id0 automatically (asserted above), so this round validates
+		// without any hand-applied pin.
 		let round = try handBuildPQLeafMoveUpd(proposer: &bob, newID: currentID)
 		var respondProbe = alice
-		let acceptedWithoutPin: Bool
+		let acceptedWithPin: Bool
 		do {
 			_ = try respondProbe.pqRekeyRespond(round.frame)
-			acceptedWithoutPin = true
+			acceptedWithPin = true
 		} catch {
-			acceptedWithoutPin = false
+			acceptedWithPin = false
 		}
-		XCTExpectFailure(
-			"group-rules.md:143-158 rule 4 — nothing pins a credential a live PQ leaf still presents at window eviction"
-		) {
-			XCTAssertTrue(acceptedWithoutPin)
-		}
+		XCTAssertTrue(
+			acceptedWithPin,
+			"group-rules.md rule 4 — a credential a live PQ leaf still presents stays admissible past window eviction"
+		)
 
-		// If the engine DID pin it (the book's own rule, applied by hand
-		// here), the round already validates correctly — the remaining
-		// mechanism conforms; only the automatic pin is missing. Delivered
-		// through to BOTH sides for real: alice's response is her own
-		// genuine commit on Group_A.pq, and bob's `pqRekeyApply` plus his
-		// classical bind discharge complete his half too, so neither party
-		// is left desynced going into round 2. `pqRekeyApply`'s own
-		// adjudication (`adjudicatePQRekeyEffects`) checks a moved leaf
-		// against `auth.mine` on the session whose OWN leaf it is — here
-		// that is bob applying HIS OWN leaf's move — so his side needs the
-		// same rule-4 pin applied to `bob.auth.mine`, not just alice's
-		// view of him.
-		alice.auth.theirs.pin(id0)
-		bob.auth.mine.pin(id0)
+		// Delivered through to BOTH sides for real: alice's response is
+		// her own genuine commit on Group_A.pq, and bob's `pqRekeyApply`
+		// plus his classical bind discharge complete his half too, so
+		// neither party is left desynced going into round 2.
+		// `pqRekeyApply`'s own adjudication (`adjudicatePQRekeyEffects`)
+		// checks a moved leaf against `auth.mine` on the session whose OWN
+		// leaf it is — here that is bob applying HIS OWN leaf's move — so
+		// his side relies on the same automatic pin, already present on
+		// `bob.auth.mine`.
 		let round1Commit = try alice.pqRekeyRespond(round.frame)
 		XCTAssertEqual(round1Commit.rotatedCredential, currentID)
 		XCTAssertTrue(alice.auth.theirs.pinned.contains(id0))
@@ -1012,12 +1011,219 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		// Rule 4's other half: now that NEITHER of bob's live PQ leaves
 		// presents id0 any longer — genuinely, in alice's own session, not
 		// just in bob's — the pin must retire.
-		XCTExpectFailure(
-			"group-rules.md:143-158 rule 4 — the pin must retire once no live PQ leaf presents the evicted id"
-		) {
-			XCTAssertFalse(alice.auth.theirs.pinned.contains(id0))
-		}
+		XCTAssertFalse(
+			alice.auth.theirs.pinned.contains(id0),
+			"group-rules.md rule 4 — the pin retires once no live PQ leaf presents the evicted id"
+		)
 	}
+
+	// MARK: - Pin maintenance survives a faulted write-back
+
+	/// `pqRekeyApply`'s own leaf-move write-back (`recvGroup`/`leafKeys`)
+	/// lands on `self` before this call ever reaches its own `stateUpdate`
+	/// — a fault right after that write-back (armed at
+	/// `pqRekeyApply.afterWriteBackBeforeBind`) leaves `self.auth.mine.
+	/// pinned` stale: the just-moved leaf's NEW id is now presented but not
+	/// yet covered by the (unrecomputed) `pinned` set. `makeSessionArchive`,
+	/// called directly on that torn state (bypassing `stateUpdate`), must
+	/// still recompute a normal-form `pinned` that covers it — proven by
+	/// the resulting archive restoring successfully. Mutation: reverting
+	/// `makeSessionArchive`'s `auth: pqPinnedAuth()` back to `auth: auth`
+	/// makes this fail (the archived, stale `pinned` no longer covers the
+	/// just-moved id, so `restore`'s own pin safety check rejects it).
+	#if DEBUG
+		func testArchiveAfterFaultedRekeyApplyWriteBackStillRestores() throws {
+			OracleCheck.allow([.recvClassical, .sendClassical, .recvPQ, .sendPQ])
+			defer { OracleCheck.allow([]) }
+			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+			let id0 = bob.identity.clientID
+
+			// Phases 1-3, verbatim from `testRule4Pin`: age bob's bookkeeping
+			// to the window's edge, a real classical catch-up to `s7`, then a
+			// real rotation to `s8` that evicts `id0` from both parties'
+			// classical history while bob's PQ leaves are left hand-aged —
+			// still presenting `id0`.
+			for step in 1...7 {
+				let stepID = Data("wb-bob-step\(step)".utf8)
+				try alice.auth.theirs.commit(stepID)
+				try bob.auth.mine.commit(stepID)
+			}
+			let s7 = try XCTUnwrap(bob.auth.mine.current)
+			let (recvSigningKey, recvSignatureKey) =
+				try TwoMLSIdentity.mintSignatureKeypair()
+			let (sendSigningKey, sendSignatureKey) =
+				try TwoMLSIdentity.mintSignatureKeypair()
+			bob.leafKeys.recvClassical.pending[s7] = LeafKey(
+				signingKey: recvSigningKey, signatureKey: recvSignatureKey)
+			bob.leafKeys.sendClassical.pending[s7] = LeafKey(
+				signingKey: sendSigningKey, signatureKey: sendSignatureKey)
+			_ = try bob.prepareToEncrypt()
+			let bobFrame = try bob.encrypt(Data("wb-bob-catchup".utf8)).frame
+			let aliceSaw = try alice.processIncomingDecrypted(bobFrame)
+			try alice.queueProposal(digest: aliceSaw.queuedProposal.digest)
+			_ = try alice.prepareToEncrypt()
+			let aliceFoldFrame = try alice.encrypt(Data("wb-alice-catchup-fold".utf8))
+				.frame
+			_ = try bob.processIncomingDecrypted(aliceFoldFrame)
+
+			let s8 = Data("wb-bob-step8".utf8)
+			_ = try bob.prepareToEncrypt(rotating: s8)
+			let rotationOfferFrame = try bob.encrypt(Data("wb-bob-rotate-offer".utf8))
+				.frame
+			let aliceSawRotation = try alice.processIncomingDecrypted(
+				rotationOfferFrame)
+			try alice.queueProposal(digest: aliceSawRotation.queuedProposal.digest)
+			_ = try alice.prepareToEncrypt()
+			let rotationFoldFrame = try alice.encrypt(
+				Data("wb-alice-rotation-fold".utf8)
+			).frame
+			_ = try bob.processIncomingDecrypted(rotationFoldFrame)
+			let currentID = try XCTUnwrap(alice.auth.theirs.current)
+			XCTAssertTrue(bob.auth.mine.pinned.contains(id0))
+
+			// Round 1 (mirrors `testRule4Pin`): bob's recv-PQ mirror still
+			// presents `id0` — hand-build his catch-up Upd′, deliver it
+			// through alice's REAL `pqRekeyRespond` (she is already pinned,
+			// so this succeeds), then arm the fault right where bob's OWN
+			// resulting leaf move would otherwise write back.
+			let round = try handBuildPQLeafMoveUpd(proposer: &bob, newID: currentID)
+			let round1Commit = try alice.pqRekeyRespond(round.frame)
+			bob.pqInflight = .rekeyInitiated(updMessage: round.bytes)
+			bob.pendingSideBand = round.frame
+
+			TwoMLSSessionTestHooks.armFault("pqRekeyApply.afterWriteBackBeforeBind")
+			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
+			XCTAssertThrowsError(try bob.pqRekeyApply(round1Commit.frame))
+
+			// The write-back landed (bob's own recv-PQ leaf now presents
+			// `currentID`) even though the call itself threw before ever
+			// reaching its own `stateUpdate`.
+			XCTAssertEqual(
+				try basicIdentifier(
+					TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
+						.credential),
+				currentID)
+			// `bob.auth.mine.pinned` is stale here — still whatever the LAST
+			// real `stateUpdate` left it at, not yet covering `currentID`.
+			// Calling `makeSessionArchive` directly must recompute it anyway.
+			let archive = try bob.makeSessionArchive(kind: .checkpoint)
+			let body = try archive.decode(SessionArchive.self)
+			XCTAssertTrue(body.auth.mine.pinned.contains(currentID))
+			XCTAssertTrue(body.auth.mine.pinned.contains(id0))
+
+			XCTAssertNoThrow(
+				try TwoMLSSession.restore(
+					core: nil, checkpoint: archive,
+					classicalProvider: SessionTestSupport.classicalProvider,
+					pqProvider: SessionTestSupport.pqProvider))
+		}
+	#endif
+
+	/// `id0` is pinned from the moment bob's own last successful state
+	/// update ran — well BEFORE this frame ever evicts it from history —
+	/// because the normal form pins every currently-presented id, in-
+	/// history or not (book group-rules.md rule 4's own wording only
+	/// names the evicted case, but pinning an in-history id is behavior-
+	/// neutral for every caller: `PartySequence.commit` checks `current
+	/// == id` before ever consulting `pinned`, and `validSuccessor`'s
+	/// authorization shortcut already excludes a `history` successor, so
+	/// neither can tell the difference). A fault armed right between the
+	/// classical
+	/// eviction landing on `self` and this call's own `stateUpdate`
+	/// (`processMessageFrame.afterStapleBeforeDecrypt`), on the very frame
+	/// that evicts `id0`, catches this directly: `pinned` already covers
+	/// `id0` at that exact moment, not only after some later recompute
+	/// reacts to the eviction. Mutation: pinning only an id ALREADY absent
+	/// from `history` (`presented.subtracting(history)`, instead of only
+	/// subtracting candidates) would leave `id0` unpinned here — it was
+	/// still in `history` as of bob's last successful state update — and
+	/// only pick it up after a LATER recompute, which the retry below
+	/// would still need in order for the catch-up to succeed; asserting
+	/// success is already true at the fault point rules that out.
+	#if DEBUG
+		func testPinnedBeforeEvictionHealsOnRetryAndAcceptsTheCatchUp() throws {
+			OracleCheck.allow([.recvClassical, .sendClassical, .recvPQ, .sendPQ])
+			defer { OracleCheck.allow([]) }
+			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
+			let id0 = bob.identity.clientID
+
+			// Phases 1-3 setup, verbatim from `testRule4Pin`, up to (but not
+			// including) alice folding bob's rotation.
+			for step in 1...7 {
+				let stepID = Data("pbe-bob-step\(step)".utf8)
+				try alice.auth.theirs.commit(stepID)
+				try bob.auth.mine.commit(stepID)
+			}
+			let s7 = try XCTUnwrap(bob.auth.mine.current)
+			let (recvSigningKey, recvSignatureKey) =
+				try TwoMLSIdentity.mintSignatureKeypair()
+			let (sendSigningKey, sendSignatureKey) =
+				try TwoMLSIdentity.mintSignatureKeypair()
+			bob.leafKeys.recvClassical.pending[s7] = LeafKey(
+				signingKey: recvSigningKey, signatureKey: recvSignatureKey)
+			bob.leafKeys.sendClassical.pending[s7] = LeafKey(
+				signingKey: sendSigningKey, signatureKey: sendSignatureKey)
+			_ = try bob.prepareToEncrypt()
+			let bobFrame = try bob.encrypt(Data("pbe-bob-catchup".utf8)).frame
+			let aliceSaw = try alice.processIncomingDecrypted(bobFrame)
+			try alice.queueProposal(digest: aliceSaw.queuedProposal.digest)
+			_ = try alice.prepareToEncrypt()
+			let aliceFoldFrame = try alice.encrypt(Data("pbe-alice-catchup-fold".utf8))
+				.frame
+			_ = try bob.processIncomingDecrypted(aliceFoldFrame)
+
+			let s8 = Data("pbe-bob-step8".utf8)
+			_ = try bob.prepareToEncrypt(rotating: s8)
+			let rotationOfferFrame = try bob.encrypt(Data("pbe-bob-rotate-offer".utf8))
+				.frame
+			let aliceSawRotation = try alice.processIncomingDecrypted(
+				rotationOfferFrame)
+			try alice.queueProposal(digest: aliceSawRotation.queuedProposal.digest)
+			_ = try alice.prepareToEncrypt()
+			// THE EVICTING FRAME: folding this into alice's recv-classical
+			// canonicalizes bob onto `s8`, evicting `id0` from history.
+			let rotationFoldFrame = try alice.encrypt(
+				Data("pbe-alice-rotation-fold".utf8)
+			)
+			.frame
+
+			TwoMLSSessionTestHooks.armFault(
+				"processMessageFrame.afterStapleBeforeDecrypt")
+			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
+			XCTAssertThrowsError(try bob.processIncoming(rotationFoldFrame))
+
+			// The classical eviction has already landed on `self` (inside
+			// `handleStaple`, before this call's own `stateUpdate` was ever
+			// reached) — yet `pinned` ALREADY covers `id0`, from bob's last
+			// successful state update, well before this eviction.
+			XCTAssertFalse(bob.auth.mine.history.contains(id0))
+			XCTAssertTrue(
+				bob.auth.mine.pinned.contains(id0),
+				"pinned before eviction — the normal form pins every "
+					+ "presented id, not only ones already absent from history"
+			)
+
+			// Retry: an idempotent re-ride of the already-applied fold,
+			// which reaches the real `stateUpdate` this time — `pinned`
+			// stays stable across it.
+			_ = try bob.processIncomingDecrypted(rotationFoldFrame)
+			XCTAssertTrue(bob.auth.mine.pinned.contains(id0))
+
+			// bob's own PQ leaves still lag (unmoved by any of the above) —
+			// the genuine catch-up now succeeds end to end. Alice's own
+			// `pqRekeyRespond` is unaffected by bob's gap (her own pin was
+			// recomputed at her own earlier `prepareToEncrypt`) — the
+			// property this test targets is bob's own `pqRekeyApply`, whose
+			// adjudication checks THIS id-move against `bob.auth.mine`
+			// (his own view of himself), which only just healed above.
+			let currentID = try XCTUnwrap(bob.auth.mine.current)
+			let round = try handBuildPQLeafMoveUpd(proposer: &bob, newID: currentID)
+			let commitFrame = try alice.pqRekeyRespond(round.frame)
+			bob.pqInflight = .rekeyInitiated(updMessage: round.bytes)
+			bob.pendingSideBand = round.frame
+			XCTAssertNoThrow(try bob.pqRekeyApply(commitFrame.frame))
+		}
+	#endif
 
 	// MARK: - Races cost one extra round, never a stall
 

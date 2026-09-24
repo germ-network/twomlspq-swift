@@ -96,6 +96,39 @@ extension TwoMLSSession {
 			else {
 				throw TwoMLSError.proposalRejected
 			}
+			guard let currentRecord = send.classical.tree.leaf(at: senderLeaf) else {
+				throw TwoMLSError.proposalRejected
+			}
+			let currentLeaf = try MLS.RFC9420.LeafNode(
+				mlsEncoded: currentRecord.encoded)
+			// The enclosing `verifying(proposal:)` above authenticates only
+			// the FRAMING — the sender's CURRENT leaf's signature over the
+			// proposal — never the EMBEDDED replacement leaf's own RFC 9420 section 7.3
+			// validity (`LeafNode.verifySignature` covers its own
+			// signature; `validatePolicy` covers capabilities/credential-
+			// type mutual support/`required_capabilities`). Both run here,
+			// before this approval can ever authorize anything, against
+			// EVERY current member — including the sender's own current
+			// leaf — mirroring the roster a real commit validates against
+			// (`currentMemberRoster`).
+			do {
+				try leafNode.verifySignature(
+					classicalProvider,
+					placement: .inGroup(
+						groupID: send.classical.context.groupID,
+						leafIndex: senderLeaf))
+				let roster = try Self.currentMemberRoster(of: send.classical)
+				try leafNode.validatePolicy(
+					.updateProposal(replacing: currentLeaf),
+					groupRequirements: send.classical.context.extensions
+						.requiredCapabilities(),
+					memberCredentialTypes: roster.credentialTypes,
+					memberCapabilities: roster.byLeaf.values)
+			} catch {
+				throw TwoMLSError.proposalRejected
+			}
+			try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+				leafNode, codepoints: codepoints)
 			// Rule 8 tail (group-rules.md:77-78): "Leaves advertise the
 			// extension type, so a binding-carrying group can only ever
 			// contain capability-bearing leaves." The peer's offered Update
@@ -106,11 +139,6 @@ extension TwoMLSSession {
 			if try AppBinding.read(fromExtensionsOf: send.classical.context) != nil {
 				try ensureAppBindingCreatorLeafAdvert(leafNode)
 			}
-			guard let currentRecord = send.classical.tree.leaf(at: senderLeaf) else {
-				throw TwoMLSError.proposalRejected
-			}
-			let currentLeaf = try MLS.RFC9420.LeafNode(
-				mlsEncoded: currentRecord.encoded)
 			guard case .basic(let offeredID) = leafNode.credential,
 				offeredID == offered.proposing
 			else {
@@ -325,7 +353,28 @@ extension TwoMLSSession {
 	internal mutating func committingRound() throws -> (
 		didCommit: Bool, committedRemoteClientID: Data?
 	) {
+		// Take the slot before anything else runs — approval
+		// and authorization are one unit (`PartySequence.revoke`'s own
+		// doc); a commit this round fails to build must not leave the
+		// approval sitting untouched, silently retriable forever with no
+		// compensating withdrawal. Any throw from here on, not only from
+		// `committing` itself, withdraws a still-outstanding (not yet
+		// canonical) authorization for the folded offer's id.
 		let folded = queuedProposal
+		queuedProposal = nil
+		do {
+			return try committingRoundBody(folded: folded)
+		} catch {
+			if let folded, !auth.theirs.history.contains(folded.proposing) {
+				auth.theirs.revoke(folded.proposing)
+			}
+			throw error
+		}
+	}
+
+	private mutating func committingRoundBody(
+		folded: (digest: Data, proposing: Data, message: Data)?
+	) throws -> (didCommit: Bool, committedRemoteClientID: Data?) {
 		let owed = owedBind
 		let licensed: Bool
 		if let peerApplied = peerAppliedSendEpoch, let send = sendGroup {
@@ -399,6 +448,8 @@ extension TwoMLSSession {
 				else {
 					throw TwoMLSError.invalidFoldEffects
 				}
+				try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+					leafNode, codepoints: codepoints)
 				// Rule 8 tail (group-rules.md:77-78), same gate as
 				// `validateOfferedUpdate`'s: re-checked here (defense in
 				// depth, not redundant — `queueProposal`'s validation and
@@ -601,11 +652,11 @@ extension TwoMLSSession {
 					currentStaple = Frames.encodeMlsMessageStaple(commitBytes)
 				}
 				// Either way this round is now fully spent: the fold it carried
-				// (if any) is consumed, and any still-unapproved offer is bound
-				// to the epoch this commit just left behind (§11 MF8's "the peer
-				// re-proposes at the new epoch once it sees this commit's
-				// staple").
-				queuedProposal = nil
+				// (if any) is consumed — `queuedProposal` is already nil,
+				// taken at `committingRound`'s own entry — and any still-
+				// unapproved offer is bound to the epoch this commit just
+				// left behind (§11 MF8's "the peer re-proposes at the new
+				// epoch once it sees this commit's staple").
 				offeredProposal = nil
 				return (true, committedRemoteClientID)
 			}
@@ -707,9 +758,10 @@ extension TwoMLSSession {
 				orThrow: .invalidFoldEffects)
 			// AS consult point 3 (slice 6): every `.credentialReplaced` effect
 			// this commit carries — my own leaf catching up, and/or the
-			// peer's own-leaf catch-up — validated BEFORE the group advances.
-			try auth.adjudicate(effects)
+			// peer's own-leaf catch-up — validated BEFORE the group advances,
+			// each against ITS OWN party (`adjudicate`'s `myLeaf`).
 			let myLeaf = recv.classical.myLeafIndex
+			try auth.adjudicate(effects, myLeaf: myLeaf)
 			let advanced = try pending.apply(onto: recv.classical)
 			recv.classical = advanced.group
 			try TwoPartyRules.ensureTwoParty(recv.classical)
@@ -766,6 +818,26 @@ extension TwoMLSSession {
 		}
 	}
 
+	/// The full-leaf-validation roster `validateOfferedUpdate` needs
+	/// (`LeafNode.validatePolicy`'s `memberCredentialTypes`/
+	/// `memberCapabilities`): every non-blank leaf of `group`, INCLUDING
+	/// the sender's own current one — mirrors swift-mls's own (internal,
+	/// so re-derived here) `currentMemberRoster()`, the same roster a real
+	/// commit validates against.
+	private static func currentMemberRoster(of group: MLS.RFC9420.Group) throws -> (
+		byLeaf: [MLS.LeafIndex: MLS.RFC9420.Capabilities],
+		credentialTypes: Set<MLS.RFC9420.CredentialType>
+	) {
+		var byLeaf: [MLS.LeafIndex: MLS.RFC9420.Capabilities] = [:]
+		var credentialTypes: Set<MLS.RFC9420.CredentialType> = []
+		for entry in group.tree.nonBlankLeaves() {
+			let leaf = try MLS.RFC9420.LeafNode(mlsEncoded: entry.record.encoded)
+			byLeaf[entry.index] = leaf.capabilities
+			credentialTypes.insert(leaf.credential.credentialType)
+		}
+		return (byLeaf, credentialTypes)
+	}
+
 	/// Slice 6: fold every `.credentialReplaced` effect an already-adjudicated
 	/// commit carried into a NEW `AuthCore` — pure (throws before returning,
 	/// never mutates `auth` in place), so `applyFoldCommit`/`applyBind` can
@@ -788,11 +860,33 @@ extension TwoMLSSession {
 				continue
 			}
 			let newID = try basicIdentifier(new.credential)
+			// Canonicalize only a credential NEW to the sequence — one
+			// neither already in `history` nor `pinned`. A leaf moving to
+			// an id that's already known is a legitimate catch-up (the
+			// same-id case is `commit`'s own no-op; landing on an already-
+			// canonical, non-head id, or on a pinned evicted-but-presented
+			// id, is a catch-up too), never something for `commit`'s own
+			// rollback check to see — `commit` stays strict, so calling it
+			// on an id it would treat as a rollback candidate is simply
+			// skipped here rather than caught after the fact.
+			// `AuthCore.validateSuccession` (run at `adjudicate`) remains
+			// the only rollback gate. The flags below are set regardless —
+			// a same-id signing-key-only change still canonicalizes
+			// nothing but is still a credential-replaced event worth
+			// surfacing.
 			if leaf == myLeaf {
-				try updated.mine.commit(newID)
+				if !(updated.mine.history.contains(newID)
+					|| updated.mine.pinned.contains(newID))
+				{
+					try updated.mine.commit(newID)
+				}
 				ownCredentialCanonicalized = true
 			} else {
-				try updated.theirs.commit(newID)
+				if !(updated.theirs.history.contains(newID)
+					|| updated.theirs.pinned.contains(newID))
+				{
+					try updated.theirs.commit(newID)
+				}
 				newSender = newID
 			}
 		}
@@ -1060,9 +1154,10 @@ extension TwoMLSSession {
 				classicalEffects, foldedPeerUpdate: foldedPeerUpdate)
 			// AS consult point 3 (slice 6): the PQ half never carries a
 			// `.credentialReplaced` (`validateBindPQEffects` stays strict),
-			// so only the classical half's effects need adjudicating.
-			try auth.adjudicate(classicalEffects)
+			// so only the classical half's effects need adjudicating, each
+			// against ITS OWN party (`adjudicate`'s `myLeaf`).
 			let myLeaf = recv.classical.myLeafIndex
+			try auth.adjudicate(classicalEffects, myLeaf: myLeaf)
 			let tTransition = try tPending.apply(onto: recv.classical)
 			recv.classical = tTransition.group
 			// CAPTURE-ON-ENTRY (+Attachment.swift): ledger the recv group's

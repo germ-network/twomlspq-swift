@@ -77,6 +77,16 @@ extension TwoMLSSession {
 		guard try basicIdentifier(their.pq.leafNode.credential) == theirClassicalID else {
 			throw TwoMLSError.remoteIdentityMismatch
 		}
+		// Germ AS policy (two distinct principals) — not RFC 9420- or
+		// book-mandated: the peer can never legitimately be this device's
+		// own identity, before any group is even built.
+		guard theirClassicalID != identity.clientID else {
+			throw TwoMLSError.remoteIdentityMismatch
+		}
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			their.classical.leafNode, codepoints: codepoints)
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			their.pq.leafNode, codepoints: codepoints)
 		let auth = AuthCore(
 			mine: .seeded(identity.clientID), theirs: .seeded(theirClassicalID))
 
@@ -259,19 +269,38 @@ extension TwoMLSSession {
 		if let pq = groupA.pq {
 			try TwoPartyRules.ensureTwoParty(pq)
 		}
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			Self.joinedCreatorLeaf(of: groupA.classical), codepoints: codepoints)
+		if let pq = groupA.pq {
+			try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+				Self.joinedCreatorLeaf(of: pq), codepoints: codepoints)
+		}
 
 		// Slice-2 seam CLOSED: the AS seeds `theirs` from the creator leaf this
 		// join actually landed — read straight off the joined tree, not a claim
 		// — then requires the caller-supplied `theirClassicalKeyPackage` to
 		// present that SAME identity (Rust's mandatory welcome-creator ≡ KP
 		// binding, `two-mls-pq/src/session/mod.rs`). A KeyPackage naming any
-		// other party — including this device's own id — is rejected here,
-		// rather than relying solely on the 0xFF02 cross-party PSK export
-		// failing later.
+		// other party is rejected here, rather than relying solely on the
+		// 0xFF02 cross-party PSK export failing later; the creator naming
+		// THIS device's own id is rejected separately, just below.
 		let peerLeaf = try Self.joinedCreatorLeaf(of: groupA.classical)
 		let peerID = try basicIdentifier(peerLeaf.credential)
 		guard try basicIdentifier(theirClassicalKeyPackage.leafNode.credential) == peerID
 		else { throw TwoMLSError.remoteIdentityMismatch }
+		// Germ AS policy (two distinct principals) — not RFC 9420- or
+		// book-mandated: the joined creator can never legitimately be this
+		// device's own identity. Defense-in-depth alongside `initiate`'s own
+		// guard above: unreachable against a welcome THIS module's own
+		// `initiate` produced (that guard already forecloses the collision),
+		// but this reads the JOINED tree's own credential, not a claim — a
+		// welcome from elsewhere (a migrated session, a differently-built
+		// establishment path) gets the same fail-closed treatment.
+		guard peerID != identity.clientID else {
+			throw TwoMLSError.remoteIdentityMismatch
+		}
+		try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+			theirClassicalKeyPackage.leafNode, codepoints: codepoints)
 		// Defense-in-depth: a dedicated id equal to the remote/initiator's own
 		// id can never be legitimate (it would found Group_B under an identity
 		// the peer already occupies in Group_A) — reject before minting.
