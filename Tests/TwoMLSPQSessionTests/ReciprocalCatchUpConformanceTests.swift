@@ -268,30 +268,25 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 			of: try XCTUnwrap(alice.recvGroup?.pq))
 		XCTAssertEqual(try basicIdentifier(aliceRecvPQBefore.credential), aliceOldID)
 
-		// Book: her own next `encrypt` should self-drive an A.5 whose
-		// Upd′ carries her new id — probed on copies so `alice`/`bob`
-		// stay clean for the hand-built round below.
-		var triggerProbe = alice
-		_ = try triggerProbe.prepareToEncrypt()
-		_ = try triggerProbe.encrypt(Data("trigger-probe".utf8))
-		let triggerOpensRekey: Bool
-		if case .rekeyInitiated = triggerProbe.pqInflight {
-			triggerOpensRekey = true
-		} else {
-			triggerOpensRekey = false
+		// Book: her own next `encrypt` self-drives an A.5 whose Upd′
+		// carries her new id — the real self-driven open, not an explicit
+		// `pqRekeyBegin()` call. Deliver the plain message frame it rides
+		// on too, so bob's evidence stays current for the discharge below.
+		_ = try alice.prepareToEncrypt()
+		let triggerFrame = try alice.encrypt(Data("trigger".utf8)).frame
+		guard case .rekeyInitiated = alice.pqInflight else {
+			XCTFail("expected alice's own next turn to self-drive the catch-up")
+			return
 		}
-		XCTAssertTrue(triggerOpensRekey)
-
-		// Round 1: alice's real `pqRekeyBegin` now carries her current id
-		// directly, driven through the real commit/apply path.
-		let beginResult = try alice.pqRekeyBegin()
+		let beginFrame = try XCTUnwrap(alice.pqPendingOutbound())
+		_ = try bob.processIncomingDecrypted(triggerFrame)
 		// PR2: opened via `bob` — the frame's addressee.
 		let announcedByBegin = try credentialAnnounced(
-			byRekeyUpdFrame: beginResult.frame, opener: bob,
+			byRekeyUpdFrame: beginFrame, opener: bob,
 			verifyingAgainst: try XCTUnwrap(bob.sendGroup?.pq))
 		XCTAssertEqual(announcedByBegin, alice2ID)
 
-		let round1Commit = try bob.pqRekeyRespond(beginResult.frame)
+		let round1Commit = try bob.pqRekeyRespond(beginFrame)
 		XCTAssertEqual(round1Commit.rotatedCredential, alice2ID)
 		XCTAssertNoThrow(try alice.pqRekeyApply(round1Commit.frame))
 		XCTAssertNil(alice.pqInflight)
@@ -303,6 +298,12 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		XCTAssertEqual(try basicIdentifier(aliceRecvPQAfterRound1.credential), alice2ID)
 		let bobsViewOfAlice = try peerLeaf(in: try XCTUnwrap(bob.sendGroup?.pq))
 		XCTAssertEqual(try basicIdentifier(bobsViewOfAlice.credential), alice2ID)
+
+		// Fresh evidence for alice's discharge below — her own self-driven
+		// trigger send above spent the fold-frame's earlier license.
+		_ = try bob.prepareToEncrypt()
+		let bobAckFrame = try bob.encrypt(Data("bob-ack".utf8)).frame
+		_ = try alice.processIncomingDecrypted(bobAckFrame)
 
 		// Discharge round 1's ack — passes the turn to Bob.
 		XCTAssertNotNil(alice.owedBind)
@@ -320,29 +321,24 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 			of: try XCTUnwrap(alice.sendGroup?.pq))
 		XCTAssertEqual(try basicIdentifier(aliceSendPQBeforeRound2.credential), aliceOldID)
 
-		// Book: Bob's own next turn should self-drive the reciprocal A.5.
-		var round2TriggerProbe = bob
-		_ = try round2TriggerProbe.prepareToEncrypt()
-		_ = try round2TriggerProbe.encrypt(Data("round2-trigger-probe".utf8))
-		let round2OpensRekey: Bool
-		if case .rekeyInitiated = round2TriggerProbe.pqInflight {
-			round2OpensRekey = true
-		} else {
-			round2OpensRekey = false
+		// Book: Bob's own next turn self-drives the reciprocal A.5 (same-id
+		// — he never rotated, matching the book's own shape for this
+		// round) — the real self-driven open, C2 now satisfied by round 1.
+		_ = try bob.prepareToEncrypt()
+		let round2TriggerFrame = try bob.encrypt(Data("round2-trigger".utf8)).frame
+		guard case .rekeyInitiated = bob.pqInflight else {
+			XCTFail(
+				"expected bob's own next turn to self-drive the reciprocal catch-up"
+			)
+			return
 		}
-		XCTExpectFailure(
-			"protocol-flows.md:56/:704-708 — the reciprocal round's trigger is unimplemented"
-		) {
-			XCTAssertTrue(round2OpensRekey)
-		}
+		let round2BeginFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		_ = try alice.processIncomingDecrypted(round2TriggerFrame)
 
-		// Round 2: Bob's real `pqRekeyBegin` (same-id — he never rotated,
-		// matching the book's own shape for this round), and alice's real
-		// `pqRekeyRespond` now carries her current id onto her OWN
-		// send-PQ leaf directly — this is the reciprocal catch-up's own
-		// half.
-		let round2Begin = try bob.pqRekeyBegin()
-		let round2Commit = try alice.pqRekeyRespond(round2Begin.frame)
+		// Alice's real `pqRekeyRespond` carries her current id onto her
+		// OWN send-PQ leaf directly — this is the reciprocal catch-up's
+		// own half.
+		let round2Commit = try alice.pqRekeyRespond(round2BeginFrame)
 		XCTAssertNoThrow(try bob.pqRekeyApply(round2Commit.frame))
 		XCTAssertNil(bob.pqInflight)
 		XCTAssertNotNil(bob.owedBind)
@@ -1567,11 +1563,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		} else {
 			opensReciprocal = false
 		}
-		XCTExpectFailure(
-			"protocol-flows.md:56 / session-lifecycle.md:291-302 (C2) — the reciprocal A.5 must open once the peer's own A.5 has landed"
-		) {
-			XCTAssertTrue(opensReciprocal)
-		}
+		XCTAssertTrue(opensReciprocal)
 	}
 
 	// MARK: - The join-key rule
@@ -1644,5 +1636,66 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		// cryptographically verifies it.
 		let begin = try alice.pqRekeyBegin()
 		XCTAssertNoThrow(try bob.pqRekeyRespond(begin.frame))
+	}
+
+	// MARK: - The trigger predicate (pure)
+
+	/// Every input combination `opensRekey` can see, in both profiles.
+	/// Kills: ignoring the profile; C2 gating our own lag; opening with no
+	/// lag anywhere; the own-arm gate reading the wrong flag.
+	func testOpensRekeyByProfile() throws {
+		for profile: SessionProfile in [.correct, .deployedCompatible] {
+			// No lag anywhere never opens, whatever else is true.
+			XCTAssertFalse(
+				TwoMLSSession.opensRekey(
+					ownLeafLags: false, ownTargetFolded: true,
+					peerLeafLags: false,
+					peerOwnA5Landed: false, profile: profile))
+			XCTAssertFalse(
+				TwoMLSSession.opensRekey(
+					ownLeafLags: false, ownTargetFolded: false,
+					peerLeafLags: false,
+					peerOwnA5Landed: true, profile: profile))
+
+			// Own lag opens once the peer has folded the target — in BOTH
+			// profiles — and never before, regardless of profile.
+			XCTAssertTrue(
+				TwoMLSSession.opensRekey(
+					ownLeafLags: true, ownTargetFolded: true,
+					peerLeafLags: false,
+					peerOwnA5Landed: false, profile: profile))
+			XCTAssertFalse(
+				TwoMLSSession.opensRekey(
+					ownLeafLags: true, ownTargetFolded: false,
+					peerLeafLags: false,
+					peerOwnA5Landed: false, profile: profile))
+			// Own lag wins even when the peer also lags.
+			XCTAssertTrue(
+				TwoMLSSession.opensRekey(
+					ownLeafLags: true, ownTargetFolded: true,
+					peerLeafLags: true,
+					peerOwnA5Landed: false, profile: profile))
+		}
+
+		// Peer lag alone, own leaf not lagging: opens under `.correct`
+		// whether or not the peer's own A.5 has landed — C2 doesn't apply.
+		XCTAssertTrue(
+			TwoMLSSession.opensRekey(
+				ownLeafLags: false, ownTargetFolded: true, peerLeafLags: true,
+				peerOwnA5Landed: false, profile: .correct))
+		XCTAssertTrue(
+			TwoMLSSession.opensRekey(
+				ownLeafLags: false, ownTargetFolded: true, peerLeafLags: true,
+				peerOwnA5Landed: true, profile: .correct))
+
+		// ...but under `.deployedCompatible` (C2), only once it has landed.
+		XCTAssertFalse(
+			TwoMLSSession.opensRekey(
+				ownLeafLags: false, ownTargetFolded: true, peerLeafLags: true,
+				peerOwnA5Landed: false, profile: .deployedCompatible))
+		XCTAssertTrue(
+			TwoMLSSession.opensRekey(
+				ownLeafLags: false, ownTargetFolded: true, peerLeafLags: true,
+				peerOwnA5Landed: true, profile: .deployedCompatible))
 	}
 }

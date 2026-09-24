@@ -342,15 +342,18 @@ final class RotationTests: XCTestCase {
 
 		// Alice's recv-PQ leaf — joined at §A.3 off her identity's original
 		// KeyPackage — still presents her pre-rotation id, so her own next
-		// turn opens the catch-up instead of a plain A.4. Drive it, then
-		// hand the turn back with one plain, uneventful A.4, so the MF4
-		// assertions below see alice holding the turn with nothing lagging.
+		// turn opens the catch-up instead of a plain A.4. That catch-up
+		// moves her leaf in Group_B.pq (bob's send-PQ), which is exactly
+		// what C2 was waiting on: bob's own next turn now opens the
+		// reciprocal on Group_A.pq (his recv-PQ), catching her OTHER leaf
+		// up too, so the MF4 assertions below see alice holding the turn
+		// with nothing left lagging.
 		let catchUpTag = try SessionTestSupport.drivePQRound(
 			initiator: &alice, responder: &bob)
 		XCTAssertEqual(catchUpTag, Frames.pqRekeyUpdTag)
-		let handBackTag = try SessionTestSupport.drivePQRound(
+		let reciprocalTag = try SessionTestSupport.drivePQRound(
 			initiator: &bob, responder: &alice)
-		XCTAssertEqual(handBackTag, Frames.pqEKTag)
+		XCTAssertEqual(reciprocalTag, Frames.pqRekeyUpdTag)
 		XCTAssertTrue(alice.myPQTurn)
 
 		// MF4 (a): Alice — the rotator, now turn-holder — self-stages a

@@ -318,11 +318,20 @@ extension TwoMLSSession {
 	/// leaf in `recvGroup.classical` already presenting `mine.current` —
 	/// so a peer that never folds a catch-up offer (a deployed host that
 	/// never runs A.2, e.g.) leaves this session ratcheting A.4 instead of
-	/// stalled on a §A.5 it can never complete.
+	/// stalled on a §A.5 it can never complete. The peer's own lag opens
+	/// the reciprocal round too, deferred under the deployed-compatible
+	/// profile until the peer's own A.5 has landed — observed as its leaf
+	/// in our send-PQ presenting its current canonical id (protocol doc §4
+	/// C2). Only the receive group's leaves trigger: reading our own
+	/// send-PQ leaf here would be the deployed engine's own anomaly.
 	func rekeyDue() -> Bool {
-		guard let recvPQ = recvGroup?.pq else { return false }
-		guard ownLeafLagsHead(in: recvPQ) else { return false }
-		return ownRekeyTargetFolded()
+		guard let recvPQ = recvGroup?.pq, let sendPQ = sendGroup?.pq else { return false }
+		return Self.opensRekey(
+			ownLeafLags: ownLeafLagsHead(in: recvPQ),
+			ownTargetFolded: ownRekeyTargetFolded(),
+			peerLeafLags: peerLeafLagsHead(in: recvPQ),
+			peerOwnA5Landed: !peerLeafLagsHead(in: sendPQ),
+			profile: profile)
 	}
 
 	private func ownLeafLagsHead(in group: MLS.RFC9420.Group) -> Bool {
@@ -345,5 +354,19 @@ extension TwoMLSSession {
 			let id = try? basicIdentifier(leaf.credential)
 		else { return true }
 		return id == head
+	}
+
+	/// The non-self leaf of `group` presenting an id other than the peer's
+	/// current canonical one.
+	private func peerLeafLagsHead(in group: MLS.RFC9420.Group) -> Bool {
+		guard let head = auth.theirs.current else { return false }
+		guard
+			let entry = group.tree.nonBlankLeaves().first(where: {
+				$0.index != group.myLeafIndex
+			}),
+			let leaf = try? MLS.RFC9420.LeafNode(mlsEncoded: entry.record.encoded),
+			let id = try? basicIdentifier(leaf.credential)
+		else { return false }
+		return id != head
 	}
 }

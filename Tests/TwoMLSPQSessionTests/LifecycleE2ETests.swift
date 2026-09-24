@@ -914,7 +914,11 @@ final class LifecycleE2ETests: XCTestCase {
 		let finalFromBobDecrypted = try alice.deliverDecrypted(bob.nextBlob())
 		XCTAssertEqual(
 			finalFromBobDecrypted.applicationMessage, Data("final-from-bob".utf8))
-		bob.outbox.removeAll()  // discard the self-staged EK; this round need not complete
+		// C2 is now satisfied — alice's own A.5 landed at [11] — so bob's
+		// own next turn self-drives the reciprocal, not a plain A.4.
+		XCTAssertEqual(bob.outbox.last?.expectedKind, .pqSideBand(.rekeyUpd))
+		// Discard the self-staged reciprocal open; this round need not complete.
+		bob.outbox.removeAll()
 
 		let finalFromAlice = try alice.send(Data("final-from-alice".utf8), to: &bob)
 		_ = finalFromAlice

@@ -225,12 +225,14 @@ shares a key across its groups, and nothing compares a peer's keys across groups
 - **C2 — defer the reciprocal A.5 until the peer's own A.5 has landed.**
   - What it is: when the peer's leaf in OUR recv-PQ lags, we don't open the reciprocal A.5 the moment it does. We wait
     until the peer's own A.5 has landed — its leaf in OUR send-PQ presents its current canonical id — before opening
-    the round that catches its leaf up. That round runs in the PEER's send-PQ group — our own recv-PQ, the group its
-    leaf lags in, never a group we founded (`protocol-flows.md:706`: "Bob's next turn opens the reciprocal A.5 on
-    [ASG-PQ]", Alice's send-PQ group). Our own catch-up (opening an A.5 when OUR OWN leaf lags) is not deferred by
-    this — C2 gates only the reciprocal round. A residual case this doesn't cover: against a deployed peer that
-    rotated before its own A.3 bind, that peer's answer to OUR A.5 — as responder, whichever A.5 it is — still
-    orphans its key (the book's anomaly #5 covers any A.5 the deployed party answers, not only a reciprocal one).
+    the round that catches its leaf up. Deferring means opening a plain A.4 instead — the turn must still pass, or
+    the peer could never run the A.5 we are waiting on. That round runs in the PEER's send-PQ group — our own
+    recv-PQ, the group its leaf lags in, never a group we founded (`protocol-flows.md:706`: "Bob's next turn opens
+    the reciprocal A.5 on [ASG-PQ]", Alice's send-PQ group). Our own catch-up (opening an A.5 when OUR OWN leaf lags)
+    is not deferred by this — C2 gates only the reciprocal round. A residual case this doesn't cover: against a
+    deployed peer that rotated before its own A.3 bind, that peer's answer to OUR A.5 — as responder, whichever A.5
+    it is — still orphans its key (the book's anomaly #5 covers any A.5 the deployed party answers, not only a
+    reciprocal one).
   - Why: the deployed engine's A.3 join signs with its *current* PQ key rather than the KP′ key its leaf actually
     presents there (contrary to rule 4). If that party rotates before its A.3 bind, its own A.5 `Upd'` in that group
     is mis-signed and permanently rejected, and the presented KP′ key survives only as its own send-PQ group's
