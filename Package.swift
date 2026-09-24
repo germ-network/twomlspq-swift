@@ -29,11 +29,11 @@ let package = Package(
 			url: "https://github.com/germ-network/swift-mls.git",
 			from: "0.1.6"
 		),
-		// The zeroizing storage behind `MLS.HpkeSecretKey.data`; range matches swift-mls.
-		// 0.5.0 is its swift-crypto-5 release.
+		// The zeroizing storage behind `MLS.HpkeSecretKey.data`. 0.7.1 decodes keyed
+		// containers in linear time, which snapshot restore relies on.
 		.package(
 			url: "https://github.com/germ-network/swift-secret-bytes.git",
-			from: "0.5.0"
+			from: "0.7.1"
 		),
 		// The shared `tryUnwrap` (safe unwrap) and other Germ conveniences. 0.8.0
 		// splits the HTTP helpers into GermConvenienceHTTP, so the base product
