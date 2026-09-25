@@ -129,10 +129,19 @@ extension TwoMLSSession {
 			peerKeyPackage: their.pq,
 			provider: pqProvider)
 
+		// Book group-rules.md rule 9: the newest profile both classical key
+		// packages advertise, recorded on Group_A's classical half. The
+		// founding leaf's own advert follows from `founding.classical`
+		// copying `identity.keyPackage.classical`'s own capabilities, so
+		// `establishFull`'s own choke point covers it — nothing to
+		// re-check here.
+		let profile = SessionProfile.negotiate(
+			own: identity.keyPackage.classical.leafNode, their: their.classical.leafNode)
+
 		let (groupA, welcome) = try APQGroup.establishFull(
 			classical: classicalHalf, pq: pqHalf, mode: 0,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			appBinding: appBinding, codepoints: codepoints)
+			appBinding: appBinding, profile: profile, codepoints: codepoints)
 
 		let apqWelcomeA = Frames.encodeAPQWelcome(
 			t: try EstablishmentMessages.encodeWelcome(welcome.tWelcome),
@@ -415,6 +424,22 @@ extension TwoMLSSession {
 		let verifiedAppBinding = try AppBinding.read(
 			fromExtensionsOf: groupA.classical.context)
 
+		// Book group-rules.md rule 9: the recorded profile must be the one
+		// both classical key packages advertise, else `.sessionProfileMismatch`
+		// before any invitation state is claimed; the joined creator (peer)
+		// leaf must keep advertising it. `verifyPQHalfUnbound` above already
+		// refused a PQ-half record. The founding leaf's own advert follows
+		// `identity.keyPackage.classical`'s, covered by
+		// `establishClassicalOnly`'s own choke point below.
+		let profile = try SessionProfile.recorded(in: groupA.classical.context)
+		guard
+			profile
+				== SessionProfile.negotiate(
+					own: identity.keyPackage.classical.leafNode,
+					their: theirClassicalKeyPackage.leafNode)
+		else { throw TwoMLSError.sessionProfileMismatch }
+		try profile.ensureAdvertised(by: peerLeaf)
+
 		// A dedicated session is requested ONLY when `newClientID` differs
 		// from the invitation identity (protocol-flows.md:420,
 		// credential-differ rule) — equal/nil degenerates to today's nil
@@ -441,7 +466,7 @@ extension TwoMLSSession {
 			founder: founderHalf, pqGroupID: pqGroupID, crossPSK: crossPSK,
 			nonce: nonce,
 			provider: classicalProvider, appBinding: verifiedAppBinding,
-			codepoints: codepoints)
+			profile: profile, codepoints: codepoints)
 		try TwoPartyRules.ensureTwoParty(groupB.classical)
 
 		let apqWelcomeB = Frames.encodeAPQWelcome(

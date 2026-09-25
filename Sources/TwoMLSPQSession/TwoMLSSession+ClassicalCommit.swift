@@ -139,6 +139,10 @@ extension TwoMLSSession {
 			if try AppBinding.read(fromExtensionsOf: send.classical.context) != nil {
 				try ensureAppBindingCreatorLeafAdvert(leafNode)
 			}
+			// Book group-rules.md rule 9's tail, same gate: a profile-carrying
+			// group's replacement leaf must keep advertising the recorded type.
+			try SessionProfile.recorded(in: send.classical.context)
+				.ensureAdvertised(by: leafNode)
 			guard case .basic(let offeredID) = leafNode.credential,
 				offeredID == offered.proposing
 			else {
@@ -464,6 +468,9 @@ extension TwoMLSSession {
 				{
 					try ensureAppBindingCreatorLeafAdvert(leafNode)
 				}
+				// Book group-rules.md rule 9's tail, same re-check at fold.
+				try SessionProfile.recorded(in: send.classical.context)
+					.ensureAdvertised(by: leafNode)
 				let ref = try proposalStore.insert(verified, classicalProvider)
 				proposals.append(.reference(ref))
 				committedRemoteClientID = remoteIdentity

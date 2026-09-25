@@ -43,6 +43,36 @@ enum SessionProfile: Sendable, Equatable {
 		let theirs = advertised(by: their)
 		return advertised(by: own).first { theirs.contains($0) } ?? .deployedCompatible
 	}
+
+	/// The classical half's creation-time GroupContext extensions that
+	/// record this profile: one empty extension of its type, or none.
+	var recordExtensions: [MLS.RFC9420.Extension] {
+		extensionType.map { [MLS.RFC9420.Extension(type: $0, data: Data())] } ?? []
+	}
+
+	/// The profile a GroupContext records — `.deployedCompatible` when none
+	/// is. Throws `.sessionProfileMismatch` when more than one profile type
+	/// is present, or one is present with non-empty contents.
+	static func recorded(in context: MLS.RFC9420.GroupContext) throws -> SessionProfile {
+		let matches = recognized.flatMap { profile in
+			context.extensions.filter { $0.type == profile.extensionType }.map { (profile, $0) }
+		}
+		guard let (profile, ext) = matches.first else { return .deployedCompatible }
+		guard matches.count == 1, ext.data.isEmpty else {
+			throw TwoMLSError.sessionProfileMismatch
+		}
+		return profile
+	}
+
+	/// A leaf in a profile-carrying group must keep advertising the recorded
+	/// type (book group-rules.md rule 9's tail, mirrors the AppBinding leaf
+	/// gate).
+	func ensureAdvertised(by leaf: MLS.RFC9420.LeafNode) throws {
+		guard let type = extensionType else { return }
+		guard leaf.capabilities.extensions.contains(type) else {
+			throw TwoMLSError.leafCapabilityUnadvertised
+		}
+	}
 }
 
 @available(iOS 26, macOS 26, *)

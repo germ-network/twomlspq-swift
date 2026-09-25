@@ -391,8 +391,20 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// rejected rather than silently degraded"). Rejected before any state
 	/// changes; the peer is non-conforming. Also thrown by the migration
 	/// mint for any occupied leaf of the four restored trees (or either half
-	/// of a retained `initialTheirKP`) that fails the same check.
+	/// of a retained `initialTheirKP`) that fails the same check — and, for
+	/// a session profile (book group-rules.md rule 9), by a founder, peer or
+	/// replacement leaf that does not keep advertising a recorded profile's
+	/// extension type.
 	case leafCapabilityUnadvertised
+
+	// MARK: Session profile (book group-rules.md rule 9)
+
+	/// A welcome's recorded session profile is not the one both classical
+	/// key packages advertise, a return welcome does not carry the
+	/// initiator's recorded profile back unchanged, a PQ half records one,
+	/// or a `GroupContext` profile record is duplicated or carries
+	/// non-empty contents. Raised before any invitation state is claimed.
+	case sessionProfileMismatch
 
 	// MARK: Attachment CEK export (value-engine parity)
 

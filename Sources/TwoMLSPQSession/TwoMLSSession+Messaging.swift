@@ -986,6 +986,16 @@ extension TwoMLSSession {
 		if ownAppBinding != nil {
 			try ensureAppBindingCreatorLeafAdvert(creatorLeaf)
 		}
+		// Book group-rules.md rule 9: the return welcome carries the
+		// recorded profile back unchanged, and its creator leaf keeps
+		// advertising it. The ordering (after the APQ-capability gate just
+		// above) is load-bearing: `LeafCapabilityGateTests` pins a
+		// capability-less creator leaf failing on that gate first.
+		let ownProfile = try SessionProfile.recorded(in: groupA.classical.context)
+		guard try SessionProfile.recorded(in: groupB.classical.context) == ownProfile else {
+			throw TwoMLSError.sessionProfileMismatch
+		}
+		try ownProfile.ensureAdvertised(by: creatorLeaf)
 
 		// Slice 11 (protocol-flows.md:407-432): admit the joined creator into `auth.theirs` when
 		// it's new — the born-dedicated adoption. A `.bare`-mode join can
