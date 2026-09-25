@@ -3,7 +3,7 @@ import MLSCodec
 import MLSCrypto
 import MLSProfileRFC9420
 
-// MARK: - §A.1 HPKE establishment envelope (slice 9, PR3b)
+// MARK: - §A.1 HPKE establishment envelope
 //
 // The envelope blob carries NO outer tag — `[u32-LE kem_output_len]
 // [kem_output][ciphertext]` — because the invitation channel already routes
@@ -11,10 +11,13 @@ import MLSProfileRFC9420
 // PLAINTEXT leads with an authenticated inner tag that selects the frame
 // kind: `establishmentVectorTag` (0x07) for the four-section establishment
 // reply, or `Frames.pqBootstrapKPTag` (0x13, unchanged) for the parallel A.3
-// bootstrap-KP frame, carried verbatim. This slice populates only the BARE
-// either/or shape (`welcome` + `returnKeyPackage`, no `appPayload`) —
-// protocol-flows.md's self-sufficient signed-`appPayload` shape needs an
-// app-layer identity envelope the port doesn't have.
+// bootstrap-KP frame, carried verbatim — both sealed the same way
+// (`EstablishmentEnvelope.seal(to:plaintext:pqProvider:)`), so the
+// invitation-channel opener handles either without distinguishing them.
+// This populates only the BARE either/or shape (`welcome` +
+// `returnKeyPackage`, no `appPayload`) — protocol-flows.md's self-sufficient
+// signed-`appPayload` shape needs an app-layer identity envelope the port
+// doesn't have.
 
 /// The inner plaintext tag and framing constants. Declared here, not in
 /// `Frames.swift`'s session-frame registry, because this tags the HPKE
@@ -126,6 +129,16 @@ enum EstablishmentEnvelope {
 		let plaintext = encodePlaintext(
 			appPayload: appPayload, welcome: welcome,
 			returnKeyPackage: returnKeyPackage, stapledMessage: stapledMessage)
+		return try seal(to: theirKP, plaintext: plaintext, pqProvider: pqProvider)
+	}
+
+	/// The raw-blob seal both §A.1 frame kinds share: `plaintext` already
+	/// leads with its own inner tag (`establishmentVectorTag` or
+	/// `Frames.pqBootstrapKPTag`).
+	static func seal(
+		to theirKP: CombinerKeyPackage, plaintext: Data,
+		pqProvider: any MLS.CipherSuiteProvider
+	) throws -> Data {
 		let info = try basicIdentifier(theirKP.pq.leafNode.credential)
 		let (enc, ciphertext) = try pqProvider.hpkeSeal(
 			publicKey: theirKP.pq.initKey, info: info, aad: envelopeFramingAAD(),
@@ -140,10 +153,9 @@ enum EstablishmentEnvelope {
 public enum OpenedInitial: Sendable, Equatable {
 	case establishment(InitialFrame)
 	/// The verbatim `[0x13][KP′ bytes]` parallel bootstrap-KP frame — the
-	/// same side-band shape A.3 uses in steady state, decoded here for
-	/// completeness. A host holds it until establishment completes, then
-	/// feeds it to `pqBootstrapRespond`; the SEND path for this parallel
-	/// envelope is out of scope for this slice.
+	/// same side-band shape A.3 uses in steady state, shipped by the
+	/// initiator's `pqBootstrapEnvelope()`. A host holds it until
+	/// establishment completes, then feeds it to `pqBootstrapRespond`.
 	case bootstrapKP(Data)
 }
 
@@ -179,5 +191,22 @@ extension TwoMLSSession {
 			to: theirKP, appPayload: nil, welcome: currentStaple,
 			returnKeyPackage: try identity.keyPackage.classical.mlsEncoded(),
 			stapledMessage: nil, pqProvider: pqProvider)
+	}
+
+	/// The §A.3 parallel pre-delivery: the round `initiate` registered,
+	/// sealed as its own §A.1 raw blob to the peer's KP′ — the reply's outer
+	/// shape, so an acceptor's invitation-channel opener handles either.
+	/// Ship it alongside `pendingOutbound()`. A pure read: a fresh HPKE
+	/// ephemeral every call, no state change. `nil` once there is nothing
+	/// left to pre-deliver — past the Group_B join (`pqPendingOutbound()`
+	/// then carries the same frame on the steady-state side-band instead), a
+	/// responder, or a round that was never registered (a pre-change
+	/// archive).
+	public func pqBootstrapEnvelope() -> Data? {
+		guard let theirKP = initialTheirKP, case .bootstrapInitiated = pqInflight,
+			let pending = pendingSideBand, pending.first == Frames.pqBootstrapKPTag
+		else { return nil }
+		return try? EstablishmentEnvelope.seal(
+			to: theirKP, plaintext: pending, pqProvider: pqProvider)
 	}
 }

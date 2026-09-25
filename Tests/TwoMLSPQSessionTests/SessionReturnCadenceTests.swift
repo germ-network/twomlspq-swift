@@ -237,7 +237,10 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let welcome1 = try bob.pqBootstrapRespond(first.frame)
 		let welcome2 = try bob.pqBootstrapRespond(first.frame)
 		XCTAssertEqual(alice.openOrRaw(welcome1.frame), alice.openOrRaw(welcome2.frame))
-		XCTAssertEqual(welcome2.update.kind, .checkpoint)
+		// The re-serve moves nothing group-level (unlike the founding
+		// answer above, `welcome1`, which is still `.checkpoint`) — a host
+		// attaches the twin on every send instead.
+		XCTAssertEqual(welcome2.update.kind, .core)
 	}
 
 	/// `processIncoming`'s kind is derived from an actual PQ-tree delta, not

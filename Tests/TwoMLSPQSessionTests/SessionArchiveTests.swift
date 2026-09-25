@@ -1252,6 +1252,25 @@ final class SessionArchiveTests: XCTestCase {
 		}
 	}
 
+	/// The §A.3 round registers at `initiate`, so a pre-join initiator's own
+	/// `.bootstrapInitiated` archive restores — the round it names cannot
+	/// have gone any further than registration without the join it would
+	/// also need.
+	func testCheckpointPreJoinInitiatorAcceptsOnlyAnUnregisteredOrFreshRound() throws {
+		let (alice, _, _, _, _, _) = try SessionTestSupport.established()
+		XCTAssertNil(alice.recvGroup)
+		guard case .bootstrapInitiated = alice.pqInflight else {
+			return XCTFail("expected `initiate` to register `.bootstrapInitiated`")
+		}
+		XCTAssertNoThrow(try restoreCheckpoint(try checkpointBody(alice)))
+
+		// Anything past registration — here, the responder's own round
+		// state — implies a recv group this archive doesn't carry.
+		var body = try checkpointBody(alice)
+		body.pqInflight = .bootstrapResponded
+		assertRestoreRejects(body)
+	}
+
 	/// Group_B's PQ half is absent until §A.3 founds it (the responder's
 	/// send) or joins it (the initiator's recv); from then on the round
 	/// state or an export watermark names it.

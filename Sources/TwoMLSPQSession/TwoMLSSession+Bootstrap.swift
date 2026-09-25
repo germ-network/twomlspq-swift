@@ -8,19 +8,29 @@ import SecretBytes
 
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
-	/// The initiator (Alice) begins the bootstrap: hand the pre-committed KP′
-	/// to the peer as a `0x13` side-band frame. Requires it be my turn, both
-	/// groups founded, and Group_B.pq not yet founded. Idempotent while a
-	/// begin is already outstanding: re-returns the retained frame rather
-	/// than re-checking turn/state (a re-send should not depend on nothing
-	/// having moved since the first call) — but only while `recvGroup.pq` is
-	/// still nil, so a spent round (the bind already landed) falls through
-	/// to the normal guard instead of re-emitting a stale `0x13`.
+	/// The §A.3 round is registered at `initiate`, around the pre-committed
+	/// KP′ — every initiator carries `.bootstrapInitiated` and the parked
+	/// `0x13` from birth. This is the post-join re-serve: once `recvGroup`
+	/// exists and its PQ half is not yet founded, it re-seals the SAME
+	/// retained frame rather than re-checking turn/state (a re-send should
+	/// not depend on nothing having moved since the first call). Before the
+	/// Group_B join it falls through to the readiness guard below, so a
+	/// pre-join call still answers `.sessionNotReady` — pre-join delivery is
+	/// `pqBootstrapEnvelope()`'s job, not this call's. A spent round (the
+	/// bind already landed) also falls through, instead of re-emitting a
+	/// stale `0x13`.
 	public mutating func pqBootstrapBegin() throws -> SideBandResult {
 		// Slice 11: the non-emittable gate.
 		try ensureEstablishmentDelegated()
+		// Readiness first: a recv group must already exist before the
+		// idempotent branch can re-seal anything — `initiate` registers the
+		// round on EVERY initiator, well before the Group_B join, so this
+		// pre-join case is common, not a corner. Without the explicit
+		// `recvGroup` check here, `recvGroup?.pq == nil` reads true for a
+		// nil recv group too, and the re-seal below would throw
+		// `.notEstablished` instead of this call's own `.sessionNotReady`.
 		if case .bootstrapInitiated = pqInflight, let pending = pendingSideBand,
-			recvGroup?.pq == nil
+			let recv = recvGroup, recv.pq == nil
 		{
 			let sealed = try sealSideBand(pending)
 			advanceStateSeq()
@@ -45,13 +55,15 @@ extension TwoMLSSession {
 	/// The responder (Bob) receives KP′, checks it against the commitment
 	/// pinned at `receive`, founds Group_B.pq (`APQGroup.foundPQHalf`) with
 	/// KP′ as the sole Add, and returns the resulting Welcome′ as a `0x15`
-	/// side-band frame. Bob is `isFullyEstablished` once this returns.
-	/// Idempotent once `sendGroup.pq` is founded: re-returns the retained
-	/// `0x15` rather than founding a second Group_B.pq off a re-delivered
-	/// `0x13` (a re-delivery with no retained frame to re-serve —
-	/// `pendingSideBand` rides the session archive (slice 8a), so it
-	/// survives a restore; a raw in-memory restart with no restore is the
-	/// case with nothing to re-serve — is `.duplicateSideBand`).
+	/// side-band frame. Bob is `isFullyEstablished` once this returns. The
+	/// inbound frame is validated (tag, decode, commitment) before anything
+	/// about this session's own state is consulted, so nothing is ever
+	/// re-emitted for garbage or a mismatched KP′. Once `sendGroup.pq` is
+	/// founded, this re-serves the retained `0x15` only while its own §A.3
+	/// round is still open (`pqInflight == .bootstrapResponded`) — the
+	/// re-serve carries no group-level move, so it returns `.core`.
+	/// Afterward, or for a round that was never this one, it answers
+	/// `.duplicateSideBand` with no state change.
 	///
 	/// Seam: this does not check KP′'s leaf credential names the already-
 	/// established peer (Rust's AS `validate_member`; no AS exists until a
@@ -81,21 +93,28 @@ extension TwoMLSSession {
 		try ensureEstablishmentDelegated()
 		// Entry (PR2): the peer's `0x13` arrives header-sealed.
 		let frame = openOrRaw(inbound)
-		if sendGroup?.pq != nil {
-			guard let pending = pendingSideBand else {
-				throw TwoMLSError.duplicateSideBand
-			}
-			let sealed = try sealSideBand(pending)
-			advanceStateSeq()
-			return SideBandResult(
-				frame: sealed, update: try stateUpdate(kind: .checkpoint))
-		}
+		// Validate the frame itself FIRST — tag, decode, then the commitment
+		// check — before anything about this session's own state is even
+		// consulted, so garbage or a mismatched KP′ never earns a re-serve.
 		let kpBytes = try Frames.decodePQBootstrapKP(frame)
 		guard
 			let expected = expectedBootstrapKPCommitment,
 			try classicalProvider.hash(kpBytes) == expected
 		else {
 			throw TwoMLSError.bootstrapKPMismatch
+		}
+		if sendGroup?.pq != nil {
+			// Re-serve only while THIS round is still open — once it has
+			// closed (or was never this round), nothing is re-emitted for a
+			// validated-but-stale KP′ either.
+			guard case .bootstrapResponded = pqInflight, let pending = pendingSideBand
+			else {
+				throw TwoMLSError.duplicateSideBand
+			}
+			let sealed = try sealSideBand(pending)
+			advanceStateSeq()
+			return SideBandResult(
+				frame: sealed, update: try stateUpdate(kind: .core))
 		}
 		guard
 			case .keyPackage(let peerBootstrapKP) = try MLS.RFC9420.Message(
@@ -155,6 +174,12 @@ extension TwoMLSSession {
 	/// (§11 #4): a routine `Upd(self)` must already be discharged (`encrypt`)
 	/// before the bootstrap can add its own commit to the pile. Clears
 	/// `bootstrapKPSecret` once spent (§11 #11).
+	///
+	/// A Welcome′ can arrive before the Group_B join — the registered round
+	/// means the acceptor may answer before the initiator's first send. Read
+	/// before the join, this throws `.sessionNotReady`: retriable, no state
+	/// change; a host holds the bytes and re-feeds them once the join
+	/// completes.
 	public mutating func pqBootstrapJoin(_ inbound: Data) throws -> StateUpdate {
 		// Entry (PR2): the peer's `0x15` arrives header-sealed.
 		let frame = openOrRaw(inbound)
@@ -170,7 +195,7 @@ extension TwoMLSSession {
 		guard pqWedge == nil else { throw TwoMLSError.pqSideBandWedged }
 		guard pendingProposal == nil else { throw TwoMLSError.sessionNotReady }
 		guard let secret = bootstrapKPSecret else { throw TwoMLSError.sessionNotReady }
-		guard var recv = recvGroup else { throw TwoMLSError.notEstablished }
+		guard var recv = recvGroup else { throw TwoMLSError.sessionNotReady }
 		// No-custody guard, before anything is consumed — this
 		// door's `owePQBind` commits `sendGroup.pq`.
 		guard !noCustody.contains(.sendPQ) else {

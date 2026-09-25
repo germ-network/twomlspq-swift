@@ -198,6 +198,15 @@ extension TwoMLSSession {
 		// Same "works from birth" reasoning, `0xFF03` attachment component
 		// (+Attachment.swift).
 		try session.captureSendAttachmentComponent()
+		// The §A.3 round opens here, around the pre-committed KP′, so
+		// `pqBootstrapEnvelope()` can ship it alongside the reply and an
+		// early Welcome′ is already expected — the baseline below then
+		// carries the registered round, so no separate persistence path
+		// is needed for it.
+		if let bootstrapKP = try session.bootstrapKPBytes() {
+			session.pqInflight = .bootstrapInitiated
+			session.pendingSideBand = Frames.encodePQBootstrapKP(bootstrapKP)
+		}
 		// `apqWelcomeA` IS this session's first staple — the baseline
 		// `StateUpdate` (there is no separate sink/`installSink` call).
 		session.markStapleInstalled()

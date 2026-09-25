@@ -10,16 +10,16 @@ import XCTest
 @testable import TwoMLSPQSession
 
 /// One continuous, from-cold test asserting the BOOK's lifecycle
-/// (session-lifecycle.md, protocol-flows.md §A.1-A.5, walkthrough.md) — not
-/// today's engine — the way a host drives it: every outbound transmission is
-/// `encrypt`'s frame plus `pqPendingOutbound()`; every inbound blob is
-/// routed through `openIncoming` and dispatched by kind. Where the engine
-/// has not yet caught up to the book, the book's behavior is still
-/// asserted, wrapped in `XCTExpectFailure` so the run stays green today and
-/// turns red the moment that gap closes. `E2EWalkthroughTests` is
-/// classical-only by its own header; the PQ steps are otherwise tested only
-/// from pre-established fixtures (`BootstrapTests`/`RatchetTests`/
-/// `RekeyTests`) — this is the one place they all compose.
+/// (session-lifecycle.md, protocol-flows.md §A.1-A.5, walkthrough.md) the
+/// way a host drives it: every outbound transmission is `encrypt`'s frame
+/// plus `pqPendingOutbound()`; every inbound blob is routed through
+/// `openIncoming` and dispatched by kind. It runs the full arc from
+/// `initiate`/`receive` through §A.3's parallel pre-delivery, the fold+bind
+/// commit that closes the round, §A.4's ratchet, and §A.5's mechanical
+/// re-key. `E2EWalkthroughTests` is classical-only by its own header; the PQ
+/// steps are otherwise tested only from pre-established fixtures
+/// (`BootstrapTests`/`RatchetTests`/`RekeyTests`) — this is the one place
+/// they all compose.
 @available(iOS 26, macOS 26, *)
 final class LifecycleE2ETests: XCTestCase {
 
@@ -69,22 +69,17 @@ final class LifecycleE2ETests: XCTestCase {
 		}
 
 		/// Host send rule: (1) idempotent A.3 begin, only while it's my turn
-		/// and the PQ half isn't fully up (`bootstrapRule` lets the script
-		/// turn this off, to prove the engine never self-starts it); (2)
-		/// `prepareToEncrypt`; (3) `encrypt`, with the epoch/routing checks;
-		/// (4) queue the message frame, then any side-band leg riding it —
-		/// message first, since a leg `rewrapSideBand` just re-minted inside
-		/// THIS `encrypt` call sits at the epoch the message's own staple
-		/// advances to.
+		/// and the PQ half isn't fully up; (2) `prepareToEncrypt`; (3)
+		/// `encrypt`, with the epoch/routing checks; (4) queue the message
+		/// frame, then any side-band leg riding it — message first, since a
+		/// leg `rewrapSideBand` just re-minted inside THIS `encrypt` call
+		/// sits at the epoch the message's own staple advances to.
 		@discardableResult
 		mutating func send(
 			_ app: Data, to peer: inout Host, rotating: Data? = nil,
-			bootstrapRule: Bool = true,
 			file: StaticString = #filePath, line: UInt = #line
 		) throws -> (prepared: PrepareResult, result: EncryptResult) {
-			if bootstrapRule, session.isEstablished, !session.isFullyEstablished,
-				session.myPQTurn
-			{
+			if session.isEstablished, !session.isFullyEstablished, session.myPQTurn {
 				persist(try session.pqBootstrapBegin().update)
 			}
 			let prepared = try session.prepareToEncrypt(rotating: rotating)
@@ -391,10 +386,30 @@ final class LifecycleE2ETests: XCTestCase {
 		var alice = Host(initiated.session)
 		alice.persist(initiated.baseline)
 
-		// No recv group yet: the reply cannot carry an A.3 frame.
+		// §A.3 opens at `initiate`, around the pre-committed KP′: the round
+		// is registered, but with no recv group yet the steady-state begin
+		// cannot run and the side-band carries nothing.
+		guard case .bootstrapInitiated = alice.session.pqInflight else {
+			return XCTFail("expected initiate to register the A.3 round")
+		}
 		XCTAssertThrowsError(try alice.session.pqBootstrapBegin()) { error in
 			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
 		}
+		XCTAssertNil(alice.session.pqPendingOutbound())
+
+		// §A.3 parallel pre-delivery: the KP′ ships in its own §A.1 raw
+		// blob beside the reply, freshly sealed on every call.
+		let kpEnvelope = try XCTUnwrap(alice.session.pqBootstrapEnvelope())
+		XCTAssertNotEqual(kpEnvelope, alice.session.pqBootstrapEnvelope())
+
+		// The acceptor opens it off the invitation channel BEFORE `receive`
+		// (a single-use invitation drops its opener there) and holds the
+		// frame: nothing routes it yet.
+		guard case .bootstrapKP(let heldKPFrame) = try bobInvitation.openInitial(kpEnvelope)
+		else {
+			return XCTFail("expected the parallel envelope to open as a bootstrap KP")
+		}
+		XCTAssertNil(bobInvitation.bootstrapKPGroupID(kpFrame: heldKPFrame))
 
 		let dedicatedClientID = Data("bob-dedicated".utf8)
 		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
@@ -405,6 +420,9 @@ final class LifecycleE2ETests: XCTestCase {
 			spawnToken: spawnToken, newClientID: dedicatedClientID)
 		var bob = Host(receivedResult.session)
 		bob.persist(receivedResult.baseline)
+		XCTAssertThrowsError(try bobInvitation.openInitial(kpEnvelope)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .invitationSpent)
+		}
 
 		// Book: every state-advancing call returns something persistable, so
 		// the acceptor already holds a restorable checkpoint right after
@@ -418,19 +436,56 @@ final class LifecycleE2ETests: XCTestCase {
 					pqProvider: SessionTestSupport.pqProvider))
 		}
 
+		// The held frame now routes, by `H(KP′)`, to the spawned session.
+		XCTAssertEqual(
+			bobInvitation.bootstrapKPGroupID(kpFrame: heldKPFrame),
+			bob.session.recvGroup?.classical.context.groupID)
+
 		XCTAssertTrue(bob.session.owesEstablishmentEnvelope)
 		XCTAssertNotNil(bob.session.leafKeys.recvClassical.pending[dedicatedClientID])
+		// Not yet: a born-dedicated acceptor answers nothing before its
+		// handoff envelope is installed.
+		XCTAssertThrowsError(try bob.session.pqBootstrapRespond(heldKPFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		}
 
 		let envelope = Data("fake-signed-handoff".utf8)
 		bob.persist(try bob.session.installEstablishmentEnvelope(envelope))
 
+		// The acceptor answers the held KP′ before its first send.
+		let earlyWelcome = try bob.session.pqBootstrapRespond(heldKPFrame)
+		bob.persist(earlyWelcome.update)
+		XCTAssertTrue(bob.session.isFullyEstablished)
+		guard case .bootstrapResponded = bob.session.pqInflight else {
+			return XCTFail("expected bob to hold .bootstrapResponded")
+		}
+		// The answer founds `sendGroup.pq` — the first checkpoint carrying
+		// it. Restart bob here and prove the round still completes off it.
+		let bobRespondCheckpoint = try XCTUnwrap(bob.latestCheckpoint)
+		let bobRespondCheckpointBody = try bobRespondCheckpoint.decode(SessionArchive.self)
+		XCTAssertGreaterThan(
+			bobRespondCheckpointBody.stateSeq, receivedResult.baseline.stateSeq)
+		XCTAssertNotNil(bobRespondCheckpointBody.sendPQEpoch)
+		try bob.restart()
+		XCTAssertTrue(bob.session.isFullyEstablished)
+		// A re-delivered KP′ while the round is open re-serves the SAME
+		// Welcome′.
+		var reServeProbe = bob.session
+		let reServed = try reServeProbe.pqBootstrapRespond(heldKPFrame)
+		XCTAssertEqual(reServeProbe.pendingSideBand, bob.session.pendingSideBand)
+		XCTAssertEqual(
+			try XCTUnwrap(alice.session.openIncoming(reServed.frame)).frame,
+			bob.session.pendingSideBand)
+
 		// b1: Bob's very first frame staples the 0x0B handoff directly
 		// (nothing yet to fold/discharge, so his own staple never moves off
-		// the just-installed handoff).
+		// the just-installed handoff), and his Welcome′ rides beside it.
 		let b1 = try bob.send(Data("bob-hello".utf8), to: &alice)
-		XCTAssertEqual(b1.result.frame, bob.outbox.last?.bytes)
-		XCTAssertEqual(bob.outbox.map(\.expectedKind), [.message])
+		XCTAssertEqual(b1.result.frame, bob.outbox.first?.bytes)
+		XCTAssertEqual(
+			bob.outbox.map(\.expectedKind), [.message, .pqSideBand(.bootstrapWelcome)])
 		let b1Blob = try bob.nextBlob()
+		let welcomeBlob = try bob.nextBlob()
 
 		// Unapproved: pauses.
 		guard case .message(.pendingEstablishment(let pending)) = try alice.deliver(b1Blob)
@@ -455,150 +510,79 @@ final class LifecycleE2ETests: XCTestCase {
 
 		XCTAssertTrue(alice.session.isEstablished)
 		XCTAssertTrue(bob.session.isEstablished)
-		XCTAssertFalse(bob.session.isFullyEstablished)
 		XCTAssertTrue(alice.session.myPQTurn)
 		XCTAssertFalse(bob.session.myPQTurn)
-		XCTAssertEqual(bob.session.epochs.pqEpoch, 0)
-		XCTAssertNil(bob.session.shouldListenOn().sendGroup.pq)
+		// Past the cutover there is no §A.1 channel left; the retained 0x13
+		// now rides the steady-state side-band instead (the self-heal for a
+		// dropped parallel envelope).
+		XCTAssertNil(alice.session.pqBootstrapEnvelope())
+		XCTAssertNotNil(alice.session.pqPendingOutbound())
 
 		// Alice restarts right after establishment — her baseline (from
-		// `initiate`) plus the join's own `.core` already reconcile.
+		// `initiate`, carrying the registered round) plus the join's own
+		// `.core` already reconcile.
 		try alice.restart()
 		XCTAssertTrue(alice.session.isEstablished)
-
-		// [3] §A.3 parallel pre-delivery: the initiator's pre-committed KP′
-		// rides alongside the A.1 reply, and the acceptor's Welcome′
-		// alongside its return welcome, so processing the acceptor's first
-		// frame(s) is enough to fully establish both sides.
-		XCTExpectFailure(
-			"no parallel A.3 pre-delivery: the initiator has no bootstrap-envelope API"
-		) {
-			XCTAssertTrue(alice.session.isFullyEstablished)
-		}
-
-		// [4] Host obligation: with the A.3 auto-begin OFF, neither side's
-		// send ever carries a side-band leg on its own — the engine never
-		// self-starts A.3.
-		let a1 = try alice.send(Data("a1".utf8), to: &bob, bootstrapRule: false)
-		XCTAssertEqual(alice.outbox.map(\.expectedKind), [.message])
-		XCTAssertNil(alice.session.pqPendingOutbound())
-		_ = try bob.deliverDecrypted(alice.nextBlob())
-		// Group_A is a FULL pair from `initiate` (both halves founded at
-		// birth) — unlike Bob's Group_B, Alice's OWN send-PQ epoch is
-		// already 1 here, well before §A.3 ever starts.
-		XCTAssertEqual(alice.session.epochs.pqEpoch, 1)
-		_ = a1
-
-		let b2 = try bob.send(Data("b2".utf8), to: &alice, bootstrapRule: false)
-		XCTAssertEqual(bob.outbox.map(\.expectedKind), [.message])
-		XCTAssertNil(bob.session.pqPendingOutbound())
-		XCTAssertEqual(bob.session.epochs.pqEpoch, 0)
-		_ = b2
-		let b2Decrypted = try alice.deliverDecrypted(bob.nextBlob())
-		XCTAssertFalse(alice.session.isFullyEstablished)
-		XCTAssertFalse(bob.session.isFullyEstablished)
-
-		// [5] §A.2 fold: Alice queues Bob's b2 offer.
-		alice.persist(
-			try alice.session.queueProposal(digest: b2Decrypted.queuedProposal.digest))
-		let groupAClassicalEpochBeforeA2 = try XCTUnwrap(
-			alice.session.sendGroup?.classical.context.epoch)
-		let a2 = try alice.send(Data("a2".utf8), to: &bob, bootstrapRule: false)
-		XCTAssertTrue(a2.prepared.didCommit)
-		XCTAssertEqual(a2.prepared.committedRemoteClientID, dedicatedClientID)
-		XCTAssertEqual(
-			alice.session.sendGroup?.classical.context.epoch,
-			groupAClassicalEpochBeforeA2 + 1)
-		let a2Decrypted = try bob.deliverDecrypted(alice.nextBlob())
-		XCTAssertTrue(a2Decrypted.didApplyRemoteCommit)
-		XCTAssertTrue(a2Decrypted.ownCredentialCanonicalized)
-		XCTAssertEqual(
-			bob.session.recvGroup?.classical.context.epoch,
-			groupAClassicalEpochBeforeA2 + 1)
-
-		// Bob replies b3 — licenses Alice fresh, at Group_A's new epoch.
-		let b3 = try bob.send(Data("b3".utf8), to: &alice, bootstrapRule: false)
-		_ = try alice.deliverDecrypted(bob.nextBlob())
-		_ = b3
-
-		// [6] §A.3 (the auto-begin rule is on from here).
-		let a3 = try alice.send(Data("a3".utf8), to: &bob)
-		XCTAssertEqual(
-			alice.outbox.map(\.expectedKind), [.message, .pqSideBand(.bootstrapKP)])
-		XCTAssertFalse(a3.prepared.didCommit)
-
-		// Restart at `.bootstrapInitiated`, right after the begin — proves
-		// the parked 0x13 and the round resume cleanly.
-		try alice.restart()
 		guard case .bootstrapInitiated = alice.session.pqInflight else {
 			return XCTFail("expected alice to hold .bootstrapInitiated across restart")
 		}
 
-		_ = try bob.deliverDecrypted(alice.nextBlob())
-		let a3KPBlob = try alice.nextBlob()
-		// Retain the RAW opened 0x13 bytes now, before bob ever processes
-		// it, for the stale-replay pin at step 7 below.
-		let staleKP = try XCTUnwrap(bob.session.openIncoming(a3KPBlob.bytes)?.frame)
-		_ = try bob.deliver(a3KPBlob)  // 0x13 -> welcome #1 queued, held
-
-		// `pqBootstrapRespond` founds `sendGroup.pq` — the first checkpoint
-		// carrying it, not Bob's very first (that's the acceptor baseline
-		// from `receive`, persisted above). Restart him here and prove the
-		// round still completes off THIS newer checkpoint.
-		let bobRespondCheckpoint = try XCTUnwrap(bob.latestCheckpoint)
-		let bobRespondCheckpointBody = try bobRespondCheckpoint.decode(SessionArchive.self)
-		XCTAssertGreaterThan(
-			bobRespondCheckpointBody.stateSeq, receivedResult.baseline.stateSeq)
-		XCTAssertNotNil(bobRespondCheckpointBody.sendPQEpoch)
-		try bob.restart()
-		XCTAssertTrue(bob.session.isFullyEstablished)
-
-		// a4: begin is idempotent — the SAME retained 0x13 re-rides.
-		let a4 = try alice.send(Data("a4".utf8), to: &bob)
-		XCTAssertEqual(
-			alice.outbox.map(\.expectedKind), [.message, .pqSideBand(.bootstrapKP)])
-		_ = try bob.deliverDecrypted(alice.nextBlob())
-		// 0x13 re-delivery -> re-serve welcome #2.
-		_ = try bob.deliver(alice.nextBlob())
-		_ = a4
-
-		XCTAssertTrue(bob.session.isFullyEstablished)
-		XCTAssertNotNil(bob.session.shouldListenOn().sendGroup.pq)
-		XCTAssertEqual(bob.outbox.count, 2)
-		let welcome1 = try bob.nextBlob()
-		let welcome2 = try bob.nextBlob()
-
-		_ = try alice.deliver(welcome1)
+		// [3] §A.3 parallel pre-delivery: the initiator's pre-committed KP′
+		// rode alongside the A.1 reply, and the acceptor's Welcome′
+		// alongside its return welcome, so processing the acceptor's first
+		// frame(s) is enough to fully establish both sides.
+		_ = try alice.deliver(welcomeBlob)
 		XCTAssertTrue(alice.session.isFullyEstablished)
 		XCTAssertNotNil(alice.session.owedBind)
-
-		XCTAssertThrowsError(try alice.deliver(welcome2)) { error in
+		XCTAssertThrowsError(try alice.deliver(welcomeBlob)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
 		}
+		XCTAssertNil(alice.session.pqInflight)
+		XCTAssertNil(alice.session.pqPendingOutbound())
+		// Group_A is a FULL pair from `initiate` (both halves founded at
+		// birth); Group_B.pq was founded at bob's early answer.
+		XCTAssertEqual(bob.session.epochs.pqEpoch, 1)
 
-		// a5 discharges — already licensed by b3.
-		let a5 = try alice.send(Data("a5".utf8), to: &bob)
-		XCTAssertTrue(a5.prepared.didCommit)
+		// [4] §A.2 fold + the A.3 bind on one commit (protocol-flows.md §A.3:
+		// the bind rides the next classical commit, folding Bob's approved
+		// Upd). b1's offer both licenses the discharge and carries bob's
+		// dedicated credential for alice to canonicalize. Restart alice
+		// right after she commits, before bob has seen it, and prove the
+		// frame still delivers cleanly.
+		alice.persist(
+			try alice.session.queueProposal(digest: b1Decrypted.queuedProposal.digest))
+		let groupAClassicalEpochBeforeA1 = try XCTUnwrap(
+			alice.session.sendGroup?.classical.context.epoch)
+		let a1 = try alice.send(Data("a1".utf8), to: &bob)
+		XCTAssertTrue(a1.prepared.didCommit)
+		XCTAssertEqual(a1.prepared.committedRemoteClientID, dedicatedClientID)
+		XCTAssertEqual(
+			alice.session.sendGroup?.classical.context.epoch,
+			groupAClassicalEpochBeforeA1 + 1)
 		XCTAssertEqual(alice.outbox.map(\.expectedKind), [.message])
-
-		// The A.3 bind lands on Alice's own side the moment she commits it
-		// (turn already flipped locally) — restart right here, before Bob
-		// has even seen it, and prove the frame still delivers cleanly.
 		try alice.restart()
 		XCTAssertNil(alice.session.owedBind)
 		XCTAssertFalse(alice.session.myPQTurn)
 
-		let a5Blob = try alice.nextBlob()
-		let a5OpenedFrame = try XCTUnwrap(bob.session.openIncoming(a5Blob.bytes)?.frame)
-		let (a5Staple, _, _) = try Frames.decodeMessageFrame(a5OpenedFrame)
-		XCTAssertEqual(Frames.stapleKind(a5Staple.first!), .apqPrivateMessage)
-		let a5Decrypted = try bob.deliverDecrypted(a5Blob)
-		XCTAssertTrue(a5Decrypted.didApplyRemoteCommit)
+		let a1Blob = try alice.nextBlob()
+		let a1OpenedFrame = try XCTUnwrap(bob.session.openIncoming(a1Blob.bytes)?.frame)
+		let (a1Staple, _, _) = try Frames.decodeMessageFrame(a1OpenedFrame)
+		XCTAssertEqual(Frames.stapleKind(a1Staple.first!), .apqPrivateMessage)
+		let a1Decrypted = try bob.deliverDecrypted(a1Blob)
+		XCTAssertTrue(a1Decrypted.didApplyRemoteCommit)
+		XCTAssertTrue(a1Decrypted.ownCredentialCanonicalized)
 		XCTAssertTrue(bob.session.myPQTurn)
-		XCTAssertFalse(alice.session.myPQTurn)
 		XCTAssertNil(bob.session.pendingSideBand)
 		XCTAssertEqual(alice.session.sendGroup?.pq?.context.epoch, 2)
 		XCTAssertEqual(bob.session.recvGroup?.pq?.context.epoch, 2)
+
+		// Held too long: the round closed, so a late copy of the KP′ now
+		// earns `.duplicateSideBand`, never a re-serve.
+		var lateProbe = bob.session
+		XCTAssertThrowsError(try lateProbe.pqBootstrapRespond(heldKPFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .duplicateSideBand)
+		}
+		let staleKP = heldKPFrame
 
 		// [6b] Bob is a born-dedicated acceptor: his recv-PQ leaf in
 		// Group_A.pq was founded at `initiate` off the invitation
@@ -633,12 +617,11 @@ final class LifecycleE2ETests: XCTestCase {
 
 		// Book: a stale KP′ after the round closed is refused. Bob has since
 		// moved on to A.4 (his parked leg is now the EK), so replaying the
-		// long-stale a3 0x13 on a copy of his session should be refused.
+		// long-stale a3 0x13 on a copy of his session is refused, never
+		// answered with the EK.
 		var probe = bob.session
-		try XCTExpectFailure("stale bootstrap KP re-serves the parked frame") {
-			XCTAssertThrowsError(try probe.pqBootstrapRespond(staleKP)) { error in
-				XCTAssertEqual(error as? TwoMLSError, .duplicateSideBand)
-			}
+		XCTAssertThrowsError(try probe.pqBootstrapRespond(staleKP)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .duplicateSideBand)
 		}
 
 		_ = try alice.deliverDecrypted(bob.nextBlob())

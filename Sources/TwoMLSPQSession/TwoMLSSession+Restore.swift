@@ -304,8 +304,9 @@ extension TwoMLSSession {
 	/// PQ half exists only once §A.3 founds (responder) or joins (initiator)
 	/// it. So exactly two absences are legitimate:
 	///  - a pre-join initiator's recv group — the one state whose archive
-	///    still carries the classical init secret (`IdentityArchive`), and
-	///    which cannot have begun §A.3;
+	///    still carries the classical init secret (`IdentityArchive`); its
+	///    §A.3 round is registered at `initiate` (`.bootstrapInitiated`) but
+	///    cannot have gone any further, since that needs the join itself;
 	///  - Group_B's PQ half before §A.3 reaches that side — required once
 	///    any field names it: an export watermark, an owed bind (a commit on
 	///    the send PQ half), or an inflight round that runs on it.
@@ -319,13 +320,24 @@ extension TwoMLSSession {
 		var needsRecvPQ = !body.initiated || body.lastCrossInjectedPQ != nil
 		switch body.pqInflight {
 		case .bootstrapInitiated:
-			needsRecvGroup = true
+			break
 		case .bootstrapResponded, .initiating, .rekeyResponded:
 			needsSendPQ = true
 		case .responding, .rekeyInitiated:
 			needsRecvPQ = true
 		case nil:
 			break
+		}
+		// A pre-join initiator can only ever be pre- or newly-registered:
+		// anything further along (a rekey/ratchet round, a responder round,
+		// the round already answered) implies a recv group that isn't here.
+		if preJoin {
+			switch body.pqInflight {
+			case nil, .bootstrapInitiated:
+				break
+			default:
+				throw TwoMLSError.archiveInvalid
+			}
 		}
 		guard body.sendGroup != nil,
 			!needsRecvGroup || body.recvGroup != nil,

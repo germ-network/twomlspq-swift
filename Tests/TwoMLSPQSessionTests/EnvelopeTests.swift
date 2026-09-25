@@ -268,8 +268,7 @@ final class EnvelopeTests: XCTestCase {
 	}
 
 	/// The parallel A.3 bootstrap-KP tag (`0x13`) decodes to `.bootstrapKP`,
-	/// returned verbatim — decoded for completeness (the send path for this
-	/// parallel envelope is out of scope for this slice).
+	/// returned verbatim — the same shape `pqBootstrapEnvelope()` seals.
 	func testDecodePlaintextRecognizesBootstrapKPTagVerbatim() throws {
 		let verbatim = Frames.encodePQBootstrapKP(Data("kp-bytes".utf8))
 		guard
