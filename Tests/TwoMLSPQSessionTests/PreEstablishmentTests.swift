@@ -494,27 +494,32 @@ import TwoMLSPQCrypto
 	/// next `encrypt` then protects at the same generation the peer
 	/// expects, rather than skipping one the faulted attempt silently
 	/// spent. Kills: writing `sendGroup` back before the compose.
-	@available(iOS 26, macOS 26, *)
-	@Test func preJoinEncryptWriteBackIsAtomic() throws {
-		var (alice, _) = try setup()
-		_ = try alice.prepareToEncrypt()
+	// `TwoMLSSessionTestHooks`/`InjectedTestFault` are `#if DEBUG` in Sources
+	// (see TwoMLSSession+TestHooks.swift), so this test must be too, or
+	// `swift test -c release` fails to build.
+	#if DEBUG
+		@available(iOS 26, macOS 26, *)
+		@Test func preJoinEncryptWriteBackIsAtomic() throws {
+			var (alice, _) = try setup()
+			_ = try alice.prepareToEncrypt()
 
-		let before = try #require(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
-		try TwoMLSSessionTestHooks.withIsolatedFaults {
-			TwoMLSSessionTestHooks.armFault(
-				"encryptPreEstablishment.afterProtectBeforeWriteBack")
-			#expect(throws: InjectedTestFault.self) {
-				try alice.encrypt(Data("faulted".utf8))
+			let before = try #require(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault(
+					"encryptPreEstablishment.afterProtectBeforeWriteBack")
+				#expect(throws: InjectedTestFault.self) {
+					try alice.encrypt(Data("faulted".utf8))
+				}
 			}
-		}
-		let after = try #require(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
-		#expect(before == after)
+			let after = try #require(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
+			#expect(before == after)
 
-		// The session is not bricked: a retry (fault no longer armed)
-		// completes normally.
-		_ = try alice.prepareToEncrypt()
-		_ = try alice.encrypt(Data("recovered".utf8))
-	}
+			// The session is not bricked: a retry (fault no longer armed)
+			// completes normally.
+			_ = try alice.prepareToEncrypt()
+			_ = try alice.encrypt(Data("recovered".utf8))
+		}
+	#endif
 
 	/// Cutover. A pre-join prepare followed by a join, followed by
 	/// `encrypt`, throws `.noPendingProposal` (the stale prepare fails
