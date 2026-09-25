@@ -3,16 +3,17 @@ import MLSCodec
 import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
-import XCTest
 import Testing
 
 @testable import TwoMLSPQSession
 
 /// Born-dedicated principal + signed delegation handoff. Covers accept,
 /// standalone-delivery, and reject/tamper cases for the handoff.
-@available(iOS 26, macOS 26, *)
-final class BornDedicatedTests: XCTestCase {
-	private let classicalProvider = SessionTestSupport.classicalProvider
+@Suite struct BornDedicatedTests {
+	@available(iOS 26, macOS 26, *)
+	private var classicalProvider: any MLS.CipherSuiteProvider {
+		SessionTestSupport.classicalProvider
+	}
 
 	/// A stand-in for the host's signed handoff blob — this
 	/// module treats `envelope` as opaque bytes (the signature verification
@@ -25,6 +26,7 @@ final class BornDedicatedTests: XCTestCase {
 
 	/// The (envelope, welcome) digest pair + creator `processIncomingApproved`
 	/// needs, read straight off `bob`'s installed `0x0B` staple.
+	@available(iOS 26, macOS 26, *)
 	private func approvalTriple(installedOn bob: TwoMLSSession, expectedCreator: Data) throws
 		-> (envelopeDigest: Data, welcomeDigest: Data, expectedCreator: Data)
 	{
@@ -39,6 +41,7 @@ final class BornDedicatedTests: XCTestCase {
 	/// The full round-trip (accept 1) as a shared fixture for the tests that
 	/// need a fully-established, D-adopted pair: establish dedicated,
 	/// install, deliver standalone, and approve.
+	@available(iOS 26, macOS 26, *)
 	private func fullyEstablishedDedicated(
 		dedicatedClientID: Data = Data("bob-dedicated".utf8),
 		profile: SessionProfile = .deployedCompatible
@@ -52,41 +55,43 @@ final class BornDedicatedTests: XCTestCase {
 
 	// MARK: - Accept 1: full round-trip
 
-	func testFullBornDedicatedRoundTrip() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func fullBornDedicatedRoundTrip() throws {
 		var (alice, bob, _, invitationClientID, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
-		XCTAssertTrue(bob.owesEstablishmentEnvelope)
-		XCTAssertEqual(bob.identity.clientID, invitationClientID)
-		XCTAssertEqual(bob.myPrincipalState, .sync(dedicatedClientID))
-		XCTAssertNotNil(bob.leafKeys.recvClassical.pending[dedicatedClientID])
-		XCTAssertEqual(bob.currentStaple.first, Frames.apqWelcomeTag)
+		#expect(bob.owesEstablishmentEnvelope)
+		#expect(bob.identity.clientID == invitationClientID)
+		#expect(bob.myPrincipalState == .sync(dedicatedClientID))
+		#expect(bob.leafKeys.recvClassical.pending[dedicatedClientID] != nil)
+		#expect(bob.currentStaple.first == Frames.apqWelcomeTag)
 
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
-		XCTAssertFalse(bob.owesEstablishmentEnvelope)
-		XCTAssertEqual(bob.currentStaple.first, Frames.establishmentHandoffTag)
+		#expect(!bob.owesEstablishmentEnvelope)
+		#expect(bob.currentStaple.first == Frames.establishmentHandoffTag)
 		let (installedEnvelope, installedWelcome) = try Frames.decodeEstablishmentHandoff(
 			bob.currentStaple)
-		XCTAssertEqual(installedEnvelope, envelope)
-		XCTAssertEqual(installedWelcome.first, Frames.apqWelcomeTag)
+		#expect(installedEnvelope == envelope)
+		#expect(installedWelcome.first == Frames.apqWelcomeTag)
 
 		// Bob's 0x0B staple travels stapled on his first frame — but Bob
 		// cannot even build one without a proposal staged (`prepareToEncrypt`
 		// first); before that, deliver it standalone.
-		let standalone = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(standalone))
-		XCTAssertEqual(opened.kind, .message)
-		XCTAssertEqual(opened.frame.first, Frames.establishmentHandoffTag)
+		let standalone = try #require(try bob.standaloneWelcome())
+		let opened = try #require(try alice.openIncoming(standalone))
+		#expect(opened.kind == .message)
+		#expect(opened.frame.first == Frames.establishmentHandoffTag)
 
 		guard
 			case .pendingEstablishment(let pending) = try alice.processIncoming(
 				opened.frame)
 		else {
-			return XCTFail("expected a pause on the un-approved 0x0B")
+			Issue.record("expected a pause on the un-approved 0x0B")
+			return
 		}
-		XCTAssertEqual(pending.envelope, envelope)
-		XCTAssertEqual(pending.welcome, installedWelcome)
-		XCTAssertFalse(alice.isEstablished)
+		#expect(pending.envelope == envelope)
+		#expect(pending.welcome == installedWelcome)
+		#expect(!alice.isEstablished)
 
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: dedicatedClientID)
@@ -96,22 +101,24 @@ final class BornDedicatedTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail("expected .joined on the approved re-feed")
+			Issue.record("expected .joined on the approved re-feed")
+			return
 		}
-		XCTAssertEqual(newSender, dedicatedClientID)
-		XCTAssertEqual(update.kind, .core)
-		XCTAssertTrue(alice.isEstablished)
-		XCTAssertEqual(alice.auth.theirs.current, dedicatedClientID)
+		#expect(newSender == dedicatedClientID)
+		#expect(update.kind == .core)
+		#expect(alice.isEstablished)
+		#expect(alice.auth.theirs.current == dedicatedClientID)
 
 		// 0x0B byte-exact round-trip: what Bob installed decodes back to
 		// exactly the envelope+welcome pair Alice's pause/approval saw.
-		XCTAssertEqual(pending.envelope, installedEnvelope)
-		XCTAssertEqual(pending.welcome, installedWelcome)
+		#expect(pending.envelope == installedEnvelope)
+		#expect(pending.welcome == installedWelcome)
 	}
 
 	// MARK: - Accept 2: degenerate topology unchanged
 
-	func testDegenerateNewClientIDMatchesInvitationIsUnchanged() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func degenerateNewClientIDMatchesInvitationIsUnchanged() throws {
 		let bobPrincipal = try Principal.generate(
 			clientID: Data("bob".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -122,7 +129,8 @@ final class BornDedicatedTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		guard let theirCombinerKP = invitation.combinerKeyPackage else {
-			return XCTFail()
+			Issue.record("expected a combiner key package")
+			return
 		}
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirCombinerKP)
@@ -134,17 +142,18 @@ final class BornDedicatedTests: XCTestCase {
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
 			spawnToken: spawnToken, newClientID: Data("bob".utf8))
-		XCTAssertFalse(received.session.owesEstablishmentEnvelope)
-		XCTAssertTrue(received.session.leafKeys.recvClassical.pending.isEmpty)
-		XCTAssertEqual(received.session.currentStaple.first, Frames.apqWelcomeTag)
-		XCTAssertEqual(received.session.identity.clientID, Data("bob".utf8))
+		#expect(!received.session.owesEstablishmentEnvelope)
+		#expect(received.session.leafKeys.recvClassical.pending.isEmpty)
+		#expect(received.session.currentStaple.first == Frames.apqWelcomeTag)
+		#expect(received.session.identity.clientID == Data("bob".utf8))
 	}
 
-	func testNilNewClientIDMatchesInvitationIsUnchanged() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func nilNewClientIDMatchesInvitationIsUnchanged() throws {
 		let (_, bob, _, _, _, _) = try SessionTestSupport.established()
-		XCTAssertFalse(bob.owesEstablishmentEnvelope)
-		XCTAssertTrue(bob.leafKeys.recvClassical.pending.isEmpty)
-		XCTAssertEqual(bob.currentStaple.first, Frames.apqWelcomeTag)
+		#expect(!bob.owesEstablishmentEnvelope)
+		#expect(bob.leafKeys.recvClassical.pending.isEmpty)
+		#expect(bob.currentStaple.first == Frames.apqWelcomeTag)
 	}
 
 	// MARK: - Accept 3: recv-leaf catch-up
@@ -156,47 +165,52 @@ final class BornDedicatedTests: XCTestCase {
 	/// `auth.mine` was already D from `receive`, so it admits cleanly. recv-PQ is NOT caught up by this alone:
 	/// `recvGroup.pq`'s leaf still independently presents the invitation
 	/// identity until the PQ catch-up moves it.
-	func testRecvLeafCatchUpConvergesInvToD() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func recvLeafCatchUpConvergesInvToD() throws {
 		var (alice, bob, invitationClientID, dedicatedClientID, _) =
 			try fullyEstablishedDedicated()
-		XCTAssertNotNil(bob.leafKeys.recvClassical.pending[dedicatedClientID])
-		XCTAssertEqual(bob.myPrincipalState, .sync(dedicatedClientID))
-		let leafBefore = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
-		XCTAssertEqual(try basicIdentifier(leafBefore.credential), invitationClientID)
+		#expect(bob.leafKeys.recvClassical.pending[dedicatedClientID] != nil)
+		#expect(bob.myPrincipalState == .sync(dedicatedClientID))
+		let recvClassicalBefore = try #require(bob.recvGroup?.classical)
+		let leafBefore = try TwoMLSSession.ownLeaf(of: recvClassicalBefore)
+		#expect(try basicIdentifier(leafBefore.credential) == invitationClientID)
 
 		_ = try bob.prepareToEncrypt()
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(frame)
-		XCTAssertEqual(decrypted.queuedProposal.proposing, dedicatedClientID)
+		#expect(decrypted.queuedProposal.proposing == dedicatedClientID)
 
 		_ = try alice.queueProposal(digest: decrypted.queuedProposal.digest)
 		let alicePrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(alicePrepared.didCommit)
-		XCTAssertEqual(alicePrepared.committedRemoteClientID, dedicatedClientID)
+		#expect(alicePrepared.didCommit)
+		#expect(alicePrepared.committedRemoteClientID == dedicatedClientID)
 
 		let aliceFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 		let bobDecrypted = try bob.processIncomingDecrypted(aliceFrame)
-		XCTAssertTrue(bobDecrypted.didApplyRemoteCommit)
-		XCTAssertTrue(bobDecrypted.ownCredentialCanonicalized)
+		#expect(bobDecrypted.didApplyRemoteCommit)
+		#expect(bobDecrypted.ownCredentialCanonicalized)
 
-		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
-		XCTAssertEqual(try basicIdentifier(recvPQLeaf.credential), invitationClientID)
-		let leafAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
-		XCTAssertEqual(try basicIdentifier(leafAfter.credential), dedicatedClientID)
+		let recvPQGroup = try #require(bob.recvGroup?.pq)
+		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: recvPQGroup)
+		#expect(try basicIdentifier(recvPQLeaf.credential) == invitationClientID)
+		let recvClassicalAfter = try #require(bob.recvGroup?.classical)
+		let leafAfter = try TwoMLSSession.ownLeaf(of: recvClassicalAfter)
+		#expect(try basicIdentifier(leafAfter.credential) == dedicatedClientID)
 	}
 
 	// MARK: - Accept 6: A.3 founds Group_B.pq under D
 
-	func testBootstrapFoundsGroupBPQUnderDedicatedPrincipal() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bootstrapFoundsGroupBPQUnderDedicatedPrincipal() throws {
 		var (alice, bob, _, dedicatedClientID, _) = try fullyEstablishedDedicated()
 		let begin = try alice.pqBootstrapBegin()
 		let respond = try bob.pqBootstrapRespond(begin.frame)
 		_ = try alice.pqBootstrapJoin(respond.frame)
-		XCTAssertTrue(bob.isFullyEstablished)
+		#expect(bob.isFullyEstablished)
 
-		let pqGroup = try XCTUnwrap(bob.sendGroup?.pq)
+		let pqGroup = try #require(bob.sendGroup?.pq)
 		let creatorLeaf = try TwoMLSSession.ownLeaf(of: pqGroup)
-		XCTAssertEqual(try basicIdentifier(creatorLeaf.credential), dedicatedClientID)
+		#expect(try basicIdentifier(creatorLeaf.credential) == dedicatedClientID)
 	}
 
 	// MARK: - Accept 7: PQ signing resolver correctness, and the recv-PQ catch-up
@@ -209,7 +223,8 @@ final class BornDedicatedTests: XCTestCase {
 	/// approval), so the Upd′ now moves the leaf I→D directly — the native
 	/// twin of the TwoMLSPQ cross-engine flip. Kills: targeting the
 	/// presented id (I) instead of `mine.current` (D); pins not retiring.
-	func testBornDedicatedAcceptorRecvPQCatchesUpToDedicatedID() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bornDedicatedAcceptorRecvPQCatchesUpToDedicatedID() throws {
 		for profile in [SessionProfile.deployedCompatible, .correct] {
 			var (alice, bob, invitationClientID, dedicatedClientID, _) =
 				try fullyEstablishedDedicated(profile: profile)
@@ -237,18 +252,19 @@ final class BornDedicatedTests: XCTestCase {
 			let begin = try alice.pqBootstrapBegin()
 			let respond = try bob.pqBootstrapRespond(begin.frame)
 			_ = try alice.pqBootstrapJoin(respond.frame)
-			XCTAssertTrue(bob.isFullyEstablished)
+			#expect(bob.isFullyEstablished)
 
 			// Already licensed (Bob's catch-up frame above) — Alice's very next
 			// round discharges the owed A.3 bind immediately, flipping the turn.
 			_ = try alice.prepareToEncrypt()
 			let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 			_ = try bob.processIncomingDecrypted(boundFrame)
-			XCTAssertTrue(bob.myPQTurn)
+			#expect(bob.myPQTurn)
 
-			XCTAssertEqual(bob.auth.mine.current, dedicatedClientID)
-			let recvPQBefore = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
-			XCTAssertEqual(try basicIdentifier(recvPQBefore.credential), invitationClientID)
+			#expect(bob.auth.mine.current == dedicatedClientID)
+			let recvPQGroupBefore = try #require(bob.recvGroup?.pq)
+			let recvPQBefore = try TwoMLSSession.ownLeaf(of: recvPQGroupBefore)
+			#expect(try basicIdentifier(recvPQBefore.credential) == invitationClientID)
 
 			// Bob's Upd′ proposes into `recvGroup.pq` (Group_A.pq), signed
 			// under the retained invitation key `leafKeys.recvPQ.current`
@@ -258,29 +274,35 @@ final class BornDedicatedTests: XCTestCase {
 			let rekeyBegin = try bob.pqRekeyBegin()
 			// C1: only the deployed-compatible profile announces the
 			// handed-off id; the correct profile's Upd′ carries none.
-			let updBytes = try Frames.decodePQRekeyUpd(alice.openOrRaw(rekeyBegin.frame))
+			let updBytes = try Frames.decodePQRekeyUpd(
+				alice.openOrRaw(rekeyBegin.frame))
 			guard
 				case .publicMessage(let updPub) = try MLS.RFC9420.Message(
 					mlsEncoded: updBytes)
 			else {
-				return XCTFail("expected a publicMessage-framed Upd′")
+				Issue.record("expected a publicMessage-framed Upd′")
+				return
 			}
-			XCTAssertEqual(
-				updPub.content.authenticatedData,
-				profile == .correct ? Data() : dedicatedClientID, "\(profile)")
+			#expect(
+				updPub.content.authenticatedData
+					== (profile == .correct ? Data() : dedicatedClientID),
+				"\(profile)")
 
 			let rekeyRespond = try alice.pqRekeyRespond(rekeyBegin.frame)
-			XCTAssertEqual(rekeyRespond.rotatedCredential, dedicatedClientID, "\(profile)")
+			#expect(rekeyRespond.rotatedCredential == dedicatedClientID, "\(profile)")
 
-			XCTAssertNoThrow(try bob.pqRekeyApply(rekeyRespond.frame))
-			let recvPQAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
-			XCTAssertEqual(
-				try basicIdentifier(recvPQAfter.credential), dedicatedClientID, "\(profile)")
+			#expect(throws: Never.self) { try bob.pqRekeyApply(rekeyRespond.frame) }
+			let recvPQGroupAfter = try #require(bob.recvGroup?.pq)
+			let recvPQAfter = try TwoMLSSession.ownLeaf(of: recvPQGroupAfter)
+			#expect(
+				try basicIdentifier(recvPQAfter.credential) == dedicatedClientID,
+				"\(profile)"
+			)
 
 			// Neither side still pins I: bob's send-PQ was founded under D
 			// already, and his recv-PQ has now caught up too.
-			XCTAssertFalse(bob.auth.mine.pinned.contains(invitationClientID))
-			XCTAssertFalse(alice.auth.theirs.pinned.contains(invitationClientID))
+			#expect(!bob.auth.mine.pinned.contains(invitationClientID))
+			#expect(!alice.auth.theirs.pinned.contains(invitationClientID))
 		}
 	}
 
@@ -290,6 +312,7 @@ final class BornDedicatedTests: XCTestCase {
 	/// `testBornDedicatedAcceptorRecvPQCatchesUpToDedicatedID` does, up to
 	/// the point bob holds the PQ turn with his recv-PQ leaf still
 	/// presenting the invitation id.
+	@available(iOS 26, macOS 26, *)
 	private func bobHoldingPQTurnWithRecvPQLaggingInvitationID() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, invitationClientID: Data,
 		dedicatedClientID: Data
@@ -312,15 +335,16 @@ final class BornDedicatedTests: XCTestCase {
 		let begin = try alice.pqBootstrapBegin()
 		let respond = try bob.pqBootstrapRespond(begin.frame)
 		_ = try alice.pqBootstrapJoin(respond.frame)
-		XCTAssertTrue(bob.isFullyEstablished)
+		#expect(bob.isFullyEstablished)
 
 		_ = try alice.prepareToEncrypt()
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		_ = try bob.processIncomingDecrypted(boundFrame)
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPQTurn)
 
-		let recvPQ = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
-		XCTAssertEqual(try basicIdentifier(recvPQ.credential), invitationClientID)
+		let recvPQGroup = try #require(bob.recvGroup?.pq)
+		let recvPQ = try TwoMLSSession.ownLeaf(of: recvPQGroup)
+		#expect(try basicIdentifier(recvPQ.credential) == invitationClientID)
 
 		return (alice, bob, invitationClientID, dedicatedClientID)
 	}
@@ -334,16 +358,17 @@ final class BornDedicatedTests: XCTestCase {
 	/// peer that never folds a catch-up offer leaves forever. Bob's turn
 	/// keeps ratcheting A.4 instead of stalling on an A.5 he can never
 	/// complete. Kills: removing the own-arm gate.
-	func testBornDedicatedAcceptorKeepsRatchetingA4UntilThePeerFoldsItsTarget() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bornDedicatedAcceptorKeepsRatchetingA4UntilThePeerFoldsItsTarget() throws {
 		var (_, bob, _, _) = try bobHoldingPQTurnWithRecvPQLaggingInvitationID()
 
 		let unfoldedID = Data("bob-not-yet-folded".utf8)
 		try bob.auth.mine.commit(unfoldedID)
 
 		_ = try bob.prepareToEncrypt()
-		XCTAssertNoThrow(try bob.encrypt(Data("msg".utf8)))
+		#expect(throws: Never.self) { try bob.encrypt(Data("msg".utf8)) }
 		guard case .initiating = bob.pqInflight else {
-			XCTFail("expected a plain A.4 — the peer has not folded bob's target")
+			Issue.record("expected a plain A.4 — the peer has not folded bob's target")
 			return
 		}
 	}
@@ -359,7 +384,8 @@ final class BornDedicatedTests: XCTestCase {
 	/// non-folding peer refuses forever (its announced id is outside what
 	/// it has canonicalized), stalling the PQ ratchet where today it keeps
 	/// ratcheting A.4 for life. Kills: removing the own-arm gate.
-	func testBornDedicatedAcceptorNeverFoldedByPeerKeepsRatchetingA4() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bornDedicatedAcceptorNeverFoldedByPeerKeepsRatchetingA4() throws {
 		var (alice, bob, invitationClientID, dedicatedClientID, _) =
 			try fullyEstablishedDedicated()
 
@@ -378,27 +404,28 @@ final class BornDedicatedTests: XCTestCase {
 		let begin = try alice.pqBootstrapBegin()
 		let respond = try bob.pqBootstrapRespond(begin.frame)
 		_ = try alice.pqBootstrapJoin(respond.frame)
-		XCTAssertTrue(bob.isFullyEstablished)
+		#expect(bob.isFullyEstablished)
 
 		_ = try alice.prepareToEncrypt()
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		_ = try bob.processIncomingDecrypted(boundFrame)
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPQTurn)
 
-		let recvPQ = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
-		XCTAssertEqual(try basicIdentifier(recvPQ.credential), invitationClientID)
-		let recvClassical = try TwoMLSSession.ownLeaf(
-			of: XCTUnwrap(bob.recvGroup?.classical))
-		XCTAssertEqual(
-			try basicIdentifier(recvClassical.credential), invitationClientID,
+		let recvPQGroup = try #require(bob.recvGroup?.pq)
+		let recvPQ = try TwoMLSSession.ownLeaf(of: recvPQGroup)
+		#expect(try basicIdentifier(recvPQ.credential) == invitationClientID)
+		let recvClassicalGroup = try #require(bob.recvGroup?.classical)
+		let recvClassical = try TwoMLSSession.ownLeaf(of: recvClassicalGroup)
+		#expect(
+			try basicIdentifier(recvClassical.credential) == invitationClientID,
 			"the peer never folded — bob's classical leaf still presents the invitation id"
 		)
-		XCTAssertEqual(bob.auth.mine.current, dedicatedClientID)
+		#expect(bob.auth.mine.current == dedicatedClientID)
 
 		_ = try bob.prepareToEncrypt()
-		XCTAssertNoThrow(try bob.encrypt(Data("msg".utf8)))
+		#expect(throws: Never.self) { try bob.encrypt(Data("msg".utf8)) }
 		guard case .initiating = bob.pqInflight else {
-			XCTFail(
+			Issue.record(
 				"expected a plain A.4 — the peer has never folded bob's target; got \(String(describing: bob.pqInflight))"
 			)
 			return
@@ -413,39 +440,42 @@ final class BornDedicatedTests: XCTestCase {
 	/// acceptor runs a conforming engine, whose own A.5 fires"
 	/// (`session-lifecycle.md`). Kills: an own-arm that never fires for a
 	/// born-dedicated acceptor.
-	func testBornDedicatedAcceptorSelfDrivesItsRecvPQCatchUp() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bornDedicatedAcceptorSelfDrivesItsRecvPQCatchUp() throws {
 		var (alice, bob, _, dedicatedClientID) =
 			try bobHoldingPQTurnWithRecvPQLaggingInvitationID()
 
 		_ = try bob.prepareToEncrypt()
 		let selfDriven = try bob.encrypt(Data("msg".utf8))
-		XCTAssertEqual(selfDriven.update.kind, .checkpoint)
+		#expect(selfDriven.update.kind == .checkpoint)
 		guard case .rekeyInitiated(let updBytes) = bob.pqInflight else {
-			XCTFail("expected the self-drive to stage `.rekeyInitiated`")
+			Issue.record("expected the self-drive to stage `.rekeyInitiated`")
 			return
 		}
 		guard
 			case .publicMessage(let updPub) = try MLS.RFC9420.Message(
 				mlsEncoded: updBytes)
 		else {
-			XCTFail("expected a publicMessage-framed Upd′")
+			Issue.record("expected a publicMessage-framed Upd′")
 			return
 		}
 		// C1: the deployed-compatible profile announces the handed-off id.
-		XCTAssertEqual(updPub.content.authenticatedData, dedicatedClientID)
+		#expect(updPub.content.authenticatedData == dedicatedClientID)
 
-		let pending = try XCTUnwrap(bob.pqPendingOutbound())
+		let pending = try #require(bob.pqPendingOutbound())
 		let rekeyRespond = try alice.pqRekeyRespond(pending)
-		XCTAssertEqual(rekeyRespond.rotatedCredential, dedicatedClientID)
+		#expect(rekeyRespond.rotatedCredential == dedicatedClientID)
 
-		XCTAssertNoThrow(try bob.pqRekeyApply(rekeyRespond.frame))
-		let recvPQAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
-		XCTAssertEqual(try basicIdentifier(recvPQAfter.credential), dedicatedClientID)
+		#expect(throws: Never.self) { try bob.pqRekeyApply(rekeyRespond.frame) }
+		let recvPQGroupAfter = try #require(bob.recvGroup?.pq)
+		let recvPQAfter = try TwoMLSSession.ownLeaf(of: recvPQGroupAfter)
+		#expect(try basicIdentifier(recvPQAfter.credential) == dedicatedClientID)
 	}
 
 	// MARK: - Accept 8: rotation still available post-born-dedicated
 
-	func testBobCanStillRotateAfterBornDedicated() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bobCanStillRotateAfterBornDedicated() throws {
 		var (alice, bob, invitationClientID, _, _) = try fullyEstablishedDedicated()
 		// Drive the recv-leaf catch-up to completion first (own-leaf
 		// presentation must reach D before a FURTHER rotation is legitimate
@@ -459,22 +489,26 @@ final class BornDedicatedTests: XCTestCase {
 		_ = try bob.processIncomingDecrypted(aliceFrame)
 		// The CLASSICAL leaf has converged, but the PQ leaf still presents
 		// the invitation identity (see `testRecvLeafCatchUpConvergesInvToD`).
-		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
-		XCTAssertEqual(try basicIdentifier(recvPQLeaf.credential), invitationClientID)
+		let recvPQGroup = try #require(bob.recvGroup?.pq)
+		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: recvPQGroup)
+		#expect(try basicIdentifier(recvPQLeaf.credential) == invitationClientID)
 
 		// Now a genuinely NEW rotation must still work — no stale
 		// `.rotationInFlight` left over from the catch-up mechanism (which
 		// never touches `rotationCandidate`).
 		let rotated = try bob.prepareToEncrypt(rotating: Data("bob-rotated".utf8))
-		XCTAssertEqual(rotated.proposalMessage.isEmpty, false)
-		XCTAssertEqual(
-			bob.myPrincipalState,
-			.pending(old: Data("bob-dedicated".utf8), new: Data("bob-rotated".utf8)))
+		#expect(rotated.proposalMessage.isEmpty == false)
+		#expect(
+			bob.myPrincipalState
+				== .pending(
+					old: Data("bob-dedicated".utf8),
+					new: Data("bob-rotated".utf8)))
 	}
 
 	// MARK: - Accept 4: idempotent install + 0x0B dedup
 
-	func testIdempotentInstallAndDedupOnStandalone0x0B() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func idempotentInstallAndDedupOnStandalone0x0B() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
@@ -485,12 +519,12 @@ final class BornDedicatedTests: XCTestCase {
 		// Idempotent same-bytes re-install: no-op (staple byte-identical),
 		// still bumps `stateSeq` like every other idempotent re-send here.
 		let second = try bob.installEstablishmentEnvelope(envelope)
-		XCTAssertEqual(bob.currentStaple, stapleAfterFirst)
-		XCTAssertGreaterThan(bob.stateSeq, seqAfterFirst)
-		XCTAssertEqual(second.kind, .core)
+		#expect(bob.currentStaple == stapleAfterFirst)
+		#expect(bob.stateSeq > seqAfterFirst)
+		#expect(second.kind == .core)
 
-		let standalone = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(standalone))
+		let standalone = try #require(try bob.standaloneWelcome())
+		let opened = try #require(try alice.openIncoming(standalone))
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: dedicatedClientID)
 		guard
@@ -499,21 +533,24 @@ final class BornDedicatedTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail("expected .joined")
+			Issue.record("expected .joined")
+			return
 		}
 
 		// Re-delivered `0x0B` dedups on the INNER welcome digest — a fresh
 		// seal of the SAME plaintext still resolves to `.ignored`.
-		let standaloneAgain = try XCTUnwrap(try bob.standaloneWelcome())
-		let openedAgain = try XCTUnwrap(try alice.openIncoming(standaloneAgain))
+		let standaloneAgain = try #require(try bob.standaloneWelcome())
+		let openedAgain = try #require(try alice.openIncoming(standaloneAgain))
 		guard case .ignored = try alice.processIncoming(openedAgain.frame) else {
-			return XCTFail("expected .ignored on re-delivery")
+			Issue.record("expected .ignored on re-delivery")
+			return
 		}
 	}
 
 	// MARK: - Accept 5: restore
 
-	func testRestoreOwedButNotInstalledStillOwes() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreOwedButNotInstalledStillOwes() throws {
 		let (_, bob, _, invitationClientID, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let archive = try bob.makeSessionArchive(kind: .checkpoint)
@@ -521,17 +558,18 @@ final class BornDedicatedTests: XCTestCase {
 			core: nil, checkpoint: archive,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertTrue(restored.owesEstablishmentEnvelope)
-		XCTAssertNotNil(restored.leafKeys.recvClassical.pending[dedicatedClientID])
-		XCTAssertEqual(restored.identity.clientID, invitationClientID)
-		XCTAssertEqual(restored.myPrincipalState, .sync(dedicatedClientID))
-		XCTAssertEqual(restored.currentStaple.first, Frames.apqWelcomeTag)
-		XCTAssertThrowsError(try restored.encrypt(Data())) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		#expect(restored.owesEstablishmentEnvelope)
+		#expect(restored.leafKeys.recvClassical.pending[dedicatedClientID] != nil)
+		#expect(restored.identity.clientID == invitationClientID)
+		#expect(restored.myPrincipalState == .sync(dedicatedClientID))
+		#expect(restored.currentStaple.first == Frames.apqWelcomeTag)
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
+			try restored.encrypt(Data())
 		}
 	}
 
-	func testRestorePostInstallReemitsThe0x0BStaple() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restorePostInstallReemitsThe0x0BStaple() throws {
 		var (_, bob, _, _, _) = try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
@@ -540,16 +578,17 @@ final class BornDedicatedTests: XCTestCase {
 			core: nil, checkpoint: archive,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertFalse(restored.owesEstablishmentEnvelope)
-		XCTAssertEqual(restored.currentStaple.first, Frames.establishmentHandoffTag)
+		#expect(!restored.owesEstablishmentEnvelope)
+		#expect(restored.currentStaple.first == Frames.establishmentHandoffTag)
 		let (restoredEnvelope, _) = try Frames.decodeEstablishmentHandoff(
 			restored.currentStaple)
-		XCTAssertEqual(restoredEnvelope, envelope)
+		#expect(restoredEnvelope == envelope)
 	}
 
 	// MARK: - Accept 14: invalid client id
 
-	func testEmptyNewClientIDIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func emptyNewClientIDIsRejected() throws {
 		let bobPrincipal = try Principal.generate(
 			clientID: Data("bob".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -560,12 +599,13 @@ final class BornDedicatedTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		guard let theirCombinerKP = invitation.combinerKeyPackage else {
-			return XCTFail()
+			Issue.record("expected a combiner key package")
+			return
 		}
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirCombinerKP)
 		let spawnToken = classicalProvider.randomBytes(16)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidClientID) {
 			try invitation.receive(
 				welcome: initiated.welcome,
 				theirClassicalKeyPackage: initiated.session.identity.keyPackage
@@ -573,8 +613,6 @@ final class BornDedicatedTests: XCTestCase {
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
 				spawnToken: spawnToken, newClientID: Data())
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidClientID)
 		}
 	}
 
@@ -588,26 +626,28 @@ final class BornDedicatedTests: XCTestCase {
 	/// `0xFF02` exporter leaf stays unspent, matching the existing
 	/// malformed-welcome contract). A later, properly-delivered-and-approved
 	/// handoff still joins afterward.
-	func testBareUndelegatedWelcomeBurnsNothingAndLaterHandoffStillJoins() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bareUndelegatedWelcomeBurnsNothingAndLaterHandoffStillJoins() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let bareStaple = bob.currentStaple
-		XCTAssertEqual(bareStaple.first, Frames.apqWelcomeTag)
+		#expect(bareStaple.first == Frames.apqWelcomeTag)
 
-		XCTAssertThrowsError(try alice.processIncoming(bareStaple)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
+			try alice.processIncoming(bareStaple)
 		}
-		XCTAssertFalse(alice.isEstablished)
-		XCTAssertNil(alice.recvGroup)
-		XCTAssertNil(alice.joinedWelcomeDigest)
-		XCTAssertTrue(alice.sendCrossPSKLedger.isEmpty)
+		#expect(!alice.isEstablished)
+		#expect(alice.recvGroup == nil)
+		#expect(alice.joinedWelcomeDigest == nil)
+		#expect(alice.sendCrossPSKLedger.isEmpty)
 
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
-		let standalone = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(standalone))
+		let standalone = try #require(try bob.standaloneWelcome())
+		let opened = try #require(try alice.openIncoming(standalone))
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			return XCTFail("expected a pause")
+			Issue.record("expected a pause")
+			return
 		}
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: dedicatedClientID)
@@ -617,56 +657,55 @@ final class BornDedicatedTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail("expected the genuine handoff to still join")
+			Issue.record("expected the genuine handoff to still join")
+			return
 		}
-		XCTAssertEqual(newSender, dedicatedClientID)
+		#expect(newSender == dedicatedClientID)
 	}
 
 	// MARK: - Reject/tamper 10: the emit door stays closed while owed
 
-	func testEmitDoorClosedWhileOwed() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func emitDoorClosedWhileOwed() throws {
 		var (_, bob, _, _, _) = try SessionTestSupport.establishedDedicated()
-		XCTAssertThrowsError(try bob.encrypt(Data())) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
+			try bob.encrypt(Data())
 		}
-		XCTAssertThrowsError(try bob.prepareToEncrypt()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
+			try bob.prepareToEncrypt()
 		}
-		XCTAssertThrowsError(try bob.pqBootstrapBegin()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
+			try bob.pqBootstrapBegin()
 		}
-		XCTAssertThrowsError(try bob.pqBootstrapRespond(Data([0x13]))) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
+			try bob.pqBootstrapRespond(Data([0x13]))
 		}
-		XCTAssertThrowsError(try bob.pqRekeyBegin()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
+			try bob.pqRekeyBegin()
 		}
-		XCTAssertThrowsError(try bob.standaloneWelcome()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
+			try bob.standaloneWelcome()
 		}
 	}
 
 	// MARK: - Reject/tamper 11: install edge cases
 
-	func testInstallEdgeCases() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func installEdgeCases() throws {
 		var (_, bob, _, _, _) = try SessionTestSupport.establishedDedicated()
-		XCTAssertThrowsError(try bob.installEstablishmentEnvelope(Data())) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
+			try bob.installEstablishmentEnvelope(Data())
 		}
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.establishmentEnvelopeConflict) {
 			try bob.installEstablishmentEnvelope(fakeEnvelope("different"))
-		) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeConflict)
 		}
 
 		// Not owed at all (the degenerate, non-dedicated topology).
 		var (_, degenerateBob, _, _, _, _) = try SessionTestSupport.established()
-		XCTAssertThrowsError(try degenerateBob.installEstablishmentEnvelope(envelope)) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		#expect(throws: TwoMLSError.sessionNotReady) {
+			try degenerateBob.installEstablishmentEnvelope(envelope)
 		}
 
 		// Staple moved past the establishment staples entirely (a fold on
@@ -680,25 +719,26 @@ final class BornDedicatedTests: XCTestCase {
 		let bobDecrypted = try movedBob.processIncomingDecrypted(aliceOfferFrame)
 		_ = try movedBob.queueProposal(digest: bobDecrypted.queuedProposal.digest)
 		let bobPrepared = try movedBob.prepareToEncrypt()
-		XCTAssertTrue(bobPrepared.didCommit)
-		XCTAssertEqual(movedBob.currentStaple.first, Frames.mlsMessageStapleTag)
-		XCTAssertThrowsError(try movedBob.installEstablishmentEnvelope(fakeEnvelope())) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		#expect(bobPrepared.didCommit)
+		#expect(movedBob.currentStaple.first == Frames.mlsMessageStapleTag)
+		#expect(throws: TwoMLSError.sessionNotReady) {
+			try movedBob.installEstablishmentEnvelope(fakeEnvelope())
 		}
 	}
 
 	// MARK: - Reject/tamper 12: tampered re-feed re-pauses; a later matching frame heals
 
-	func testTamperedApprovalRepausesAndLaterMatchingFrameHeals() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func tamperedApprovalRepausesAndLaterMatchingFrameHeals() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
-		let standalone1 = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened1 = try XCTUnwrap(try alice.openIncoming(standalone1))
+		let standalone1 = try #require(try bob.standaloneWelcome())
+		let opened1 = try #require(try alice.openIncoming(standalone1))
 		guard case .pendingEstablishment = try alice.processIncoming(opened1.frame) else {
-			return XCTFail()
+			Issue.record("expected a pause")
+			return
 		}
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: dedicatedClientID)
@@ -709,9 +749,10 @@ final class BornDedicatedTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail("expected re-pause on a tampered envelope digest")
+			Issue.record("expected re-pause on a tampered envelope digest")
+			return
 		}
-		XCTAssertFalse(alice.isEstablished)
+		#expect(!alice.isEstablished)
 
 		guard
 			case .pendingEstablishment = try alice.processIncomingApproved(
@@ -719,59 +760,62 @@ final class BornDedicatedTests: XCTestCase {
 				approvedWelcomeDigest: Data("garbage".utf8),
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail("expected re-pause on a tampered welcome digest")
+			Issue.record("expected re-pause on a tampered welcome digest")
+			return
 		}
-		XCTAssertFalse(alice.isEstablished)
+		#expect(!alice.isEstablished)
 
 		// A LATER frame carrying the SAME approved pair still heals: a
 		// fresh standalone re-seal of the identical plaintext pair.
-		let standalone2 = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened2 = try XCTUnwrap(try alice.openIncoming(standalone2))
+		let standalone2 = try #require(try bob.standaloneWelcome())
+		let opened2 = try #require(try alice.openIncoming(standalone2))
 		guard
 			case .joined(let newSender, _) = try alice.processIncomingApproved(
 				opened2.frame, approvedEnvelopeDigest: approval.envelopeDigest,
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail("expected the later frame to heal and join")
+			Issue.record("expected the later frame to heal and join")
+			return
 		}
-		XCTAssertEqual(newSender, dedicatedClientID)
+		#expect(newSender == dedicatedClientID)
 	}
 
 	// MARK: - Reject/tamper 13: approved creator mismatch discards the join
 
-	func testApprovedJoinCreatorMismatchDiscardsJoinWhole() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func approvedJoinCreatorMismatchDiscardsJoinWhole() throws {
 		var (alice, bob, _, _, _) = try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
-		let standalone = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(standalone))
+		let standalone = try #require(try bob.standaloneWelcome())
+		let opened = try #require(try alice.openIncoming(standalone))
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			return XCTFail()
+			Issue.record("expected a pause")
+			return
 		}
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: Data("someone-else".utf8))
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.establishmentCreatorMismatch) {
 			try alice.processIncomingApproved(
 				opened.frame, approvedEnvelopeDigest: approval.envelopeDigest,
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentCreatorMismatch)
 		}
-		XCTAssertFalse(alice.isEstablished)
-		XCTAssertNil(alice.recvGroup)
-		XCTAssertNil(alice.joinedWelcomeDigest)
+		#expect(!alice.isEstablished)
+		#expect(alice.recvGroup == nil)
+		#expect(alice.joinedWelcomeDigest == nil)
 	}
 
 	// MARK: - Reject/tamper 15: pause purity
 
-	func testPausePurity() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func pausePurity() throws {
 		var (alice, bob, _, _, _) = try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
-		let standalone = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(standalone))
+		let standalone = try #require(try bob.standaloneWelcome())
+		let opened = try #require(try alice.openIncoming(standalone))
 
 		let stateSeqBefore = alice.stateSeq
 		let classicalInitSecretBefore = alice.identity.classicalInitSecretKey?.data
@@ -779,19 +823,21 @@ final class BornDedicatedTests: XCTestCase {
 		let offeredBefore = alice.offeredProposal?.digest
 
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			return XCTFail()
+			Issue.record("expected a pause")
+			return
 		}
-		XCTAssertEqual(alice.stateSeq, stateSeqBefore)
-		XCTAssertNil(alice.recvGroup)
-		XCTAssertNil(alice.joinedWelcomeDigest)
-		XCTAssertEqual(alice.sendCrossPSKLedger.count, sendLedgerCountBefore)
-		XCTAssertEqual(alice.offeredProposal?.digest, offeredBefore)
-		XCTAssertEqual(
-			alice.identity.classicalInitSecretKey?.data, classicalInitSecretBefore)
+		#expect(alice.stateSeq == stateSeqBefore)
+		#expect(alice.recvGroup == nil)
+		#expect(alice.joinedWelcomeDigest == nil)
+		#expect(alice.sendCrossPSKLedger.count == sendLedgerCountBefore)
+		#expect(alice.offeredProposal?.digest == offeredBefore)
+		#expect(
+			alice.identity.classicalInitSecretKey?.data == classicalInitSecretBefore)
 
 		// An unapproved re-feed re-pauses, never joins.
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			return XCTFail("expected a second pause")
+			Issue.record("expected a second pause")
+			return
 		}
 	}
 
@@ -804,7 +850,8 @@ final class BornDedicatedTests: XCTestCase {
 	/// path end-to-end: pause, tamper (envelope digest, then welcome digest),
 	/// wrong creator, approve, a later standalone re-delivery dedups, and
 	/// Bob's own recv-leaf (Group_A) converges to D off Alice's fold.
-	func testStapledEstablishmentHandoffFullPath() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func stapledEstablishmentHandoffFullPath() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
@@ -815,18 +862,19 @@ final class BornDedicatedTests: XCTestCase {
 		// off the just-installed handoff).
 		_ = try bob.prepareToEncrypt()
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		let opened = try XCTUnwrap(try alice.openIncoming(frame))
-		XCTAssertEqual(opened.kind, .message)
+		let opened = try #require(try alice.openIncoming(frame))
+		#expect(opened.kind == .message)
 		let decodedFrame = try Frames.decodeMessageFrame(opened.frame)
-		XCTAssertEqual(decodedFrame.staple.first, Frames.establishmentHandoffTag)
+		#expect(decodedFrame.staple.first == Frames.establishmentHandoffTag)
 
 		// Pure parse: an un-approved pause never touches `stateSeq`/`recvGroup`.
 		let stateSeqBefore = alice.stateSeq
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			return XCTFail("expected a pause on the stapled, un-approved 0x0B")
+			Issue.record("expected a pause on the stapled, un-approved 0x0B")
+			return
 		}
-		XCTAssertEqual(alice.stateSeq, stateSeqBefore)
-		XCTAssertNil(alice.recvGroup)
+		#expect(alice.stateSeq == stateSeqBefore)
+		#expect(alice.recvGroup == nil)
 
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: dedicatedClientID)
@@ -838,9 +886,10 @@ final class BornDedicatedTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail("expected re-pause on a tampered envelope digest")
+			Issue.record("expected re-pause on a tampered envelope digest")
+			return
 		}
-		XCTAssertNil(alice.recvGroup)
+		#expect(alice.recvGroup == nil)
 
 		// Tampered welcome digest: re-pauses, never joins.
 		guard
@@ -849,22 +898,21 @@ final class BornDedicatedTests: XCTestCase {
 				approvedWelcomeDigest: Data("garbage".utf8),
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail("expected re-pause on a tampered welcome digest")
+			Issue.record("expected re-pause on a tampered welcome digest")
+			return
 		}
-		XCTAssertNil(alice.recvGroup)
+		#expect(alice.recvGroup == nil)
 
 		// Wrong expectedCreator: throws, discards the join whole — the
 		// cross-party PSK ledger stays unspent.
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.establishmentCreatorMismatch) {
 			try alice.processIncomingApproved(
 				opened.frame, approvedEnvelopeDigest: approval.envelopeDigest,
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: Data("someone-else".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentCreatorMismatch)
 		}
-		XCTAssertNil(alice.recvGroup)
-		XCTAssertTrue(alice.sendCrossPSKLedger.isEmpty)
+		#expect(alice.recvGroup == nil)
+		#expect(alice.sendCrossPSKLedger.isEmpty)
 
 		// Approved re-feed: joins and decrypts in one step.
 		guard
@@ -873,32 +921,35 @@ final class BornDedicatedTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail("expected .decrypted on the approved stapled re-feed")
+			Issue.record("expected .decrypted on the approved stapled re-feed")
+			return
 		}
-		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
-		XCTAssertEqual(decrypted.newSender, dedicatedClientID)
-		XCTAssertFalse(decrypted.didApplyRemoteCommit)
-		XCTAssertEqual(decrypted.queuedProposal.proposing, dedicatedClientID)
-		XCTAssertTrue(alice.isEstablished)
+		#expect(decrypted.applicationMessage == Data("bob-hello".utf8))
+		#expect(decrypted.newSender == dedicatedClientID)
+		#expect(!decrypted.didApplyRemoteCommit)
+		#expect(decrypted.queuedProposal.proposing == dedicatedClientID)
+		#expect(alice.isEstablished)
 
 		// A LATER standalone re-delivery of the same welcome dedups.
-		let standaloneAgain = try XCTUnwrap(try bob.standaloneWelcome())
-		let openedAgain = try XCTUnwrap(try alice.openIncoming(standaloneAgain))
+		let standaloneAgain = try #require(try bob.standaloneWelcome())
+		let openedAgain = try #require(try alice.openIncoming(standaloneAgain))
 		guard case .ignored = try alice.processIncoming(openedAgain.frame) else {
-			return XCTFail("expected .ignored on a later standalone re-delivery")
+			Issue.record("expected .ignored on a later standalone re-delivery")
+			return
 		}
 
 		// Alice's fold converges Bob's own recv-leaf (Group_A) to D.
 		_ = try alice.queueProposal(digest: decrypted.queuedProposal.digest)
 		let alicePrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(alicePrepared.didCommit)
-		XCTAssertEqual(alicePrepared.committedRemoteClientID, dedicatedClientID)
+		#expect(alicePrepared.didCommit)
+		#expect(alicePrepared.committedRemoteClientID == dedicatedClientID)
 		let aliceFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 		let bobDecrypted = try bob.processIncomingDecrypted(aliceFrame)
-		XCTAssertTrue(bobDecrypted.didApplyRemoteCommit)
-		XCTAssertTrue(bobDecrypted.ownCredentialCanonicalized)
-		let leafAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
-		XCTAssertEqual(try basicIdentifier(leafAfter.credential), dedicatedClientID)
+		#expect(bobDecrypted.didApplyRemoteCommit)
+		#expect(bobDecrypted.ownCredentialCanonicalized)
+		let recvClassicalGroup = try #require(bob.recvGroup?.classical)
+		let leafAfter = try TwoMLSSession.ownLeaf(of: recvClassicalGroup)
+		#expect(try basicIdentifier(leafAfter.credential) == dedicatedClientID)
 	}
 
 	// MARK: - m-5: defense-in-depth adoption screen
@@ -912,35 +963,36 @@ final class BornDedicatedTests: XCTestCase {
 	/// so this simulates the id already being known some other way — the
 	/// guard is defense-in-depth precisely for a case this specific, not
 	/// reachable through today's flow alone.
-	func testApprovedJoinRejectsCreatorEqualToOwnKnownID() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func approvedJoinRejectsCreatorEqualToOwnKnownID() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		alice.auth.mine.authorize(dedicatedClientID)
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
-		let standalone = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(standalone))
+		let standalone = try #require(try bob.standaloneWelcome())
+		let opened = try #require(try alice.openIncoming(standalone))
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			return XCTFail()
+			Issue.record("expected a pause")
+			return
 		}
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: dedicatedClientID)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidSuccession) {
 			try alice.processIncomingApproved(
 				opened.frame, approvedEnvelopeDigest: approval.envelopeDigest,
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
-		XCTAssertFalse(alice.isEstablished)
-		XCTAssertNil(alice.recvGroup)
+		#expect(!alice.isEstablished)
+		#expect(alice.recvGroup == nil)
 	}
 
 	/// `receive` rejects a `newClientID` equal to the remote/initiator's own
 	/// id outright — a dedicated principal can never legitimately be the
 	/// very peer it is meant to be dedicated FOR.
-	func testNewClientIDEqualToPeerIDIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func newClientIDEqualToPeerIDIsRejected() throws {
 		let bobPrincipal = try Principal.generate(
 			clientID: Data("bob".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -951,12 +1003,13 @@ final class BornDedicatedTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		guard let theirCombinerKP = invitation.combinerKeyPackage else {
-			return XCTFail()
+			Issue.record("expected a combiner key package")
+			return
 		}
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirCombinerKP)
 		let spawnToken = classicalProvider.randomBytes(16)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidClientID) {
 			try invitation.receive(
 				welcome: initiated.welcome,
 				theirClassicalKeyPackage: initiated.session.identity.keyPackage
@@ -964,8 +1017,6 @@ final class BornDedicatedTests: XCTestCase {
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
 				spawnToken: spawnToken, newClientID: Data("alice".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidClientID)
 		}
 	}
 
@@ -975,24 +1026,27 @@ final class BornDedicatedTests: XCTestCase {
 	/// pending[mine.current]` predicate) reads only `leafKeys`, never any
 	/// born-dedicated-only custody record. Kills a revert to a trigger keyed
 	/// on some other live field the rule-4 pin would depend on.
-	func testGeneralizedCatchUpReadsOnlyLeafKeys() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func generalizedCatchUpReadsOnlyLeafKeys() throws {
 		var (alice, bob, invitationClientID, dedicatedClientID, _) =
 			try SessionTestSupport.establishedDedicatedAndApproved()
-		let leafBefore = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
-		XCTAssertEqual(try basicIdentifier(leafBefore.credential), invitationClientID)
+		let recvClassicalBefore = try #require(bob.recvGroup?.classical)
+		let leafBefore = try TwoMLSSession.ownLeaf(of: recvClassicalBefore)
+		#expect(try basicIdentifier(leafBefore.credential) == invitationClientID)
 
 		_ = try bob.prepareToEncrypt()
-		XCTAssertEqual(bob.pendingProposal?.proposing, dedicatedClientID)
+		#expect(bob.pendingProposal?.proposing == dedicatedClientID)
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(frame)
-		XCTAssertEqual(decrypted.queuedProposal.proposing, dedicatedClientID)
+		#expect(decrypted.queuedProposal.proposing == dedicatedClientID)
 		try alice.queueProposal(digest: decrypted.queuedProposal.digest)
 		_ = try alice.prepareToEncrypt()
 		let aliceFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 		let bobDecrypted = try bob.processIncomingDecrypted(aliceFrame)
-		XCTAssertTrue(bobDecrypted.didApplyRemoteCommit)
-		let leafAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
-		XCTAssertEqual(try basicIdentifier(leafAfter.credential), dedicatedClientID)
+		#expect(bobDecrypted.didApplyRemoteCommit)
+		let recvClassicalAfter = try #require(bob.recvGroup?.classical)
+		let leafAfter = try TwoMLSSession.ownLeaf(of: recvClassicalAfter)
+		#expect(try basicIdentifier(leafAfter.credential) == dedicatedClientID)
 	}
 
 	/// D's rule-4 catch-up key (`recvClassical.pending[D]`) is minted
@@ -1000,16 +1054,17 @@ final class BornDedicatedTests: XCTestCase {
 	/// never the same pair. Proved both before and after the catch-up fold
 	/// actually lands, so all four of D's own-leaf keys stay pairwise
 	/// distinct throughout.
-	func testBornDedicatedCatchUpKeyIsIndependent() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bornDedicatedCatchUpKeyIsIndependent() throws {
 		var (alice, bob, _, dedicatedClientID, _) =
 			try SessionTestSupport.establishedDedicatedAndApproved(
 				dedicatedClientID: Data("d1-independent".utf8))
 
-		let catchUpKeyBefore = try XCTUnwrap(
+		let catchUpKeyBefore = try #require(
 			bob.leafKeys.recvClassical.pending[dedicatedClientID])
-		let sendClassicalKeyBefore = try XCTUnwrap(bob.leafKeys.sendClassical.current)
-		XCTAssertNotEqual(
-			catchUpKeyBefore.signatureKey, sendClassicalKeyBefore.signatureKey)
+		let sendClassicalKeyBefore = try #require(bob.leafKeys.sendClassical.current)
+		#expect(
+			catchUpKeyBefore.signatureKey != sendClassicalKeyBefore.signatureKey)
 
 		// §A.3, so all four of D's own-leaf groups exist.
 		let kpFrame = try alice.pqBootstrapBegin().frame
@@ -1025,16 +1080,21 @@ final class BornDedicatedTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let aliceFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 		let bobDecrypted = try bob.processIncomingDecrypted(aliceFrame)
-		XCTAssertTrue(bobDecrypted.didApplyRemoteCommit)
-		let leafAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.classical))
-		XCTAssertEqual(try basicIdentifier(leafAfter.credential), dedicatedClientID)
+		#expect(bobDecrypted.didApplyRemoteCommit)
+		let recvClassicalGroup = try #require(bob.recvGroup?.classical)
+		let leafAfter = try TwoMLSSession.ownLeaf(of: recvClassicalGroup)
+		#expect(try basicIdentifier(leafAfter.credential) == dedicatedClientID)
 
+		let sendClassicalCurrent = try #require(bob.leafKeys.sendClassical.current)
+		let recvClassicalCurrent = try #require(bob.leafKeys.recvClassical.current)
+		let sendPQCurrent = try #require(bob.leafKeys.sendPQ.current)
+		let recvPQCurrent = try #require(bob.leafKeys.recvPQ.current)
 		let keys = [
-			try XCTUnwrap(bob.leafKeys.sendClassical.current).signatureKey.data,
-			try XCTUnwrap(bob.leafKeys.recvClassical.current).signatureKey.data,
-			try XCTUnwrap(bob.leafKeys.sendPQ.current).signatureKey.data,
-			try XCTUnwrap(bob.leafKeys.recvPQ.current).signatureKey.data,
+			sendClassicalCurrent.signatureKey.data,
+			recvClassicalCurrent.signatureKey.data,
+			sendPQCurrent.signatureKey.data,
+			recvPQCurrent.signatureKey.data,
 		]
-		XCTAssertEqual(Set(keys).count, keys.count)
+		#expect(Set(keys).count == keys.count)
 	}
 }

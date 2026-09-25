@@ -4,9 +4,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
-import TwoMLSPQCrypto
-import XCTest
 import Testing
+import TwoMLSPQCrypto
 
 @testable import TwoMLSPQSession
 
@@ -22,12 +21,12 @@ import Testing
 /// rotator's RECV-leaf first; the rotator's SEND-leaf lags until its own next
 /// `committingRound` performs the own-leaf catch-up, threading the same
 /// ring through a `newIdentity`-carrying commit on its own group.
-@available(iOS 26, macOS 26, *)
-final class RotationTests: XCTestCase {
+@Suite struct RotationTests {
 	/// The occupied leaf OTHER than the caller's own — `ownLeaf(of:)` (the
 	/// production custody helper) deliberately always reads `myLeafIndex`,
 	/// so a test that wants to read what the PEER's leaf currently presents
 	/// (as this group's own perspective sees it) needs this instead.
+	@available(iOS 26, macOS 26, *)
 	private func peerLeafCredential(of group: MLS.RFC9420.Group) throws
 		-> MLS.RFC9420.Credential
 	{
@@ -47,10 +46,11 @@ final class RotationTests: XCTestCase {
 	/// naming `newID` as its new `.basic` identity — genuinely ring-signed,
 	/// so only an Authentication Service guard (never a signature failure)
 	/// is what has to catch a malicious/colliding `newID`.
+	@available(iOS 26, macOS 26, *)
 	private func authorRotatingUpd(
 		proposer: inout TwoMLSSession, newID: Data
 	) throws -> Data {
-		var mirror = try XCTUnwrap(proposer.recvGroup)
+		var mirror = try #require(proposer.recvGroup)
 		let currentSigningKey = try proposer.recvClassicalSigningKey()
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (message, _) = try mirror.classical.proposeUpdate(
@@ -74,23 +74,24 @@ final class RotationTests: XCTestCase {
 	/// Mirrors `processA4Leg`'s core check (`+Ratchet.swift`): `unprotect`
 	/// only succeeds if the leg was genuinely signed under whatever key
 	/// `bob`'s tree currently shows for the sender's leaf.
+	@available(iOS 26, macOS 26, *)
 	private func verifyEKLegOpensCleanly(_ frame: Data, against bob: TwoMLSSession) throws {
 		// `frame` is header-sealed on exit; `bob` (the recipient) is the
 		// one whose receive window opens it.
 		let (tag, messageBytes) = try Frames.decodePQLeg(bob.openOrRaw(frame))
-		XCTAssertEqual(tag, Frames.pqEKTag)
+		#expect(tag == Frames.pqEKTag)
 		guard
 			case .privateMessage(let pm) = try MLS.RFC9420.Message(
 				mlsEncoded: messageBytes)
 		else {
-			XCTFail("expected a privateMessage EK leg")
+			Issue.record("expected a privateMessage EK leg")
 			return
 		}
-		var recvCopy = try XCTUnwrap(bob.recvGroup)
+		var recvCopy = try #require(bob.recvGroup)
 		let out = try recvCopy.classical.unprotect(
 			SessionTestSupport.classicalProvider, message: pm)
 		guard case .application = out.content else {
-			XCTFail("expected application content")
+			Issue.record("expected application content")
 			return
 		}
 	}
@@ -106,76 +107,79 @@ final class RotationTests: XCTestCase {
 	/// `.sync(aliceNewID)`, both of Alice's classical leaves present the new
 	/// credential, and app traffic round-trips both directions under the new
 	/// key afterward.
-	func testFullClassicalRotationRoundTripsBothLeavesAndPrincipalStates() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func fullClassicalRotationRoundTripsBothLeavesAndPrincipalStates() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceOldID = alice.identity.clientID
 		let aliceNewID = Data("alice-rotated".utf8)
 
 		// 1: Alice authors the rotation.
 		_ = try alice.prepareToEncrypt(rotating: aliceNewID)
-		XCTAssertEqual(alice.myPrincipalState, .pending(old: aliceOldID, new: aliceNewID))
+		#expect(alice.myPrincipalState == .pending(old: aliceOldID, new: aliceNewID))
 
 		// 2: Bob receives the offer and approves it — the AS accepts a
 		// genuinely NEW id as a valid successor of Bob's tracked `theirs`.
 		let frame1 = try alice.encrypt(Data("rotate-offer".utf8)).frame
 		let decrypted1 = try bob.processIncomingDecrypted(frame1)
-		XCTAssertEqual(decrypted1.queuedProposal.proposing, aliceNewID)
-		XCTAssertNoThrow(try bob.queueProposal(digest: decrypted1.queuedProposal.digest))
+		#expect(decrypted1.queuedProposal.proposing == aliceNewID)
+		#expect(throws: Never.self) {
+			try bob.queueProposal(digest: decrypted1.queuedProposal.digest)
+		}
 
 		// 3: Bob folds it into his next commit (on Group_B, his sendGroup) —
 		// AS consult point 2: `theirs.commit(aliceNewID)` canonicalizes it in
 		// Bob's own ledger before the group advances.
-		let groupBEpochBefore = try XCTUnwrap(bob.sendGroup?.classical.context.epoch)
+		let groupBEpochBefore = try #require(bob.sendGroup?.classical.context.epoch)
 		let prepared2 = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared2.didCommit)
-		XCTAssertEqual(prepared2.committedRemoteClientID, aliceNewID)
-		XCTAssertEqual(bob.sendGroup?.classical.context.epoch, groupBEpochBefore + 1)
-		XCTAssertEqual(bob.theirPrincipalState, .sync(aliceNewID))
+		#expect(prepared2.didCommit)
+		#expect(prepared2.committedRemoteClientID == aliceNewID)
+		#expect(bob.sendGroup?.classical.context.epoch == groupBEpochBefore + 1)
+		#expect(bob.theirPrincipalState == .sync(aliceNewID))
 
 		// 4: Alice applies Bob's staple — her RECV-leaf (Group_B mirror)
 		// canonicalizes FIRST; her SEND-leaf (Group_A) still lags.
 		let frame2 = try bob.encrypt(Data("bob-fold".utf8)).frame
 		let decrypted2 = try alice.processIncomingDecrypted(frame2)
-		XCTAssertTrue(decrypted2.didApplyRemoteCommit)
-		XCTAssertTrue(decrypted2.ownCredentialCanonicalized)
-		XCTAssertNil(decrypted2.newSender)
-		XCTAssertEqual(alice.myPrincipalState, .sync(aliceNewID))
-		XCTAssertEqual(
+		#expect(decrypted2.didApplyRemoteCommit)
+		#expect(decrypted2.ownCredentialCanonicalized)
+		#expect(decrypted2.newSender == nil)
+		#expect(alice.myPrincipalState == .sync(aliceNewID))
+		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.recvGroup!.classical).credential),
-			aliceNewID)
-		XCTAssertEqual(
+				TwoMLSSession.ownLeaf(of: alice.recvGroup!.classical).credential)
+				== aliceNewID)
+		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
-			aliceOldID,
+				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				== aliceOldID,
 			"the send-classical leaf documentedly lags until the own-leaf catch-up")
 
 		// 5: Alice's own-leaf catch-up — triggered by a PLAIN
 		// `prepareToEncrypt()`, nothing queued or owed — moves her
 		// send-classical leaf. Bob applies it and sees `newSender`.
 		let prepared3 = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared3.didCommit)
+		#expect(prepared3.didCommit)
 		let frame3 = try alice.encrypt(Data("alice-catchup".utf8)).frame
 		let decrypted3 = try bob.processIncomingDecrypted(frame3)
-		XCTAssertTrue(decrypted3.didApplyRemoteCommit)
-		XCTAssertEqual(decrypted3.newSender, aliceNewID)
-		XCTAssertFalse(decrypted3.ownCredentialCanonicalized)
-		XCTAssertEqual(bob.theirPrincipalState, .sync(aliceNewID))
-		XCTAssertEqual(
+		#expect(decrypted3.didApplyRemoteCommit)
+		#expect(decrypted3.newSender == aliceNewID)
+		#expect(!decrypted3.ownCredentialCanonicalized)
+		#expect(bob.theirPrincipalState == .sync(aliceNewID))
+		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
-			aliceNewID, "the send-classical leaf has now caught up")
+				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				== aliceNewID, "the send-classical leaf has now caught up")
 
 		// 6: app traffic round-trips both directions under the new key.
 		_ = try alice.prepareToEncrypt()
 		let aliceMsg = try alice.encrypt(Data("post-rotation-alice".utf8)).frame
 		let fromAlice = try bob.processIncomingDecrypted(aliceMsg)
-		XCTAssertEqual(fromAlice.applicationMessage, Data("post-rotation-alice".utf8))
+		#expect(fromAlice.applicationMessage == Data("post-rotation-alice".utf8))
 
 		_ = try bob.prepareToEncrypt()
 		let bobMsg = try bob.encrypt(Data("post-rotation-bob".utf8)).frame
 		let fromBob = try alice.processIncomingDecrypted(bobMsg)
-		XCTAssertEqual(fromBob.applicationMessage, Data("post-rotation-bob".utf8))
+		#expect(fromBob.applicationMessage == Data("post-rotation-bob".utf8))
 	}
 
 	// MARK: - Classical receive tolerates a same-credential key-only rotation
@@ -201,13 +205,14 @@ final class RotationTests: XCTestCase {
 	/// explicit rotation candidate or the rule-4 catch-up target ever
 	/// populate `pending`), so the stored key set would hold no entry to
 	/// sign from either.
-	func testClassicalReceiveToleratesPeerSigningKeyRotationUnderSameCredential() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func classicalReceiveToleratesPeerSigningKeyRotationUnderSameCredential() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		// Bob's own copy of Group_B (his `sendGroup`, classical-only
 		// pre-bootstrap) — the same logical group Alice mirrors as her
 		// `recvGroup`.
-		var send = try XCTUnwrap(bob.sendGroup)
+		var send = try #require(bob.sendGroup)
 		let sameID = bob.identity.clientID
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 
@@ -260,15 +265,15 @@ final class RotationTests: XCTestCase {
 			staple: staple, proposal: proposalSection, app: appBytes)
 
 		let decrypted = try alice.processIncomingDecrypted(frame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bob-rotated".utf8))
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertFalse(decrypted.ownCredentialCanonicalized)
+		#expect(decrypted.applicationMessage == Data("bob-rotated".utf8))
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(!decrypted.ownCredentialCanonicalized)
 
 		// D3: `canonicalize` (+ClassicalCommit.swift) sets `newSender` only
 		// on an id change — a same-id key-only refresh is accepted and
 		// canonicalizes nothing.
-		XCTAssertNil(decrypted.newSender)
-		XCTAssertEqual(alice.theirPrincipalState, .sync(sameID))
+		#expect(decrypted.newSender == nil)
+		#expect(alice.theirPrincipalState == .sync(sameID))
 	}
 
 	/// Load-bearing custody regression: after Alice's full rotation converges
@@ -282,7 +287,8 @@ final class RotationTests: XCTestCase {
 	/// only because his `recvGroup` mirror already shows Alice's new key from
 	/// the classical rotation above. `protect` never self-verifies, so a
 	/// missed custody site would surface ONLY here, at the peer.
-	func testA4RatchetLegAfterClassicalRotationVerifiesUnderNewKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func a4RatchetLegAfterClassicalRotationVerifiesUnderNewKey() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceNewID = Data("alice-pq-rotated".utf8)
 
@@ -297,13 +303,13 @@ final class RotationTests: XCTestCase {
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		_ = try bob.processIncomingDecrypted(catchUpFrame)
 
-		XCTAssertEqual(
+		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
-			aliceNewID)
-		XCTAssertEqual(
-			try basicIdentifier(peerLeafCredential(of: bob.recvGroup!.classical)),
-			aliceNewID)
+				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				== aliceNewID)
+		#expect(
+			try basicIdentifier(peerLeafCredential(of: bob.recvGroup!.classical))
+				== aliceNewID)
 
 		// Refresh Alice's discharge license: her catch-up commit above
 		// advanced `sendGroup.classical` past the epoch Bob's last inbound
@@ -321,25 +327,25 @@ final class RotationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		_ = try bob.processIncomingDecrypted(boundFrame)
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPQTurn)
 
 		// §A.4: Bob (turn-holder) stages the EK; Alice responds with the CT,
 		// signed under her NEW classical key.
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ekFrame = try #require(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
-		XCTAssertNoThrow(try bob.pqRatchetBind(ctFrame))
+		#expect(throws: Never.self) { try bob.pqRatchetBind(ctFrame) }
 
 		// Discharge Bob's owed bind — flips the PQ turn to Alice (the
 		// rotator), who becomes the turn-holder for the two custody
 		// pins below.
-		XCTAssertNotNil(bob.owedBind)
+		#expect(bob.owedBind != nil)
 		let dischargePrepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(dischargePrepared.didCommit)
+		#expect(dischargePrepared.didCommit)
 		let boundFrame2 = try bob.encrypt(Data("bound-2".utf8)).frame
 		_ = try alice.processIncomingDecrypted(boundFrame2)
-		XCTAssertTrue(alice.myPQTurn)
+		#expect(alice.myPQTurn)
 
 		// Alice's recv-PQ leaf — joined at §A.3 off her identity's original
 		// KeyPackage — still presents her pre-rotation id, so her own next
@@ -351,11 +357,11 @@ final class RotationTests: XCTestCase {
 		// with nothing left lagging.
 		let catchUpTag = try SessionTestSupport.drivePQRound(
 			initiator: &alice, responder: &bob)
-		XCTAssertEqual(catchUpTag, Frames.pqRekeyUpdTag)
+		#expect(catchUpTag == Frames.pqRekeyUpdTag)
 		let reciprocalTag = try SessionTestSupport.drivePQRound(
 			initiator: &bob, responder: &alice)
-		XCTAssertEqual(reciprocalTag, Frames.pqRekeyUpdTag)
-		XCTAssertTrue(alice.myPQTurn)
+		#expect(reciprocalTag == Frames.pqRekeyUpdTag)
+		#expect(alice.myPQTurn)
 
 		// Alice — the rotator, now turn-holder — self-stages a
 		// fresh EK. `stageRatchet` (`+Ratchet.swift:49`) must sign it under
@@ -363,9 +369,9 @@ final class RotationTests: XCTestCase {
 		// wrong-key mistake there would surface only when Bob opens it.
 		_ = try alice.prepareToEncrypt()
 		_ = try alice.encrypt(Data("alice-turn".utf8))
-		let originalEKFrame = try XCTUnwrap(alice.pqPendingOutbound())
+		let originalEKFrame = try #require(alice.pqPendingOutbound())
 		guard case .initiating = alice.pqInflight else {
-			XCTFail("expected alice to hold `.initiating` after self-staging")
+			Issue.record("expected alice to hold `.initiating` after self-staging")
 			return
 		}
 		try verifyEKLegOpensCleanly(originalEKFrame, against: bob)
@@ -380,24 +386,24 @@ final class RotationTests: XCTestCase {
 		let decryptedOffer2 = try alice.processIncomingDecrypted(bobOfferFrame)
 		_ = try alice.queueProposal(digest: decryptedOffer2.queuedProposal.digest)
 
-		let parkedEpoch = try XCTUnwrap(alice.sendGroup?.classical.context.epoch)
+		let parkedEpoch = try #require(alice.sendGroup?.classical.context.epoch)
 		let foldPrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(foldPrepared.didCommit)
-		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, parkedEpoch + 1)
+		#expect(foldPrepared.didCommit)
+		#expect(alice.sendGroup?.classical.context.epoch == parkedEpoch + 1)
 		let aliceFoldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 
-		let rewrappedEKFrame = try XCTUnwrap(alice.pqPendingOutbound())
+		let rewrappedEKFrame = try #require(alice.pqPendingOutbound())
 		// `pqPendingOutbound()` re-seals under a fresh nonce on every
 		// call, so the SEALED bytes always differ even for an unchanged
 		// plaintext — compare the OPENED plaintexts instead (the outer
 		// header epoch — alice's recv group, Group_B — hasn't moved here,
-		// so `bob`'s window already opens both). `tryOpen` + `XCTUnwrap`
+		// so `bob`'s window already opens both). `tryOpen` + `#require`
 		// rather than `openOrRaw`: a frame that fails to open must fail the
 		// test, not silently compare equal (or not) as still-sealed bytes.
-		let openedRewrapped = try XCTUnwrap(bob.tryOpen(rewrappedEKFrame))
-		let openedOriginal = try XCTUnwrap(bob.tryOpen(originalEKFrame))
-		XCTAssertNotEqual(
-			openedRewrapped, openedOriginal,
+		let openedRewrapped = try #require(bob.tryOpen(rewrappedEKFrame))
+		let openedOriginal = try #require(bob.tryOpen(originalEKFrame))
+		#expect(
+			openedRewrapped != openedOriginal,
 			"rewrapSideBand must have re-minted the stale leg at the new epoch")
 
 		// Bob must actually apply Alice's fold before his recv mirror can
@@ -421,7 +427,10 @@ final class RotationTests: XCTestCase {
 	/// is gone, so the live choke point can no longer find a match for
 	/// what the tree presents) — unrecoverable. The fix instead throws
 	/// `.rotationInFlight`, and the session stays fully usable afterward.
-	func testSecondRotationAfterFullConvergenceIsRotationInFlightAndSessionNotBricked() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func secondRotationAfterFullConvergenceIsRotationInFlightAndSessionNotBricked()
+		throws
+	{
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceNewID = Data("alice-converged-v2".utf8)
 
@@ -438,16 +447,14 @@ final class RotationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		_ = try bob.processIncomingDecrypted(catchUpFrame)
-		XCTAssertEqual(alice.myPrincipalState, .sync(aliceNewID))
-		XCTAssertEqual(
+		#expect(alice.myPrincipalState == .sync(aliceNewID))
+		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
-			aliceNewID)
+				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				== aliceNewID)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.rotationInFlight) {
 			try alice.prepareToEncrypt(rotating: Data("alice-v3".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .rotationInFlight)
 		}
 
 		// The session must NOT be bricked: a plain `prepareToEncrypt`/
@@ -455,7 +462,7 @@ final class RotationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let aliceMsg = try alice.encrypt(Data("post-rejected-rotation".utf8)).frame
 		let fromAlice = try bob.processIncomingDecrypted(aliceMsg)
-		XCTAssertEqual(fromAlice.applicationMessage, Data("post-rejected-rotation".utf8))
+		#expect(fromAlice.applicationMessage == Data("post-rejected-rotation".utf8))
 	}
 
 	// MARK: - CODE FIX 2: rotating to my own current id
@@ -465,12 +472,11 @@ final class RotationTests: XCTestCase {
 	/// `PartySequence.commit(current)` early-returns as a no-op, so the
 	/// offer would sit `.pending` forever with no fold able to
 	/// canonicalize it. `prepareToEncrypt(rotating:)` rejects it up front.
-	func testRotatingToOwnCurrentIDIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rotatingToOwnCurrentIDIsRejected() throws {
 		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.credentialUnknown) {
 			try alice.prepareToEncrypt(rotating: alice.identity.clientID)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .credentialUnknown)
 		}
 	}
 
@@ -482,7 +488,8 @@ final class RotationTests: XCTestCase {
 	/// would linger forever. `validateOfferedUpdate` skips the `authorize`
 	/// call for this case; `validSuccessorOfCurrent` already accepts it
 	/// trivially (`pred == succ`).
-	func testSameIDRotationOfferDoesNotLeakIntoAuthorizedNext() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func sameIDRotationOfferDoesNotLeakIntoAuthorizedNext() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let rotatingMessage = try authorRotatingUpd(
 			proposer: &bob, newID: bob.identity.clientID)
@@ -497,8 +504,10 @@ final class RotationTests: XCTestCase {
 			staple: staple, proposal: craftedProposal, app: app)
 
 		let decrypted = try alice.processIncomingDecrypted(craftedFrame)
-		XCTAssertNoThrow(try alice.queueProposal(digest: decrypted.queuedProposal.digest))
-		XCTAssertTrue(alice.auth.theirs.authorizedNext.isEmpty)
+		#expect(throws: Never.self) {
+			try alice.queueProposal(digest: decrypted.queuedProposal.digest)
+		}
+		#expect(alice.auth.theirs.authorizedNext.isEmpty)
 	}
 
 	// MARK: - Mutation-verify: one-generation cap
@@ -506,14 +515,16 @@ final class RotationTests: XCTestCase {
 	/// A second `prepareToEncrypt(rotating:)` naming a DIFFERENT id while a
 	/// candidate is still outstanding is `.rotationInFlight` — the
 	/// single-in-flight cap. Naming the SAME candidate again is idempotent.
-	func testSecondRotationWithDifferentIDWhileOutstandingIsRotationInFlight() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func secondRotationWithDifferentIDWhileOutstandingIsRotationInFlight() throws {
 		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
 		_ = try alice.prepareToEncrypt(rotating: Data("alice-v2".utf8))
-		XCTAssertThrowsError(try alice.prepareToEncrypt(rotating: Data("alice-v3".utf8))) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .rotationInFlight)
+		#expect(throws: TwoMLSError.rotationInFlight) {
+			try alice.prepareToEncrypt(rotating: Data("alice-v3".utf8))
 		}
-		XCTAssertNoThrow(try alice.prepareToEncrypt(rotating: Data("alice-v2".utf8)))
+		#expect(throws: Never.self) {
+			try alice.prepareToEncrypt(rotating: Data("alice-v2".utf8))
+		}
 	}
 
 	// MARK: - Mutation-verify: AS rejects a non-successor / rollback credential
@@ -534,7 +545,8 @@ final class RotationTests: XCTestCase {
 	/// own rotation fully converge (both leaves on `bobV2`, `rotationCandidate`
 	/// still `bobV2`) before hand-crafting the rollback keeps this test to
 	/// the TWO credentials the minimal cut supports.
-	func testRollbackToRetiredCredentialIsRejectedAtQueueProposal() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rollbackToRetiredCredentialIsRejectedAtQueueProposal() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let bobOriginalID = bob.identity.clientID
 		let bobV2ID = Data("bob-v2".utf8)
@@ -544,8 +556,8 @@ final class RotationTests: XCTestCase {
 		let decrypted1 = try alice.processIncomingDecrypted(frame1)
 		_ = try alice.queueProposal(digest: decrypted1.queuedProposal.digest)
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertEqual(prepared.committedRemoteClientID, bobV2ID)
-		XCTAssertEqual(alice.theirPrincipalState, .sync(bobV2ID))
+		#expect(prepared.committedRemoteClientID == bobV2ID)
+		#expect(alice.theirPrincipalState == .sync(bobV2ID))
 
 		let foldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 		_ = try bob.processIncomingDecrypted(foldFrame)
@@ -553,19 +565,19 @@ final class RotationTests: XCTestCase {
 		// Bob's own-leaf catch-up: a PLAIN `prepareToEncrypt()` converges his
 		// SEND-leaf to `bobV2` too, before the rollback is ever authored.
 		let catchUpPrepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(catchUpPrepared.didCommit)
+		#expect(catchUpPrepared.didCommit)
 		let catchUpFrame = try bob.encrypt(Data("bob-catchup".utf8)).frame
 		_ = try alice.processIncomingDecrypted(catchUpFrame)
-		XCTAssertEqual(
+		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: bob.sendGroup!.classical).credential),
-			bobV2ID)
+				TwoMLSSession.ownLeaf(of: bob.sendGroup!.classical).credential)
+				== bobV2ID)
 
 		// Hand-author the rollback: `newIdentity: .basic(bobOriginalID)`,
 		// genuinely ring-signed off `bob.recvClassicalSigningKey()` (still
 		// `bobV2`'s key — `rotationCandidate` is untouched by this direct
 		// construction).
-		var mirror = try XCTUnwrap(bob.recvGroup)
+		var mirror = try #require(bob.recvGroup)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (rollbackMessage, _) = try mirror.classical.proposeUpdate(
 			SessionTestSupport.classicalProvider,
@@ -589,10 +601,8 @@ final class RotationTests: XCTestCase {
 			staple: staple, proposal: rollbackProposal, app: app)
 
 		let decrypted2 = try alice.processIncomingDecrypted(rollbackFrame)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidSuccession) {
 			try alice.queueProposal(digest: decrypted2.queuedProposal.digest)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
 	}
 
@@ -604,7 +614,8 @@ final class RotationTests: XCTestCase {
 	/// look like a fresh, never-retired successor of the peer's), so
 	/// `validateOfferedUpdate`'s `!auth.mine.knownIDs.contains(offeredID)`
 	/// guard closes that gap explicitly, before `theirs` is ever consulted.
-	func testQueueProposalRejectsOfferNamingApproversFoundingID() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func queueProposalRejectsOfferNamingApproversFoundingID() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let rotatingMessage = try authorRotatingUpd(
 			proposer: &bob, newID: alice.identity.clientID)
@@ -619,10 +630,8 @@ final class RotationTests: XCTestCase {
 			staple: staple, proposal: craftedProposal, app: app)
 
 		let decrypted = try alice.processIncomingDecrypted(craftedFrame)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidSuccession) {
 			try alice.queueProposal(digest: decrypted.queuedProposal.digest)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
 	}
 
@@ -631,11 +640,12 @@ final class RotationTests: XCTestCase {
 	/// `auth.mine.authorizedNext`, not yet canonicalized) is also
 	/// `.invalidSuccession` — `knownIDs` spans `history` AND
 	/// `authorizedNext` AND `pinned`.
-	func testQueueProposalRejectsOfferNamingApproversInFlightCandidateID() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func queueProposalRejectsOfferNamingApproversInFlightCandidateID() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceCandidateID = Data("alice-candidate".utf8)
 		_ = try alice.prepareToEncrypt(rotating: aliceCandidateID)
-		XCTAssertTrue(alice.auth.mine.authorizedNext.contains(aliceCandidateID))
+		#expect(alice.auth.mine.authorizedNext.contains(aliceCandidateID))
 
 		let rotatingMessage = try authorRotatingUpd(
 			proposer: &bob, newID: aliceCandidateID)
@@ -649,10 +659,8 @@ final class RotationTests: XCTestCase {
 			staple: staple, proposal: craftedProposal, app: app)
 
 		let decrypted = try alice.processIncomingDecrypted(craftedFrame)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidSuccession) {
 			try alice.queueProposal(digest: decrypted.queuedProposal.digest)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
 	}
 
@@ -666,7 +674,8 @@ final class RotationTests: XCTestCase {
 	/// (including the self-id guard, which runs first) has passed — so a
 	/// throw here must never leak a pending authorization into the real
 	/// `auth.theirs`.
-	func testRejectedOfferLeavesTheirsUnchanged() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rejectedOfferLeavesTheirsUnchanged() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let rotatingMessage = try authorRotatingUpd(
 			proposer: &bob, newID: alice.identity.clientID)
@@ -682,12 +691,10 @@ final class RotationTests: XCTestCase {
 
 		let decrypted = try alice.processIncomingDecrypted(craftedFrame)
 		let theirsBefore = alice.auth.theirs
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidSuccession) {
 			try alice.queueProposal(digest: decrypted.queuedProposal.digest)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
-		XCTAssertEqual(alice.auth.theirs, theirsBefore)
+		#expect(alice.auth.theirs == theirsBefore)
 	}
 
 	// MARK: - Mutation-verify: the old key is rejected after rotation
@@ -697,7 +704,8 @@ final class RotationTests: XCTestCase {
 	/// `encrypt`, which resolves the correct current key via the custody
 	/// resolver) fails Bob's `unprotect` — his tree shows Alice's leaf
 	/// presenting the NEW key, so the old signature does not verify.
-	func testOldKeyIsRejectedAfterRotation() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func oldKeyIsRejectedAfterRotation() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceOldSigningKey = try alice.sendClassicalSigningKey()
 		let aliceNewID = Data("alice-old-key-test".utf8)
@@ -717,9 +725,9 @@ final class RotationTests: XCTestCase {
 		// key — build a forged app message signed with the OLD one instead,
 		// entirely off a local throwaway copy (alice's real state untouched).
 		_ = try alice.prepareToEncrypt()
-		let pending = try XCTUnwrap(alice.pendingProposal)
+		let pending = try #require(alice.pendingProposal)
 		guard var send = alice.sendGroup else {
-			XCTFail("expected alice to be established")
+			Issue.record("expected alice to be established")
 			return
 		}
 		let forgedPM = try send.classical.protect(
@@ -732,8 +740,10 @@ final class RotationTests: XCTestCase {
 			staple: alice.currentStaple, proposal: proposalSection, app: forgedAppBytes)
 
 		let bobEpochBefore = bob.recvGroup?.classical.context.epoch
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(forgedFrame))
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobEpochBefore)
+		#expect(throws: (any Error).self) {
+			try bob.processIncomingDecrypted(forgedFrame)
+		}
+		#expect(bob.recvGroup?.classical.context.epoch == bobEpochBefore)
 	}
 
 	// MARK: - Mutation-verify: value semantics on a throw
@@ -741,7 +751,8 @@ final class RotationTests: XCTestCase {
 	/// A tampered rotating-fold staple throws and burns NEITHER the group NOR
 	/// `auth` — Alice's `myPrincipalState` stays `.pending` exactly as it was,
 	/// and the genuine (untampered) frame still applies correctly afterward.
-	func testTamperedRotatingFoldLeavesGroupAndAuthUnchanged() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func tamperedRotatingFoldLeavesGroupAndAuthUnchanged() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceOldID = alice.identity.clientID
 		let aliceNewID = Data("alice-tamper-v2".utf8)
@@ -765,17 +776,19 @@ final class RotationTests: XCTestCase {
 
 		let epochBefore = alice.recvGroup?.classical.context.epoch
 		let principalBefore = alice.myPrincipalState
-		XCTAssertEqual(principalBefore, .pending(old: aliceOldID, new: aliceNewID))
-		XCTAssertThrowsError(try alice.processIncomingDecrypted(tamperedFrame))
-		XCTAssertEqual(alice.recvGroup?.classical.context.epoch, epochBefore)
-		XCTAssertEqual(alice.myPrincipalState, principalBefore)
+		#expect(principalBefore == .pending(old: aliceOldID, new: aliceNewID))
+		#expect(throws: (any Error).self) {
+			try alice.processIncomingDecrypted(tamperedFrame)
+		}
+		#expect(alice.recvGroup?.classical.context.epoch == epochBefore)
+		#expect(alice.myPrincipalState == principalBefore)
 
 		// The genuine frame still applies correctly afterward — no state was
 		// corrupted by the failed attempt.
 		let decrypted = try alice.processIncomingDecrypted(foldFrame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertTrue(decrypted.ownCredentialCanonicalized)
-		XCTAssertEqual(alice.myPrincipalState, .sync(aliceNewID))
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(decrypted.ownCredentialCanonicalized)
+		#expect(alice.myPrincipalState == .sync(aliceNewID))
 	}
 
 	// MARK: - Mutation-verify: the effects reshape still rejects a roster change
@@ -787,7 +800,8 @@ final class RotationTests: XCTestCase {
 	/// Add/Remove/`membershipRemoved` allow-list. Mirrors
 	/// `FoldTests.testFoldEffectsWithAnAddThrowsUnexpectedProposal`, swapping
 	/// a routine fold for a rotating one.
-	func testRotatingFoldWithRosterAddStillThrowsUnexpectedProposal() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rotatingFoldWithRosterAddStillThrowsUnexpectedProposal() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceNewID = Data("alice-roster-v2".utf8)
 
@@ -795,10 +809,10 @@ final class RotationTests: XCTestCase {
 		let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 		let decryptedOffer = try bob.processIncomingDecrypted(offerFrame)
 		_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
-		let rotatingMessage = try XCTUnwrap(bob.queuedProposal?.message)
+		let rotatingMessage = try #require(bob.queuedProposal?.message)
 
 		guard let sendGroupB = bob.sendGroup else {
-			XCTFail("expected bob to be established")
+			Issue.record("expected bob to be established")
 			return
 		}
 		let mallory = try SessionTestSupport.identity("mallory-rotation")
@@ -845,10 +859,10 @@ final class RotationTests: XCTestCase {
 		// post-apply `.invalidFoldEffects` shape check. Same rejection,
 		// earlier gate.
 		let recvEpochBefore = alice.recvGroup?.classical.context.epoch
-		XCTAssertThrowsError(try alice.processIncomingDecrypted(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
+		#expect(throws: TwoMLSError.unexpectedProposal) {
+			try alice.processIncomingDecrypted(badFrame)
 		}
-		XCTAssertEqual(alice.recvGroup?.classical.context.epoch, recvEpochBefore)
+		#expect(alice.recvGroup?.classical.context.epoch == recvEpochBefore)
 	}
 
 	// MARK: - Recv-side `adjudicate` (`applyFoldCommit`/`applyBind`)
@@ -864,10 +878,11 @@ final class RotationTests: XCTestCase {
 	/// ONLY thing that catches this; the shape allow-list alone would wave
 	/// it through since a `.credentialReplaced` on the committer counts as
 	/// an ordinary leaf move.
-	func testApplyFoldCommitRejectsNeverOfferedNewIdentityViaAdjudicate() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func applyFoldCommitRejectsNeverOfferedNewIdentityViaAdjudicate() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		guard let sendGroupB = bob.sendGroup else {
-			XCTFail("expected bob to be established")
+			Issue.record("expected bob to be established")
 			return
 		}
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
@@ -902,11 +917,11 @@ final class RotationTests: XCTestCase {
 
 		let recvEpochBefore = alice.recvGroup?.classical.context.epoch
 		let theirsBefore = alice.auth.theirs
-		XCTAssertThrowsError(try alice.processIncomingDecrypted(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		#expect(throws: TwoMLSError.invalidSuccession) {
+			try alice.processIncomingDecrypted(badFrame)
 		}
-		XCTAssertEqual(alice.recvGroup?.classical.context.epoch, recvEpochBefore)
-		XCTAssertEqual(alice.auth.theirs, theirsBefore)
+		#expect(alice.recvGroup?.classical.context.epoch == recvEpochBefore)
+		#expect(alice.auth.theirs == theirsBefore)
 	}
 
 	/// The `0x05` bind-riding counterpart: a genuine PQ bind commit (the
@@ -919,7 +934,8 @@ final class RotationTests: XCTestCase {
 	/// catches the never-offered identity. Mirrors
 	/// `BootstrapTests.testWrongClassicalAttestationIsRejectedAndRolledBack`'s
 	/// construction, swapping the bad attestation for a bad `newIdentity`.
-	func testApplyBindRejectsNeverOfferedNewIdentityViaAdjudicate() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func applyBindRejectsNeverOfferedNewIdentityViaAdjudicate() throws {
 		let established = try SessionTestSupport.established()
 		var alice = established.alice
 		var bob = established.bob
@@ -933,16 +949,16 @@ final class RotationTests: XCTestCase {
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
-		let owed = try XCTUnwrap(alice.owedBind)
-		var send = try XCTUnwrap(alice.sendGroup)
-		var recv = try XCTUnwrap(alice.recvGroup)
+		let owed = try #require(alice.owedBind)
+		var send = try #require(alice.sendGroup)
+		var recv = try #require(alice.recvGroup)
 
-		let bobRecvClassicalEpochBefore = try XCTUnwrap(
+		let bobRecvClassicalEpochBefore = try #require(
 			bob.recvGroup?.classical.context.epoch)
-		let bobRecvPQEpochBefore = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
+		let bobRecvPQEpochBefore = try #require(bob.recvGroup?.pq?.context.epoch)
 		let bobTheirsBefore = bob.auth.theirs
 
-		var pqForExport = try XCTUnwrap(send.pq)
+		var pqForExport = try #require(send.pq)
 		let apqPSK = try MLS.Combiner.ExportedPsk.export(
 			from: &pqForExport, SessionTestSupport.pqProvider,
 			componentID: MLS.Combiner.Codepoints.deployed.apqComponentID)
@@ -1024,13 +1040,13 @@ final class RotationTests: XCTestCase {
 		let frame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appBytes)
 
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(frame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		#expect(throws: TwoMLSError.invalidSuccession) {
+			try bob.processIncomingDecrypted(frame)
 		}
 
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobRecvClassicalEpochBefore)
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobRecvPQEpochBefore)
-		XCTAssertEqual(bob.auth.theirs, bobTheirsBefore)
+		#expect(bob.recvGroup?.classical.context.epoch == bobRecvClassicalEpochBefore)
+		#expect(bob.recvGroup?.pq?.context.epoch == bobRecvPQEpochBefore)
+		#expect(bob.auth.theirs == bobTheirsBefore)
 	}
 
 	// MARK: - Evidence-gating: an unlicensed own-leaf catch-up must not commit
@@ -1046,7 +1062,8 @@ final class RotationTests: XCTestCase {
 	/// round. `pqBootstrapJoin` requires `pendingProposal == nil`, so the
 	/// rotation offer's `encrypt` runs before the bootstrap join. Cites
 	/// `protocol-flows.md` §Evidence-gating.
-	func testUnlicensedBootstrapOwnLeafCatchUpDoesNotCommit() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func unlicensedBootstrapOwnLeafCatchUpDoesNotCommit() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceNewID = Data("alice-evidence-b1".utf8)
 
@@ -1058,60 +1075,61 @@ final class RotationTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncomingDecrypted(foldFrame)
-		XCTAssertEqual(alice.myPrincipalState, .sync(aliceNewID))
-		XCTAssertEqual(
+		#expect(alice.myPrincipalState == .sync(aliceNewID))
+		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.recvGroup!.classical).credential),
-			aliceNewID)
-		XCTAssertEqual(
+				TwoMLSSession.ownLeaf(of: alice.recvGroup!.classical).credential)
+				== aliceNewID)
+		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
-			alice.identity.clientID, "the send-classical leaf documentedly lags")
+				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				== alice.identity.clientID,
+			"the send-classical leaf documentedly lags")
 
 		// §A.3 bootstrap: Bob founds Group_B.pq, Alice joins and owes the bind.
 		// `pendingProposal` is nil (the offer's `encrypt` cleared it), so the
 		// join is not blocked by its own guard.
-		XCTAssertNil(alice.pendingProposal)
-		let sendEpochBefore = try XCTUnwrap(alice.sendGroup?.classical.context.epoch)
+		#expect(alice.pendingProposal == nil)
+		let sendEpochBefore = try #require(alice.sendGroup?.classical.context.epoch)
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
-		XCTAssertNotNil(alice.owedBind)
-		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, sendEpochBefore)
+		#expect(alice.owedBind != nil)
+		#expect(alice.sendGroup?.classical.context.epoch == sendEpochBefore)
 
 		// Simulate Bob's licensing Upd never having arrived.
 		alice.peerAppliedSendEpoch = nil
 
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertFalse(prepared.didCommit, "an unlicensed catch-up must not commit")
-		XCTAssertNotNil(alice.owedBind)
-		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, sendEpochBefore)
+		#expect(!prepared.didCommit, "an unlicensed catch-up must not commit")
+		#expect(alice.owedBind != nil)
+		#expect(alice.sendGroup?.classical.context.epoch == sendEpochBefore)
 		let stalledStapleKind = Frames.stapleKind(alice.currentStaple.first!)
-		XCTAssertNotEqual(stalledStapleKind, .mlsMessage)
-		XCTAssertNotEqual(stalledStapleKind, .apqPrivateMessage)
+		#expect(stalledStapleKind != .mlsMessage)
+		#expect(stalledStapleKind != .apqPrivateMessage)
 
 		// Re-license: Bob's next inbound frame stamps our send epoch.
 		_ = try bob.prepareToEncrypt()
 		let licenseFrame = try bob.encrypt(Data("license".utf8)).frame
 		_ = try alice.processIncomingDecrypted(licenseFrame)
-		XCTAssertNotNil(alice.peerAppliedSendEpoch)
+		#expect(alice.peerAppliedSendEpoch != nil)
 
 		// The deferred catch-up and the bind land on ONE licensed round.
 		let prepared2 = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared2.didCommit)
-		XCTAssertNil(alice.owedBind)
+		#expect(prepared2.didCommit)
+		#expect(alice.owedBind == nil)
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(boundFrame))
-		XCTAssertEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
+		#expect(Frames.stapleKind(staple.first!) == .apqPrivateMessage)
 
 		let decrypted = try bob.processIncomingDecrypted(boundFrame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertEqual(decrypted.newSender, aliceNewID)
-		XCTAssertEqual(
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(decrypted.newSender == aliceNewID)
+		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
-			aliceNewID, "the send-classical leaf has now caught up")
+				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				== aliceNewID, "the send-classical leaf has now caught up")
 	}
 
 	/// No PQ at all: an unlicensed own-leaf catch-up must not produce a
@@ -1119,7 +1137,8 @@ final class RotationTests: XCTestCase {
 	/// license withheld: `didCommit == false` and the send epoch is unchanged.
 	/// Re-license and the deferred catch-up commits; Bob applies it
 	/// (`newSender == aliceNewID`). Cites `protocol-flows.md` §Evidence-gating.
-	func testUnlicensedOwnLeafCatchUpDoesNotCommit() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func unlicensedOwnLeafCatchUpDoesNotCommit() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceNewID = Data("alice-evidence-b3".utf8)
 
@@ -1130,39 +1149,38 @@ final class RotationTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncomingDecrypted(foldFrame)
-		XCTAssertEqual(alice.myPrincipalState, .sync(aliceNewID))
+		#expect(alice.myPrincipalState == .sync(aliceNewID))
 
-		let sendEpochBefore = try XCTUnwrap(alice.sendGroup?.classical.context.epoch)
+		let sendEpochBefore = try #require(alice.sendGroup?.classical.context.epoch)
 		alice.peerAppliedSendEpoch = nil
 
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertFalse(prepared.didCommit, "an unlicensed catch-up must not commit")
-		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, sendEpochBefore)
+		#expect(!prepared.didCommit, "an unlicensed catch-up must not commit")
+		#expect(alice.sendGroup?.classical.context.epoch == sendEpochBefore)
 		let stalledStapleKind = Frames.stapleKind(alice.currentStaple.first!)
-		XCTAssertNotEqual(stalledStapleKind, .mlsMessage)
-		XCTAssertNotEqual(stalledStapleKind, .apqPrivateMessage)
+		#expect(stalledStapleKind != .mlsMessage)
+		#expect(stalledStapleKind != .apqPrivateMessage)
 
 		// Re-license and the deferred catch-up commits.
 		_ = try bob.prepareToEncrypt()
 		let licenseFrame = try bob.encrypt(Data("license".utf8)).frame
 		_ = try alice.processIncomingDecrypted(licenseFrame)
-		XCTAssertNotNil(alice.peerAppliedSendEpoch)
+		#expect(alice.peerAppliedSendEpoch != nil)
 
 		let prepared2 = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared2.didCommit)
+		#expect(prepared2.didCommit)
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(catchUpFrame))
-		XCTAssertEqual(Frames.stapleKind(staple.first!), .mlsMessage)
+		#expect(Frames.stapleKind(staple.first!) == .mlsMessage)
 		let decrypted = try bob.processIncomingDecrypted(catchUpFrame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertEqual(decrypted.newSender, aliceNewID)
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(decrypted.newSender == aliceNewID)
 	}
 }
 
 // MARK: - Generalized catch-up retention
 
-@available(iOS 26, macOS 26, *)
 extension RotationTests {
 	/// An §A.5 `pqRekeyApply` keeps `recvPQ.pending[mine.current]`
 	/// when the recv-PQ leaf STILL lags after the apply. The in-flight
@@ -1171,7 +1189,8 @@ extension RotationTests {
 	/// held catch-up key supplied out of band (as a migrated session's
 	/// mint would). The apply promotes the round's own (same-id) key, and
 	/// must retain the now-lagging `pending[c]` it never touched.
-	func testRekeyApplyRetainsPQCatchUpKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rekeyApplyRetainsPQCatchUpKey() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let upd = try bob.pqRekeyBegin().frame
 
@@ -1183,14 +1202,14 @@ extension RotationTests {
 
 		let commit = try alice.pqRekeyRespond(upd).frame
 		_ = try bob.pqRekeyApply(commit)
-		XCTAssertNotEqual(
-			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq)).credential),
-			c, "the apply promoted the round's own (same-id) key, not c")
-		XCTAssertEqual(
-			bob.leafKeys.recvPQ.pending[c]?.signatureKey, pk,
+		let recvPQGroup = try #require(bob.recvGroup?.pq)
+		#expect(
+			try basicIdentifier(TwoMLSSession.ownLeaf(of: recvPQGroup).credential)
+				!= c, "the apply promoted the round's own (same-id) key, not c")
+		#expect(
+			bob.leafKeys.recvPQ.pending[c]?.signatureKey == pk,
 			"the retained catch-up key")
-		XCTAssertEqual(bob.leafKeys.recvPQ.pending.count, 1)
+		#expect(bob.leafKeys.recvPQ.pending.count == 1)
 	}
 
 	/// The id-MOVING variant of the race above: bob's own begin targets
@@ -1202,7 +1221,8 @@ extension RotationTests {
 	/// move; nothing ever staged `pending[c2]`, so `pending` clears
 	/// entirely. His own leaf still lags `c2` afterward, so the NEXT begin
 	/// mints fresh for it, and the parked target restores.
-	func testRekeyApplyDuringIDMovingInFlightRoundThenNextBeginTargetsTheLaterID() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rekeyApplyDuringIDMovingInFlightRoundThenNextBeginTargetsTheLaterID() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let c1 = Data("bob-race-c1".utf8)
 		bob.auth.mine.history.append(c1)
@@ -1210,10 +1230,10 @@ extension RotationTests {
 
 		let upd = try bob.pqRekeyBegin().frame
 		guard case .rekeyInitiated = bob.pqInflight else {
-			XCTFail("expected bob to hold .rekeyInitiated after pqRekeyBegin")
+			Issue.record("expected bob to hold .rekeyInitiated after pqRekeyBegin")
 			return
 		}
-		XCTAssertNotNil(bob.leafKeys.recvPQ.pending[c1])
+		#expect(bob.leafKeys.recvPQ.pending[c1] != nil)
 
 		// The race: a further classical rotation, to c2, lands while the
 		// round above is still in flight (bookkeeping-only advance — the
@@ -1233,21 +1253,23 @@ extension RotationTests {
 		)
 
 		let midRaceArchive = try bob.makeSessionArchive(kind: .checkpoint)
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try TwoMLSSession.restore(
 				core: nil, checkpoint: midRaceArchive,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider))
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 
 		let commit = try alice.pqRekeyRespond(upd).frame
 		_ = try bob.pqRekeyApply(commit)
 
-		XCTAssertEqual(
-			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq)).credential),
-			c1, "the apply promoted the round's own target, c1, not the later c2")
-		XCTAssertNil(bob.leafKeys.recvPQ.pending[c2], "nothing ever staged a key for c2")
-		XCTAssertTrue(
+		let recvPQGroup = try #require(bob.recvGroup?.pq)
+		#expect(
+			try basicIdentifier(TwoMLSSession.ownLeaf(of: recvPQGroup).credential)
+				== c1,
+			"the apply promoted the round's own target, c1, not the later c2")
+		#expect(bob.leafKeys.recvPQ.pending[c2] == nil, "nothing ever staged a key for c2")
+		#expect(
 			bob.leafKeys.recvPQ.pending.isEmpty,
 			"c1 was promoted, and no entry pins a target the leaf has already moved past"
 		)
@@ -1261,11 +1283,11 @@ extension RotationTests {
 		bob.owedBind = nil
 		_ = try bob.pqRekeyBegin()
 		guard case .rekeyInitiated(let nextUpdBytes) = bob.pqInflight else {
-			XCTFail("expected bob to hold .rekeyInitiated after the fresh begin")
+			Issue.record("expected bob to hold .rekeyInitiated after the fresh begin")
 			return
 		}
-		XCTAssertNotEqual(nextUpdBytes, upd)
-		XCTAssertNotNil(bob.leafKeys.recvPQ.pending[c2])
+		#expect(nextUpdBytes != upd)
+		#expect(bob.leafKeys.recvPQ.pending[c2] != nil)
 	}
 
 	/// Rotation staging never touches send-classical at all — its own
@@ -1276,7 +1298,8 @@ extension RotationTests {
 	/// earlier Rust-won rotation, hand-set here); authoring ANOTHER native
 	/// rotation (to `d`) leaves that entry exactly as it was, and stages
 	/// nothing send-side for `d` either.
-	func testRotationWhileSendLeafLagsLeavesSendClassicalPendingUntouched() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rotationWhileSendLeafLagsLeavesSendClassicalPendingUntouched() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		let c = Data("bob-send-lags".utf8)
 		let (csk, cpk) = try TwoMLSIdentity.mintSignatureKeypair()
@@ -1285,15 +1308,15 @@ extension RotationTests {
 
 		let d = Data("bob-new-candidate".utf8)
 		let prepared = try bob.prepareToEncrypt(rotating: d)
-		XCTAssertFalse(prepared.didCommit, "a fresh candidate offer, not a fold")
-		XCTAssertEqual(
-			bob.leafKeys.sendClassical.pending[c]?.signatureKey, cpk,
+		#expect(!prepared.didCommit, "a fresh candidate offer, not a fold")
+		#expect(
+			bob.leafKeys.sendClassical.pending[c]?.signatureKey == cpk,
 			"a hand-set send-classical entry is left untouched by recv-side staging"
 		)
-		XCTAssertNil(
-			bob.leafKeys.sendClassical.pending[d],
+		#expect(
+			bob.leafKeys.sendClassical.pending[d] == nil,
 			"the new candidate's key is staged in recv-classical only")
-		XCTAssertEqual(bob.leafKeys.sendClassical.pending.count, 1)
-		XCTAssertEqual(bob.rotationCandidate?.clientID, d)
+		#expect(bob.leafKeys.sendClassical.pending.count == 1)
+		#expect(bob.rotationCandidate?.clientID == d)
 	}
 }

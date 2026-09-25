@@ -4,7 +4,7 @@ import MLSCodec
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
-import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
@@ -64,17 +64,17 @@ private func makeRotationMember(
 /// mechanism itself needs no OS-26 dependency (only `TwoMLSSuite`'s PQ suite
 /// does). Each cluster notes, in a comment, which single line — if broken —
 /// makes ONLY that test fail (mutation-verification).
-final class CredentialAuthenticationTests: XCTestCase {
+@Suite struct CredentialAuthenticationTests {
 	private func id(_ s: String) -> Data { Data(s.utf8) }
 
 	// MARK: - commit()
 
-	func testCommitAppendsAndAdvancesCurrent() throws {
+	@Test func commitAppendsAndAdvancesCurrent() throws {
 		var sequence = PartySequence.seeded(id("a"))
-		XCTAssertEqual(sequence.current, id("a"))
+		#expect(sequence.current == id("a"))
 		try sequence.commit(id("b"))
-		XCTAssertEqual(sequence.current, id("b"))
-		XCTAssertEqual(sequence.history, [id("a"), id("b")])
+		#expect(sequence.current == id("b"))
+		#expect(sequence.history == [id("a"), id("b")])
 	}
 
 	/// Rollback is an error: re-committing an id that is in `history` but no
@@ -83,26 +83,26 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// convergence). Mutation: restoring the old move-to-newest
 	/// (`history.removeAll { $0 == id }` + append, instead of the throw) is the
 	/// ONLY change that makes this fail.
-	func testCommitRejectsRollbackToRetiredID() throws {
+	@Test func commitRejectsRollbackToRetiredID() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		try sequence.commit(id("b"))
 		try sequence.commit(id("c"))
-		XCTAssertThrowsError(try sequence.commit(id("a"))) { error in
-			XCTAssertEqual(error as? TwoMLSError, .credentialRollback)
+		#expect(throws: TwoMLSError.credentialRollback) {
+			try sequence.commit(id("a"))
 		}
-		XCTAssertEqual(sequence.history, [id("a"), id("b"), id("c")])
-		XCTAssertEqual(sequence.current, id("c"))
+		#expect(sequence.history == [id("a"), id("b"), id("c")])
+		#expect(sequence.current == id("c"))
 	}
 
 	/// `commit` also rejects re-committing a `pinned` (retired-but-held) id, not
 	/// just one still in the live window. Mutation: dropping `|| pinned.contains(id)`
 	/// makes this fail.
-	func testCommitRejectsRollbackToPinnedID() throws {
+	@Test func commitRejectsRollbackToPinnedID() throws {
 		var sequence = PartySequence.seeded(id("c0"))
 		try sequence.commit(id("c1"))
 		sequence.pin(id("retired"))
-		XCTAssertThrowsError(try sequence.commit(id("retired"))) { error in
-			XCTAssertEqual(error as? TwoMLSError, .credentialRollback)
+		#expect(throws: TwoMLSError.credentialRollback) {
+			try sequence.commit(id("retired"))
 		}
 	}
 
@@ -110,44 +110,44 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// `current == id` no-op check is the ONLY change that makes this fail —
 	/// a re-commit of the already-current id must preserve an authorization
 	/// already in flight for the NEXT step.
-	func testCommitOfCurrentPreservesAuthorizedNext() throws {
+	@Test func commitOfCurrentPreservesAuthorizedNext() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		sequence.authorize(id("b"))
 		try sequence.commit(id("a"))  // no-op: already current
-		XCTAssertTrue(sequence.validSuccessor(pred: id("a"), succ: id("b")))
+		#expect(sequence.validSuccessor(pred: id("a"), succ: id("b")))
 	}
 
 	// MARK: - validSuccessor: same-id / authorized / catch-up / non-successor
 
-	func testSameIDIsAlwaysAValidSuccessor() throws {
+	@Test func sameIDIsAlwaysAValidSuccessor() throws {
 		let sequence = PartySequence.seeded(id("a"))
-		XCTAssertTrue(sequence.validSuccessor(pred: id("a"), succ: id("a")))
-		XCTAssertTrue(sequence.validSuccessor(pred: id("z"), succ: id("z")))
+		#expect(sequence.validSuccessor(pred: id("a"), succ: id("a")))
+		#expect(sequence.validSuccessor(pred: id("z"), succ: id("z")))
 	}
 
-	func testAuthorizedStepIsAcceptedAsSuccessor() throws {
+	@Test func authorizedStepIsAcceptedAsSuccessor() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		sequence.authorize(id("b"))
-		XCTAssertTrue(sequence.validSuccessor(pred: id("a"), succ: id("b")))
+		#expect(sequence.validSuccessor(pred: id("a"), succ: id("b")))
 	}
 
 	/// Catch-up: a lagging leaf (still on an older, but still-in-history,
 	/// credential) may fast-forward to any newer history element with no
 	/// separate authorization.
-	func testCatchUpToNewerHistoryElementIsAccepted() throws {
+	@Test func catchUpToNewerHistoryElementIsAccepted() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		try sequence.commit(id("b"))
 		try sequence.commit(id("c"))
-		XCTAssertTrue(sequence.validSuccessor(pred: id("a"), succ: id("c")))
+		#expect(sequence.validSuccessor(pred: id("a"), succ: id("c")))
 	}
 
 	/// A `succ` unrelated to `pred` (not authorized, not newer in history) is
 	/// the case a real `validateSuccession` call throws `.invalidSuccession`
 	/// for (exercised for real in the integration test below).
-	func testUnrelatedSuccessorIsRejected() throws {
+	@Test func unrelatedSuccessorIsRejected() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		try sequence.commit(id("b"))
-		XCTAssertFalse(sequence.validSuccessor(pred: id("b"), succ: id("z")))
+		#expect(!sequence.validSuccessor(pred: id("b"), succ: id("z")))
 	}
 
 	// MARK: - validSuccessor: gate ordering (HIGH)
@@ -157,19 +157,19 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// (checking `authorizedNext.contains(succ)` first) is the ONLY change
 	/// that makes this fail — it would accept an authorized `succ` even from
 	/// a `pred` this sequence never held.
-	func testUnknownPredWithAuthorizedSuccessorIsStillRejected() throws {
+	@Test func unknownPredWithAuthorizedSuccessorIsStillRejected() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		sequence.authorize(id("b"))
-		XCTAssertFalse(sequence.validSuccessor(pred: id("unknown"), succ: id("b")))
+		#expect(!sequence.validSuccessor(pred: id("unknown"), succ: id("b")))
 	}
 
 	/// A `pred` that is pinned-only (absent from `history`) IS known, so the
 	/// same authorized `succ` is accepted from it.
-	func testPinnedOnlyPredWithAuthorizedSuccessorIsAccepted() throws {
+	@Test func pinnedOnlyPredWithAuthorizedSuccessorIsAccepted() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		sequence.pin(id("old"))
 		sequence.authorize(id("b"))
-		XCTAssertTrue(sequence.validSuccessor(pred: id("old"), succ: id("b")))
+		#expect(sequence.validSuccessor(pred: id("old"), succ: id("b")))
 	}
 
 	/// No-downgrade (HIGH), in one test: a pinned id absent from `history` is
@@ -177,34 +177,34 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// never authorize a downgrade back onto itself. Mutation: making
 	/// `(nil, _?)` return anything but a fixed direction (or admitting a
 	/// pinned id into `position(succ)`) is what this test pins down.
-	func testPinnedIDNeverAuthorizesADowngrade() throws {
+	@Test func pinnedIDNeverAuthorizesADowngrade() throws {
 		var sequence = PartySequence.seeded(id("current"))
 		sequence.pin(id("ancient"))
-		XCTAssertFalse(sequence.validSuccessor(pred: id("current"), succ: id("ancient")))
-		XCTAssertTrue(sequence.validSuccessor(pred: id("ancient"), succ: id("current")))
+		#expect(!sequence.validSuccessor(pred: id("current"), succ: id("ancient")))
+		#expect(sequence.validSuccessor(pred: id("ancient"), succ: id("current")))
 	}
 
 	/// A rollback dressed as an authorization is still rejected: authorizing an
 	/// id already retired in `history` does NOT make it a valid successor — the
 	/// authorization shortcut admits only genuinely new ids. Mutation: dropping
 	/// the `!history.contains(succ)` guard on the authorized arm makes this fail.
-	func testAuthorizingARetiredIDDoesNotResurrectIt() throws {
+	@Test func authorizingARetiredIDDoesNotResurrectIt() throws {
 		var sequence = PartySequence.seeded(id("c0"))
 		try sequence.commit(id("c1"))
 		try sequence.commit(id("c2"))
 		sequence.authorize(id("c0"))  // app error: c0 is retired
-		XCTAssertFalse(sequence.validSuccessor(pred: id("c2"), succ: id("c0")))
-		XCTAssertFalse(sequence.validSuccessorOfCurrent(id("c0")))
+		#expect(!sequence.validSuccessor(pred: id("c2"), succ: id("c0")))
+		#expect(!sequence.validSuccessorOfCurrent(id("c0")))
 	}
 
 	/// Same for a `pinned` (evicted) id: authorizing it does not make it a valid
 	/// `succ`, so the no-downgrade guarantee holds even against an authorization.
 	/// Mutation: dropping the `!pinned.contains(succ)` guard makes this fail.
-	func testAuthorizingAPinnedIDDoesNotMakeItAValidSuccessor() throws {
+	@Test func authorizingAPinnedIDDoesNotMakeItAValidSuccessor() throws {
 		var sequence = PartySequence.seeded(id("current"))
 		sequence.pin(id("ancient"))
 		sequence.authorize(id("ancient"))
-		XCTAssertFalse(sequence.validSuccessor(pred: id("current"), succ: id("ancient")))
+		#expect(!sequence.validSuccessor(pred: id("current"), succ: id("ancient")))
 	}
 
 	// MARK: - History window
@@ -212,27 +212,27 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// Mutation: relaxing `history.count > Self.credentialHistoryWindow` (or
 	/// dropping the evict loop entirely) is the ONLY change that makes the
 	/// count assertion fail.
-	func testWindowEvictsOldestPastCapacity() throws {
+	@Test func windowEvictsOldestPastCapacity() throws {
 		var sequence = PartySequence.seeded(id("id-0"))
 		for i in 1...PartySequence.credentialHistoryWindow {
 			try sequence.commit(id("id-\(i)"))
 		}
-		XCTAssertEqual(sequence.history.count, PartySequence.credentialHistoryWindow)
-		XCTAssertFalse(sequence.contains(id("id-0")))
-		XCTAssertTrue(sequence.contains(id("id-1")))
+		#expect(sequence.history.count == PartySequence.credentialHistoryWindow)
+		#expect(!sequence.contains(id("id-0")))
+		#expect(sequence.contains(id("id-1")))
 	}
 
 	/// An evicted id is no longer a valid `pred` UNLESS pinned.
-	func testEvictedIDIsNoLongerAValidPredUnlessPinned() throws {
+	@Test func evictedIDIsNoLongerAValidPredUnlessPinned() throws {
 		var sequence = PartySequence.seeded(id("id-0"))
 		for i in 1...PartySequence.credentialHistoryWindow {
 			try sequence.commit(id("id-\(i)"))
 		}
 		let newest = id("id-\(PartySequence.credentialHistoryWindow)")
-		XCTAssertFalse(sequence.validSuccessor(pred: id("id-0"), succ: newest))
+		#expect(!sequence.validSuccessor(pred: id("id-0"), succ: newest))
 
 		sequence.pin(id("id-0"))
-		XCTAssertTrue(sequence.validSuccessor(pred: id("id-0"), succ: newest))
+		#expect(sequence.validSuccessor(pred: id("id-0"), succ: newest))
 	}
 
 	// MARK: - knownIDs / AuthCore.knows / validateMember
@@ -240,59 +240,59 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// Mutation: dropping any ONE of the three `knownIDs` sources (`history`,
 	/// `authorizedNext`, `pinned`) makes exactly the corresponding element
 	/// below missing from this set.
-	func testKnownIDsChainsAllThreeSources() throws {
+	@Test func knownIDsChainsAllThreeSources() throws {
 		var sequence = PartySequence.seeded(id("history-id"))
 		sequence.authorize(id("authorized-id"))
 		sequence.pin(id("pinned-id"))
-		XCTAssertEqual(
-			Set(sequence.knownIDs),
-			Set([id("history-id"), id("authorized-id"), id("pinned-id")]))
+		#expect(
+			Set(sequence.knownIDs)
+				== Set([id("history-id"), id("authorized-id"), id("pinned-id")]))
 	}
 
-	func testValidateMemberRejectsUnknownIdentity() throws {
+	@Test func validateMemberRejectsUnknownIdentity() throws {
 		let auth = AuthCore(mine: .seeded(id("me")), theirs: .seeded(id("them")))
-		XCTAssertThrowsError(try auth.validateMember(.basic(identity: id("stranger")))) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .unknownIdentity)
+		#expect(throws: TwoMLSError.unknownIdentity) {
+			try auth.validateMember(.basic(identity: id("stranger")))
 		}
 	}
 
-	func testValidateMemberAdmitsAuthorizedOnlyIdentity() throws {
+	@Test func validateMemberAdmitsAuthorizedOnlyIdentity() throws {
 		var auth = AuthCore(mine: .seeded(id("me")), theirs: .seeded(id("them")))
 		auth.theirs.authorize(id("their-next"))
-		XCTAssertNoThrow(try auth.validateMember(.basic(identity: id("their-next"))))
+		#expect(throws: Never.self) {
+			try auth.validateMember(.basic(identity: id("their-next")))
+		}
 	}
 
-	func testValidateMemberAdmitsPinnedEvictedIdentity() throws {
+	@Test func validateMemberAdmitsPinnedEvictedIdentity() throws {
 		var sequence = PartySequence.seeded(id("id-0"))
 		for i in 1...PartySequence.credentialHistoryWindow {
 			try sequence.commit(id("id-\(i)"))
 		}
-		XCTAssertFalse(sequence.contains(id("id-0")))
+		#expect(!sequence.contains(id("id-0")))
 		sequence.pin(id("id-0"))
 		let auth = AuthCore(mine: .seeded(id("me")), theirs: sequence)
-		XCTAssertNoThrow(try auth.validateMember(.basic(identity: id("id-0"))))
+		#expect(throws: Never.self) {
+			try auth.validateMember(.basic(identity: id("id-0")))
+		}
 	}
 
-	func testValidateMemberRejectsEvictedAndUnpinnedIdentity() throws {
+	@Test func validateMemberRejectsEvictedAndUnpinnedIdentity() throws {
 		var sequence = PartySequence.seeded(id("id-0"))
 		for i in 1...PartySequence.credentialHistoryWindow {
 			try sequence.commit(id("id-\(i)"))
 		}
 		let auth = AuthCore(mine: .seeded(id("me")), theirs: sequence)
-		XCTAssertThrowsError(try auth.validateMember(.basic(identity: id("id-0")))) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .unknownIdentity)
+		#expect(throws: TwoMLSError.unknownIdentity) {
+			try auth.validateMember(.basic(identity: id("id-0")))
 		}
 	}
 
-	func testValidateMemberRejectsUnsupportedCredentialType() throws {
+	@Test func validateMemberRejectsUnsupportedCredentialType() throws {
 		let auth = AuthCore(mine: .seeded(id("me")), theirs: .seeded(id("them")))
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.unsupportedCredential) {
 			try auth.validateMember(
 				.other(type: MLS.RFC9420.CredentialType(.x509), data: Data()))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unsupportedCredential)
 		}
 	}
 
@@ -305,9 +305,9 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// is enforced elsewhere — the rotation is framed/signed under the OLD key
 	/// (ADR 0002 `signingClosure(current:new:)`) and the peer identity is bound
 	/// at establishment — a deliberate Germ scope boundary, not this AS's job.
-	func testSameIdentifierIsAcceptedByDesignRegardlessOfKeyChange() throws {
+	@Test func sameIdentifierIsAcceptedByDesignRegardlessOfKeyChange() throws {
 		let sequence = PartySequence.seeded(id("stable-id"))
-		XCTAssertTrue(sequence.validSuccessor(pred: id("stable-id"), succ: id("stable-id")))
+		#expect(sequence.validSuccessor(pred: id("stable-id"), succ: id("stable-id")))
 	}
 
 	// MARK: - API 1 (succeeding current) / forward gaps / backward rollback
@@ -315,32 +315,32 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// API 1 pins the predecessor to the head: an authorized successor of the
 	/// current head is accepted; an older-than-head id is not (going back to it
 	/// is not a succession); and there is nothing valid with no head.
-	func testValidSuccessorOfCurrentUsesTheHead() throws {
+	@Test func validSuccessorOfCurrentUsesTheHead() throws {
 		var sequence = PartySequence.seeded(id("c0"))
 		try sequence.commit(id("c1"))  // head = c1
 		sequence.authorize(id("c2"))
-		XCTAssertTrue(sequence.validSuccessorOfCurrent(id("c2")))
-		XCTAssertFalse(sequence.validSuccessorOfCurrent(id("c0")))  // older than head
-		XCTAssertFalse(PartySequence().validSuccessorOfCurrent(id("x")))  // no head
+		#expect(sequence.validSuccessorOfCurrent(id("c2")))
+		#expect(!sequence.validSuccessorOfCurrent(id("c0")))  // older than head
+		#expect(!PartySequence().validSuccessorOfCurrent(id("x")))  // no head
 	}
 
 	/// Forward gap: the app authorizes a far successor, skipping intermediates it
 	/// never saw; both APIs accept it from the current head even though nothing
 	/// between them entered `history`.
-	func testForwardGapIsAcceptedWhenAuthorized() throws {
+	@Test func forwardGapIsAcceptedWhenAuthorized() throws {
 		var sequence = PartySequence.seeded(id("c0"))
 		sequence.authorize(id("c3"))  // c1, c2 skipped
-		XCTAssertTrue(sequence.validSuccessor(pred: id("c0"), succ: id("c3")))
-		XCTAssertTrue(sequence.validSuccessorOfCurrent(id("c3")))
+		#expect(sequence.validSuccessor(pred: id("c0"), succ: id("c3")))
+		#expect(sequence.validSuccessorOfCurrent(id("c3")))
 	}
 
 	/// A backward move within the window is rejected — an older-in-history succ
 	/// is not a successor of a newer pred.
-	func testBackwardMoveIsRejected() throws {
+	@Test func backwardMoveIsRejected() throws {
 		var sequence = PartySequence.seeded(id("c0"))
 		try sequence.commit(id("c1"))
 		try sequence.commit(id("c2"))
-		XCTAssertFalse(sequence.validSuccessor(pred: id("c2"), succ: id("c0")))
+		#expect(!sequence.validSuccessor(pred: id("c2"), succ: id("c0")))
 	}
 
 	// MARK: - validatePQLeafMove (§A.5 PQ leaf-move gate)
@@ -350,7 +350,7 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// yet canonical), `ancient` pinned (evicted-but-held). Each pair below
 	/// is chosen to fail if either half of "same-id, OR (canonical AND a
 	/// valid successor)" is dropped.
-	func testValidatePQLeafMove() throws {
+	@Test func validatePQLeafMoveCases() throws {
 		var sequence = PartySequence.seeded(id("c0"))
 		try sequence.commit(id("c1"))
 		try sequence.commit(id("c2"))
@@ -361,30 +361,29 @@ final class CredentialAuthenticationTests: XCTestCase {
 		// must admit this without ever consulting `history`. Mutation:
 		// deleting the `oldID == newID` early return makes this throw
 		// (`ancient` is absent from `history`).
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try validatePQLeafMove(
-				oldID: id("ancient"), newID: id("ancient"), in: sequence))
+				oldID: id("ancient"), newID: id("ancient"), in: sequence)
+		}
 		// An ordinary catch-up within `history`.
-		XCTAssertNoThrow(
-			try validatePQLeafMove(oldID: id("c0"), newID: id("c2"), in: sequence))
+		#expect(throws: Never.self) {
+			try validatePQLeafMove(oldID: id("c0"), newID: id("c2"), in: sequence)
+		}
 		// A catch-up from a pinned (evicted) predecessor.
-		XCTAssertNoThrow(
-			try validatePQLeafMove(oldID: id("ancient"), newID: id("c1"), in: sequence))
+		#expect(throws: Never.self) {
+			try validatePQLeafMove(oldID: id("ancient"), newID: id("c1"), in: sequence)
+		}
 
 		// A rollback WITHIN history (`c2` → `c0`) and a move from an unknown
 		// predecessor: `newID` is already canonical either way, so only the
 		// `validSuccessor` conjunct catches them. Mutation: dropping
 		// `validSuccessor` (keeping only `history.contains`) makes both
 		// wrongly pass.
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidSuccession) {
 			try validatePQLeafMove(oldID: id("c2"), newID: id("c0"), in: sequence)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidSuccession) {
 			try validatePQLeafMove(oldID: id("unknown"), newID: id("c2"), in: sequence)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
 
 		// A move to a merely-AUTHORIZED (not yet canonical) candidate is
@@ -392,16 +391,12 @@ final class CredentialAuthenticationTests: XCTestCase {
 		// authorization shortcut), but a PQ leaf may only fast-forward to an
 		// ALREADY-canonical id. Mutation: dropping the `history.contains`
 		// conjunct (keeping only `validSuccessor`) makes this wrongly pass.
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidSuccession) {
 			try validatePQLeafMove(oldID: id("c0"), newID: id("cand"), in: sequence)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
 		// An id neither committed nor authorized.
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidSuccession) {
 			try validatePQLeafMove(oldID: id("c0"), newID: id("nobody"), in: sequence)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
 	}
 
@@ -416,7 +411,7 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// `CommitEffects` — never a hand-built one, since `CommitEffects.init`
 	/// and `CredentialPresentation.init` are both `internal` to
 	/// `MLSProfileRFC9420` — to `AuthCore.adjudicate`.
-	func testAdjudicateAcceptsAuthorizedRotationAndRejectsUnauthorizedOne() throws {
+	@Test func adjudicateAcceptsAuthorizedRotationAndRejectsUnauthorizedOne() throws {
 		let provider = SwiftCryptoProvider().cipherSuiteProvider(for: .curve25519ChaCha)!
 
 		let alice = try makeRotationMember("alice", provider: provider)
@@ -433,7 +428,8 @@ final class CredentialAuthenticationTests: XCTestCase {
 			framing: .publicMessage)
 		let creationBase = creation.group
 		let creationSent = creation.takeOutput()
-		let welcome = try XCTUnwrap(creationSent.welcome)
+		let rawWelcome = creationSent.welcome
+		let welcome = try #require(rawWelcome)
 		let creationPending = creationSent.takePending()
 		let foundingEffects = creationPending.effects
 		let creationAdvanced = try creationPending.apply(onto: creationBase)
@@ -457,7 +453,8 @@ final class CredentialAuthenticationTests: XCTestCase {
 				provider, current: bob.signingKey, new: rotated.signingKey),
 			framing: .publicMessage, newIdentity: newIdentity)
 		guard case .publicMessage(let proposalPub) = message else {
-			return XCTFail("expected a public proposal message")
+			Issue.record("expected a public proposal message")
+			return
 		}
 		let verifiedProposal = try aliceGroup.verifying(provider, proposal: proposalPub)
 		var store = MLS.RFC9420.ProposalStore()
@@ -479,14 +476,15 @@ final class CredentialAuthenticationTests: XCTestCase {
 			}),
 			case .credentialReplaced(let leaf, let old, let new) = credentialReplaced
 		else {
-			return XCTFail("expected a credentialReplaced effect")
+			Issue.record("expected a credentialReplaced effect")
+			return
 		}
-		XCTAssertEqual(leaf, bobLeaf)
-		XCTAssertEqual(new.credential, newIdentity.credential)
+		#expect(leaf == bobLeaf)
+		#expect(new.credential == newIdentity.credential)
 
 		// `adjudicate`'s `.added` arm is real: the founding commit carries a
 		// genuine `.added(bob)` `CredentialPresentation` (not a hand-built one).
-		XCTAssertTrue(
+		#expect(
 			foundingEffects.events.contains {
 				if case .added = $0 { return true }
 				return false
@@ -500,13 +498,17 @@ final class CredentialAuthenticationTests: XCTestCase {
 		// actually moves, `bobLeaf`) is never it, so every `adjudicate`
 		// call below correctly routes to `theirs`.
 		let myLeaf = aliceGroup.myLeafIndex
-		XCTAssertNotEqual(myLeaf, bobLeaf)
+		#expect(myLeaf != bobLeaf)
 
 		var acceptingAuth = AuthCore(
 			mine: .seeded(alice.identity), theirs: .seeded(bob.identity))
 		acceptingAuth.theirs.authorize(rotated.identity)
-		XCTAssertNoThrow(try acceptingAuth.adjudicate(foundingEffects, myLeaf: myLeaf))
-		XCTAssertNoThrow(try acceptingAuth.adjudicate(rotationEffects, myLeaf: myLeaf))
+		#expect(throws: Never.self) {
+			try acceptingAuth.adjudicate(foundingEffects, myLeaf: myLeaf)
+		}
+		#expect(throws: Never.self) {
+			try acceptingAuth.adjudicate(rotationEffects, myLeaf: myLeaf)
+		}
 
 		// Reject: a fresh AS that never authorized (or caught up to) the
 		// rotated id — the profile already rejects a forged credential
@@ -514,10 +516,8 @@ final class CredentialAuthenticationTests: XCTestCase {
 		// this AS's state never admits, not tampered bytes.
 		let rejectingAuth = AuthCore(
 			mine: .seeded(alice.identity), theirs: .seeded(bob.identity))
-		XCTAssertThrowsError(try rejectingAuth.adjudicate(rotationEffects, myLeaf: myLeaf))
-		{
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		#expect(throws: TwoMLSError.invalidSuccession) {
+			try rejectingAuth.adjudicate(rotationEffects, myLeaf: myLeaf)
 		}
 
 		// Per-party adjudication: the moved leaf is BOB's (`theirs`), which
@@ -537,19 +537,16 @@ final class CredentialAuthenticationTests: XCTestCase {
 		// could arise, to prove the isolation holds even then.
 		crossAuth.mine.history.append(bob.identity)
 		crossAuth.mine.authorize(rotated.identity)
-		XCTAssertThrowsError(try crossAuth.adjudicate(rotationEffects, myLeaf: myLeaf)) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		#expect(throws: TwoMLSError.invalidSuccession) {
+			try crossAuth.adjudicate(rotationEffects, myLeaf: myLeaf)
 		}
 
 		// Lease successor-half: `old` IS the head (bob), yet a rotation to an
 		// unauthorized `new` is still rejected — the lease checks BOTH `old ==
 		// head` AND that `new` is a valid successor of it. Mutation: dropping the
 		// `validSuccessorOfCurrent` half of the lease makes this pass wrongly.
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidSuccession) {
 			try rejectingAuth.validateSuccessionAgainstCurrent(old: old, new: new)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
 
 		// Reject via the `.added` arm: an AS whose `theirs` never knew Bob's id
@@ -558,9 +555,8 @@ final class CredentialAuthenticationTests: XCTestCase {
 		// turning the `.added` case into `break` makes ONLY this assertion fail.
 		let strangerAuth = AuthCore(
 			mine: .seeded(alice.identity), theirs: .seeded(Data("not-bob".utf8)))
-		XCTAssertThrowsError(try strangerAuth.adjudicate(foundingEffects, myLeaf: myLeaf)) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .unknownIdentity)
+		#expect(throws: TwoMLSError.unknownIdentity) {
+			try strangerAuth.adjudicate(foundingEffects, myLeaf: myLeaf)
 		}
 
 		// API 1 (lease) vs API 2 (explicit pred), on the SAME real effect. With
@@ -568,19 +564,19 @@ final class CredentialAuthenticationTests: XCTestCase {
 		// the peer's head past `bob` and the lease (API 1) rejects a rotation
 		// still built on `bob`, while API 2 accepts it as a gap-spanning handoff
 		// from a known-but-not-current predecessor.
-		XCTAssertNoThrow(
-			try acceptingAuth.validateSuccessionAgainstCurrent(old: old, new: new))
+		#expect(throws: Never.self) {
+			try acceptingAuth.validateSuccessionAgainstCurrent(old: old, new: new)
+		}
 		var movedOn = AuthCore(
 			mine: .seeded(alice.identity), theirs: .seeded(bob.identity))
 		try movedOn.theirs.commit(Data("bob-moved".utf8))
 		movedOn.theirs.authorize(rotated.identity)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invalidSuccession) {
 			try movedOn.validateSuccessionAgainstCurrent(old: old, new: new)
-		) {
-			error in XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
 		}
-		XCTAssertNoThrow(
-			try movedOn.validateSuccession(old: old, new: new, party: movedOn.theirs))
+		#expect(throws: Never.self) {
+			try movedOn.validateSuccession(old: old, new: new, party: movedOn.theirs)
+		}
 	}
 
 	// MARK: - pins(forPresented:) normal form (book group-rules.md rule 4)
@@ -591,20 +587,20 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// includes it regardless, rather than special-casing it out. Mutation:
 	/// subtracting `history` from `presented` (instead of only the candidate
 	/// set) makes this fail.
-	func testPinsForPresentedIncludesAnInHistoryID() throws {
+	@Test func pinsForPresentedIncludesAnInHistoryID() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		try sequence.commit(id("b"))
-		XCTAssertEqual(sequence.pins(forPresented: [id("a")]), [id("a")])
+		#expect(sequence.pins(forPresented: [id("a")]) == [id("a")])
 	}
 
 	/// A presented id that is an authorized-but-not-yet-canonical candidate
 	/// is EXCLUDED — pinning it would make `commit` reject its own
 	/// canonicalization as a rollback. Mutation: dropping the
 	/// `.subtracting(candidates)` step makes this fail.
-	func testPinsForPresentedExcludesAnAuthorizedCandidate() throws {
+	@Test func pinsForPresentedExcludesAnAuthorizedCandidate() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		sequence.authorize(id("candidate"))
-		XCTAssertEqual(sequence.pins(forPresented: [id("candidate")]), [])
+		#expect(sequence.pins(forPresented: [id("candidate")]) == [])
 	}
 
 	/// An id nobody presents is never in the pin set, even if it was pinned
@@ -612,19 +608,19 @@ final class CredentialAuthenticationTests: XCTestCase {
 	/// incremental update. Mutation: unioning with the sequence's own prior
 	/// `pinned` (instead of deriving purely from `presented`) makes this
 	/// fail.
-	func testPinsForPresentedDropsAnIDNoLongerPresented() throws {
+	@Test func pinsForPresentedDropsAnIDNoLongerPresented() throws {
 		var sequence = PartySequence.seeded(id("a"))
 		sequence.pin(id("stale"))
-		XCTAssertEqual(sequence.pins(forPresented: []), [])
+		#expect(sequence.pins(forPresented: []) == [])
 	}
 
 	/// Sorted (lexicographic bytes) and deduplicated — the exact shape
 	/// `SessionMigrationTests`'s minted-vs-native comparison relies on.
 	/// Mutation: returning `Array(presented)` unsorted makes this fail
 	/// (order-dependent on `Set`'s unspecified iteration).
-	func testPinsForPresentedIsSortedAndDeduplicated() throws {
+	@Test func pinsForPresentedIsSortedAndDeduplicated() throws {
 		let sequence = PartySequence.seeded(id("z"))
 		let result = sequence.pins(forPresented: [id("z"), id("m"), id("a")])
-		XCTAssertEqual(result, [id("a"), id("m"), id("z")])
+		#expect(result == [id("a"), id("m"), id("z")])
 	}
 }

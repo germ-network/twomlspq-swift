@@ -1,21 +1,20 @@
 import Foundation
 import MLSCodec
 import MLSCrypto
-import XCTest
+import Testing
 
 @testable import TwoMLSPQCrypto
 
-// XCTest (not swift-testing): `@Test` rejects `@available`-gated functions,
-// and `CompositeCryptoProvider` is `@available(iOS 26, macOS 26)`.
-@available(iOS 26, macOS 26, *)
-final class CompositeProviderTests: XCTestCase {
-	let provider = CompositeCryptoProvider()
+@Suite struct CompositeProviderTests {
+	@available(iOS 26, macOS 26, *)
+	private var provider: CompositeCryptoProvider { CompositeCryptoProvider() }
 
-	func testSupportedCipherSuitesIsClassicalPlusPQ() {
+	@available(iOS 26, macOS 26, *)
+	@Test func supportedCipherSuitesIsClassicalPlusPQ() {
 		let expected =
 			SwiftCryptoProvider().supportedCipherSuites
 			+ [MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID)]
-		XCTAssertEqual(provider.supportedCipherSuites, expected)
+		#expect(provider.supportedCipherSuites == expected)
 	}
 
 	/// Dispatch by HPKE key size, not by type-check: `SwiftCryptoCipherSuiteProvider`
@@ -23,22 +22,25 @@ final class CompositeProviderTests: XCTestCase {
 	/// `@testable`. A swapped dispatch predicate produces the wrong provider,
 	/// which shows up as the wrong HPKE key size (ML-KEM-768: 1184 bytes;
 	/// X25519: 32 bytes).
-	func testDispatchRoutesPQSuiteToMLKEM768() throws {
-		let pq = try XCTUnwrap(
-			provider.cipherSuiteProvider(
-				for: MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID))
-		)
+	@available(iOS 26, macOS 26, *)
+	@Test func dispatchRoutesPQSuiteToMLKEM768() throws {
+		let raw = provider.cipherSuiteProvider(
+			for: MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID))
+		let pq = try #require(raw)
 		let (_, publicKey) = try pq.hpkeGenerateKeyPair()
-		XCTAssertEqual(publicKey.data.count, 1184)
+		#expect(publicKey.data.count == 1184)
 	}
 
-	func testDispatchRoutesClassicalSuitesToSwiftCryptoProvider() throws {
-		let classical = try XCTUnwrap(provider.cipherSuiteProvider(for: .curve25519ChaCha))
+	@available(iOS 26, macOS 26, *)
+	@Test func dispatchRoutesClassicalSuitesToSwiftCryptoProvider() throws {
+		let raw = provider.cipherSuiteProvider(for: .curve25519ChaCha)
+		let classical = try #require(raw)
 		let (_, publicKey) = try classical.hpkeGenerateKeyPair()
-		XCTAssertEqual(publicKey.data.count, 32)
+		#expect(publicKey.data.count == 32)
 	}
 
-	func testUnknownSuiteReturnsNil() {
-		XCTAssertNil(provider.cipherSuiteProvider(for: MLS.CipherSuite(id: 0xFFFF)))
+	@available(iOS 26, macOS 26, *)
+	@Test func unknownSuiteReturnsNil() {
+		#expect(provider.cipherSuiteProvider(for: MLS.CipherSuite(id: 0xFFFF)) == nil)
 	}
 }
