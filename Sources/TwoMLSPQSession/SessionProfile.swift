@@ -7,8 +7,8 @@ import MLSProfileRFC9420
 /// kept only for the deployed engine; `.deployedCompatible` adds C1 (this
 /// file) and C2. Chosen once per session from the two classical key
 /// packages and recorded in both classical halves; the default records
-/// nothing. `TwoMLSSession.profile` is still the constant seam here — a
-/// later change reads the recorded value instead.
+/// nothing. `TwoMLSSession.profile` reads the recorded value off the send
+/// group.
 enum SessionProfile: Sendable, Equatable {
 	case correct
 	case deployedCompatible
@@ -77,11 +77,19 @@ enum SessionProfile: Sendable, Equatable {
 
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
-	/// Every session is deployed-compatible until sessions carry a real
-	/// profile (recorded in the group at creation, per KeyPackage
-	/// capability negotiation) — a later change replaces this computed
-	/// constant with the value recorded in the group.
-	var profile: SessionProfile { .deployedCompatible }
+	/// The profile recorded in this session's send group's classical half —
+	/// re-derived on every read rather than stored (no archive key).
+	/// Swallows a malformed record to `.deployedCompatible`: unreachable
+	/// today (archives are sealed, the migration mint refuses any record,
+	/// and establishment validates the record before it is ever claimed —
+	/// restore re-derives from the already-validated send group and adds no
+	/// separate check of its own).
+	var profile: SessionProfile {
+		guard let context = sendGroup?.classical.context,
+			let recorded = try? SessionProfile.recorded(in: context)
+		else { return .deployedCompatible }
+		return recorded
+	}
 
 	/// C1 (protocol doc §4): the §A.5 `Upd′`'s authenticated data. Empty
 	/// under `.correct`, and empty for a key-only move under either

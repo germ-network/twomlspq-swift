@@ -24,10 +24,12 @@ final class RatchetTests: XCTestCase {
 	/// landing on a fully-established pair with the turn on Bob. `static` and
 	/// non-`private` so `RekeyTests` can reuse it as its own §A.5 starting
 	/// fixture.
-	static func fullyEstablishedTurnOnBob() throws -> (
+	static func fullyEstablishedTurnOnBob(
+		profile: SessionProfile = .deployedCompatible
+	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession
 	) {
-		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged(profile: profile)
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)

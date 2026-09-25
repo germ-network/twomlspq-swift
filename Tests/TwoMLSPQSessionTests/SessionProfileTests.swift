@@ -68,6 +68,8 @@ final class SessionProfileTests: XCTestCase {
 		XCTAssertEqual(try recorded(bob.sendGroup?.classical), .correct)
 		XCTAssertEqual(try recorded(alice.recvGroup?.classical), .correct)
 		XCTAssertEqual(try recorded(alice.sendGroup?.pq), .deployedCompatible)
+		XCTAssertEqual(alice.profile, .correct)
+		XCTAssertEqual(bob.profile, .correct)
 
 		let kp = try alice.pqBootstrapBegin().frame
 		_ = try alice.pqBootstrapJoin(try bob.pqBootstrapRespond(kp).frame)
@@ -246,6 +248,7 @@ final class SessionProfileTests: XCTestCase {
 				bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
 				spawnToken: Data("rw".utf8)
 			).session
+			XCTAssertEqual(alice.profile, bobProfile)
 			_ = try bob.prepareToEncrypt()
 			let genuine = try bob.encrypt(Data("b1".utf8)).frame
 			let (_, proposal, app) = try Frames.decodeMessageFrame(alice.openOrRaw(genuine))
@@ -349,5 +352,73 @@ final class SessionProfileTests: XCTestCase {
 			XCTAssertEqual($0 as? TwoMLSError, .sessionProfileMismatch)
 		}
 		XCTAssertNoThrow(try verifyPQHalfUnbound(nil))
+	}
+
+	// MARK: - Running the profile
+
+	/// C1: the correct profile announces nothing on an id-changing A.5.
+	/// Kills: `profile` not reading the record.
+	func testCorrectProfileAnnouncesNothing() throws {
+		for profile in [SessionProfile.correct, .deployedCompatible] {
+			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob(profile: profile)
+			let bob2 = Data("bob-2".utf8)
+			_ = try bob.prepareToEncrypt(rotating: bob2)
+			let offer = try bob.encrypt(Data("offer".utf8)).frame
+			if case .initiating = bob.pqInflight {
+				bob.pqInflight = nil
+				bob.pendingSideBand = nil
+			}
+			let decrypted = try alice.processIncomingDecrypted(offer)
+			_ = try alice.queueProposal(digest: decrypted.queuedProposal.digest)
+			_ = try alice.prepareToEncrypt()
+			_ = try bob.processIncomingDecrypted(try alice.encrypt(Data("fold".utf8)).frame)
+			let begin = try bob.pqRekeyBegin()
+			let updBytes = try Frames.decodePQRekeyUpd(alice.openOrRaw(begin.frame))
+			guard case .publicMessage(let pub) = try MLS.RFC9420.Message(mlsEncoded: updBytes)
+			else { return XCTFail("expected a publicMessage Upd'") }
+			XCTAssertEqual(
+				pub.content.authenticatedData, profile == .correct ? Data() : bob2, "\(profile)")
+			// The responder hint is leaf-derived, so it is the same in both.
+			XCTAssertEqual(try alice.pqRekeyRespond(begin.frame).rotatedCredential, bob2)
+		}
+	}
+
+	/// C2: the correct profile opens the reciprocal A.5 as soon as the
+	/// peer's leaf lags. Kills: `profile` not reading the record.
+	func testCorrectProfileOpensTheReciprocalAtOnce() throws {
+		for profile in [SessionProfile.correct, .deployedCompatible] {
+			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob(profile: profile)
+			_ = try alice.prepareToEncrypt(rotating: Data("alice-2".utf8))
+			let offer = try alice.encrypt(Data("offer".utf8)).frame
+			let decrypted = try bob.processIncomingDecrypted(offer)
+			_ = try bob.queueProposal(digest: decrypted.queuedProposal.digest)
+			_ = try bob.prepareToEncrypt()
+			let fold = try bob.encrypt(Data("fold".utf8)).frame
+			if case .initiating = bob.pqInflight {
+				bob.pqInflight = nil
+				bob.pendingSideBand = nil
+			}
+			_ = try alice.processIncomingDecrypted(fold)
+			_ = try alice.prepareToEncrypt()
+			_ = try bob.processIncomingDecrypted(try alice.encrypt(Data("ack".utf8)).frame)
+			_ = try bob.prepareToEncrypt()
+			_ = try bob.encrypt(Data("turn".utf8))
+			switch (profile, bob.pqInflight) {
+			case (.correct, .some(.rekeyInitiated)), (.deployedCompatible, .some(.initiating)):
+				break
+			default:
+				XCTFail("\(profile): unexpected \(String(describing: bob.pqInflight))")
+			}
+		}
+	}
+
+	/// The profile is derived from the group, so it survives a restore.
+	func testProfileSurvivesRestore() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged(profile: .correct)
+		let checkpoint = try alice.stateUpdate(kind: .checkpoint).archive
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: checkpoint,
+			classicalProvider: classicalProvider, pqProvider: pqProvider)
+		XCTAssertEqual(restored.profile, SessionProfile.correct)
 	}
 }
