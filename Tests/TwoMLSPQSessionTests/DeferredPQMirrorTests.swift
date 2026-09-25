@@ -3,8 +3,8 @@ import MLSCodec
 import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -13,14 +13,21 @@ import XCTest
 /// observed pq group id/epoch, with no real `Group` involved — the PQ-half
 /// analogue of `APQGroupTests`' `checkAPQInfoDeferred` pinning, one clause per
 /// test.
-@available(iOS 26, macOS 26, *)
-final class DeferredPQMirrorTests: XCTestCase {
+@Suite struct DeferredPQMirrorTests {
 	private static let classicalSuite = MLS.CipherSuite.curve25519ChaCha
-	private static let pqSuite = MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID)
+	/// A computed property, not a stored one: its initializer reaches a
+	/// gated API (`MLKEM768CipherSuiteProvider`), and a stored `static let`
+	/// of that shape would have to be valid unconditionally, which this
+	/// ungated suite's own (lower) availability floor can't satisfy.
+	@available(iOS 26, macOS 26, *)
+	private static var pqSuite: MLS.CipherSuite {
+		MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID)
+	}
 	private static let tSessionGroupID = Data([1, 2, 3])
 	private static let pqSessionGroupID = Data([4, 5, 6])
 	private static let observedPQEpoch: UInt64 = 1
 
+	@available(iOS 26, macOS 26, *)
 	private func makePQInfo(
 		tSessionGroupID: Data = tSessionGroupID,
 		pqSessionGroupID: Data = pqSessionGroupID,
@@ -36,6 +43,7 @@ final class DeferredPQMirrorTests: XCTestCase {
 			tEpoch: tEpoch, pqEpoch: pqEpoch)
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private func makeClassicalInfo(
 		tSessionGroupID: Data = tSessionGroupID,
 		pqSessionGroupID: Data = pqSessionGroupID,
@@ -49,58 +57,66 @@ final class DeferredPQMirrorTests: XCTestCase {
 			tEpoch: 1, pqEpoch: epochUnbound)
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private func assertMismatch(
 		pqInfo: MLS.Combiner.APQInfo, classicalInfo: MLS.Combiner.APQInfo
 	) {
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.deferredPQMirrorMismatch) {
 			try APQGroup.checkDeferredPQMirror(
 				pqInfo: pqInfo, classicalInfo: classicalInfo,
 				observedPQGroupID: Self.pqSessionGroupID,
 				observedPQEpoch: Self.observedPQEpoch)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .deferredPQMirrorMismatch)
 		}
 	}
 
-	func testValidPairPasses() throws {
-		XCTAssertNoThrow(
+	@available(iOS 26, macOS 26, *)
+	@Test func validPairPasses() throws {
+		#expect(throws: Never.self) {
 			try APQGroup.checkDeferredPQMirror(
 				pqInfo: makePQInfo(), classicalInfo: makeClassicalInfo(),
 				observedPQGroupID: Self.pqSessionGroupID,
-				observedPQEpoch: Self.observedPQEpoch))
+				observedPQEpoch: Self.observedPQEpoch)
+		}
 	}
 
-	func testRejectsBoundTEpoch() {
+	@available(iOS 26, macOS 26, *)
+	@Test func rejectsBoundTEpoch() {
 		assertMismatch(pqInfo: makePQInfo(tEpoch: 1), classicalInfo: makeClassicalInfo())
 	}
 
-	func testRejectsWrongPqEpoch() {
+	@available(iOS 26, macOS 26, *)
+	@Test func rejectsWrongPqEpoch() {
 		assertMismatch(pqInfo: makePQInfo(pqEpoch: 2), classicalInfo: makeClassicalInfo())
 	}
 
-	func testRejectsPqSessionGroupIDNotMatchingObserved() {
+	@available(iOS 26, macOS 26, *)
+	@Test func rejectsPqSessionGroupIDNotMatchingObserved() {
 		assertMismatch(
 			pqInfo: makePQInfo(pqSessionGroupID: Data([9, 9, 9])),
 			classicalInfo: makeClassicalInfo())
 	}
 
-	func testRejectsMismatchedIdentityFieldTSessionGroupID() {
+	@available(iOS 26, macOS 26, *)
+	@Test func rejectsMismatchedIdentityFieldTSessionGroupID() {
 		assertMismatch(
 			pqInfo: makePQInfo(),
 			classicalInfo: makeClassicalInfo(tSessionGroupID: Data([9, 9, 9])))
 	}
 
-	func testRejectsMismatchedIdentityFieldMode() {
+	@available(iOS 26, macOS 26, *)
+	@Test func rejectsMismatchedIdentityFieldMode() {
 		assertMismatch(pqInfo: makePQInfo(), classicalInfo: makeClassicalInfo(mode: 1))
 	}
 
-	func testRejectsWrongTCipherSuite() {
+	@available(iOS 26, macOS 26, *)
+	@Test func rejectsWrongTCipherSuite() {
 		assertMismatch(
 			pqInfo: makePQInfo(tCipherSuite: MLS.CipherSuite(id: 0xFFFF)),
 			classicalInfo: makeClassicalInfo())
 	}
 
-	func testRejectsWrongPqCipherSuite() {
+	@available(iOS 26, macOS 26, *)
+	@Test func rejectsWrongPqCipherSuite() {
 		assertMismatch(
 			pqInfo: makePQInfo(pqCipherSuite: MLS.CipherSuite(id: 0xFFFF)),
 			classicalInfo: makeClassicalInfo(pqCipherSuite: MLS.CipherSuite(id: 0xFFFF))

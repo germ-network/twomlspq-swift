@@ -5,21 +5,24 @@ import MLSExtensions
 import MLSProfileRFC9420
 import MLSTreeMath
 import SecretBytes
-import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
-@available(iOS 26, macOS 26, *)
-final class TwoPartyRulesTests: XCTestCase {
+@Suite struct TwoPartyRulesTests {
 	// MARK: - ensureTwoParty
 
-	func testEnsureTwoPartyAcceptsTwoMembers() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func ensureTwoPartyAcceptsTwoMembers() throws {
 		let (_, bob, _, _, _, _) = try SessionTestSupport.established()
-		let groupA = try XCTUnwrap(bob.recvGroup)
-		XCTAssertNoThrow(try TwoPartyRules.ensureTwoParty(groupA.classical))
+		let groupA = try #require(bob.recvGroup)
+		#expect(throws: Never.self) {
+			try TwoPartyRules.ensureTwoParty(groupA.classical)
+		}
 	}
 
-	func testEnsureTwoPartyRejectsOneMember() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func ensureTwoPartyRejectsOneMember() throws {
 		let alice = try SessionTestSupport.identity("solo-alice")
 		let provider = SessionTestSupport.classicalProvider
 		let group = try MLS.RFC9420.Group.create(
@@ -27,12 +30,13 @@ final class TwoPartyRulesTests: XCTestCase {
 			leafNode: alice.keyPackage.classical.leafNode,
 			leafSecretKey: alice.classicalLeafSecretKey,
 			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
-		XCTAssertThrowsError(try TwoPartyRules.ensureTwoParty(group)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .notTwoParty(count: 1))
+		#expect(throws: TwoMLSError.notTwoParty(count: 1)) {
+			try TwoPartyRules.ensureTwoParty(group)
 		}
 	}
 
-	func testEnsureTwoPartyRejectsThreeMembers() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func ensureTwoPartyRejectsThreeMembers() throws {
 		let alice = try SessionTestSupport.identity("trio-alice")
 		let bob = try SessionTestSupport.identity("trio-bob")
 		let carol = try SessionTestSupport.identity("trio-carol")
@@ -53,14 +57,15 @@ final class TwoPartyRulesTests: XCTestCase {
 		let adopted = transition.group
 		let advanced = try transition.takeOutput().takePending().apply(onto: adopted)
 
-		XCTAssertThrowsError(try TwoPartyRules.ensureTwoParty(advanced.group)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .notTwoParty(count: 3))
+		#expect(throws: TwoMLSError.notTwoParty(count: 3)) {
+			try TwoPartyRules.ensureTwoParty(advanced.group)
 		}
 	}
 
 	// MARK: - validateCreationProposals
 
-	func testValidateCreationProposalsAcceptsAddPlusPSK() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func validateCreationProposalsAcceptsAddPlusPSK() throws {
 		let bob = try SessionTestSupport.identity("guard-bob")
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
 			.proposal(.add(bob.keyPackage.classical)),
@@ -68,29 +73,30 @@ final class TwoPartyRulesTests: XCTestCase {
 				.preSharedKey(
 					.external(pskID: Data("x".utf8), nonce: Data("n".utf8)))),
 		]
-		XCTAssertNoThrow(try TwoPartyRules.validateCreationProposals(proposals))
+		#expect(throws: Never.self) {
+			try TwoPartyRules.validateCreationProposals(proposals)
+		}
 	}
 
-	func testValidateCreationProposalsRejectsTwoAdds() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func validateCreationProposalsRejectsTwoAdds() throws {
 		let bob = try SessionTestSupport.identity("guard-bob-2")
 		let carol = try SessionTestSupport.identity("guard-carol-2")
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
 			.proposal(.add(bob.keyPackage.classical)),
 			.proposal(.add(carol.keyPackage.classical)),
 		]
-		XCTAssertThrowsError(try TwoPartyRules.validateCreationProposals(proposals)) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidCreationProposals)
+		#expect(throws: TwoMLSError.invalidCreationProposals) {
+			try TwoPartyRules.validateCreationProposals(proposals)
 		}
 	}
 
-	func testValidateCreationProposalsRejectsRemove() {
+	@Test func validateCreationProposalsRejectsRemove() {
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
 			.proposal(.remove(MLS.LeafIndex(value: 0)))
 		]
-		XCTAssertThrowsError(try TwoPartyRules.validateCreationProposals(proposals)) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidCreationProposals)
+		#expect(throws: TwoMLSError.invalidCreationProposals) {
+			try TwoPartyRules.validateCreationProposals(proposals)
 		}
 	}
 
@@ -100,124 +106,116 @@ final class TwoPartyRulesTests: XCTestCase {
 	/// permitted application/external ids passes — so the rejections below
 	/// are demonstrably about the specific id/type under test, not the
 	/// function rejecting everything.
-	func testValidateInlineProposalsAcceptsExactlyTheExpectedSet() throws {
+	@Test func validateInlineProposalsAcceptsExactlyTheExpectedSet() throws {
 		let componentID = MLS.Extensions.ComponentID(rawValue: 0xFF01)
 		let applicationIdentifier = MLS.RFC9420.PreSharedKeyIdentifier.application(
 			componentID: componentID, pskID: Data("app-id".utf8), nonce: Data("n1".utf8)
 		)
-		let applicationStorageID = try XCTUnwrap(
-			try applicationIdentifier.applicationStorageID())
+		let rawApplicationStorageID = try applicationIdentifier.applicationStorageID()
+		let applicationStorageID = try #require(rawApplicationStorageID)
 		let externalID = Data("ext-id".utf8)
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
 			.proposal(.preSharedKey(applicationIdentifier)),
 			.proposal(
 				.preSharedKey(.external(pskID: externalID, nonce: Data("n2".utf8)))),
 		]
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try TwoPartyRules.validateInlineProposals(
 				proposals,
 				expectedApplicationStorageIDs: [applicationStorageID],
 				expectedExternalPSKIDs: [externalID],
-				allowAttestation: false))
+				allowAttestation: false)
+		}
 	}
 
 	/// The exact-id tightening: an `application` PSK of a permitted
 	/// COMPONENT (`0xFF01`, the `apq_psk` component) but a pskID not in the
 	/// expected set — i.e. not the storage id the caller actually derived —
 	/// is rejected, not merely type-checked.
-	func testValidateInlineProposalsRejectsApplicationPSKNotInExpectedSet() throws {
+	@Test func validateInlineProposalsRejectsApplicationPSKNotInExpectedSet() throws {
 		let componentID = MLS.Extensions.ComponentID(rawValue: 0xFF01)
 		let expectedIdentifier = MLS.RFC9420.PreSharedKeyIdentifier.application(
 			componentID: componentID, pskID: Data("expected-id".utf8),
 			nonce: Data("n1".utf8))
-		let expectedStorageID = try XCTUnwrap(
-			try expectedIdentifier.applicationStorageID())
+		let rawExpectedStorageID = try expectedIdentifier.applicationStorageID()
+		let expectedStorageID = try #require(rawExpectedStorageID)
 		let wrongIdentifier = MLS.RFC9420.PreSharedKeyIdentifier.application(
 			componentID: componentID, pskID: Data("wrong-id".utf8),
 			nonce: Data("n2".utf8))
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
 			.proposal(.preSharedKey(wrongIdentifier))
 		]
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.unexpectedProposal) {
 			try TwoPartyRules.validateInlineProposals(
 				proposals,
 				expectedApplicationStorageIDs: [expectedStorageID],
 				expectedExternalPSKIDs: [],
 				allowAttestation: false)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
 		}
 	}
 
-	func testValidateInlineProposalsRejectsExternalPSKNotInExpectedSet() {
+	@Test func validateInlineProposalsRejectsExternalPSKNotInExpectedSet() {
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
 			.proposal(
 				.preSharedKey(
 					.external(pskID: Data("wrong".utf8), nonce: Data("n".utf8)))
 			)
 		]
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.unexpectedProposal) {
 			try TwoPartyRules.validateInlineProposals(
 				proposals, expectedApplicationStorageIDs: [],
 				expectedExternalPSKIDs: [Data("expected".utf8)],
 				allowAttestation: false)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
 		}
 	}
 
-	func testValidateInlineProposalsRejectsResumptionPSK() {
+	@Test func validateInlineProposalsRejectsResumptionPSK() {
 		let resumption = MLS.RFC9420.ResumptionPSK(
 			usage: .application, groupID: Data("g".utf8), epoch: 1)
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
 			.proposal(.preSharedKey(.resumption(resumption, nonce: Data("n".utf8))))
 		]
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.unexpectedProposal) {
 			try TwoPartyRules.validateInlineProposals(
 				proposals, expectedApplicationStorageIDs: [],
 				expectedExternalPSKIDs: [],
 				allowAttestation: false)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
 		}
 	}
 
-	func testValidateInlineProposalsRejectsGroupContextExtensions() {
+	@Test func validateInlineProposalsRejectsGroupContextExtensions() {
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
 			.proposal(.groupContextExtensions([]))
 		]
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.unexpectedProposal) {
 			try TwoPartyRules.validateInlineProposals(
 				proposals, expectedApplicationStorageIDs: [],
 				expectedExternalPSKIDs: [],
 				allowAttestation: false)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
 		}
 	}
 
-	func testValidateInlineProposalsRejectsAttestationWhenNotAllowed() {
+	@Test func validateInlineProposalsRejectsAttestationWhenNotAllowed() {
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
 			.proposal(.custom(type: .init(.appDataUpdate), body: Data()))
 		]
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.unexpectedProposal) {
 			try TwoPartyRules.validateInlineProposals(
 				proposals, expectedApplicationStorageIDs: [],
 				expectedExternalPSKIDs: [],
 				allowAttestation: false)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
 		}
 	}
 
-	func testValidateInlineProposalsAcceptsAttestationWhenAllowed() {
+	@Test func validateInlineProposalsAcceptsAttestationWhenAllowed() {
 		let proposals: [MLS.RFC9420.ProposalOrRef] = [
 			.proposal(.custom(type: .init(.appDataUpdate), body: Data()))
 		]
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try TwoPartyRules.validateInlineProposals(
 				proposals, expectedApplicationStorageIDs: [],
 				expectedExternalPSKIDs: [],
-				allowAttestation: true))
+				allowAttestation: true)
+		}
 	}
 }

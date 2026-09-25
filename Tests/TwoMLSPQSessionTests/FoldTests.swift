@@ -5,9 +5,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
-import TwoMLSPQCrypto
-import XCTest
 import Testing
+import TwoMLSPQCrypto
 
 @testable import TwoMLSPQSession
 
@@ -21,14 +20,14 @@ import Testing
 /// paired with an owed bind as `0x05`. Mirrors the proven PQ fold
 /// mechanism (`pqRekeyRespond`/`pqRekeyApply`) ported onto the classical
 /// group.
-@available(iOS 26, macOS 26, *)
-final class FoldTests: XCTestCase {
+@Suite struct FoldTests {
 	// MARK: - Helpers
 
 	/// Drive one offer leg: `proposer` stages+sends an `Upd(self)`, `approver`
 	/// receives it. Returns the offer's digest/proposing/raw message bytes —
 	/// everything a test needs either to `queueProposal` normally or to
 	/// hand-craft a tampered/forged frame.
+	@available(iOS 26, macOS 26, *)
 	@discardableResult
 	private func surfaceOffer(
 		from proposer: inout TwoMLSSession, to approver: inout TwoMLSSession,
@@ -54,18 +53,19 @@ final class FoldTests: XCTestCase {
 	/// (`didCommit`/`committedRemoteClientID`/epoch 1→2, stapled bare
 	/// `0x00`), Bob applies it (`didApplyRemoteCommit`), and app traffic
 	/// round-trips both directions afterward.
-	func testFullRoutineFoldRoundRefreshesBothLeavesAndRoundTrips() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func fullRoutineFoldRoundRefreshesBothLeavesAndRoundTrips() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
-		let groupAEpochBefore = try XCTUnwrap(alice.sendGroup?.classical.context.epoch)
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, groupAEpochBefore)
+		let groupAEpochBefore = try #require(alice.sendGroup?.classical.context.epoch)
+		#expect(bob.recvGroup?.classical.context.epoch == groupAEpochBefore)
 
 		let offer = try surfaceOffer(from: &bob, to: &alice)
 		_ = try alice.queueProposal(digest: offer.digest)
 
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
-		XCTAssertEqual(prepared.committedRemoteClientID, Data("bob".utf8))
-		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, groupAEpochBefore + 1)
+		#expect(prepared.didCommit)
+		#expect(prepared.committedRemoteClientID == Data("bob".utf8))
+		#expect(alice.sendGroup?.classical.context.epoch == groupAEpochBefore + 1)
 
 		let frame = try alice.encrypt(Data("alice-fold".utf8)).frame
 		// `frame` is header-sealed on exit; `bob` (the intended
@@ -77,38 +77,40 @@ final class FoldTests: XCTestCase {
 		// whole slot decodes as a `.publicMessage` commit (the staple carries a
 		// `ComponentID`-bearing `0xFF02` PSK proposal, so decode under the
 		// deployed wire width).
-		XCTAssertEqual(staple.first, Frames.mlsMessageStapleTag)
-		XCTAssertEqual(staple.prefix(4), Data([0x00, 0x01, 0x00, 0x01]))
+		#expect(staple.first == Frames.mlsMessageStapleTag)
+		#expect(staple.prefix(4) == Data([0x00, 0x01, 0x00, 0x01]))
 		try withDeployedWireConventions {
 			guard
 				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(
 					mlsEncoded: staple)
 			else {
-				return XCTFail("expected a publicMessage commit staple")
+				Issue.record("expected a publicMessage commit staple")
+				return
 			}
-			XCTAssertEqual(
-				commitPub.content.epoch, groupAEpochBefore,
+			#expect(
+				commitPub.content.epoch == groupAEpochBefore,
 				"the staple commit is framed at the sender's PRE-apply epoch")
 			guard case .commit = commitPub.content.content else {
-				return XCTFail("expected the staple to decode as a commit")
+				Issue.record("expected the staple to decode as a commit")
+				return
 			}
 		}
 
 		let decrypted = try bob.processIncomingDecrypted(frame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertEqual(decrypted.applicationMessage, Data("alice-fold".utf8))
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, groupAEpochBefore + 1)
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(decrypted.applicationMessage == Data("alice-fold".utf8))
+		#expect(bob.recvGroup?.classical.context.epoch == groupAEpochBefore + 1)
 
 		// Round-trip both directions post-fold.
 		_ = try alice.prepareToEncrypt()
 		let aliceMsg = try alice.encrypt(Data("post-fold-alice".utf8)).frame
 		let fromAlice = try bob.processIncomingDecrypted(aliceMsg)
-		XCTAssertEqual(fromAlice.applicationMessage, Data("post-fold-alice".utf8))
+		#expect(fromAlice.applicationMessage == Data("post-fold-alice".utf8))
 
 		_ = try bob.prepareToEncrypt()
 		let bobMsg = try bob.encrypt(Data("post-fold-bob".utf8)).frame
 		let fromBob = try alice.processIncomingDecrypted(bobMsg)
-		XCTAssertEqual(fromBob.applicationMessage, Data("post-fold-bob".utf8))
+		#expect(fromBob.applicationMessage == Data("post-fold-bob".utf8))
 	}
 
 	// MARK: - Fold + bind on one `0x05` commit
@@ -117,40 +119,41 @@ final class FoldTests: XCTestCase {
 	/// Update: Bob owes a bind (via the §A.4 ratchet), Alice offers Bob an
 	/// Update which Bob approves, and Bob's next `prepareToEncrypt` folds AND
 	/// discharges in one commit, stapled `0x05`.
-	func testFoldAndBindRideOneCommit() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func foldAndBindRideOneCommit() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ekFrame = try #require(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 		_ = try bob.pqRatchetBind(ctFrame)
-		XCTAssertNotNil(bob.owedBind)
+		#expect(bob.owedBind != nil)
 
 		let offer = try surfaceOffer(from: &alice, to: &bob)
 		_ = try bob.queueProposal(digest: offer.digest)
 
-		let groupBEpochBefore = try XCTUnwrap(bob.sendGroup?.classical.context.epoch)
+		let groupBEpochBefore = try #require(bob.sendGroup?.classical.context.epoch)
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
-		XCTAssertEqual(prepared.committedRemoteClientID, Data("alice".utf8))
-		XCTAssertEqual(bob.sendGroup?.classical.context.epoch, groupBEpochBefore + 1)
-		XCTAssertNil(bob.owedBind)
+		#expect(prepared.didCommit)
+		#expect(prepared.committedRemoteClientID == Data("alice".utf8))
+		#expect(bob.sendGroup?.classical.context.epoch == groupBEpochBefore + 1)
+		#expect(bob.owedBind == nil)
 
 		let frame = try bob.encrypt(Data("fold-and-bind".utf8)).frame
 		// Opened via `alice` (the intended recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(alice.openOrRaw(frame))
-		XCTAssertEqual(staple.first, Frames.apqPrivateMessageTag)
+		#expect(staple.first == Frames.apqPrivateMessageTag)
 
 		let decrypted = try alice.processIncomingDecrypted(frame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertEqual(alice.recvGroup?.classical.context.epoch, groupBEpochBefore + 1)
-		XCTAssertTrue(alice.myPQTurn)
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(alice.recvGroup?.classical.context.epoch == groupBEpochBefore + 1)
+		#expect(alice.myPQTurn)
 
 		_ = try alice.prepareToEncrypt()
 		let msg = try alice.encrypt(Data("post-fold-bind".utf8)).frame
 		let fromAlice = try bob.processIncomingDecrypted(msg)
-		XCTAssertEqual(fromAlice.applicationMessage, Data("post-fold-bind".utf8))
+		#expect(fromAlice.applicationMessage == Data("post-fold-bind".utf8))
 	}
 
 	// MARK: - The send-side `0xFF02` ledger
@@ -160,7 +163,8 @@ final class FoldTests: XCTestCase {
 	/// the ledger/gate, the second apply's cross-PSK resolution would attempt
 	/// a second, failing export off the already-consumed leaf
 	/// (`componentSecretConsumed`).
-	func testTwoFoldsAtOneOwnSendEpochExerciseTheLedgerGate() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func twoFoldsAtOneOwnSendEpochExerciseTheLedgerGate() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		let offer1 = try surfaceOffer(from: &bob, to: &alice)
@@ -168,17 +172,17 @@ final class FoldTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let frame1 = try alice.encrypt(Data("fold-1".utf8)).frame
 		let decrypted1 = try bob.processIncomingDecrypted(frame1)
-		XCTAssertTrue(decrypted1.didApplyRemoteCommit)
+		#expect(decrypted1.didApplyRemoteCommit)
 
 		let offer2 = try surfaceOffer(from: &bob, to: &alice)
 		_ = try alice.queueProposal(digest: offer2.digest)
 		_ = try alice.prepareToEncrypt()
 		let frame2 = try alice.encrypt(Data("fold-2".utf8)).frame
 		let decrypted2 = try bob.processIncomingDecrypted(frame2)
-		XCTAssertTrue(decrypted2.didApplyRemoteCommit)
+		#expect(decrypted2.didApplyRemoteCommit)
 
-		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, 3)
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, 3)
+		#expect(alice.sendGroup?.classical.context.epoch == 3)
+		#expect(bob.recvGroup?.classical.context.epoch == 3)
 	}
 
 	/// Crossed concurrent commits: Alice's fold commit (on Group_A) injects
@@ -189,7 +193,8 @@ final class FoldTests: XCTestCase {
 	/// Bob's own sendGroup.classical can no longer produce live (the -02
 	/// exporter tree retains only the current epoch) — resolved only via the
 	/// ledger Bob's own commit remembered before advancing past it.
-	func testCrossedConcurrentCommitsResolveViaLedgerForDepartedEpoch() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func crossedConcurrentCommitsResolveViaLedgerForDepartedEpoch() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		// Bob's offer for his OWN later fold, surfaced first — before alice's
@@ -212,25 +217,26 @@ final class FoldTests: XCTestCase {
 		_ = try bob.queueProposal(digest: offer2.digest)
 		_ = try bob.prepareToEncrypt()
 		let bobFoldFrame = try bob.encrypt(Data("bob-fold".utf8)).frame
-		XCTAssertEqual(bob.sendGroup?.classical.context.epoch, 2)
-		XCTAssertNotNil(bob.sendCrossPSKLedger[1])
+		#expect(bob.sendGroup?.classical.context.epoch == 2)
+		#expect(bob.sendCrossPSKLedger[1] != nil)
 
 		// Only now does alice's crossed commit reach bob — its injected PSK
 		// resolves only via the ledger bob's own commit above remembered
 		// before advancing past epoch 1 (the -02 exporter tree retains only
 		// the current epoch's frontier, so a live re-export is impossible).
 		let decrypted = try bob.processIncomingDecrypted(aliceFoldFrame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
+		#expect(decrypted.didApplyRemoteCommit)
 
 		let fromBob = try alice.processIncomingDecrypted(bobFoldFrame)
-		XCTAssertTrue(fromBob.didApplyRemoteCommit)
+		#expect(fromBob.didApplyRemoteCommit)
 	}
 
 	// MARK: - Mutation-verify: tampered `0x00`
 
 	/// A tampered `0x00` staple throws and burns no state — the genuine
 	/// commit still applies afterward.
-	func testTamperedFoldCommitThrowsAndBurnsNoState() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func tamperedFoldCommitThrowsAndBurnsNoState() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
 		_ = try alice.queueProposal(digest: offer.digest)
@@ -248,12 +254,14 @@ final class FoldTests: XCTestCase {
 			staple: tamperedStaple, proposal: proposal, app: app)
 
 		let recvEpochBefore = bob.recvGroup?.classical.context.epoch
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(tamperedFrame))
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore)
+		#expect(throws: (any Error).self) {
+			try bob.processIncomingDecrypted(tamperedFrame)
+		}
+		#expect(bob.recvGroup?.classical.context.epoch == recvEpochBefore)
 
 		let decrypted = try bob.processIncomingDecrypted(frame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertEqual(decrypted.applicationMessage, Data("fold".utf8))
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(decrypted.applicationMessage == Data("fold".utf8))
 	}
 
 	// MARK: - `queueProposal` rejections
@@ -261,21 +269,25 @@ final class FoldTests: XCTestCase {
 	/// An approval digest that doesn't match the surfaced offer is
 	/// `.proposalRejected`, not a silent no-op — and the offer survives to be
 	/// approved correctly afterward.
-	func testQueueProposalRejectsDigestMismatch() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func queueProposalRejectsDigestMismatch() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
 		var wrongDigest = offer.digest
 		wrongDigest[wrongDigest.index(before: wrongDigest.endIndex)] ^= 0xFF
 
-		XCTAssertThrowsError(try alice.queueProposal(digest: wrongDigest)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .proposalRejected)
+		#expect(throws: TwoMLSError.proposalRejected) {
+			try alice.queueProposal(digest: wrongDigest)
 		}
-		XCTAssertNoThrow(try alice.queueProposal(digest: offer.digest))
+		#expect(throws: Never.self) {
+			try alice.queueProposal(digest: offer.digest)
+		}
 	}
 
 	/// An offered "proposal" that doesn't even decode as a publicMessage
 	/// Update is `.proposalRejected`.
-	func testQueueProposalRejectsUndecodableOffer() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func queueProposalRejectsUndecodableOffer() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
@@ -289,21 +301,19 @@ final class FoldTests: XCTestCase {
 			staple: staple, proposal: craftedProposal, app: app)
 
 		let decrypted = try alice.processIncomingDecrypted(craftedFrame)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.proposalRejected) {
 			try alice.queueProposal(digest: decrypted.queuedProposal.digest)
-		) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .proposalRejected)
 		}
 	}
 
 	/// An offered Update genuinely framed by the APPROVER'S OWN leaf (never a
 	/// legitimate peer offer) is `.proposalRejected` — `queueProposal` must
 	/// reject a self-Update, not just a different proposal type.
-	func testQueueProposalRejectsOwnLeafUpdate() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func queueProposalRejectsOwnLeafUpdate() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		guard var sendGroupA = alice.sendGroup else {
-			XCTFail("expected alice to be established")
+			Issue.record("expected alice to be established")
 			return
 		}
 		let (ownUpdateMessage, _) = try sendGroupA.classical.proposeUpdate(
@@ -322,11 +332,8 @@ final class FoldTests: XCTestCase {
 			staple: staple, proposal: craftedProposal, app: app)
 
 		let decrypted = try alice.processIncomingDecrypted(craftedFrame)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.proposalRejected) {
 			try alice.queueProposal(digest: decrypted.queuedProposal.digest)
-		) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .proposalRejected)
 		}
 	}
 
@@ -334,7 +341,8 @@ final class FoldTests: XCTestCase {
 	/// claim does not match the verified leaf's own `.basic` identity is
 	/// `.proposalRejected` — `proposing` rides outside the AAD, so
 	/// the wire claim alone proves nothing.
-	func testQueueProposalRejectsProposingMismatch() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func queueProposalRejectsProposingMismatch() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
@@ -349,11 +357,8 @@ final class FoldTests: XCTestCase {
 			staple: staple, proposal: craftedProposal, app: app)
 
 		let decrypted = try alice.processIncomingDecrypted(craftedFrame)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.proposalRejected) {
 			try alice.queueProposal(digest: decrypted.queuedProposal.digest)
-		) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .proposalRejected)
 		}
 	}
 
@@ -364,13 +369,14 @@ final class FoldTests: XCTestCase {
 	/// `CommitEffects` has no public initializer, so this drives a real
 	/// over-broad commit through swift-mls directly (mirroring
 	/// `RekeyTests.testRekeyApplyRejectsCommitWithExtraAddEffect`).
-	func testFoldEffectsWithAnAddThrowsUnexpectedProposal() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func foldEffectsWithAnAddThrowsUnexpectedProposal() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
 		_ = try alice.queueProposal(digest: offer.digest)
 
 		guard let sendGroupA = alice.sendGroup else {
-			XCTFail("expected alice to be established")
+			Issue.record("expected alice to be established")
 			return
 		}
 		let mallory = try SessionTestSupport.identity("mallory-fold")
@@ -419,10 +425,10 @@ final class FoldTests: XCTestCase {
 		// throws `.unexpectedProposal` rather than reaching the post-apply
 		// `.invalidFoldEffects` shape check. Same rejection, earlier gate.
 		let recvEpochBefore = bob.recvGroup?.classical.context.epoch
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
+		#expect(throws: TwoMLSError.unexpectedProposal) {
+			try bob.processIncomingDecrypted(badFrame)
 		}
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore)
+		#expect(bob.recvGroup?.classical.context.epoch == recvEpochBefore)
 	}
 
 	/// The exact-id tightening itself: a commit that folds the approved peer
@@ -436,13 +442,14 @@ final class FoldTests: XCTestCase {
 	/// runs on `applyFoldCommit`'s decoded `commitValue.proposals` BEFORE
 	/// `recv.classical.validating` — an unresolvable/unexpected PSK id would
 	/// otherwise surface as a `validating` failure instead.
-	func testFoldWithExtraWrongIDApplicationPSKThrowsUnexpectedProposal() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func foldWithExtraWrongIDApplicationPSKThrowsUnexpectedProposal() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
 		try alice.queueProposal(digest: offer.digest)
 
 		guard let sendGroupA = alice.sendGroup else {
-			XCTFail("expected alice to be established")
+			Issue.record("expected alice to be established")
 			return
 		}
 
@@ -494,10 +501,10 @@ final class FoldTests: XCTestCase {
 			staple: badStaple, proposal: proposal, app: app)
 
 		let recvEpochBefore = bob.recvGroup?.classical.context.epoch
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
+		#expect(throws: TwoMLSError.unexpectedProposal) {
+			try bob.processIncomingDecrypted(badFrame)
 		}
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore)
+		#expect(bob.recvGroup?.classical.context.epoch == recvEpochBefore)
 	}
 
 	// MARK: - Credential rotation now accepted (the fold/rekey boundary)
@@ -517,8 +524,9 @@ final class FoldTests: XCTestCase {
 	/// offer — a throwaway copy would author a proposal whose fresh HPKE leaf
 	/// secret is never retained anywhere, so a later fold's path-secret
 	/// decryption for bob's own (new) leaf position would fail outright.
+	@available(iOS 26, macOS 26, *)
 	private func authorBobCredentialRotation(bob: inout TwoMLSSession) throws -> Data {
-		var mirror = try XCTUnwrap(bob.recvGroup)
+		var mirror = try #require(bob.recvGroup)
 		let sk = Curve25519.Signing.PrivateKey()
 		let freshSigningKey = try MLS.SignatureSecretKey(sk.rawRepresentation)
 		let freshSignatureKey = MLS.SignaturePublicKey(sk.publicKey.rawRepresentation)
@@ -553,7 +561,8 @@ final class FoldTests: XCTestCase {
 	/// (`auth.theirs.validSuccessorOfCurrent`, trivially true here since the
 	/// id is unchanged) rather than rejecting any credential/signature-key
 	/// change outright the way the fold path did before rotation support.
-	func testQueueProposalAcceptsSameIDCredentialRotation() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func queueProposalAcceptsSameIDCredentialRotation() throws {
 		// `authorBobCredentialRotation` hand-builds a SAME-id, fresh-key
 		// rotation directly on bob's recv-classical leaf, bypassing
 		// `prepareToEncrypt(rotating:)` (and so `rotationCandidate`)
@@ -573,8 +582,9 @@ final class FoldTests: XCTestCase {
 			staple: staple, proposal: craftedProposal, app: app)
 
 		let decrypted = try alice.processIncomingDecrypted(craftedFrame)
-		XCTAssertNoThrow(
-			try alice.queueProposal(digest: decrypted.queuedProposal.digest))
+		#expect(throws: Never.self) {
+			try alice.queueProposal(digest: decrypted.queuedProposal.digest)
+		}
 	}
 
 	/// The fold/rekey boundary, layer (b): the apply-side counterpart. A
@@ -591,7 +601,8 @@ final class FoldTests: XCTestCase {
 	/// membership one. The rotating message is seeded directly into bob's
 	/// `stagedUpdates` (`@testable` internal accessor) standing in for what
 	/// `prepareToEncrypt(rotating:)` would have appended.
-	func testFoldedCredentialRotationIsAcceptedAndAdvancesEpoch() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func foldedCredentialRotationIsAcceptedAndAdvancesEpoch() throws {
 		// Same reason as `testQueueProposalAcceptsSameIDCredentialRotation`:
 		// `authorBobCredentialRotation` bypasses `rotationCandidate` entirely.
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -604,7 +615,7 @@ final class FoldTests: XCTestCase {
 			))
 
 		guard let sendGroupA = alice.sendGroup else {
-			XCTFail("expected alice to be established")
+			Issue.record("expected alice to be established")
 			return
 		}
 
@@ -653,14 +664,14 @@ final class FoldTests: XCTestCase {
 		let frame = Frames.encodeMessageFrame(
 			staple: staple, proposal: proposal, app: appBytes)
 
-		let recvEpochBefore = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
+		let recvEpochBefore = try #require(bob.recvGroup?.classical.context.epoch)
 		let decrypted = try bob.processIncomingDecrypted(frame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
+		#expect(decrypted.didApplyRemoteCommit)
 		// D3: a same-id move (a key refresh only) surfaces neither flag —
 		// only an id change would.
-		XCTAssertFalse(decrypted.ownCredentialCanonicalized)
-		XCTAssertNil(decrypted.newSender)
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore + 1)
+		#expect(!decrypted.ownCredentialCanonicalized)
+		#expect(decrypted.newSender == nil)
+		#expect(bob.recvGroup?.classical.context.epoch == recvEpochBefore + 1)
 	}
 
 	// MARK: - Epoch classification (shared by `0x00` and `0x05`)
@@ -670,11 +681,12 @@ final class FoldTests: XCTestCase {
 	/// manual commits on a detached copy of Group_A, neither delivered, so
 	/// the second is framed one epoch beyond what Bob's real
 	/// `recvGroup.classical` has ever seen.
-	func testAheadFoldCommitThrowsEpochDesync() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func aheadFoldCommitThrowsEpochDesync() throws {
 		let (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		var fixtureBob = bob
 		guard var groupACopy = alice.sendGroup else {
-			XCTFail("expected alice to be established")
+			Issue.record("expected alice to be established")
 			return
 		}
 
@@ -708,17 +720,18 @@ final class FoldTests: XCTestCase {
 			staple: aheadStaple, proposal: proposal, app: app)
 
 		let recvEpochBefore = fixtureBob.recvGroup?.classical.context.epoch
-		XCTAssertThrowsError(try fixtureBob.processIncomingDecrypted(aheadFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .epochDesync)
+		#expect(throws: TwoMLSError.epochDesync) {
+			try fixtureBob.processIncomingDecrypted(aheadFrame)
 		}
-		XCTAssertEqual(fixtureBob.recvGroup?.classical.context.epoch, recvEpochBefore)
+		#expect(fixtureBob.recvGroup?.classical.context.epoch == recvEpochBefore)
 	}
 
 	/// A `0x00` staple that merely re-rides a fold commit already applied
 	/// off an earlier frame (now strictly behind the receive group's live
 	/// epoch) is an idempotent skip, not an error — `didApplyRemoteCommit`
 	/// is `false` and the epoch is unchanged.
-	func testBehindFoldCommitIsSkippedIdempotently() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func behindFoldCommitIsSkippedIdempotently() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let offer = try surfaceOffer(from: &bob, to: &alice)
 		_ = try alice.queueProposal(digest: offer.digest)
@@ -726,7 +739,7 @@ final class FoldTests: XCTestCase {
 		let frame = try alice.encrypt(Data("fold".utf8)).frame
 
 		let decrypted = try bob.processIncomingDecrypted(frame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
+		#expect(decrypted.didApplyRemoteCommit)
 		let epochAfter = bob.recvGroup?.classical.context.epoch
 
 		// Alice's next send re-rides the SAME (now-behind, already-applied)
@@ -734,9 +747,9 @@ final class FoldTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let nextFrame = try alice.encrypt(Data("post-fold".utf8)).frame
 		let redelivered = try bob.processIncomingDecrypted(nextFrame)
-		XCTAssertFalse(redelivered.didApplyRemoteCommit)
-		XCTAssertEqual(redelivered.applicationMessage, Data("post-fold".utf8))
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, epochAfter)
+		#expect(!redelivered.didApplyRemoteCommit)
+		#expect(redelivered.applicationMessage == Data("post-fold".utf8))
+		#expect(bob.recvGroup?.classical.context.epoch == epochAfter)
 	}
 
 	// MARK: - Single-occupancy, latest-wins
@@ -747,18 +760,21 @@ final class FoldTests: XCTestCase {
 	/// earlier digest is no longer approvable — only the latest one is. A
 	/// same-target repeat would be a reuse, not a genuinely later offer, so
 	/// the second leg here is a rotation.
-	func testLaterOfferReplacesEarlierUnapprovedOfferSingleOccupancyLatestWins() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func laterOfferReplacesEarlierUnapprovedOfferSingleOccupancyLatestWins() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let bobRotated = Data("bob-rotated".utf8)
 		let offer1 = try surfaceOffer(from: &bob, to: &alice, app: Data("first".utf8))
 		let offer2 = try surfaceOffer(
 			from: &bob, to: &alice, app: Data("second".utf8), rotating: bobRotated)
-		XCTAssertNotEqual(offer1.digest, offer2.digest)
+		#expect(offer1.digest != offer2.digest)
 
-		XCTAssertThrowsError(try alice.queueProposal(digest: offer1.digest)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .proposalRejected)
+		#expect(throws: TwoMLSError.proposalRejected) {
+			try alice.queueProposal(digest: offer1.digest)
 		}
-		XCTAssertNoThrow(try alice.queueProposal(digest: offer2.digest))
+		#expect(throws: Never.self) {
+			try alice.queueProposal(digest: offer2.digest)
+		}
 	}
 
 	/// A host-relied invariant: the SAME target's offer repeats byte-for-
@@ -773,7 +789,8 @@ final class FoldTests: XCTestCase {
 	/// means to pin. Kills: a second approval of the identical digest
 	/// appending a second `authorizedNext` entry, or otherwise not being a
 	/// clean no-op.
-	func testReapprovingARepeatedIdenticalOfferOnANewFrameIsIdempotent() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func reapprovingARepeatedIdenticalOfferOnANewFrameIsIdempotent() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let bobRotated = Data("bob-rotated-reapproved".utf8)
 
@@ -781,28 +798,28 @@ final class FoldTests: XCTestCase {
 		let offer1 = try surfaceOffer(
 			from: &bob, to: &alice, app: Data("first".utf8), rotating: bobRotated)
 		_ = try alice.queueProposal(digest: offer1.digest)
-		let queuedAfterFirst = try XCTUnwrap(alice.queuedProposal)
+		let queuedAfterFirst = try #require(alice.queuedProposal)
 		let authorizedCountAfterFirst = alice.auth.theirs.authorizedNext.count
-		XCTAssertTrue(alice.auth.theirs.authorizedNext.contains(bobRotated))
+		#expect(alice.auth.theirs.authorizedNext.contains(bobRotated))
 
 		// A SECOND, later frame repeating the identical offer bytes (the
 		// per-epoch reuse rule) — surfaced again (re-populating
 		// `offeredProposal`), then re-approved.
 		let offer2 = try surfaceOffer(
 			from: &bob, to: &alice, app: Data("second".utf8), rotating: bobRotated)
-		XCTAssertEqual(offer1.digest, offer2.digest, "reused within the same epoch")
+		#expect(offer1.digest == offer2.digest, "reused within the same epoch")
 		_ = try alice.queueProposal(digest: offer2.digest)
-		let queuedAfterSecond = try XCTUnwrap(alice.queuedProposal)
+		let queuedAfterSecond = try #require(alice.queuedProposal)
 
-		XCTAssertEqual(queuedAfterFirst.digest, queuedAfterSecond.digest)
-		XCTAssertEqual(queuedAfterFirst.proposing, queuedAfterSecond.proposing)
-		XCTAssertEqual(queuedAfterFirst.message, queuedAfterSecond.message)
-		XCTAssertEqual(
-			alice.auth.theirs.authorizedNext.count, authorizedCountAfterFirst,
+		#expect(queuedAfterFirst.digest == queuedAfterSecond.digest)
+		#expect(queuedAfterFirst.proposing == queuedAfterSecond.proposing)
+		#expect(queuedAfterFirst.message == queuedAfterSecond.message)
+		#expect(
+			alice.auth.theirs.authorizedNext.count == authorizedCountAfterFirst,
 			"re-approving the identical offer must not authorize it twice")
 
 		// And the fold still proceeds normally off the re-approved offer.
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 	}
 }
