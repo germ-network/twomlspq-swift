@@ -1,6 +1,4 @@
 #if DEBUG
-	import Foundation
-
 	/// Thrown by a named fault point once armed (`TwoMLSSessionTestHooks.
 	/// armFault`) — never a case on the public `TwoMLSError`, since this
 	/// exists only to let a test simulate an otherwise-unreachable failure
@@ -60,21 +58,25 @@
 	// every test never arms anything) and just answers `false`.
 	@available(iOS 26, macOS 26, *)
 	enum TwoMLSSessionTestHooks {
+		/// No lock: a `FaultBox` is a fresh instance per `withIsolatedFaults`
+		/// call, reachable only through that call's task-local — never shared
+		/// with a concurrently-running test's own box. Combined with the
+		/// synchronous-only assumption above (no hop to a detached task
+		/// between `armFault` and the trigger), exactly one call chain ever
+		/// touches a given instance, so there is nothing to race. `@unchecked
+		/// Sendable` is still required to cross the task-local's implicit
+		/// Sendable requirement under strict concurrency checking — it is not
+		/// standing in for a lock.
 		private final class FaultBox: @unchecked Sendable {
-			private let lock = NSLock()
 			private var armed: Set<String> = []
 
 			func arm(_ name: String) {
-				lock.lock()
-				defer { lock.unlock() }
 				armed.insert(name)
 			}
 
 			/// True iff `name` was armed; consumes it either way (fires once).
 			func consume(_ name: String) -> Bool {
-				lock.lock()
-				defer { lock.unlock() }
-				return armed.remove(name) != nil
+				armed.remove(name) != nil
 			}
 		}
 
