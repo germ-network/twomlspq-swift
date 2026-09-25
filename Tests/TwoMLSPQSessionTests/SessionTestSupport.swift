@@ -34,11 +34,9 @@ enum SessionTestSupport {
 	static func principal(
 		_ name: String, profile: SessionProfile = .deployedCompatible
 	) throws -> Principal {
-		var principal = try Principal.generate(
+		try Principal.generate(
 			clientID: Data(name.utf8), classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
-		principal.advertising = profile == .correct ? SessionProfile.recognized : []
-		return principal
+			pqProvider: pqProvider, advertisesCorrectProfile: profile == .correct)
 	}
 
 	/// Alice initiates to Bob's freshly-minted invitation, Bob receives. Bob
@@ -131,13 +129,14 @@ enum SessionTestSupport {
 	/// `BornDedicatedTests` and any other suite needing a born-dedicated
 	/// starting point.
 	static func establishedDedicatedAndApproved(
-		dedicatedClientID: Data = Data("bob-dedicated".utf8)
+		dedicatedClientID: Data = Data("bob-dedicated".utf8),
+		profile: SessionProfile = .deployedCompatible
 	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, invitationClientID: Data,
 		dedicatedClientID: Data, envelope: Data
 	) {
 		var (alice, bob, _, invitationClientID, resolvedDedicatedClientID) =
-			try establishedDedicated(dedicatedClientID: dedicatedClientID)
+			try establishedDedicated(dedicatedClientID: dedicatedClientID, profile: profile)
 		let envelope = Data("fake-signed-handoff".utf8)
 		_ = try bob.installEstablishmentEnvelope(envelope)
 		let standalone = try XCTUnwrap(try bob.standaloneWelcome())

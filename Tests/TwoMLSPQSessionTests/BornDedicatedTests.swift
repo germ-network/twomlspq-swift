@@ -41,13 +41,14 @@ final class BornDedicatedTests: XCTestCase {
 	/// need a fully-established, D-adopted pair: establish dedicated,
 	/// install, deliver standalone, and approve.
 	private func fullyEstablishedDedicated(
-		dedicatedClientID: Data = Data("bob-dedicated".utf8)
+		dedicatedClientID: Data = Data("bob-dedicated".utf8),
+		profile: SessionProfile = .deployedCompatible
 	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, invitationClientID: Data,
 		dedicatedClientID: Data, envelope: Data
 	) {
 		try SessionTestSupport.establishedDedicatedAndApproved(
-			dedicatedClientID: dedicatedClientID)
+			dedicatedClientID: dedicatedClientID, profile: profile)
 	}
 
 	// MARK: - Accept 1: full round-trip
@@ -211,72 +212,78 @@ final class BornDedicatedTests: XCTestCase {
 	/// twin of the TwoMLSPQ cross-engine flip. Kills: targeting the
 	/// presented id (I) instead of `mine.current` (D); pins not retiring.
 	func testBornDedicatedAcceptorRecvPQCatchesUpToDedicatedID() throws {
-		var (alice, bob, invitationClientID, dedicatedClientID, _) =
-			try fullyEstablishedDedicated()
+		for profile in [SessionProfile.deployedCompatible, .correct] {
+			var (alice, bob, invitationClientID, dedicatedClientID, _) =
+				try fullyEstablishedDedicated(profile: profile)
 
-		// License Alice + drive Bob's recv-leaf catch-up in one stroke,
-		// mirroring `RatchetTests.fullyEstablishedTurnOnBob()`'s own
-		// bootstrap-then-license recipe (§11 #8: a queued fold requires
-		// Alice to have seen at least one of Bob's send epochs).
-		_ = try bob.prepareToEncrypt()
-		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
-		let decrypted = try alice.processIncomingDecrypted(bobFrame)
-		_ = try alice.queueProposal(digest: decrypted.queuedProposal.digest)
-		_ = try alice.prepareToEncrypt()
-		let aliceFoldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
-		_ = try bob.processIncomingDecrypted(aliceFoldFrame)
+			// License Alice + drive Bob's recv-leaf catch-up in one stroke,
+			// mirroring `RatchetTests.fullyEstablishedTurnOnBob()`'s own
+			// bootstrap-then-license recipe (§11 #8: a queued fold requires
+			// Alice to have seen at least one of Bob's send epochs).
+			_ = try bob.prepareToEncrypt()
+			let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
+			let decrypted = try alice.processIncomingDecrypted(bobFrame)
+			_ = try alice.queueProposal(digest: decrypted.queuedProposal.digest)
+			_ = try alice.prepareToEncrypt()
+			let aliceFoldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
+			_ = try bob.processIncomingDecrypted(aliceFoldFrame)
 
-		// Alice's fold above advanced her `sendGroup.classical` epoch, so
-		// the earlier license is now stale — Bob sends once more at the
-		// NEW epoch to re-stamp `peerAppliedSendEpoch` fresh before the A.3
-		// discharge below relies on it.
-		_ = try bob.prepareToEncrypt()
-		let bobFrame2 = try bob.encrypt(Data("bob-hello-2".utf8)).frame
-		_ = try alice.processIncomingDecrypted(bobFrame2)
+			// Alice's fold above advanced her `sendGroup.classical` epoch, so
+			// the earlier license is now stale — Bob sends once more at the
+			// NEW epoch to re-stamp `peerAppliedSendEpoch` fresh before the A.3
+			// discharge below relies on it.
+			_ = try bob.prepareToEncrypt()
+			let bobFrame2 = try bob.encrypt(Data("bob-hello-2".utf8)).frame
+			_ = try alice.processIncomingDecrypted(bobFrame2)
 
-		let begin = try alice.pqBootstrapBegin()
-		let respond = try bob.pqBootstrapRespond(begin.frame)
-		_ = try alice.pqBootstrapJoin(respond.frame)
-		XCTAssertTrue(bob.isFullyEstablished)
+			let begin = try alice.pqBootstrapBegin()
+			let respond = try bob.pqBootstrapRespond(begin.frame)
+			_ = try alice.pqBootstrapJoin(respond.frame)
+			XCTAssertTrue(bob.isFullyEstablished)
 
-		// Already licensed (Bob's catch-up frame above) — Alice's very next
-		// round discharges the owed A.3 bind immediately, flipping the turn.
-		_ = try alice.prepareToEncrypt()
-		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
-		_ = try bob.processIncomingDecrypted(boundFrame)
-		XCTAssertTrue(bob.myPQTurn)
+			// Already licensed (Bob's catch-up frame above) — Alice's very next
+			// round discharges the owed A.3 bind immediately, flipping the turn.
+			_ = try alice.prepareToEncrypt()
+			let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
+			_ = try bob.processIncomingDecrypted(boundFrame)
+			XCTAssertTrue(bob.myPQTurn)
 
-		XCTAssertEqual(bob.auth.mine.current, dedicatedClientID)
-		let recvPQBefore = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
-		XCTAssertEqual(try basicIdentifier(recvPQBefore.credential), invitationClientID)
+			XCTAssertEqual(bob.auth.mine.current, dedicatedClientID)
+			let recvPQBefore = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
+			XCTAssertEqual(try basicIdentifier(recvPQBefore.credential), invitationClientID)
 
-		// Bob's Upd′ proposes into `recvGroup.pq` (Group_A.pq), signed
-		// under the retained invitation key `leafKeys.recvPQ.current`
-		// still holds, and carries D as the leaf's new credential — Alice's
-		// `pqRekeyRespond`, which owns that group as her `sendGroup.pq`,
-		// verifies it and reports the move.
-		let rekeyBegin = try bob.pqRekeyBegin()
-		// C1: the deployed-compatible profile announces the handed-off id.
-		let updBytes = try Frames.decodePQRekeyUpd(alice.openOrRaw(rekeyBegin.frame))
-		guard
-			case .publicMessage(let updPub) = try MLS.RFC9420.Message(
-				mlsEncoded: updBytes)
-		else {
-			return XCTFail("expected a publicMessage-framed Upd′")
+			// Bob's Upd′ proposes into `recvGroup.pq` (Group_A.pq), signed
+			// under the retained invitation key `leafKeys.recvPQ.current`
+			// still holds, and carries D as the leaf's new credential — Alice's
+			// `pqRekeyRespond`, which owns that group as her `sendGroup.pq`,
+			// verifies it and reports the move.
+			let rekeyBegin = try bob.pqRekeyBegin()
+			// C1: only the deployed-compatible profile announces the
+			// handed-off id; the correct profile's Upd′ carries none.
+			let updBytes = try Frames.decodePQRekeyUpd(alice.openOrRaw(rekeyBegin.frame))
+			guard
+				case .publicMessage(let updPub) = try MLS.RFC9420.Message(
+					mlsEncoded: updBytes)
+			else {
+				return XCTFail("expected a publicMessage-framed Upd′")
+			}
+			XCTAssertEqual(
+				updPub.content.authenticatedData,
+				profile == .correct ? Data() : dedicatedClientID, "\(profile)")
+
+			let rekeyRespond = try alice.pqRekeyRespond(rekeyBegin.frame)
+			XCTAssertEqual(rekeyRespond.rotatedCredential, dedicatedClientID, "\(profile)")
+
+			XCTAssertNoThrow(try bob.pqRekeyApply(rekeyRespond.frame))
+			let recvPQAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
+			XCTAssertEqual(
+				try basicIdentifier(recvPQAfter.credential), dedicatedClientID, "\(profile)")
+
+			// Neither side still pins I: bob's send-PQ was founded under D
+			// already, and his recv-PQ has now caught up too.
+			XCTAssertFalse(bob.auth.mine.pinned.contains(invitationClientID))
+			XCTAssertFalse(alice.auth.theirs.pinned.contains(invitationClientID))
 		}
-		XCTAssertEqual(updPub.content.authenticatedData, dedicatedClientID)
-
-		let rekeyRespond = try alice.pqRekeyRespond(rekeyBegin.frame)
-		XCTAssertEqual(rekeyRespond.rotatedCredential, dedicatedClientID)
-
-		XCTAssertNoThrow(try bob.pqRekeyApply(rekeyRespond.frame))
-		let recvPQAfter = try TwoMLSSession.ownLeaf(of: XCTUnwrap(bob.recvGroup?.pq))
-		XCTAssertEqual(try basicIdentifier(recvPQAfter.credential), dedicatedClientID)
-
-		// Neither side still pins I: bob's send-PQ was founded under D
-		// already, and his recv-PQ has now caught up too.
-		XCTAssertFalse(bob.auth.mine.pinned.contains(invitationClientID))
-		XCTAssertFalse(alice.auth.theirs.pinned.contains(invitationClientID))
 	}
 
 	// MARK: - Accept 7 (self-driven): the own-arm gate

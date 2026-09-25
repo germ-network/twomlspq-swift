@@ -27,27 +27,37 @@ public struct Principal: Sendable {
 	let pqProvider: any MLS.CipherSuiteProvider
 	let codepoints: MLS.Combiner.Codepoints
 	public let clientID: Data
+	/// Opt-in, default off: every KeyPackage this principal mints advertises
+	/// the correct session profile (book group-rules.md rule 9) once this is
+	/// `true`. A session's profile is fixed at establishment from both
+	/// KeyPackages, so a KeyPackage generated before opting in never
+	/// advertises it, even after this is later flipped on. With the default
+	/// `false`, behavior and wire bytes are unchanged from a session with no
+	/// profile mechanism at all.
+	public let advertisesCorrectProfile: Bool
+
 	/// The session profiles every key package this principal mints
-	/// advertises (book group-rules.md rule 9) — internal for now, and
-	/// empty by default (no behavior change): a later change exposes a
-	/// host opt-in here.
-	var advertising: [SessionProfile] = []
+	/// advertises.
+	var advertising: [SessionProfile] { advertisesCorrectProfile ? SessionProfile.recognized : [] }
 
 	/// Validates the provider config for `clientID` — no key material is
 	/// minted here; each `TwoMLSIdentity` this principal later produces
-	/// mints its own, fresh.
+	/// mints its own, fresh. `advertisesCorrectProfile` sets this
+	/// principal's opt-in (see the stored property's doc); default off.
 	public static func generate(
 		clientID: Data,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
-		codepoints: MLS.Combiner.Codepoints = .deployed
+		codepoints: MLS.Combiner.Codepoints = .deployed,
+		advertisesCorrectProfile: Bool = false
 	) throws -> Principal {
 		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
 			pqProvider.cipherSuite == TwoMLSSuite.pq
 		else { throw TwoMLSError.cipherSuiteMismatch }
 		return Principal(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			codepoints: codepoints, clientID: clientID)
+			codepoints: codepoints, clientID: clientID,
+			advertisesCorrectProfile: advertisesCorrectProfile)
 	}
 
 	/// Mint a fresh combiner key package under a fresh `TwoMLSIdentity`,
