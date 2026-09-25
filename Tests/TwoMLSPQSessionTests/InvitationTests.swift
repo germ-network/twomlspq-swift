@@ -3,7 +3,6 @@ import MLSCodec
 import MLSCombiner
 import MLSProfileRFC9420
 import SecretBytes
-import XCTest
 import Testing
 
 @testable import TwoMLSPQSession
@@ -13,8 +12,8 @@ import Testing
 /// 3-object model layered over the existing identity-based establishment
 /// (book concepts.md, session-lifecycle.md's "Invitations & replayed
 /// initial frames").
-@available(iOS 26, macOS 26, *)
-final class InvitationTests: XCTestCase {
+@Suite struct InvitationTests {
+	@available(iOS 26, macOS 26, *)
 	private func makePrincipal(_ name: String) throws -> Principal {
 		try Principal.generate(
 			clientID: Data(name.utf8),
@@ -22,19 +21,21 @@ final class InvitationTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private func freshSpawnToken() -> Data {
 		SessionTestSupport.classicalProvider.randomBytes(16)
 	}
 
 	/// Runs one `initiate` -> `receive` round against `invitation`, returning
 	/// everything a caller might want to assert on.
+	@available(iOS 26, macOS 26, *)
 	private func acceptOneWelcome(
 		from initiator: Principal, into invitation: inout Invitation
 	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, welcome: Data, spawnToken: Data,
 		bootstrapKPCommitment: Data, archive: SecretArchive, baseline: StateUpdate
 	) {
-		let theirCombinerKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let theirCombinerKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
 			principal: initiator, their: theirCombinerKP)
 		let commitment = try initiated.session.bootstrapKPCommitment()
@@ -55,7 +56,8 @@ final class InvitationTests: XCTestCase {
 	/// A principal mints an invitation; a peer initiates to its published
 	/// combiner KP; `Invitation.receive` yields a working session in both
 	/// directions, and A.3 completes.
-	func testInvitationReceiveYieldsAWorkingSessionBothDirectionsAndA3Completes() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func invitationReceiveYieldsAWorkingSessionBothDirectionsAndA3Completes() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
@@ -63,70 +65,72 @@ final class InvitationTests: XCTestCase {
 		let round = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
 		var alice = round.alice
 		var bob = round.bob
-		XCTAssertTrue(bob.isEstablished)
-		XCTAssertFalse(alice.isEstablished)
+		#expect(bob.isEstablished)
+		#expect(!alice.isEstablished)
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncomingDecrypted(bobFrame)
-		XCTAssertTrue(alice.isEstablished)
+		#expect(alice.isEstablished)
 
 		_ = try alice.prepareToEncrypt()
 		let aliceFrame = try alice.encrypt(Data("alice-hello".utf8)).frame
 		let aliceDecrypted = try bob.processIncomingDecrypted(aliceFrame)
-		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("alice-hello".utf8))
+		#expect(aliceDecrypted.applicationMessage == Data("alice-hello".utf8))
 
 		_ = try bob.prepareToEncrypt()
 		let bobReply = try bob.encrypt(Data("bob-reply".utf8)).frame
 		let bobDecrypted = try alice.processIncomingDecrypted(bobReply)
-		XCTAssertEqual(bobDecrypted.applicationMessage, Data("bob-reply".utf8))
+		#expect(bobDecrypted.applicationMessage == Data("bob-reply".utf8))
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
-		XCTAssertTrue(alice.isFullyEstablished)
-		XCTAssertTrue(bob.isFullyEstablished)
+		#expect(alice.isFullyEstablished)
+		#expect(bob.isFullyEstablished)
 	}
 
 	// MARK: - Dedup
 
-	func testRedeliveringTheExactSameWelcomeIsDuplicateWelcome() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func redeliveringTheExactSameWelcomeIsDuplicateWelcome() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let round = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
-		let expectedGroupID = try XCTUnwrap(round.bob.recvGroup?.classical.context.groupID)
+		let expectedGroupID = try #require(round.bob.recvGroup?.classical.context.groupID)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.duplicateWelcome) {
 			try invitation.receive(
 				welcome: round.welcome,
 				theirClassicalKeyPackage: round.alice.identity.keyPackage.classical,
 				bootstrapKPCommitment: round.bootstrapKPCommitment,
 				spawnToken: round.spawnToken)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .duplicateWelcome)
 		}
 
-		XCTAssertEqual(
-			invitation.processedWelcomeGroupID(welcome: round.welcome), expectedGroupID)
-		XCTAssertEqual(
-			invitation.forwardGroupID(spawnToken: round.spawnToken), expectedGroupID)
+		#expect(
+			invitation.processedWelcomeGroupID(welcome: round.welcome)
+				== expectedGroupID)
+		#expect(
+			invitation.forwardGroupID(spawnToken: round.spawnToken) == expectedGroupID)
 
 		// `bootstrapKPGroupID` resolves whether the frame arrives tagged
 		// (the `0x13` side-band wire shape) or already untagged (the same
 		// preimage `bootstrapKPCommitment()` hashes).
-		let untaggedKP = try XCTUnwrap(round.alice.bootstrapKPBytes())
-		XCTAssertEqual(invitation.bootstrapKPGroupID(kpFrame: untaggedKP), expectedGroupID)
-		XCTAssertEqual(
+		let untaggedKPRaw = try round.alice.bootstrapKPBytes()
+		let untaggedKP = try #require(untaggedKPRaw)
+		#expect(invitation.bootstrapKPGroupID(kpFrame: untaggedKP) == expectedGroupID)
+		#expect(
 			invitation.bootstrapKPGroupID(
-				kpFrame: Frames.encodePQBootstrapKP(untaggedKP)),
-			expectedGroupID)
+				kpFrame: Frames.encodePQBootstrapKP(untaggedKP))
+				== expectedGroupID)
 	}
 
 	/// A second, DIFFERENT welcome from the same remote (the same principal
 	/// initiating a second time) is also `.duplicateWelcome` — the
 	/// consumed-remote guard, not the content-keyed one.
-	func testASecondDifferentWelcomeFromTheSameRemoteIsDuplicateWelcome() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func aSecondDifferentWelcomeFromTheSameRemoteIsDuplicateWelcome() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
@@ -134,16 +138,17 @@ final class InvitationTests: XCTestCase {
 
 		// A second `initiate` from the SAME principal mints a fresh Group_A
 		// (a genuinely different welcome) but carries the same clientID.
-		XCTAssertThrowsError(try acceptOneWelcome(from: alicePrincipal, into: &invitation))
-		{
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .duplicateWelcome)
+		#expect(throws: TwoMLSError.duplicateWelcome) {
+			try acceptOneWelcome(from: alicePrincipal, into: &invitation)
 		}
 	}
 
 	// MARK: - Single-use vs last-resort
 
-	func testSingleUseInvitationIsSpentAfterOneWelcomeAndDropsItsKPMaterialOnRestore() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func singleUseInvitationIsSpentAfterOneWelcomeAndDropsItsKPMaterialOnRestore()
+		throws
+	{
 		let alicePrincipal = try makePrincipal("alice")
 		let carolPrincipal = try makePrincipal("carol")
 		let bobPrincipal = try makePrincipal("bob")
@@ -151,14 +156,14 @@ final class InvitationTests: XCTestCase {
 		// Captured before consumption — mirrors two remotes racing to
 		// initiate against the same not-yet-consumed published KP; whichever
 		// welcome `receive` sees second finds the KP already gone.
-		let publishedKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let publishedKP = try #require(invitation.combinerKeyPackage)
 
 		let firstRound = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
-		XCTAssertNil(invitation.combinerKeyPackage)
+		#expect(invitation.combinerKeyPackage == nil)
 
 		let carolInitiated = try TwoMLSSession.initiate(
 			principal: carolPrincipal, their: publishedKP)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invitationSpent) {
 			try invitation.receive(
 				welcome: carolInitiated.welcome,
 				theirClassicalKeyPackage: carolInitiated.session.identity.keyPackage
@@ -166,27 +171,26 @@ final class InvitationTests: XCTestCase {
 				bootstrapKPCommitment: try carolInitiated.session
 					.bootstrapKPCommitment(),
 				spawnToken: freshSpawnToken())
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invitationSpent)
 		}
 
 		let restored = try Invitation.restore(
 			archive: firstRound.archive,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertNil(restored.combinerKeyPackage)
+		#expect(restored.combinerKeyPackage == nil)
 	}
 
-	func testLastResortInvitationServicesMultipleDistinctRemotes() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func lastResortInvitationServicesMultipleDistinctRemotes() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let carolPrincipal = try makePrincipal("carol")
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 
 		_ = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
-		XCTAssertNotNil(invitation.combinerKeyPackage)
+		#expect(invitation.combinerKeyPackage != nil)
 		_ = try acceptOneWelcome(from: carolPrincipal, into: &invitation)
-		XCTAssertNotNil(invitation.combinerKeyPackage)
+		#expect(invitation.combinerKeyPackage != nil)
 	}
 
 	/// Two sessions accepted off ONE last-resort invitation each found their
@@ -195,7 +199,8 @@ final class InvitationTests: XCTestCase {
 	/// its own §A.3 — distinct send-PQ keys too. Their RECV keys are equal
 	/// by design: both join the SAME invitation KeyPackage, so recv-classical
 	/// and recv-PQ share the one published half.
-	func testLastResortInvitationSessionsShareNoSendGroupKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func lastResortInvitationSessionsShareNoSendGroupKey() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let carolPrincipal = try makePrincipal("carol")
 		let bobPrincipal = try makePrincipal("bob")
@@ -204,15 +209,15 @@ final class InvitationTests: XCTestCase {
 		var aliceRound = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
 		var carolRound = try acceptOneWelcome(from: carolPrincipal, into: &invitation)
 
-		let aliceBobSendKey = try XCTUnwrap(aliceRound.bob.leafKeys.sendClassical.current)
-		let carolBobSendKey = try XCTUnwrap(carolRound.bob.leafKeys.sendClassical.current)
-		XCTAssertNotEqual(aliceBobSendKey.signatureKey, carolBobSendKey.signatureKey)
+		let aliceBobSendKey = try #require(aliceRound.bob.leafKeys.sendClassical.current)
+		let carolBobSendKey = try #require(carolRound.bob.leafKeys.sendClassical.current)
+		#expect(aliceBobSendKey.signatureKey != carolBobSendKey.signatureKey)
 
 		// recv-classical (the invitation's own published classical half) IS
 		// shared, by design.
-		XCTAssertEqual(
-			aliceRound.bob.leafKeys.recvClassical.current?.signatureKey,
-			carolRound.bob.leafKeys.recvClassical.current?.signatureKey)
+		#expect(
+			aliceRound.bob.leafKeys.recvClassical.current?.signatureKey
+				== carolRound.bob.leafKeys.recvClassical.current?.signatureKey)
 
 		// Alice becomes established (and gains a `recvGroup` to run §A.3
 		// against) only once she processes bob's first inbound frame.
@@ -229,48 +234,48 @@ final class InvitationTests: XCTestCase {
 		let carolKPFrame = try carolRound.alice.pqBootstrapBegin().frame
 		_ = try carolRound.bob.pqBootstrapRespond(carolKPFrame)
 
-		let aliceBobSendPQKey = try XCTUnwrap(aliceRound.bob.leafKeys.sendPQ.current)
-		let carolBobSendPQKey = try XCTUnwrap(carolRound.bob.leafKeys.sendPQ.current)
-		XCTAssertNotEqual(aliceBobSendPQKey.signatureKey, carolBobSendPQKey.signatureKey)
+		let aliceBobSendPQKey = try #require(aliceRound.bob.leafKeys.sendPQ.current)
+		let carolBobSendPQKey = try #require(carolRound.bob.leafKeys.sendPQ.current)
+		#expect(aliceBobSendPQKey.signatureKey != carolBobSendPQKey.signatureKey)
 
 		// recv-PQ (the invitation's own published PQ half) is shared too.
-		XCTAssertEqual(
-			aliceRound.bob.leafKeys.recvPQ.current?.signatureKey,
-			carolRound.bob.leafKeys.recvPQ.current?.signatureKey)
+		#expect(
+			aliceRound.bob.leafKeys.recvPQ.current?.signatureKey
+				== carolRound.bob.leafKeys.recvPQ.current?.signatureKey)
 	}
 
 	// MARK: - Restore
 
-	func testAllFourTablesSurviveRestore() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func allFourTablesSurviveRestore() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let round = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
-		let expectedGroupID = try XCTUnwrap(round.bob.recvGroup?.classical.context.groupID)
-		let untaggedKP = try XCTUnwrap(round.alice.bootstrapKPBytes())
+		let expectedGroupID = try #require(round.bob.recvGroup?.classical.context.groupID)
+		let untaggedKPRaw = try round.alice.bootstrapKPBytes()
+		let untaggedKP = try #require(untaggedKPRaw)
 
 		var restored = try Invitation.restore(
 			archive: round.archive,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		XCTAssertEqual(
-			restored.forwardGroupID(spawnToken: round.spawnToken), expectedGroupID)
-		XCTAssertEqual(
-			restored.processedWelcomeGroupID(welcome: round.welcome), expectedGroupID)
-		XCTAssertEqual(restored.bootstrapKPGroupID(kpFrame: untaggedKP), expectedGroupID)
-		XCTAssertNotNil(restored.combinerKeyPackage)
+		#expect(
+			restored.forwardGroupID(spawnToken: round.spawnToken) == expectedGroupID)
+		#expect(
+			restored.processedWelcomeGroupID(welcome: round.welcome) == expectedGroupID)
+		#expect(restored.bootstrapKPGroupID(kpFrame: untaggedKP) == expectedGroupID)
+		#expect(restored.combinerKeyPackage != nil)
 
 		// The exact same welcome re-delivered is caught by the
 		// processed-welcome ledger.
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.duplicateWelcome) {
 			try restored.receive(
 				welcome: round.welcome,
 				theirClassicalKeyPackage: round.alice.identity.keyPackage.classical,
 				bootstrapKPCommitment: round.bootstrapKPCommitment,
 				spawnToken: round.spawnToken)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .duplicateWelcome)
 		}
 
 		// A NEW, distinct welcome from the SAME remote isolates the
@@ -278,9 +283,8 @@ final class InvitationTests: XCTestCase {
 		// different digest (so the ledger alone would let it through) but
 		// the same remote client id, so only a consumed set that itself
 		// survived restore can reject it.
-		XCTAssertThrowsError(try acceptOneWelcome(from: alicePrincipal, into: &restored)) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .duplicateWelcome)
+		#expect(throws: TwoMLSError.duplicateWelcome) {
+			try acceptOneWelcome(from: alicePrincipal, into: &restored)
 		}
 	}
 
@@ -296,7 +300,8 @@ final class InvitationTests: XCTestCase {
 	/// un-consumed, then restored, successfully `receive`s a welcome. This
 	/// is the case with no coverage before this test existed — the fix is
 	/// `IdentityArchive`'s `includeInitSecrets` control (`SessionArchive.swift`).
-	func testRestoredLastResortInvitationCanReceiveAWelcome() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoredLastResortInvitationCanReceiveAWelcome() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
@@ -310,15 +315,16 @@ final class InvitationTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 
 		let round = try acceptOneWelcome(from: alicePrincipal, into: &restored)
-		XCTAssertTrue(round.bob.isEstablished)
-		XCTAssertFalse(round.alice.isEstablished)
+		#expect(round.bob.isEstablished)
+		#expect(!round.alice.isEstablished)
 	}
 
 	/// A **single-use** invitation, archived BEFORE its first receive, then
 	/// restored, also successfully `receive`s — its init secrets survived
 	/// even though the invitation is single-use (not yet consumed, so
 	/// nothing has nil'd `identity` yet).
-	func testRestoredSingleUseInvitationCanReceiveBeforeItsFirstWelcome() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoredSingleUseInvitationCanReceiveBeforeItsFirstWelcome() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
@@ -330,8 +336,8 @@ final class InvitationTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 
 		let round = try acceptOneWelcome(from: alicePrincipal, into: &restored)
-		XCTAssertTrue(round.bob.isEstablished)
-		XCTAssertNil(restored.combinerKeyPackage)
+		#expect(round.bob.isEstablished)
+		#expect(restored.combinerKeyPackage == nil)
 	}
 
 	/// A **single-use** invitation that has `receive`d once (consumed —
@@ -339,14 +345,15 @@ final class InvitationTests: XCTestCase {
 	/// `receive` again after being archived + restored — the book's
 	/// spent-can't-replay property survives restore, `includeInitSecrets`
 	/// notwithstanding (there is no identity left to archive secrets from).
-	func testRestoredSingleUseInvitationCannotReceiveAgainAfterConsumption() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoredSingleUseInvitationCannotReceiveAgainAfterConsumption() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let carolPrincipal = try makePrincipal("carol")
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
 		// Captured before consumption, so a second party can still attempt
 		// to initiate against the now-spent published KP.
-		let publishedKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let publishedKP = try #require(invitation.combinerKeyPackage)
 
 		let firstRound = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
 
@@ -354,11 +361,11 @@ final class InvitationTests: XCTestCase {
 			archive: firstRound.archive,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertNil(restored.combinerKeyPackage)
+		#expect(restored.combinerKeyPackage == nil)
 
 		let carolInitiated = try TwoMLSSession.initiate(
 			principal: carolPrincipal, their: publishedKP)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.invitationSpent) {
 			try restored.receive(
 				welcome: carolInitiated.welcome,
 				theirClassicalKeyPackage: carolInitiated.session.identity.keyPackage
@@ -366,8 +373,6 @@ final class InvitationTests: XCTestCase {
 				bootstrapKPCommitment: try carolInitiated.session
 					.bootstrapKPCommitment(),
 				spawnToken: freshSpawnToken())
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invitationSpent)
 		}
 	}
 
@@ -379,7 +384,8 @@ final class InvitationTests: XCTestCase {
 	/// the live happy-path test, so a missing half (only one secret
 	/// persisted) would surface here even if it happened to not fail the
 	/// simpler headline check.
-	func testRestoredInvitationArchiveCarriesBothInitSecretsFullRoundTrip() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoredInvitationArchiveCarriesBothInitSecretsFullRoundTrip() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
@@ -393,23 +399,23 @@ final class InvitationTests: XCTestCase {
 		let round = try acceptOneWelcome(from: alicePrincipal, into: &restored)
 		var alice = round.alice
 		var bob = round.bob
-		XCTAssertTrue(bob.isEstablished)
+		#expect(bob.isEstablished)
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncomingDecrypted(bobFrame)
-		XCTAssertTrue(alice.isEstablished)
+		#expect(alice.isEstablished)
 
 		_ = try alice.prepareToEncrypt()
 		let aliceFrame = try alice.encrypt(Data("alice-hello".utf8)).frame
 		let aliceDecrypted = try bob.processIncomingDecrypted(aliceFrame)
-		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("alice-hello".utf8))
+		#expect(aliceDecrypted.applicationMessage == Data("alice-hello".utf8))
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
-		XCTAssertTrue(alice.isFullyEstablished)
-		XCTAssertTrue(bob.isFullyEstablished)
+		#expect(alice.isFullyEstablished)
+		#expect(bob.isFullyEstablished)
 	}
 
 	// MARK: - open_initial
@@ -422,60 +428,66 @@ final class InvitationTests: XCTestCase {
 	/// envelope does NOT consume it — `combinerKeyPackage` stays non-nil,
 	/// and the invitation is still able to `receive` the very welcome the
 	/// opened envelope carried.
-	func testOpenInitialDoesNotConsumeASingleUseInvitation() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func openInitialDoesNotConsumeASingleUseInvitation() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
-		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirKP)
 
 		let envelope = try initiated.session.pendingOutbound()
 		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		XCTAssertNotNil(invitation.combinerKeyPackage, "openInitial must not consume")
+		#expect(
+			invitation.combinerKeyPackage != nil,
+			"openInitial must not consume")
 
 		var mutableInvitation = invitation
 		let returnKP = try EstablishmentMessages.decodeKeyPackage(
-			try XCTUnwrap(frame.returnKeyPackage))
+			try #require(frame.returnKeyPackage))
 		let received = try mutableInvitation.receive(
-			welcome: try XCTUnwrap(frame.welcome), theirClassicalKeyPackage: returnKP,
+			welcome: try #require(frame.welcome), theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
 			spawnToken: freshSpawnToken())
-		XCTAssertTrue(received.session.isEstablished)
+		#expect(received.session.isEstablished)
 	}
 
 	/// A spent single-use invitation (`identity` nil'd on consume) fails
 	/// `openInitial` cleanly with `.invitationSpent`, rather than crash.
-	func testOpenInitialFailsCleanlyOnASpentSingleUseInvitation() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func openInitialFailsCleanlyOnASpentSingleUseInvitation() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let carolPrincipal = try makePrincipal("carol")
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
 		// Captured before consumption, so a second party's envelope can
 		// still be sealed against the now-spent published KP.
-		let publishedKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let publishedKP = try #require(invitation.combinerKeyPackage)
 		_ = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
-		XCTAssertNil(invitation.combinerKeyPackage)
+		#expect(invitation.combinerKeyPackage == nil)
 
 		let carolInitiated = try TwoMLSSession.initiate(
 			principal: carolPrincipal, their: publishedKP)
 		let envelope = try carolInitiated.session.pendingOutbound()
 
-		XCTAssertThrowsError(try invitation.openInitial(envelope)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invitationSpent)
+		#expect(throws: TwoMLSError.invitationSpent) {
+			try invitation.openInitial(envelope)
 		}
 	}
 
 	/// This holds because invitation archives persist init secrets: a restored last-resort invitation's PQ init
 	/// secret survives, so a restored (never-yet-consumed) invitation can
 	/// both `openInitial` a fresh envelope AND `receive` off it.
-	func testRestoredLastResortInvitationCanOpenInitialAndReceive() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoredLastResortInvitationCanOpenInitialAndReceive() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
-		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let theirKP = try #require(invitation.combinerKeyPackage)
 
 		let archive = try invitation.makeInvitationArchive()
 		var restored = try Invitation.restore(
@@ -488,30 +500,34 @@ final class InvitationTests: XCTestCase {
 		let envelope = try initiated.session.pendingOutbound()
 
 		guard case .establishment(let frame) = try restored.openInitial(envelope) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
 		let returnKP = try EstablishmentMessages.decodeKeyPackage(
-			try XCTUnwrap(frame.returnKeyPackage))
+			try #require(frame.returnKeyPackage))
 		let received = try restored.receive(
-			welcome: try XCTUnwrap(frame.welcome), theirClassicalKeyPackage: returnKP,
+			welcome: try #require(frame.welcome), theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
 			spawnToken: freshSpawnToken())
-		XCTAssertTrue(received.session.isEstablished)
+		#expect(received.session.isEstablished)
 	}
 
 	// MARK: - forwarded(spawnToken:)
 
-	func testForwardedSpawnTokenRoutesCorrectlyAndRejectsAMismatch() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func forwardedSpawnTokenRoutesCorrectlyAndRejectsAMismatch() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let round = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
 
-		XCTAssertNoThrow(try round.bob.forwarded(spawnToken: round.spawnToken))
+		#expect(throws: Never.self) {
+			try round.bob.forwarded(spawnToken: round.spawnToken)
+		}
 
 		let wrongToken = freshSpawnToken()
-		XCTAssertThrowsError(try round.bob.forwarded(spawnToken: wrongToken)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .misroutedSpawnToken)
+		#expect(throws: TwoMLSError.misroutedSpawnToken) {
+			try round.bob.forwarded(spawnToken: wrongToken)
 		}
 	}
 
@@ -520,14 +536,15 @@ final class InvitationTests: XCTestCase {
 	/// `receive`'s returned `baseline` is a genuine restorable checkpoint the
 	/// moment `receive` returns — before any further state-advancing call on
 	/// the spawned session, not just a decodable blob.
-	func testAcceptorBaselineAloneRestoresAWorkingSession() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func acceptorBaselineAloneRestoresAWorkingSession() throws {
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
 		let round = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
 
-		XCTAssertEqual(round.baseline.kind, .checkpoint)
-		XCTAssertEqual(round.baseline.stateSeq, round.bob.stateSeq)
+		#expect(round.baseline.kind == .checkpoint)
+		#expect(round.baseline.stateSeq == round.bob.stateSeq)
 
 		var restoredBob = try TwoMLSSession.restore(
 			core: nil, checkpoint: round.baseline.archive,
@@ -536,15 +553,15 @@ final class InvitationTests: XCTestCase {
 		var alice = round.alice
 
 		let restoredPrepared = try restoredBob.prepareToEncrypt()
-		XCTAssertEqual(restoredPrepared.dependsOnSeq, round.baseline.stateSeq)
+		#expect(restoredPrepared.dependsOnSeq == round.baseline.stateSeq)
 		let bobFrame = try restoredBob.encrypt(Data("bob-hello".utf8)).frame
 		let bobDecrypted = try alice.processIncomingDecrypted(bobFrame)
-		XCTAssertEqual(bobDecrypted.applicationMessage, Data("bob-hello".utf8))
+		#expect(bobDecrypted.applicationMessage == Data("bob-hello".utf8))
 
 		_ = try alice.prepareToEncrypt()
 		let aliceFrame = try alice.encrypt(Data("alice-hello".utf8)).frame
 		let aliceDecrypted = try restoredBob.processIncomingDecrypted(aliceFrame)
-		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("alice-hello".utf8))
+		#expect(aliceDecrypted.applicationMessage == Data("alice-hello".utf8))
 	}
 
 	/// Baseline PLUS the born-dedicated `installEstablishmentEnvelope` `.core`
@@ -557,11 +574,14 @@ final class InvitationTests: XCTestCase {
 	/// carries PQ trees at all, so the splice is what gives the restored
 	/// session back Group_A's PQ half. The restored session already has the
 	/// handoff installed and owes nothing.
-	func testBornDedicatedAcceptorBaselinePlusInstallSpliceRestoresAWorkingSession() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bornDedicatedAcceptorBaselinePlusInstallSpliceRestoresAWorkingSession()
+		throws
+	{
 		let alicePrincipal = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
-		let theirCombinerKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let theirCombinerKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirCombinerKP)
 		let dedicatedClientID = Data("bob-dedicated".utf8)
@@ -571,42 +591,43 @@ final class InvitationTests: XCTestCase {
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
 			spawnToken: freshSpawnToken(), newClientID: dedicatedClientID)
 		var bob = received.session
-		XCTAssertTrue(bob.owesEstablishmentEnvelope)
+		#expect(bob.owesEstablishmentEnvelope)
 
 		let envelope = Data("fake-signed-handoff".utf8)
 		let installUpdate = try bob.installEstablishmentEnvelope(envelope)
-		XCTAssertEqual(installUpdate.kind, .core)
-		XCTAssertEqual(installUpdate.stateSeq, received.baseline.stateSeq + 1)
+		#expect(installUpdate.kind == .core)
+		#expect(installUpdate.stateSeq == received.baseline.stateSeq + 1)
 
 		var restoredBob = try TwoMLSSession.restore(
 			core: installUpdate.archive, checkpoint: received.baseline.archive,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertFalse(restoredBob.owesEstablishmentEnvelope)
-		XCTAssertEqual(restoredBob.currentStaple.first, Frames.establishmentHandoffTag)
+		#expect(!restoredBob.owesEstablishmentEnvelope)
+		#expect(restoredBob.currentStaple.first == Frames.establishmentHandoffTag)
 		// The splice, proven directly: Group_A's PQ half (spliced in from the
 		// checkpoint) is back, while Group_B's (never in a `.core`, and nil in
 		// the checkpoint too pre-A.3) stays nil.
-		XCTAssertNotNil(restoredBob.recvGroup?.pq)
-		XCTAssertNil(restoredBob.sendGroup?.pq)
+		#expect(restoredBob.recvGroup?.pq != nil)
+		#expect(restoredBob.sendGroup?.pq == nil)
 
 		// Nothing of the peer's to fold on this first prepare, so it never
 		// re-installs a staple: `dependsOnSeq` names the last stateSeq this
 		// splice actually reconciled to — the INSTALL update's own (splicing
 		// keeps the rest of core), not the earlier baseline's.
 		let prepared = try restoredBob.prepareToEncrypt()
-		XCTAssertEqual(prepared.dependsOnSeq, installUpdate.stateSeq)
+		#expect(prepared.dependsOnSeq == installUpdate.stateSeq)
 
 		let bobFrame = try restoredBob.encrypt(Data("bob-hello".utf8)).frame
 
 		var alice = initiated.session
 		guard case .pendingEstablishment(let pending) = try alice.processIncoming(bobFrame)
 		else {
-			return XCTFail("expected a pause on the un-approved 0x0B")
+			Issue.record("expected a pause on the un-approved 0x0B")
+			return
 		}
 		let (envelopeBytes, welcomeBytes) = try Frames.decodeEstablishmentHandoff(
 			restoredBob.currentStaple)
-		XCTAssertEqual(pending.envelope, envelopeBytes)
+		#expect(pending.envelope == envelopeBytes)
 
 		let envelopeDigest = try SessionTestSupport.classicalProvider.hash(envelopeBytes)
 		let welcomeDigest = try SessionTestSupport.classicalProvider.hash(welcomeBytes)
@@ -616,10 +637,11 @@ final class InvitationTests: XCTestCase {
 				approvedWelcomeDigest: welcomeDigest,
 				expectedCreator: dedicatedClientID)
 		else {
-			return XCTFail("expected .decrypted on the approved re-feed")
+			Issue.record("expected .decrypted on the approved re-feed")
+			return
 		}
-		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
-		XCTAssertEqual(decrypted.queuedProposal.context, restoredBob.proposalContext())
+		#expect(decrypted.applicationMessage == Data("bob-hello".utf8))
+		#expect(decrypted.queuedProposal.context == restoredBob.proposalContext())
 	}
 
 	// MARK: - D1: a Principal holds no key of its own
@@ -630,13 +652,14 @@ final class InvitationTests: XCTestCase {
 	/// invitation's own classical half is distinct from its own PQ half);
 	/// two `initiate(principal:)` sessions from that same principal share no
 	/// own-leaf key either.
-	func testInvitationsFromOnePrincipalShareNoKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func invitationsFromOnePrincipalShareNoKey() throws {
 		let principal = try makePrincipal("carol")
 
 		let (firstInvitation, _) = try principal.generateInvitation(lastResort: false)
 		let (secondInvitation, _) = try principal.generateInvitation(lastResort: false)
-		let firstKP = try XCTUnwrap(firstInvitation.combinerKeyPackage)
-		let secondKP = try XCTUnwrap(secondInvitation.combinerKeyPackage)
+		let firstKP = try #require(firstInvitation.combinerKeyPackage)
+		let secondKP = try #require(secondInvitation.combinerKeyPackage)
 
 		let keys = [
 			firstKP.classical.leafNode.signatureKey.data,
@@ -644,12 +667,12 @@ final class InvitationTests: XCTestCase {
 			secondKP.classical.leafNode.signatureKey.data,
 			secondKP.pq.leafNode.signatureKey.data,
 		]
-		XCTAssertEqual(Set(keys).count, keys.count)
+		#expect(Set(keys).count == keys.count)
 
 		let bobPrincipal = try makePrincipal("bob-for-carol")
 		var (bobInvitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let firstSession = try TwoMLSSession.initiate(
-			principal: principal, their: try XCTUnwrap(bobInvitation.combinerKeyPackage)
+			principal: principal, their: try #require(bobInvitation.combinerKeyPackage)
 		)
 		_ = try bobInvitation.receive(
 			welcome: firstSession.welcome,
@@ -661,7 +684,7 @@ final class InvitationTests: XCTestCase {
 		var (bobInvitation2, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let secondSession = try TwoMLSSession.initiate(
 			principal: principal,
-			their: try XCTUnwrap(bobInvitation2.combinerKeyPackage))
+			their: try #require(bobInvitation2.combinerKeyPackage))
 		_ = try bobInvitation2.receive(
 			welcome: secondSession.welcome,
 			theirClassicalKeyPackage: secondSession.session.identity.keyPackage
@@ -670,19 +693,19 @@ final class InvitationTests: XCTestCase {
 			spawnToken: freshSpawnToken())
 
 		let firstOwnKeys = [
-			try XCTUnwrap(firstSession.session.leafKeys.sendClassical.current)
+			try #require(firstSession.session.leafKeys.sendClassical.current)
 				.signatureKey
 				.data,
-			try XCTUnwrap(firstSession.session.leafKeys.sendPQ.current).signatureKey
+			try #require(firstSession.session.leafKeys.sendPQ.current).signatureKey
 				.data,
 		]
 		let secondOwnKeys = [
-			try XCTUnwrap(secondSession.session.leafKeys.sendClassical.current)
+			try #require(secondSession.session.leafKeys.sendClassical.current)
 				.signatureKey
 				.data,
-			try XCTUnwrap(secondSession.session.leafKeys.sendPQ.current).signatureKey
+			try #require(secondSession.session.leafKeys.sendPQ.current).signatureKey
 				.data,
 		]
-		XCTAssertTrue(Set(firstOwnKeys).isDisjoint(with: Set(secondOwnKeys)))
+		#expect(Set(firstOwnKeys).isDisjoint(with: Set(secondOwnKeys)))
 	}
 }

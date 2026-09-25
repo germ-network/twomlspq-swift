@@ -1,15 +1,15 @@
 import Foundation
-import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
-final class FrameCodecTests: XCTestCase {
+@Suite struct FrameCodecTests {
 	// MARK: - Staple self-discrimination
 
-	func testStapleKindDiscriminatesOnFirstByte() {
-		XCTAssertEqual(Frames.stapleKind(0x01), .welcome)
-		XCTAssertEqual(Frames.stapleKind(0x00), .mlsMessage)
-		XCTAssertEqual(Frames.stapleKind(0xAB), .unsupported(0xAB))
+	@Test func stapleKindDiscriminatesOnFirstByte() {
+		#expect(Frames.stapleKind(0x01) == .welcome)
+		#expect(Frames.stapleKind(0x00) == .mlsMessage)
+		#expect(Frames.stapleKind(0xAB) == .unsupported(0xAB))
 	}
 
 	// MARK: - `0x00` bare mlsMessage staple
@@ -18,263 +18,259 @@ final class FrameCodecTests: XCTestCase {
 	/// message's own `ProtocolVersion` high byte (`mls10` = `00 01`), not a
 	/// wrapper tag — `encodeMlsMessageStaple` passes the message through
 	/// unchanged and `decodeMlsMessageStaple` returns the whole slot.
-	func testMlsMessageStapleIsTheBareMessage() throws {
+	@Test func mlsMessageStapleIsTheBareMessage() throws {
 		let message = Data([0x00, 0x01, 0x00, 0x01, 0xAA])
 		let staple = Frames.encodeMlsMessageStaple(message)
-		XCTAssertEqual(staple, message)
-		XCTAssertEqual(try Frames.decodeMlsMessageStaple(staple), message)
+		#expect(staple == message)
+		#expect(try Frames.decodeMlsMessageStaple(staple) == message)
 	}
 
-	func testMlsMessageStapleRejectsWrongFirstByte() {
-		XCTAssertThrowsError(
+	@Test func mlsMessageStapleRejectsWrongFirstByte() {
+		#expect(throws: TwoMLSError.unsupportedStapleTag(0x02)) {
 			try Frames.decodeMlsMessageStaple(Data([0x02, 0x01, 0x00, 0x01]))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unsupportedStapleTag(0x02))
 		}
 	}
 
-	func testMlsMessageStapleRejectsTruncation() {
-		XCTAssertThrowsError(try Frames.decodeMlsMessageStaple(Data([0x00]))) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
+	@Test func mlsMessageStapleRejectsTruncation() {
+		#expect(throws: TwoMLSError.truncatedSection) {
+			try Frames.decodeMlsMessageStaple(Data([0x00]))
 		}
-		XCTAssertThrowsError(try Frames.decodeMlsMessageStaple(Data([0x00, 0x01]))) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
+		#expect(throws: TwoMLSError.truncatedSection) {
+			try Frames.decodeMlsMessageStaple(Data([0x00, 0x01]))
 		}
 	}
 
 	// MARK: - `0x03` message frame
 
-	func testMessageFrameRoundTrips() throws {
+	@Test func messageFrameRoundTrips() throws {
 		let staple = Data("staple-bytes".utf8)
 		let proposal = Data("proposal-bytes".utf8)
 		let app = Data("app-bytes".utf8)
 		let frame = Frames.encodeMessageFrame(staple: staple, proposal: proposal, app: app)
 		let decoded = try Frames.decodeMessageFrame(frame)
-		XCTAssertEqual(decoded.staple, staple)
-		XCTAssertEqual(decoded.proposal, proposal)
-		XCTAssertEqual(decoded.app, app)
+		#expect(decoded.staple == staple)
+		#expect(decoded.proposal == proposal)
+		#expect(decoded.app == app)
 	}
 
-	func testMessageFrameRejectsWrongTag() {
+	@Test func messageFrameRejectsWrongTag() {
 		var frame = Frames.encodeMessageFrame(
 			staple: Data([1]), proposal: Data([2]), app: Data([3]))
 		frame[frame.startIndex] = 0x09
-		XCTAssertThrowsError(try Frames.decodeMessageFrame(frame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unsupportedFrameTag(0x09))
+		#expect(throws: TwoMLSError.unsupportedFrameTag(0x09)) {
+			try Frames.decodeMessageFrame(frame)
 		}
 	}
 
 	/// `encodeMessageFrame` now preconditions against an empty section (nit), so
 	/// this builds the malformed frame directly off `pushSection` rather than
 	/// through the encoder, to exercise the decoder's own rejection.
-	func testMessageFrameRejectsEmptySection() {
+	@Test func messageFrameRejectsEmptySection() {
 		var frame = Data([Frames.messageFrameTag])
 		Frames.pushSection(Data(), into: &frame)
 		Frames.pushSection(Data([1]), into: &frame)
 		Frames.pushSection(Data([2]), into: &frame)
-		XCTAssertThrowsError(try Frames.decodeMessageFrame(frame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .emptySection)
+		#expect(throws: TwoMLSError.emptySection) {
+			try Frames.decodeMessageFrame(frame)
 		}
 	}
 
-	func testMessageFrameRejectsTruncation() {
+	@Test func messageFrameRejectsTruncation() {
 		var frame = Frames.encodeMessageFrame(
 			staple: Data([1]), proposal: Data([2]), app: Data([3]))
 		frame.removeLast()
-		XCTAssertThrowsError(try Frames.decodeMessageFrame(frame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
+		#expect(throws: TwoMLSError.truncatedSection) {
+			try Frames.decodeMessageFrame(frame)
 		}
 	}
 
-	func testMessageFrameRejectsTrailingBytes() {
+	@Test func messageFrameRejectsTrailingBytes() {
 		var frame = Frames.encodeMessageFrame(
 			staple: Data([1]), proposal: Data([2]), app: Data([3]))
 		frame.append(0xFF)
-		XCTAssertThrowsError(try Frames.decodeMessageFrame(frame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .trailingBytes)
+		#expect(throws: TwoMLSError.trailingBytes) {
+			try Frames.decodeMessageFrame(frame)
 		}
 	}
 
 	// MARK: - Proposal sub-section
 
-	func testProposalSectionRejectsEmptyProposing() {
+	@Test func proposalSectionRejectsEmptyProposing() {
 		let section = Frames.encodeProposalSection(
 			proposing: Data(), message: Data("upd-message".utf8))
-		XCTAssertThrowsError(try Frames.decodeProposalSection(section)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .emptySection)
+		#expect(throws: TwoMLSError.emptySection) {
+			try Frames.decodeProposalSection(section)
 		}
 	}
 
-	func testProposalSectionRoundTripsWithNonEmptyProposing() throws {
+	@Test func proposalSectionRoundTripsWithNonEmptyProposing() throws {
 		let section = Frames.encodeProposalSection(
 			proposing: Data("client-id".utf8), message: Data("upd-message".utf8))
 		let decoded = try Frames.decodeProposalSection(section)
-		XCTAssertEqual(decoded.proposing, Data("client-id".utf8))
-		XCTAssertEqual(decoded.message, Data("upd-message".utf8))
+		#expect(decoded.proposing == Data("client-id".utf8))
+		#expect(decoded.message == Data("upd-message".utf8))
 	}
 
-	func testProposalSectionRejectsEmptyMessage() {
+	@Test func proposalSectionRejectsEmptyMessage() {
 		let section = Frames.encodeProposalSection(proposing: Data(), message: Data())
-		XCTAssertThrowsError(try Frames.decodeProposalSection(section)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .emptySection)
+		#expect(throws: TwoMLSError.emptySection) {
+			try Frames.decodeProposalSection(section)
 		}
 	}
 
 	// MARK: - `0x01` APQ welcome
 
-	func testAPQWelcomeRoundTrips() throws {
+	@Test func aPQWelcomeRoundTrips() throws {
 		let t = Data("classical-welcome".utf8)
 		let pq = Data("pq-welcome".utf8)
 		let staple = Frames.encodeAPQWelcome(t: t, pq: pq)
 		let decoded = try Frames.decodeAPQWelcome(staple)
-		XCTAssertEqual(decoded.t, t)
-		XCTAssertEqual(decoded.pq, pq)
+		#expect(decoded.t == t)
+		#expect(decoded.pq == pq)
 	}
 
 	/// Group_B's welcome staple: the pq slot is empty (classical-only, deferred
 	/// PQ), and that must round-trip cleanly rather than being rejected as an
 	/// empty section.
-	func testAPQWelcomeRoundTripsWithEmptyPQSlot() throws {
+	@Test func aPQWelcomeRoundTripsWithEmptyPQSlot() throws {
 		let t = Data("classical-welcome".utf8)
 		let staple = Frames.encodeAPQWelcome(t: t, pq: Data())
 		let decoded = try Frames.decodeAPQWelcome(staple)
-		XCTAssertEqual(decoded.t, t)
-		XCTAssertEqual(decoded.pq, Data())
+		#expect(decoded.t == t)
+		#expect(decoded.pq == Data())
 	}
 
-	func testAPQWelcomeRejectsEmptyClassicalSlot() {
+	@Test func aPQWelcomeRejectsEmptyClassicalSlot() {
 		let staple = Frames.encodeAPQWelcome(t: Data(), pq: Data("pq".utf8))
-		XCTAssertThrowsError(try Frames.decodeAPQWelcome(staple)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .emptySection)
+		#expect(throws: TwoMLSError.emptySection) {
+			try Frames.decodeAPQWelcome(staple)
 		}
 	}
 
-	func testAPQWelcomeRejectsWrongTag() {
+	@Test func aPQWelcomeRejectsWrongTag() {
 		var staple = Frames.encodeAPQWelcome(t: Data([1]), pq: Data([2]))
 		staple[staple.startIndex] = 0x02
-		XCTAssertThrowsError(try Frames.decodeAPQWelcome(staple)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unsupportedStapleTag(0x02))
+		#expect(throws: TwoMLSError.unsupportedStapleTag(0x02)) {
+			try Frames.decodeAPQWelcome(staple)
 		}
 	}
 
 	// MARK: - `0x17`/`0x19` §A.4 PQ ratchet legs (outer frame)
 
-	func testPQLegRoundTripsEKTag() throws {
+	@Test func pQLegRoundTripsEKTag() throws {
 		let messageBytes = Data("ek-mlsmessage-bytes".utf8)
 		let frame = Frames.encodePQLeg(tag: Frames.pqEKTag, messageBytes: messageBytes)
 		let decoded = try Frames.decodePQLeg(frame)
-		XCTAssertEqual(decoded.tag, Frames.pqEKTag)
-		XCTAssertEqual(decoded.messageBytes, messageBytes)
+		#expect(decoded.tag == Frames.pqEKTag)
+		#expect(decoded.messageBytes == messageBytes)
 	}
 
-	func testPQLegRoundTripsCTTag() throws {
+	@Test func pQLegRoundTripsCTTag() throws {
 		let messageBytes = Data("ct-mlsmessage-bytes".utf8)
 		let frame = Frames.encodePQLeg(tag: Frames.pqCTTag, messageBytes: messageBytes)
 		let decoded = try Frames.decodePQLeg(frame)
-		XCTAssertEqual(decoded.tag, Frames.pqCTTag)
-		XCTAssertEqual(decoded.messageBytes, messageBytes)
+		#expect(decoded.tag == Frames.pqCTTag)
+		#expect(decoded.messageBytes == messageBytes)
 	}
 
-	func testPQLegRejectsWrongOuterTag() {
+	@Test func pQLegRejectsWrongOuterTag() {
 		let frame = Frames.encodePQLeg(tag: 0x21, messageBytes: Data([1, 2, 3]))
-		XCTAssertThrowsError(try Frames.decodePQLeg(frame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unsupportedSideBandTag(0x21))
+		#expect(throws: TwoMLSError.unsupportedSideBandTag(0x21)) {
+			try Frames.decodePQLeg(frame)
 		}
 	}
 
 	// MARK: - `0x17`/`0x19` §A.4 PQ ratchet legs (inner authenticated content)
 
-	func testPQLegContentRoundTripsEKTag() throws {
+	@Test func pQLegContentRoundTripsEKTag() throws {
 		let payload = Data("ek-bytes".utf8)
 		let content = Frames.encodePQLegContent(tag: Frames.pqEKTag, payload: payload)
 		let decoded = try Frames.decodePQLegContent(content)
-		XCTAssertEqual(decoded.tag, Frames.pqEKTag)
-		XCTAssertEqual(decoded.payload, payload)
+		#expect(decoded.tag == Frames.pqEKTag)
+		#expect(decoded.payload == payload)
 	}
 
-	func testPQLegContentRoundTripsCTTag() throws {
+	@Test func pQLegContentRoundTripsCTTag() throws {
 		let payload = Data("wire-ct-bytes".utf8)
 		let content = Frames.encodePQLegContent(tag: Frames.pqCTTag, payload: payload)
 		let decoded = try Frames.decodePQLegContent(content)
-		XCTAssertEqual(decoded.tag, Frames.pqCTTag)
-		XCTAssertEqual(decoded.payload, payload)
+		#expect(decoded.tag == Frames.pqCTTag)
+		#expect(decoded.payload == payload)
 	}
 
-	func testPQLegContentRejectsEmptyContent() {
-		XCTAssertThrowsError(try Frames.decodePQLegContent(Data())) { error in
-			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
+	@Test func pQLegContentRejectsEmptyContent() {
+		#expect(throws: TwoMLSError.truncatedSection) {
+			try Frames.decodePQLegContent(Data())
 		}
 	}
 
 	// MARK: - `0x0B` signed establishment handoff
 
-	func testEstablishmentHandoffRoundTrips() throws {
+	@Test func establishmentHandoffRoundTrips() throws {
 		let envelope = Data("signed-handoff-blob".utf8)
 		let welcome = Frames.encodeAPQWelcome(t: Data("t-welcome".utf8), pq: Data())
 		let staple = Frames.encodeEstablishmentHandoff(envelope: envelope, welcome: welcome)
 		let decoded = try Frames.decodeEstablishmentHandoff(staple)
-		XCTAssertEqual(decoded.envelope, envelope)
-		XCTAssertEqual(decoded.welcome, welcome)
+		#expect(decoded.envelope == envelope)
+		#expect(decoded.welcome == welcome)
 	}
 
 	/// wire-format.md:17: the inner section must be the unmodified `0x01`
 	/// welcome — anything else is rejected outright, keyed on the inner
 	/// section's own first byte.
-	func testEstablishmentHandoffRejectsNonWelcomeInner() {
+	@Test func establishmentHandoffRejectsNonWelcomeInner() {
 		let envelope = Data("signed-handoff-blob".utf8)
 		let notAWelcome = Data([0x00, 0xAA, 0xBB])
 		let staple = Frames.encodeEstablishmentHandoff(
 			envelope: envelope, welcome: notAWelcome)
-		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unsupportedStapleTag(0x00))
+		#expect(throws: TwoMLSError.unsupportedStapleTag(0x00)) {
+			try Frames.decodeEstablishmentHandoff(staple)
 		}
 	}
 
-	func testEstablishmentHandoffRejectsEmptyEnvelopeSection() {
+	@Test func establishmentHandoffRejectsEmptyEnvelopeSection() {
 		let welcome = Frames.encodeAPQWelcome(t: Data("t-welcome".utf8), pq: Data())
 		let staple = Frames.encodeEstablishmentHandoff(envelope: Data(), welcome: welcome)
-		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .emptySection)
+		#expect(throws: TwoMLSError.emptySection) {
+			try Frames.decodeEstablishmentHandoff(staple)
 		}
 	}
 
-	func testEstablishmentHandoffRejectsEmptyWelcomeSection() {
+	@Test func establishmentHandoffRejectsEmptyWelcomeSection() {
 		let staple = Frames.encodeEstablishmentHandoff(
 			envelope: Data("signed-handoff-blob".utf8), welcome: Data())
-		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .emptySection)
+		#expect(throws: TwoMLSError.emptySection) {
+			try Frames.decodeEstablishmentHandoff(staple)
 		}
 	}
 
-	func testEstablishmentHandoffRejectsWrongOuterTag() {
+	@Test func establishmentHandoffRejectsWrongOuterTag() {
 		var staple = Frames.encodeEstablishmentHandoff(
 			envelope: Data("signed-handoff-blob".utf8),
 			welcome: Frames.encodeAPQWelcome(t: Data("t-welcome".utf8), pq: Data()))
 		staple[staple.startIndex] = 0x02
-		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unsupportedStapleTag(0x02))
+		#expect(throws: TwoMLSError.unsupportedStapleTag(0x02)) {
+			try Frames.decodeEstablishmentHandoff(staple)
 		}
 	}
 
-	func testEstablishmentHandoffRejectsTrailingBytes() {
+	@Test func establishmentHandoffRejectsTrailingBytes() {
 		var staple = Frames.encodeEstablishmentHandoff(
 			envelope: Data("signed-handoff-blob".utf8),
 			welcome: Frames.encodeAPQWelcome(t: Data("t-welcome".utf8), pq: Data()))
 		staple.append(0xFF)
-		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .trailingBytes)
+		#expect(throws: TwoMLSError.trailingBytes) {
+			try Frames.decodeEstablishmentHandoff(staple)
 		}
 	}
 
-	func testEstablishmentHandoffRejectsTruncation() {
+	@Test func establishmentHandoffRejectsTruncation() {
 		var staple = Frames.encodeEstablishmentHandoff(
 			envelope: Data("signed-handoff-blob".utf8),
 			welcome: Frames.encodeAPQWelcome(t: Data("t-welcome".utf8), pq: Data()))
 		staple.removeLast()
-		XCTAssertThrowsError(try Frames.decodeEstablishmentHandoff(staple)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
+		#expect(throws: TwoMLSError.truncatedSection) {
+			try Frames.decodeEstablishmentHandoff(staple)
 		}
 	}
 }

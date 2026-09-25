@@ -3,20 +3,26 @@ import MLSCodec
 import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
-import XCTest
 import Testing
 
 @testable import TwoMLSPQSession
 
 /// Standalone welcome/handoff delivery.
-@available(iOS 26, macOS 26, *)
-final class StandaloneEstablishmentTests: XCTestCase {
-	private let classicalProvider = SessionTestSupport.classicalProvider
+@Suite struct StandaloneEstablishmentTests {
+	/// `SessionTestSupport` (the type this reads from) is gated to iOS/macOS
+	/// 26 and this suite type is not, so this must be a computed property
+	/// (individually gated) rather than a stored one — see
+	/// `CombinerKeyPackageWireTests.makeIdentity()` for the same shape.
+	@available(iOS 26, macOS 26, *)
+	private var classicalProvider: any MLS.CipherSuiteProvider {
+		SessionTestSupport.classicalProvider
+	}
 
 	private func fakeEnvelope(_ tag: String = "fake-signed-handoff") -> Data {
 		Data(tag.utf8)
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private func approvalTriple(installedOn bob: TwoMLSSession, expectedCreator: Data) throws
 		-> (envelopeDigest: Data, welcomeDigest: Data, expectedCreator: Data)
 	{
@@ -36,23 +42,27 @@ final class StandaloneEstablishmentTests: XCTestCase {
 	/// persisted the returned `update`) rewinds to pre-join, proving the
 	/// join is a genuine, capturable transition, not a safely-droppable
 	/// no-op. Subsequent `0x03` traffic then reads normally.
-	func testNonDedicatedStandaloneWelcomeJoinsAndMutationVerifies() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func nonDedicatedStandaloneWelcomeJoinsAndMutationVerifies() throws {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
-		XCTAssertFalse(alice.isEstablished)
+		#expect(!alice.isEstablished)
 		let preJoinArchive = try alice.makeSessionArchive(kind: .checkpoint)
 
-		let sealed = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(sealed))
-		XCTAssertEqual(opened.kind, .message)
+		let sealedRaw = try bob.standaloneWelcome()
+		let sealed = try #require(sealedRaw)
+		let openedRaw = try alice.openIncoming(sealed)
+		let opened = try #require(openedRaw)
+		#expect(opened.kind == .message)
 		guard
 			case .joined(let newSender, let update) = try alice.processIncoming(
 				opened.frame)
 		else {
-			return XCTFail("expected .joined")
+			Issue.record("expected .joined")
+			return
 		}
-		XCTAssertNil(newSender)
-		XCTAssertEqual(update.kind, .core)
-		XCTAssertTrue(alice.isEstablished)
+		#expect(newSender == nil)
+		#expect(update.kind == .core)
+		#expect(alice.isEstablished)
 
 		// Mutation-verify: a restore from the PRE-join checkpoint alone
 		// (dropping `update`, as an app that never persisted it would)
@@ -60,27 +70,31 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		let rewound = try TwoMLSSession.restore(
 			core: nil, checkpoint: preJoinArchive, classicalProvider: classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertFalse(rewound.isEstablished)
+		#expect(!rewound.isEstablished)
 
 		// Subsequent `0x03` traffic reads normally.
 		_ = try bob.prepareToEncrypt()
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(frame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
+		#expect(decrypted.applicationMessage == Data("bob-hello".utf8))
 	}
 
 	// MARK: - Born-dedicated standalone 0x0B, then Bob's first 0x03 surfaces the catch-up
 
-	func testStandaloneHandoffPausesThenApprovedJoinsWithDedicatedSender() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func standaloneHandoffPausesThenApprovedJoinsWithDedicatedSender() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
 
-		let sealed = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(sealed))
+		let sealedRaw = try bob.standaloneWelcome()
+		let sealed = try #require(sealedRaw)
+		let openedRaw = try alice.openIncoming(sealed)
+		let opened = try #require(openedRaw)
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			return XCTFail("expected a pause")
+			Issue.record("expected a pause")
+			return
 		}
 
 		let approval = try approvalTriple(
@@ -91,25 +105,30 @@ final class StandaloneEstablishmentTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail("expected .joined")
+			Issue.record("expected .joined")
+			return
 		}
-		XCTAssertEqual(newSender, dedicatedClientID)
-		XCTAssertEqual(update.kind, .core)
+		#expect(newSender == dedicatedClientID)
+		#expect(update.kind == .core)
 	}
 
 	/// Standalone-`0x0B`-first, THEN Bob's first `0x03` decrypts and
 	/// surfaces the recv-leaf-catch-up Upd — `DecryptResult.queuedProposal.proposing
 	/// == D` — the one ordering touchpoint with the classical core.
-	func testStandaloneFirstThenBobsFirstFrameSurfacesCatchUpProposal() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func standaloneFirstThenBobsFirstFrameSurfacesCatchUpProposal() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
 
-		let sealed = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(sealed))
+		let sealedRaw = try bob.standaloneWelcome()
+		let sealed = try #require(sealedRaw)
+		let openedRaw = try alice.openIncoming(sealed)
+		let opened = try #require(openedRaw)
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			return XCTFail()
+			Issue.record()
+			return
 		}
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: dedicatedClientID)
@@ -119,13 +138,14 @@ final class StandaloneEstablishmentTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail()
+			Issue.record()
+			return
 		}
 
 		_ = try bob.prepareToEncrypt()
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(frame)
-		XCTAssertEqual(decrypted.queuedProposal.proposing, dedicatedClientID)
+		#expect(decrypted.queuedProposal.proposing == dedicatedClientID)
 	}
 
 	// MARK: - Standalone <-> stapled convergence of the SAME welcome
@@ -133,7 +153,8 @@ final class StandaloneEstablishmentTests: XCTestCase {
 	/// Whichever copy of the SAME welcome joins first wins; the other
 	/// dedups to `.ignored` on the INNER welcome digest, regardless of
 	/// which tag (`0x01` stapled vs standalone) it rides.
-	func testStandaloneAndStapledConvergeOnTheSameWelcome() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func standaloneAndStapledConvergeOnTheSameWelcome() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8), classicalProvider: classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
@@ -141,7 +162,7 @@ final class StandaloneEstablishmentTests: XCTestCase {
 			clientID: Data("bob".utf8), classicalProvider: classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
-		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirKP)
 		var alice = initiated.session
@@ -154,12 +175,15 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		var bob = received.session
 
 		// The standalone copy joins FIRST.
-		let sealed = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(sealed))
+		let sealedRaw = try bob.standaloneWelcome()
+		let sealed = try #require(sealedRaw)
+		let openedRaw = try alice.openIncoming(sealed)
+		let opened = try #require(openedRaw)
 		guard case .joined = try alice.processIncoming(opened.frame) else {
-			return XCTFail("expected the standalone copy to join first")
+			Issue.record("expected the standalone copy to join first")
+			return
 		}
-		XCTAssertTrue(alice.isEstablished)
+		#expect(alice.isEstablished)
 
 		// The STAPLED copy of the SAME welcome (Bob's first ordinary
 		// message frame, still carrying the un-advanced `0x01` staple)
@@ -167,23 +191,27 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		guard case .decrypted = try alice.processIncoming(frame) else {
-			return XCTFail(
+			Issue.record(
 				"expected the stapled re-delivery to decrypt normally, not re-pause"
 			)
+			return
 		}
 	}
 
 	// MARK: - Sealed standalone through openIncoming; raw still accepted
 
-	func testSealedStandalone0x01OpensAsMessageAndRawStillAccepted() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func sealedStandalone0x01OpensAsMessageAndRawStillAccepted() throws {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 
 		// Sealed path: `openIncoming` classifies a sealed standalone `0x01`
 		// as `.message`.
-		let sealed = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(sealed))
-		XCTAssertEqual(opened.kind, .message)
-		XCTAssertEqual(opened.frame.first, Frames.apqWelcomeTag)
+		let sealedRaw = try bob.standaloneWelcome()
+		let sealed = try #require(sealedRaw)
+		let openedRaw = try alice.openIncoming(sealed)
+		let opened = try #require(openedRaw)
+		#expect(opened.kind == .message)
+		#expect(opened.frame.first == Frames.apqWelcomeTag)
 
 		// Raw path: the same plaintext frame, fed directly, is accepted by
 		// `processIncoming`'s `openOrRaw` fallback (not required to be sealed)
@@ -193,32 +221,38 @@ final class StandaloneEstablishmentTests: XCTestCase {
 			alice: "raw-alice", bob: "raw-bob")
 		let rawWelcome = rawBob.currentStaple
 		guard case .joined = try rawAlice.processIncoming(rawWelcome) else {
-			return XCTFail("expected the raw (unsealed) standalone welcome to join")
+			Issue.record("expected the raw (unsealed) standalone welcome to join")
+			return
 		}
-		XCTAssertTrue(rawAlice.isEstablished)
+		#expect(rawAlice.isEstablished)
 
 		// The genuinely sealed copy above still joins too.
 		guard case .joined = try alice.processIncoming(opened.frame) else {
-			return XCTFail("expected the sealed copy to join")
+			Issue.record("expected the sealed copy to join")
+			return
 		}
 	}
 
-	func testRawEstablishmentHandoffStillAcceptedViaOpenOrRaw() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rawEstablishmentHandoffStillAcceptedViaOpenOrRaw() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
 
 		// Sealed path: openIncoming classifies it `.message`.
-		let sealed = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(sealed))
-		XCTAssertEqual(opened.kind, .message)
-		XCTAssertEqual(opened.frame.first, Frames.establishmentHandoffTag)
+		let sealedRaw = try bob.standaloneWelcome()
+		let sealed = try #require(sealedRaw)
+		let openedRaw = try alice.openIncoming(sealed)
+		let opened = try #require(openedRaw)
+		#expect(opened.kind == .message)
+		#expect(opened.frame.first == Frames.establishmentHandoffTag)
 
 		// Raw path: the same plaintext frame, fed directly, is accepted by
 		// `processIncoming`'s `openOrRaw` fallback (not required to be sealed).
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			return XCTFail("expected a pause from the raw (unsealed) frame")
+			Issue.record("expected a pause from the raw (unsealed) frame")
+			return
 		}
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: dedicatedClientID)
@@ -228,21 +262,26 @@ final class StandaloneEstablishmentTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail()
+			Issue.record()
+			return
 		}
 	}
 
 	// MARK: - Post-join regression guards
 
-	func testPostJoinStapled0x0BDecryptsRatherThanRepausing() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func postJoinStapled0x0BDecryptsRatherThanRepausing() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
-		let sealed = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(sealed))
+		let sealedRaw = try bob.standaloneWelcome()
+		let sealed = try #require(sealedRaw)
+		let openedRaw = try alice.openIncoming(sealed)
+		let opened = try #require(openedRaw)
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			return XCTFail()
+			Issue.record()
+			return
 		}
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: dedicatedClientID)
@@ -252,7 +291,8 @@ final class StandaloneEstablishmentTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail()
+			Issue.record()
+			return
 		}
 
 		// Bob's staple is STILL 0x0B (he hasn't committed yet) — his next
@@ -261,20 +301,25 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		guard case .decrypted(let result) = try alice.processIncoming(frame) else {
-			return XCTFail("expected .decrypted, not a re-pause")
+			Issue.record("expected .decrypted, not a re-pause")
+			return
 		}
-		XCTAssertEqual(result.applicationMessage, Data("bob-hello".utf8))
+		#expect(result.applicationMessage == Data("bob-hello".utf8))
 	}
 
-	func testPostJoinStandalone0x0BIsIgnoredAndBobFromBirthRejectsStray0x0B() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func postJoinStandalone0x0BIsIgnoredAndBobFromBirthRejectsStray0x0B() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
-		let sealed = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(sealed))
+		let sealedRaw = try bob.standaloneWelcome()
+		let sealed = try #require(sealedRaw)
+		let openedRaw = try alice.openIncoming(sealed)
+		let opened = try #require(openedRaw)
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			return XCTFail()
+			Issue.record()
+			return
 		}
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: dedicatedClientID)
@@ -284,14 +329,18 @@ final class StandaloneEstablishmentTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail()
+			Issue.record()
+			return
 		}
 
 		// A re-delivered STANDALONE 0x0B post-join is `.ignored`.
-		let sealedAgain = try XCTUnwrap(try bob.standaloneWelcome())
-		let openedAgain = try XCTUnwrap(try alice.openIncoming(sealedAgain))
+		let sealedAgainRaw = try bob.standaloneWelcome()
+		let sealedAgain = try #require(sealedAgainRaw)
+		let openedAgainRaw = try alice.openIncoming(sealedAgain)
+		let openedAgain = try #require(openedAgainRaw)
 		guard case .ignored = try alice.processIncoming(openedAgain.frame) else {
-			return XCTFail("expected .ignored")
+			Issue.record("expected .ignored")
+			return
 		}
 
 		// Bob's OWN `recvGroup` exists from birth — a stray 0x0B fed to HIS
@@ -303,14 +352,15 @@ final class StandaloneEstablishmentTests: XCTestCase {
 			bob: "foreign-bob")
 		let strayHandoff = Frames.encodeEstablishmentHandoff(
 			envelope: Data("x".utf8), welcome: foreignBob.currentStaple)
-		XCTAssertThrowsError(try bob.processIncoming(strayHandoff)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedWelcome)
+		#expect(throws: TwoMLSError.unexpectedWelcome) {
+			try bob.processIncoming(strayHandoff)
 		}
 	}
 
 	// MARK: - Bob (recv group from birth) fed a re-delivered/foreign standalone 0x01
 
-	func testBobRejectsForeignStandaloneWelcomeButIgnoresARedelivery() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bobRejectsForeignStandaloneWelcomeButIgnoresARedelivery() throws {
 		let alice: TwoMLSSession
 		var bob: TwoMLSSession
 		(alice, bob, _, _, _, _) = try SessionTestSupport.established()
@@ -320,65 +370,76 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		// there — the one dedup entry Bob's session carries, though he
 		// FOUNDED rather than joined Group_B) is `.ignored`, not a throw.
 		guard case .ignored = try bob.processIncoming(alice.currentStaple) else {
-			return XCTFail(
+			Issue.record(
 				"expected a re-delivery of Bob's own join welcome to be ignored")
+			return
 		}
 
 		// A genuinely DIFFERENT (foreign) welcome — another pair's Alice —
 		// is `.unexpectedWelcome`.
 		let (otherAlice, _, _, _, _, _) = try SessionTestSupport.established(
 			alice: "other-alice", bob: "other-bob")
-		XCTAssertThrowsError(try bob.processIncoming(otherAlice.currentStaple)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedWelcome)
+		#expect(throws: TwoMLSError.unexpectedWelcome) {
+			try bob.processIncoming(otherAlice.currentStaple)
 		}
 	}
 
 	// MARK: - Malformed standalone 0x01 leaves state untouched
 
-	func testMalformedStandaloneWelcomeLeavesStateUntouchedThenGoodCopyJoins() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func malformedStandaloneWelcomeLeavesStateUntouchedThenGoodCopyJoins() throws {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		let ledgerBefore = alice.sendCrossPSKLedger.count
 		let initSecretBefore = alice.identity.classicalInitSecretKey?.data
 
 		let garbageWelcome = Frames.encodeAPQWelcome(
 			t: Data("not-a-welcome".utf8), pq: Data())
-		XCTAssertThrowsError(try alice.processIncoming(garbageWelcome))
-		XCTAssertFalse(alice.isEstablished)
-		XCTAssertEqual(alice.sendCrossPSKLedger.count, ledgerBefore)
-		XCTAssertEqual(alice.identity.classicalInitSecretKey?.data, initSecretBefore)
+		#expect(throws: (any Error).self) {
+			try alice.processIncoming(garbageWelcome)
+		}
+		#expect(!alice.isEstablished)
+		#expect(alice.sendCrossPSKLedger.count == ledgerBefore)
+		#expect(alice.identity.classicalInitSecretKey?.data == initSecretBefore)
 
 		// The genuine standalone copy still joins afterward.
-		let sealed = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(sealed))
+		let sealedRaw = try bob.standaloneWelcome()
+		let sealed = try #require(sealedRaw)
+		let openedRaw = try alice.openIncoming(sealed)
+		let opened = try #require(openedRaw)
 		guard case .joined = try alice.processIncoming(opened.frame) else {
-			return XCTFail("expected the genuine copy to join")
+			Issue.record("expected the genuine copy to join")
+			return
 		}
 	}
 
 	// MARK: - standaloneWelcome() gate; initialWelcome() on a restored owed Bob
 
-	func testStandaloneWelcomeGatedAndInitialWelcomeAvailableOnRestore() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func standaloneWelcomeGatedAndInitialWelcomeAvailableOnRestore() throws {
 		let (_, bob, _, _, _) = try SessionTestSupport.establishedDedicated()
-		XCTAssertThrowsError(try bob.standaloneWelcome()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
+			try bob.standaloneWelcome()
 		}
-		XCTAssertEqual(bob.initialWelcome(), bob.currentStaple)
+		#expect(bob.initialWelcome() == bob.currentStaple)
 
 		let archive = try bob.makeSessionArchive(kind: .checkpoint)
 		let restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: archive, classicalProvider: classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertTrue(restored.owesEstablishmentEnvelope)
+		#expect(restored.owesEstablishmentEnvelope)
 		// A restored owed-but-not-installed Bob still has `initialWelcome()`
 		// available — he has no `EstablishResult.welcome` any more, so this
 		// is what a host mints the handoff-blob signature over.
-		XCTAssertEqual(restored.initialWelcome(), restored.currentStaple)
-		XCTAssertThrowsError(try restored.standaloneWelcome())
+		#expect(restored.initialWelcome() == restored.currentStaple)
+		#expect(throws: (any Error).self) {
+			try restored.standaloneWelcome()
+		}
 	}
 
 	// MARK: - Approval can never launder a bare welcome
 
-	func testApprovedCallOnBareDifferingCreatorWelcomeStillRequiresEnvelope() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func approvedCallOnBareDifferingCreatorWelcomeStillRequiresEnvelope() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		// Bob's staple is bare 0x01 (not yet installed) — feed it to
@@ -386,35 +447,39 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		// is consulted only for a 0x0B section, so this must
 		// process exactly like plain `processIncoming` would.
 		let bareStaple = bob.currentStaple
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
 			try alice.processIncomingApproved(
 				bareStaple, approvedEnvelopeDigest: Data("x".utf8),
 				approvedWelcomeDigest: Data("y".utf8),
 				expectedCreator: dedicatedClientID)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
 		}
-		XCTAssertFalse(alice.isEstablished)
+		#expect(!alice.isEstablished)
 	}
 
 	// MARK: - standaloneWelcome() lifecycle
 
-	func testStandaloneWelcomeLifecycle() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func standaloneWelcomeLifecycle() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		// Gated while owed.
-		XCTAssertThrowsError(try bob.standaloneWelcome())
+		#expect(throws: (any Error).self) {
+			try bob.standaloneWelcome()
+		}
 
 		let envelope = fakeEnvelope()
 		_ = try bob.installEstablishmentEnvelope(envelope)
 		// Sealed 0x0B post-install.
-		let sealedHandoff = try XCTUnwrap(try bob.standaloneWelcome())
-		let openedHandoff = try XCTUnwrap(try alice.openIncoming(sealedHandoff))
-		XCTAssertEqual(openedHandoff.frame.first, Frames.establishmentHandoffTag)
+		let sealedHandoffRaw = try bob.standaloneWelcome()
+		let sealedHandoff = try #require(sealedHandoffRaw)
+		let openedHandoffRaw = try alice.openIncoming(sealedHandoff)
+		let openedHandoff = try #require(openedHandoffRaw)
+		#expect(openedHandoff.frame.first == Frames.establishmentHandoffTag)
 
 		guard case .pendingEstablishment = try alice.processIncoming(openedHandoff.frame)
 		else {
-			return XCTFail()
+			Issue.record()
+			return
 		}
 		let approval = try approvalTriple(
 			installedOn: bob, expectedCreator: dedicatedClientID)
@@ -425,7 +490,8 @@ final class StandaloneEstablishmentTests: XCTestCase {
 				approvedWelcomeDigest: approval.welcomeDigest,
 				expectedCreator: approval.expectedCreator)
 		else {
-			return XCTFail()
+			Issue.record()
+			return
 		}
 
 		// `standaloneWelcome()` keeps serving the (still-`0x0B`) staple
@@ -438,8 +504,8 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		let bobDecrypted = try bob.processIncomingDecrypted(aliceOffer)
 		_ = try bob.queueProposal(digest: bobDecrypted.queuedProposal.digest)
 		let bobPrepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(bobPrepared.didCommit)
-		XCTAssertEqual(bob.currentStaple.first, Frames.mlsMessageStapleTag)
-		XCTAssertNil(try bob.standaloneWelcome())
+		#expect(bobPrepared.didCommit)
+		#expect(bob.currentStaple.first == Frames.mlsMessageStapleTag)
+		#expect(try bob.standaloneWelcome() == nil)
 	}
 }

@@ -3,7 +3,6 @@ import MLSCodec
 import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
-import XCTest
 import Testing
 
 @testable import TwoMLSPQSession
@@ -17,13 +16,13 @@ import Testing
 // own fixture: two parties racing a classical rotation each, under the
 // correct profile's immediate reciprocal.
 
-@available(iOS 26, macOS 26, *)
-final class SessionProfileLifecycleTests: XCTestCase {
+@Suite struct SessionProfileLifecycleTests {
 	/// The non-self leaf of a 2-member group, decoded — mirrors
 	/// `ReciprocalCatchUpConformanceTests`'s own private helper of the same
 	/// name/shape.
+	@available(iOS 26, macOS 26, *)
 	private func peerLeaf(in group: MLS.RFC9420.Group) throws -> MLS.RFC9420.LeafNode {
-		let entry = try XCTUnwrap(
+		let entry = try #require(
 			group.tree.nonBlankLeaves().first { $0.index != group.myLeafIndex })
 		return try MLS.RFC9420.LeafNode(mlsEncoded: entry.record.encoded)
 	}
@@ -42,18 +41,22 @@ final class SessionProfileLifecycleTests: XCTestCase {
 	/// produced a spurious "double-rotation never converges" reading — a
 	/// test-construction bug, not an engine defect (confirmed identical
 	/// behavior on main with the correct profile forced).
-	func testDoubleRotationConvergesWithTheReciprocalOpenedAtOnce() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func doubleRotationConvergesWithTheReciprocalOpenedAtOnce() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob(profile: .correct)
-		let alice2 = Data("alice-2".utf8), bob2 = Data("bob-2".utf8)
+		let alice2 = Data("alice-2".utf8)
+		let bob2 = Data("bob-2".utf8)
 
 		_ = try alice.prepareToEncrypt(rotating: alice2)
 		let aliceOffer = try bob.processIncomingDecrypted(
 			try alice.encrypt(Data("a-offer".utf8)).frame)
 		_ = try bob.queueProposal(digest: aliceOffer.queuedProposal.digest)
-		XCTAssertTrue(try bob.prepareToEncrypt().didCommit)
+		#expect(try bob.prepareToEncrypt().didCommit)
 		let aliceFold = try bob.encrypt(Data("a-fold".utf8)).frame
 		guard case .rekeyInitiated = bob.pqInflight else {
-			return XCTFail("correct profile: the fold's send opens the reciprocal at once")
+			Issue.record(
+				"correct profile: the fold's send opens the reciprocal at once")
+			return
 		}
 		_ = try alice.processIncomingDecrypted(aliceFold)
 
@@ -61,9 +64,9 @@ final class SessionProfileLifecycleTests: XCTestCase {
 		let bobOffer = try alice.processIncomingDecrypted(
 			try bob.encrypt(Data("b-offer".utf8)).frame)
 		_ = try alice.queueProposal(digest: bobOffer.queuedProposal.digest)
-		XCTAssertTrue(try alice.prepareToEncrypt().didCommit)
+		#expect(try alice.prepareToEncrypt().didCommit)
 		_ = try bob.processIncomingDecrypted(try alice.encrypt(Data("b-fold".utf8)).frame)
-		XCTAssertEqual(bob.myPrincipalState, .sync(bob2))
+		#expect(bob.myPrincipalState == .sync(bob2))
 
 		var rounds: [Data?] = []
 		for i in 0..<3 {
@@ -73,42 +76,49 @@ final class SessionProfileLifecycleTests: XCTestCase {
 				rounds.append(try driveA5(holder: &alice, peer: &bob, tag: i))
 			}
 		}
-		XCTAssertEqual(rounds, [nil, alice2, bob2])
+		#expect(rounds == [nil, alice2, bob2])
 		for (g, own, peer) in [
 			(alice.sendGroup?.pq, alice2, bob2), (alice.recvGroup?.pq, alice2, bob2),
 			(bob.sendGroup?.pq, bob2, alice2), (bob.recvGroup?.pq, bob2, alice2),
 		] {
-			let group = try XCTUnwrap(g)
-			XCTAssertEqual(try basicIdentifier(TwoMLSSession.ownLeaf(of: group).credential), own)
-			XCTAssertEqual(try basicIdentifier(peerLeaf(in: group).credential), peer)
+			let group = try #require(g)
+			#expect(
+				try basicIdentifier(TwoMLSSession.ownLeaf(of: group).credential)
+					== own)
+			#expect(try basicIdentifier(peerLeaf(in: group).credential) == peer)
 		}
 	}
 
 	/// The holder's next send must open an A.5; drive it to the bind.
 	/// Returns the responder's `rotatedCredential`; asserts the Upd′
 	/// announces nothing (the correct profile's C1).
+	@available(iOS 26, macOS 26, *)
 	private func driveA5(
 		holder: inout TwoMLSSession, peer: inout TwoMLSSession, tag: Int
 	) throws -> Data? {
 		_ = try holder.prepareToEncrypt()
-		_ = try peer.processIncomingDecrypted(try holder.encrypt(Data("open-\(tag)".utf8)).frame)
+		_ = try peer.processIncomingDecrypted(
+			try holder.encrypt(Data("open-\(tag)".utf8)).frame)
 		_ = try peer.prepareToEncrypt()  // fresh evidence for the discharge
-		_ = try holder.processIncomingDecrypted(try peer.encrypt(Data("ack-\(tag)".utf8)).frame)
+		_ = try holder.processIncomingDecrypted(
+			try peer.encrypt(Data("ack-\(tag)".utf8)).frame)
 		guard case .rekeyInitiated = holder.pqInflight else {
-			XCTFail("expected an A.5")
+			Issue.record("expected an A.5")
 			return nil
 		}
-		let upd = try XCTUnwrap(holder.pqPendingOutbound())
+		let upd = try #require(holder.pqPendingOutbound())
 		let updBytes = try Frames.decodePQRekeyUpd(peer.openOrRaw(upd))
-		guard case .publicMessage(let pub) = try MLS.RFC9420.Message(mlsEncoded: updBytes) else {
-			XCTFail("expected a publicMessage Upd'")
+		guard case .publicMessage(let pub) = try MLS.RFC9420.Message(mlsEncoded: updBytes)
+		else {
+			Issue.record("expected a publicMessage Upd'")
 			return nil
 		}
-		XCTAssertEqual(pub.content.authenticatedData, Data())
+		#expect(pub.content.authenticatedData == Data())
 		let response = try peer.pqRekeyRespond(upd)
 		_ = try holder.pqRekeyApply(response.frame)
-		XCTAssertTrue(try holder.prepareToEncrypt().didCommit)
-		_ = try peer.processIncomingDecrypted(try holder.encrypt(Data("bound-\(tag)".utf8)).frame)
+		#expect(try holder.prepareToEncrypt().didCommit)
+		_ = try peer.processIncomingDecrypted(
+			try holder.encrypt(Data("bound-\(tag)".utf8)).frame)
 		return response.rotatedCredential
 	}
 }
