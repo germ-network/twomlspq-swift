@@ -160,9 +160,11 @@ public enum OpenedInitial: Sendable, Equatable {
 }
 
 /// The establishment reply's four optional sections (empty on the wire =
-/// absent). This slice populates only `welcome`/`returnKeyPackage` (the bare
-/// shape, `TwoMLSSession.pendingOutbound()`); `appPayload`/`stapledMessage`
-/// decode for completeness but are never populated here.
+/// absent). This slice populates only `welcome`/`returnKeyPackage` (the
+/// no-app-payload shape, `TwoMLSSession.pendingOutbound()`);
+/// `appPayload`/`stapledMessage` decode for completeness but are never
+/// populated here. `welcome` and `returnKeyPackage` are each an RFC 9420
+/// `MLSMessage`.
 public struct InitialFrame: Sendable, Equatable {
 	public var appPayload: Data?
 	public var welcome: Data?
@@ -189,7 +191,8 @@ extension TwoMLSSession {
 		}
 		return try EstablishmentEnvelope.seal(
 			to: theirKP, appPayload: nil, welcome: currentStaple,
-			returnKeyPackage: try identity.keyPackage.classical.mlsEncoded(),
+			returnKeyPackage: try EstablishmentMessages.encodeKeyPackage(
+				identity.keyPackage.classical),
 			stapledMessage: nil, pqProvider: pqProvider)
 	}
 

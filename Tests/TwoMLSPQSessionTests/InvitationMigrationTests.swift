@@ -161,8 +161,8 @@ final class InvitationMigrationTests: XCTestCase {
 		guard case .establishment(let frame) = try restored.openInitial(envelope) else {
 			return XCTFail("expected .establishment")
 		}
-		let returnKP = try MLS.RFC9420.KeyPackage(
-			mlsEncoded: try XCTUnwrap(frame.returnKeyPackage))
+		let returnKP = try EstablishmentMessages.decodeKeyPackage(
+			try XCTUnwrap(frame.returnKeyPackage))
 		let received = try restored.receive(
 			welcome: try XCTUnwrap(frame.welcome), theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),

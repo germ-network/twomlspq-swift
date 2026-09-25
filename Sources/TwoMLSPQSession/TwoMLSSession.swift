@@ -26,7 +26,8 @@ public struct EstablishResult: Sendable {
 	/// The session's own classical KeyPackage — the establishment product an
 	/// initiator/replier puts into the welcome's keyMaterial (the Rust
 	/// `PQClient.reply`'s `myKeyPackage` 4th value; the invitation path's
-	/// `InitialFrame.returnKeyPackage` is the same idea).
+	/// `InitialFrame.returnKeyPackage` is the same idea). Its wire and signed
+	/// form is its RFC 9420 `MLSMessage` encoding.
 	public let returnKeyPackage: MLS.RFC9420.KeyPackage
 }
 
