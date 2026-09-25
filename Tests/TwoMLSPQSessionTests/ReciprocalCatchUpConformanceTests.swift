@@ -280,7 +280,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		}
 		let beginFrame = try XCTUnwrap(alice.pqPendingOutbound())
 		_ = try bob.processIncomingDecrypted(triggerFrame)
-		// PR2: opened via `bob` — the frame's addressee.
+		// Opened via `bob` — the frame's addressee.
 		let announcedByBegin = try credentialAnnounced(
 			byRekeyUpdFrame: beginFrame, opener: bob,
 			verifyingAgainst: try XCTUnwrap(bob.sendGroup?.pq))
@@ -476,7 +476,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		).signatureKey
 
 		let begin = try alice.pqRekeyBegin()
-		// PR2: opened via `bob` — the frame's addressee.
+		// Opened via `bob` — the frame's addressee.
 		let announcedID = try credentialAnnounced(
 			byRekeyUpdFrame: begin.frame, opener: bob,
 			verifyingAgainst: try XCTUnwrap(bob.sendGroup?.pq))
@@ -818,7 +818,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	/// pin must stay held as long as EITHER still presents an evicted id,
 	/// and retire only once BOTH have moved.
 	func testRule4Pin() throws {
-		// F2's one-generation rotation cap makes nine SEQUENTIAL real
+		// The one-generation rotation cap makes nine SEQUENTIAL real
 		// rotations of the same party architecturally unreachable: once a
 		// rotation fully converges (both classical leaves canonicalize),
 		// `rotationCandidate` is never cleared, so every LATER
@@ -840,7 +840,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		// round moves both of bob's classical leaves onto that edge id,
 		// through the actual generalized-catch-up trigger (Messaging.
 		// swift's `rotating == nil` arm) and the actual send-leaf catch-up
-		// (`committingRound`'s §3c); (3) a REAL classical rotation, through
+		// (`committingRound`'s own-leaf catch-up trigger); (3) a REAL classical rotation, through
 		// the engine's own `prepareToEncrypt(rotating:)`/fold/canonicalize
 		// path, is what finally evicts id0 — the engine's own
 		// canonicalization site. Only bob's PQ leaves are left hand-aged
@@ -871,7 +871,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 
 		// Bob is already LICENSED (`fullyEstablishedTurnOnBob`), so this one
 		// `prepareToEncrypt` both commits his own SEND-classical catch-up
-		// (§3c, `didCommit`) AND stages a RECV-classical catch-up offer for
+		// (`didCommit`) AND stages a RECV-classical catch-up offer for
 		// the very same frame — converges in one round (verified by
 		// running it, not assumed).
 		let bobRound = try bob.prepareToEncrypt()
@@ -906,7 +906,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 			s7, "bob's recv-classical leaf has caught up")
 
 		// Phase 3: a REAL rotation to s8 — bob has no outstanding
-		// `rotationCandidate`, so F2's cap does not bite — is what
+		// `rotationCandidate`, so the cap does not bite — is what
 		// actually evicts id0 from both `PartySequence`s, through the
 		// engine's own canonicalization.
 		let s8 = Data("bob-step8".utf8)
@@ -1259,7 +1259,7 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 		// Alice opens an A.5 — her leaf isn't lagging yet (she rotates
 		// below, AFTER this begin), so it's same-id, with empty AD.
 		let begin = try alice.pqRekeyBegin()
-		// PR2: opened via `bob` — the frame's addressee.
+		// Opened via `bob` — the frame's addressee.
 		let originalUpdBytes = try Frames.decodePQRekeyUpd(bob.openOrRaw(begin.frame))
 		guard
 			case .publicMessage(let originalUpdPub) = try MLS.RFC9420.Message(

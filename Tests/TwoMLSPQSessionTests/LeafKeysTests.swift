@@ -1259,7 +1259,7 @@ final class LeafKeysTests: XCTestCase {
 	/// decrypts. A live retry is NOT possible here: this fault fires while
 	/// processing one specific inbound frame, and that frame's app section
 	/// was never decrypted — there is nothing to "retry" against the same
-	/// input (§11 MF7 would treat a second delivery of the same staple as
+	/// input (the shared classifier would treat a second delivery of the same staple as
 	/// stale/behind, not as this round completing). The DURABLE recovery
 	/// path is what this test proves instead: a restore from the
 	/// last-persisted Checkpoint (captured before delivery) still folds

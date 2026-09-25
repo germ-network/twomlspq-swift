@@ -373,7 +373,7 @@ final class LifecycleE2ETests: XCTestCase {
 	}
 
 	/// The same book lifecycle, under the correct profile: both principals
-	/// opt in (the amendment's public surface), so C1 sends no announce and
+	/// opt in (`SessionProfile`'s public opt-in), so C1 sends no announce and
 	/// C2 opens the reciprocal A.5 at once instead of deferring to a plain
 	/// A.4 — sites [10]/[11]/[12] below.
 	func testBookLifecycleFromColdCorrectProfile() throws {

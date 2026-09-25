@@ -32,8 +32,8 @@ import SecretBytes
 //   a SUPERSET of the sites `rememberSendCrossPSK` runs at (this ledger also
 //   captures at group creation and at `restore`, which `rememberSendCrossPSK`
 //   does not need to) — so `exportAttachmentCEKSend` stays a PURE READ (no
-//   live export), matching the return-based persistence contract (slice
-//   8a): a method with no `StateUpdate` to return must never consume
+//   live export), matching the return-based persistence contract: a
+//   method with no `StateUpdate` to return must never consume
 //   single-shot state.
 // - RECV: `rememberRecvAttachmentComponent` is CAPTURE-ON-ENTRY — every
 //   recv-group creation/advance site ledgers the NEWLY-CURRENT epoch

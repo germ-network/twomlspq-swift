@@ -16,7 +16,7 @@ import TwoMLSPQCrypto
 // one.
 
 /// Raw migrated identity parts, mirroring `IdentityArchive`'s field types
-/// exactly, plus the one field the plan-review's caller could have dropped:
+/// exactly, plus the one field a caller could otherwise drop:
 /// the identity's own `clientID`, which must equal both `KeyPackage`s' Basic
 /// credential identities (and the invitation-level `clientID` — `mintArchive`
 /// checks) or `openInitial`/`receive` fail downstream with nothing to explain

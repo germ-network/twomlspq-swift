@@ -7,8 +7,7 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// Slice 11, §C.5: standalone welcome/handoff delivery. Covers the plan's
-/// S1-S9 (+ T1-T9 regression guards) test matrix.
+/// Standalone welcome/handoff delivery.
 @available(iOS 26, macOS 26, *)
 final class StandaloneEstablishmentTests: XCTestCase {
 	private let classicalProvider = SessionTestSupport.classicalProvider
@@ -28,15 +27,15 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		)
 	}
 
-	// MARK: - S1: non-dedicated standalone 0x01
+	// MARK: - Non-dedicated standalone 0x01
 
 	/// A non-dedicated standalone `0x01` welcome's FIRST join is
-	/// state-advancing (`.joined`, Fable F3) — mutation-verified: a restore
+	/// state-advancing (`.joined`) — mutation-verified: a restore
 	/// from a checkpoint captured BEFORE the join (as if the app never
 	/// persisted the returned `update`) rewinds to pre-join, proving the
 	/// join is a genuine, capturable transition, not a safely-droppable
 	/// no-op. Subsequent `0x03` traffic then reads normally.
-	func testS1NonDedicatedStandaloneWelcomeJoinsAndMutationVerifies() throws {
+	func testNonDedicatedStandaloneWelcomeJoinsAndMutationVerifies() throws {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		XCTAssertFalse(alice.isEstablished)
 		let preJoinArchive = try alice.makeSessionArchive(kind: .checkpoint)
@@ -69,9 +68,9 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
 	}
 
-	// MARK: - S2/S9: born-dedicated standalone 0x0B, then Bob's first 0x03 surfaces the catch-up
+	// MARK: - Born-dedicated standalone 0x0B, then Bob's first 0x03 surfaces the catch-up
 
-	func testS2StandaloneHandoffPausesThenApprovedJoinsWithDedicatedSender() throws {
+	func testStandaloneHandoffPausesThenApprovedJoinsWithDedicatedSender() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
@@ -97,10 +96,10 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		XCTAssertEqual(update.kind, .core)
 	}
 
-	/// S9: standalone-`0x0B`-first, THEN Bob's first `0x03` decrypts and
-	/// surfaces the §C.4 recv-leaf-catch-up Upd — `DecryptResult.queuedProposal.proposing
+	/// Standalone-`0x0B`-first, THEN Bob's first `0x03` decrypts and
+	/// surfaces the recv-leaf-catch-up Upd — `DecryptResult.queuedProposal.proposing
 	/// == D` — the one ordering touchpoint with the classical core.
-	func testS9StandaloneFirstThenBobsFirstFrameSurfacesCatchUpProposal() throws {
+	func testStandaloneFirstThenBobsFirstFrameSurfacesCatchUpProposal() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
@@ -128,12 +127,12 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		XCTAssertEqual(decrypted.queuedProposal.proposing, dedicatedClientID)
 	}
 
-	// MARK: - S3: standalone <-> stapled convergence of the SAME welcome
+	// MARK: - Standalone <-> stapled convergence of the SAME welcome
 
 	/// Whichever copy of the SAME welcome joins first wins; the other
 	/// dedups to `.ignored` on the INNER welcome digest, regardless of
 	/// which tag (`0x01` stapled vs standalone) it rides.
-	func testS3StandaloneAndStapledConvergeOnTheSameWelcome() throws {
+	func testStandaloneAndStapledConvergeOnTheSameWelcome() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8), classicalProvider: classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
@@ -173,9 +172,9 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		}
 	}
 
-	// MARK: - S4/T4: sealed standalone through openIncoming; raw still accepted
+	// MARK: - Sealed standalone through openIncoming; raw still accepted
 
-	func testS4SealedStandalone0x01OpensAsMessageAndRawStillAccepted() throws {
+	func testSealedStandalone0x01OpensAsMessageAndRawStillAccepted() throws {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 
 		// Sealed path: `openIncoming` classifies a sealed standalone `0x01`
@@ -203,7 +202,7 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		}
 	}
 
-	func testT4RawEstablishmentHandoffStillAcceptedViaOpenOrRaw() throws {
+	func testRawEstablishmentHandoffStillAcceptedViaOpenOrRaw() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
@@ -232,9 +231,9 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		}
 	}
 
-	// MARK: - T1/T2: post-join regression guards (F1)
+	// MARK: - Post-join regression guards
 
-	func testT1PostJoinStapled0x0BDecryptsRatherThanRepausing() throws {
+	func testPostJoinStapled0x0BDecryptsRatherThanRepausing() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
@@ -266,7 +265,7 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		XCTAssertEqual(result.applicationMessage, Data("bob-hello".utf8))
 	}
 
-	func testT2PostJoinStandalone0x0BIsIgnoredAndBobFromBirthRejectsStray0x0B() throws {
+	func testPostJoinStandalone0x0BIsIgnoredAndBobFromBirthRejectsStray0x0B() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		let envelope = fakeEnvelope()
@@ -308,9 +307,9 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		}
 	}
 
-	// MARK: - T3: Bob (recv group from birth) fed a re-delivered/foreign standalone 0x01
+	// MARK: - Bob (recv group from birth) fed a re-delivered/foreign standalone 0x01
 
-	func testT3BobRejectsForeignStandaloneWelcomeButIgnoresARedelivery() throws {
+	func testBobRejectsForeignStandaloneWelcomeButIgnoresARedelivery() throws {
 		let alice: TwoMLSSession
 		var bob: TwoMLSSession
 		(alice, bob, _, _, _, _) = try SessionTestSupport.established()
@@ -333,9 +332,9 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		}
 	}
 
-	// MARK: - T5: malformed standalone 0x01 leaves state untouched
+	// MARK: - Malformed standalone 0x01 leaves state untouched
 
-	func testT5MalformedStandaloneWelcomeLeavesStateUntouchedThenGoodCopyJoins() throws {
+	func testMalformedStandaloneWelcomeLeavesStateUntouchedThenGoodCopyJoins() throws {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		let ledgerBefore = alice.sendCrossPSKLedger.count
 		let initSecretBefore = alice.identity.classicalInitSecretKey?.data
@@ -355,9 +354,9 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		}
 	}
 
-	// MARK: - T7: standaloneWelcome() gate; initialWelcome() on a restored owed Bob
+	// MARK: - standaloneWelcome() gate; initialWelcome() on a restored owed Bob
 
-	func testT7StandaloneWelcomeGatedAndInitialWelcomeAvailableOnRestore() throws {
+	func testStandaloneWelcomeGatedAndInitialWelcomeAvailableOnRestore() throws {
 		let (_, bob, _, _, _) = try SessionTestSupport.establishedDedicated()
 		XCTAssertThrowsError(try bob.standaloneWelcome()) { error in
 			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
@@ -376,14 +375,14 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		XCTAssertThrowsError(try restored.standaloneWelcome())
 	}
 
-	// MARK: - T8: approval can never launder a bare welcome
+	// MARK: - Approval can never launder a bare welcome
 
-	func testT8ApprovedCallOnBareDifferingCreatorWelcomeStillRequiresEnvelope() throws {
+	func testApprovedCallOnBareDifferingCreatorWelcomeStillRequiresEnvelope() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		// Bob's staple is bare 0x01 (not yet installed) — feed it to
-		// `processIncomingApproved` with an unrelated approved pair; F4
-		// says approval is consulted only for a 0x0B section, so this must
+		// `processIncomingApproved` with an unrelated approved pair; approval
+		// is consulted only for a 0x0B section, so this must
 		// process exactly like plain `processIncoming` would.
 		let bareStaple = bob.currentStaple
 		XCTAssertThrowsError(
@@ -397,9 +396,9 @@ final class StandaloneEstablishmentTests: XCTestCase {
 		XCTAssertFalse(alice.isEstablished)
 	}
 
-	// MARK: - S5: standaloneWelcome() lifecycle
+	// MARK: - standaloneWelcome() lifecycle
 
-	func testS5StandaloneWelcomeLifecycle() throws {
+	func testStandaloneWelcomeLifecycle() throws {
 		var (alice, bob, _, _, dedicatedClientID) =
 			try SessionTestSupport.establishedDedicated()
 		// Gated while owed.

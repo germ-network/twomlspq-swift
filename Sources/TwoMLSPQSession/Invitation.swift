@@ -5,7 +5,7 @@ import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
 
-// MARK: - Invitation (slice 8b)
+// MARK: - Invitation
 //
 // The self-contained receiving capability (book concepts.md's
 // `TwoMlsPqInvitation`): one published combiner key package's private
@@ -115,8 +115,8 @@ public struct Invitation: Sendable {
 	///
 	/// `expectedAppBinding` is a TRAILING optional (see
 	/// `TwoMLSSession.receive`) — the app-state binding the welcome must
-	/// carry, `nil` for an unbound session. `newClientID` (slice 11,
-	/// contract-26) mirrors `TwoMLSSession.receive`'s own trailing slot —
+	/// carry, `nil` for an unbound session. `newClientID` mirrors
+	/// `TwoMLSSession.receive`'s own trailing slot —
 	/// see its doc for the dedicated-principal semantics.
 	public mutating func receive(
 		welcome: Data,
@@ -205,7 +205,7 @@ public struct Invitation: Sendable {
 		return bootstrapRouting[digest]
 	}
 
-	// MARK: - open_initial (slice 9, PR3b)
+	// MARK: - open_initial
 
 	/// Opens a §A.1 envelope with this invitation's own (still-live) PQ
 	/// init secret. Decrypt-only: no table writes, no consume — the four

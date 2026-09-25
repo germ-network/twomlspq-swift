@@ -218,7 +218,7 @@ public struct TwoMLSIdentity: Sendable {
 	}
 
 	/// Mint a fresh Ed25519 signing keypair — exactly `generate`'s signing
-	/// half, factored out for a classical principal rotation (slice 6): a
+	/// half, factored out for a classical principal rotation: a
 	/// signature-key rotation needs only this, never a full `TwoMLSIdentity`
 	/// (no `KeyPackage`, no HPKE leaf/init keys — swift-mls mints the rotated
 	/// leaf's own encryption key inside `proposeUpdate`/`committing`).

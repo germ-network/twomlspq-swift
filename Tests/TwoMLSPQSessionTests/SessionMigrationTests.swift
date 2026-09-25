@@ -1063,7 +1063,7 @@ final class SessionMigrationTests: XCTestCase {
 		}
 	}
 
-	/// R-5: a deployed-shaped party's one classical key, shared across its
+	/// A deployed-shaped party's one classical key, shared across its
 	/// send- and recv-classical leaves, diverges at each leaf's own first
 	/// native move — the send leaf at its first commit, the recv leaf at
 	/// its first fold — never together. PQ divergence (the first A.5) is
@@ -1104,7 +1104,7 @@ final class SessionMigrationTests: XCTestCase {
 
 	/// A pre-establishment initiator (`recvGroup == nil`) mints with its
 	/// classical init secret carried, restores, and COMPLETES establishment —
-	/// the full PR3c flow a migrated mid-establishment session needs.
+	/// the full mid-establishment restore flow a migrated session needs.
 	func testMintedPreEstablishmentInitiatorCompletesEstablishment() throws {
 		// Deployed-shaped: founds Group_A on alice's own
 		// already-signed KP leaves directly, rather than the public
@@ -1511,15 +1511,14 @@ final class SessionMigrationTests: XCTestCase {
 	/// Group_A leaves still present the INVITATION identity — custody
 	/// resolves through `recvLeafPrincipal`, so the parts must carry it, and
 	/// the minted archive must restore with that custody intact. No messaging
-	/// leg here: Bob cannot send until the contract-26 handoff envelope is
+	/// leg here: Bob cannot send until the signed handoff envelope is
 	/// installed and approved, and Alice isn't established until his first
 	/// frame — that full flow is BornDedicatedTests' territory; the custody
 	/// arms (and their negative, next test) are what this file must prove.
 	/// Also the conversion case where Group_A.pq (bob's `recvGroup.pq`) is a
 	/// full pair from construction — no A.3 bootstrap needed for THIS half
 	/// — so it already EXISTS at mint time, and its own leaf still presents
-	/// the INVITATION identity's PQ key (nothing catches PQ up to D in this
-	/// slice). `lookupPQ` must resolve it via `recvLeafPrincipal`'s PQ
+	/// the INVITATION identity's PQ key (nothing catches PQ up to D at mint time). `lookupPQ` must resolve it via `recvLeafPrincipal`'s PQ
 	/// slot, not `identity`'s (which is D) — the explicit `recvPQ.current`
 	/// check below, against both the minted archive directly and the
 	/// restored session, is the direct proof: it fails if that resolution

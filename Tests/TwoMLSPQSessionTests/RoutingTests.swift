@@ -9,7 +9,7 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// Slice 9 (PR1): rendezvous routing — `sendRendezvous`/`shouldListenOn`,
+/// Rendezvous routing — `sendRendezvous`/`shouldListenOn`,
 /// the `listenRendezvous` capture/retention, and its archive round-trip.
 /// Mirrors `FoldTests`' full routine round to drive repeated classical
 /// commits (session-lifecycle.md, "Routing").

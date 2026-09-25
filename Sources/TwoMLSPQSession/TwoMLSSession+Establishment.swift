@@ -150,8 +150,8 @@ extension TwoMLSSession {
 
 		// KP′ IS `identity`'s own PQ half now (Group_A's PQ leaf is the
 		// fresh `founding.pq` leaf above, never `identity.keyPackage.pq`) —
-		// its commitment `H(KP′)` hashes the MLSMessage-wrapped bytes (§11
-		// #7). Captured before `clearingInitSecrets` below drops the
+		// its commitment `H(KP′)` hashes the MLSMessage-wrapped bytes.
+		// Captured before `clearingInitSecrets` below drops the
 		// session-identity copy of the PQ init secret; `bootstrapKPSecret`
 		// keeps its own, independent copy, still live for `pqBootstrapJoin`
 		// to spend later.
@@ -206,7 +206,7 @@ extension TwoMLSSession {
 		try session.recordListenRendezvous()
 		// Group_A is a full pair from construction, so its send-PQ half
 		// exists immediately too — capture its birth-epoch header key
-		// alongside (PR2).
+		// alongside.
 		try session.recordPQHeaderKey()
 		// Same "works from birth" reasoning, `0xFF03` attachment component
 		// (+Attachment.swift).
@@ -229,7 +229,7 @@ extension TwoMLSSession {
 			returnKeyPackage: session.identity.keyPackage.classical)
 	}
 
-	/// KP′'s MLSMessage-wrapped wire bytes (§11 #7), derived on demand from
+	/// KP′'s MLSMessage-wrapped wire bytes, derived on demand from
 	/// the still-live `bootstrapKPSecret` rather than a separately stored
 	/// field — the public form can then never outlive the private one.
 	/// `nil` on the responder, or once `pqBootstrapJoin` has spent the secret.
@@ -275,7 +275,7 @@ extension TwoMLSSession {
 	/// any group is even decoded — empty is reserved-invalid, so it could
 	/// never match.
 	///
-	/// `newClientID` (slice 11, contract-26) is the reserved trailing slot:
+	/// `newClientID` is the reserved trailing slot:
 	/// when it differs from `identity.clientID`, this mints a fresh,
 	/// dedicated principal D under it to found Group_B — the session
 	/// `identity` becomes D, while `recvGroup` (Group_A) stays joined under
@@ -375,7 +375,7 @@ extension TwoMLSSession {
 				Self.joinedCreatorLeaf(of: pq), codepoints: codepoints)
 		}
 
-		// Slice-2 seam CLOSED: the AS seeds `theirs` from the creator leaf this
+		// The AS seeds `theirs` from the creator leaf this
 		// join actually landed — read straight off the joined tree, not a claim
 		// — then requires the caller-supplied `theirClassicalKeyPackage` to
 		// present that SAME identity (Rust's mandatory welcome-creator ≡ KP
@@ -457,7 +457,7 @@ extension TwoMLSSession {
 			leafNode: founding.leafNode, leafSecretKey: founding.leafSecretKey,
 			signingKey: founding.key.signingKey,
 			peerKeyPackage: theirClassicalKeyPackage, provider: classicalProvider)
-		// Pre-allocated: Group_B's PQ half is not founded in slice 1 (A.3), but
+		// Pre-allocated: Group_B's PQ half is not founded until the A.3 bootstrap, but
 		// its `APQInfo` still names the eventual group id (a draft-02 PARTIAL).
 		let pqGroupID = pqProvider.randomBytes(pqProvider.hashSize)
 		let nonce = classicalProvider.randomBytes(classicalProvider.hashSize)
@@ -544,7 +544,7 @@ extension TwoMLSSession {
 			currentStaple: apqWelcomeB, pendingProposal: nil,
 			joinedWelcomeDigest: try classicalProvider.hash(welcome), initiated: false,
 			expectedBootstrapKPCommitment: bootstrapKPCommitment, pqTurnMine: false,
-			// §11 #1: `lastCrossInjected` tracks the epoch of `recvGroup.classical`
+			// `lastCrossInjected` tracks the epoch of `recvGroup.classical`
 			// (Group_A, joined above) at the last cross-party PSK injection —
 			// Bob's freshly-joined copy is already at epoch 1, so the watermark
 			// seeds there too.
@@ -554,7 +554,7 @@ extension TwoMLSSession {
 		// birth epoch's rendezvous address before minting the baseline
 		// archive (routing works from birth, book session-lifecycle.md).
 		try session.recordListenRendezvous()
-		// Group_B is classical-only pre-A.3 (PR2): a no-op today, kept for
+		// Group_B is classical-only pre-A.3: a no-op today, kept for
 		// call-site symmetry with `initiate` and against a future establish
 		// shape that founds the PQ half earlier.
 		try session.recordPQHeaderKey()
@@ -573,10 +573,10 @@ extension TwoMLSSession {
 			returnKeyPackage: session.identity.keyPackage.classical)
 	}
 
-	// MARK: - Contract-26 non-emittable gate + install
+	// MARK: - Signed-handoff non-emittable gate + install
 
 	/// The non-emittable gate: throws while a dedicated
-	/// principal's contract-26 handoff is still owed. Call FIRST in every
+	/// principal's signed handoff is still owed. Call FIRST in every
 	/// frame-producing public method — a commit before install would
 	/// replace the bare `0x01` staple and make `installEstablishmentEnvelope`
 	/// fail `.sessionNotReady` forever.
@@ -587,7 +587,7 @@ extension TwoMLSSession {
 	}
 
 	/// Wraps `currentStaple` (still the bare `0x01` `apqWelcomeB`) in the
-	/// contract-26 signed handoff blob — NOT the §A.1 HPKE envelope of
+	/// signed handoff blob — NOT the §A.1 HPKE envelope of
 	/// `EstablishmentEnvelope.swift`, a different mechanism entirely: this is
 	/// the signed delegation the host mints (over `initialWelcome()`'s bytes)
 	/// proving D's succession from the invitation identity, carried on the

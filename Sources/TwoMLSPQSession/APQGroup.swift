@@ -185,11 +185,11 @@ extension APQGroup {
 		}
 	}
 
-	/// Slice 11 (protocol-flows.md:407-432): the creator-pin mode a Group_B join is expected under
-	/// — `.bare` for a plain (un-enveloped) welcome, pinned to the
+	/// The creator-pin mode a Group_B join is expected under
+	/// (protocol-flows.md:407-432) — `.bare` for a plain (un-enveloped) welcome, pinned to the
 	/// invitation identity (protocol-flows.md:428: a mismatch here means the
 	/// welcome names a DIFFERENT creator than the one this session's
-	/// invitation-based topology can trust WITHOUT the signed contract-26
+	/// invitation-based topology can trust WITHOUT the signed
 	/// handoff, so it is not yet distinguishable from a born-dedicated
 	/// welcome pre-approval — `.establishmentEnvelopeRequired`, not a bare
 	/// identity mismatch); `.approved` for a welcome whose PAIRED handoff

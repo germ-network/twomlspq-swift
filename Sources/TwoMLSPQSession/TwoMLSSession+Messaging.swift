@@ -10,13 +10,13 @@ import SecretBytes
 extension TwoMLSSession {
 	/// Stage a routine `Upd(self)` into the **receive** group (the peer's send
 	/// group, where the peer folds it) — framed `.publicMessage` to match the
-	/// Rust reference's control-message framing (m4). Requires `isEstablished`
+	/// Rust reference's control-message framing. Requires `isEstablished`
 	/// — UNLESS this is a pre-join initiator (`recvGroup == nil, initiated,
 	/// initialTheirKP != nil`), which instead returns a stateless, empty
 	/// proposal keyed to the current staple (book §A.1 pre-establishment
 	/// send; see `prepareToEncryptPreEstablishment`, below).
 	///
-	/// First runs a `committingRound` (§4b/§5/§3c) — folding an approved peer
+	/// First runs a `committingRound` — folding an approved peer
 	/// Update, discharging an owed bind if one is licensed, and/or catching up
 	/// my own send-leaf's presentation — into a FULL commit on
 	/// `sendGroup.classical`, stapling either a bare `0x00` fold or the `0x05`
@@ -24,8 +24,8 @@ extension TwoMLSSession {
 	/// epoch. `didCommit` reports whether that happened; `committedRemoteClientID`
 	/// is set only when a fold rode.
 	///
-	/// `rotating`, when non-nil, authors a classical principal rotation
-	/// (slice 6): mint a fresh signature keypair for `rotating` (or, if it
+	/// `rotating`, when non-nil, authors a classical principal rotation:
+	/// mint a fresh signature keypair for `rotating` (or, if it
 	/// already names the single outstanding `rotationCandidate`, reuse that
 	/// candidate's key — idempotent), then stage it as the `Upd(self)` via
 	/// the rotation ring + `NewSigningIdentity` instead of the routine
@@ -42,9 +42,9 @@ extension TwoMLSSession {
 	/// replaced this way — dropping it would strand the very key both
 	/// classical leaves may already present, bricking the session; a
 	/// second rotation on an already-converged leaf must instead wait for
-	/// a later slice's PQ catch-up.
+	/// the PQ catch-up.
 	public mutating func prepareToEncrypt(rotating: Data? = nil) throws -> PrepareResult {
-		// Slice 11: the non-emittable gate, BEFORE `committingRound()`
+		// The non-emittable gate, BEFORE `committingRound()`
 		// — a commit landing here before install would replace the bare
 		// `0x01` staple and make `installEstablishmentEnvelope` fail
 		// `.sessionNotReady` forever. First, ahead of the pre-join branch
@@ -128,7 +128,7 @@ extension TwoMLSSession {
 		// forever with no fold ever able to canonicalize it.
 		let myCurrentID = try basicIdentifier(Self.ownLeaf(of: recv.classical).credential)
 
-		// Slice 11 (group-rules.md rule 4, generalized —
+		// (group-rules.md rule 4, generalized —
 		// protocol-flows.md:56): the recv-leaf catch-up — my own recv-leaf
 		// still "lags" (presents an id other than `auth.mine.current`),
 		// whatever put it there: the born-dedicated acceptor's Group_A leaf
@@ -236,8 +236,8 @@ extension TwoMLSSession {
 						// epoch it was staged at). A candidate that DID
 						// converge means a rotation already landed on this
 						// leaf, so a second rotation on a converged leaf is
-						// rejected outright (F2's one-generation cap) until a
-						// later slice's PQ catch-up — lifting the cap is a
+						// rejected outright (the one-generation cap) until a
+						// the PQ catch-up — lifting the cap is a
 						// separate policy call, not merely a consequence of
 						// send-classical no longer holding a candidate
 						// key that could be stranded. It also keeps at most two targets
@@ -272,7 +272,7 @@ extension TwoMLSSession {
 				}
 				mintedLeafKeys = stagedLeafKeys
 
-				// MF5/the ring: `.framedContent` stays on the recv-leaf's
+				// `.framedContent` stays on the recv-leaf's
 				// CURRENT key (still OLD — recv-classical has not
 				// canonicalized yet), so the peer's `verifying(proposal:)`
 				// checks it against the pre-commit sender leaf; `.leafNode`
@@ -293,7 +293,7 @@ extension TwoMLSSession {
 				mintedCandidate = candidate
 			}
 		} else {
-			// §3b: after `canonicalized_own`, my recv-leaf presents the NEW
+			// After `canonicalized_own`, my recv-leaf presents the NEW
 			// credential, and a routine (non-rotating) `Upd` must sign under
 			// it — read straight off the tree rather than trusting bookkeeping.
 			// D3: a routine offer is a key move too — it mints a fresh key
@@ -319,7 +319,7 @@ extension TwoMLSSession {
 			}
 		}
 
-		// MF4: value semantics — every throwing call above ran on the LOCAL
+		// Value semantics — every throwing call above ran on the LOCAL
 		// `recv` copy (and minted a candidate only into a local var); only
 		// on success do we write back `recvGroup`, `rotationCandidate`, and
 		// `auth.mine`'s authorization.
@@ -350,7 +350,7 @@ extension TwoMLSSession {
 		pendingProposal = (
 			proposing: proposing, message: proposalBytes, hash: proposalHash
 		)
-		// §11 MF3: retain every DISTINCT Upd(self) staged this
+		// Retain every DISTINCT Upd(self) staged this
 		// recv epoch — not just the latest — so a `0x00`/`0x05` staple that
 		// folds an earlier one by reference can still resolve it. A reused
 		// offer repeats an entry already here, so it is not appended again
@@ -360,7 +360,7 @@ extension TwoMLSSession {
 			stagedUpdates.append((digest: proposalHash, message: proposalBytes))
 		}
 
-		// Return cadence (slice 8a): classical-only mutation → `.core`. `didCommit`
+		// Return cadence: classical-only mutation → `.core`. `didCommit`
 		// installed a fresh `currentStaple` (`committingRound`'s success
 		// point) iff it folded/discharged/caught-up — stamp the durability
 		// watermark at THIS call's own (just-bumped) `stateSeq` exactly then.
@@ -406,9 +406,9 @@ extension TwoMLSSession {
 	/// the current staple. The AEAD binds the hash to *this* app message, not
 	/// to the frame's separate proposal section — proposal integrity is its own
 	/// MLS leaf signature, checked when folded (`queueProposal`/
-	/// `committingRound`/`applyFoldCommit`, slice 5) (M1).
+	/// `committingRound`/`applyFoldCommit`).
 	public mutating func encrypt(_ app: Data) throws -> EncryptResult {
-		// Slice 11: the non-emittable gate.
+		// The non-emittable gate.
 		try ensureEstablishmentDelegated()
 		if recvGroup == nil, initiated, initialTheirKP != nil {
 			return try encryptPreEstablishment(app)
@@ -421,7 +421,7 @@ extension TwoMLSSession {
 		sendGroup = send
 		pendingProposal = nil
 
-		// The app section is a full `Message`, not a bare `PrivateMessage` (M2) —
+		// The app section is a full `Message`, not a bare `PrivateMessage` —
 		// matches the proposal section, which already carries a full `Message`.
 		let appBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
 		let proposalSection = Frames.encodeProposalSection(
@@ -439,7 +439,7 @@ extension TwoMLSSession {
 		rewrapSideBand()
 		let stagedRekey = maybeStageNextRound()
 
-		// Sealed on exit (PR2, header-encryption.md "Send rule"): every
+		// Sealed on exit (header-encryption.md "Send rule"): every
 		// outbound message-path frame is header-sealed under the recv
 		// group's current classical key.
 		let sealedFrame = try seal(frame)
@@ -501,8 +501,8 @@ extension TwoMLSSession {
 		return EncryptResult(frame: envelope, update: update, isEstablishmentEnvelope: true)
 	}
 
-	/// Slice 11 (protocol-flows.md:407-432): which pre-verified `0x0B` (envelope, welcome)
-	/// pair `processIncomingApproved` pins, or the absence of one for plain
+	/// Which pre-verified `0x0B` (envelope, welcome) pair (protocol-flows.md:407-432)
+	/// `processIncomingApproved` pins, or the absence of one for plain
 	/// `processIncoming` — threaded through the shared dispatch below so the
 	/// two public entry points share every code path except this.
 	private enum EstablishmentApproval {
@@ -514,7 +514,7 @@ extension TwoMLSSession {
 	/// `0x05` bind — idempotently, when the staple merely re-rides a commit
 	/// already applied off an earlier frame), decrypt the app section against
 	/// the receive group, and surface the peer's staged proposal uninterpreted
-	/// (`queueProposal` is the approval step that folds it). Slice 11 (session-lifecycle.md:32-38):
+	/// (`queueProposal` is the approval step that folds it). Per session-lifecycle.md:32-38,
 	/// also dispatches a STANDALONE `0x01`/`0x0B` frame (no `0x03` wrapper),
 	/// and PAUSES on a `0x0B` (stapled or standalone) while `recvGroup ==
 	/// nil` rather than joining — see `IncomingResult`.
@@ -530,7 +530,7 @@ extension TwoMLSSession {
 		try dispatchIncoming(inbound, approval: .unapproved, ownOfferWindow: ownOfferWindow)
 	}
 
-	/// Slice 11 (protocol-flows.md:407-432): re-feed a frame carrying a `0x0B` pair the caller has
+	/// Re-feed a frame carrying a `0x0B` pair (protocol-flows.md:407-432) the caller has
 	/// already verified out of band, pinned by digest over EXACTLY the two
 	/// `0x0B` sections — not "same inbound only": ANY frame carrying that
 	/// approved pair is approvable, including a LATER re-staple (how a
@@ -567,7 +567,7 @@ extension TwoMLSSession {
 		_ inbound: Data, approval: EstablishmentApproval,
 		ownOfferWindow: SecretArchive? = nil
 	) throws -> IncomingResult {
-		// Entry (PR2): transparently removes the header seal if present,
+		// Entry: transparently removes the header seal if present,
 		// else passes an already-opened frame straight through (book,
 		// "Receive rule" convenience).
 		let frame = openOrRaw(inbound)
@@ -616,7 +616,7 @@ extension TwoMLSSession {
 		guard case .privateMessage(let appPM) = appMessage else {
 			throw TwoMLSError.appSectionNotPrivateMessage
 		}
-		// Return cadence (slice 8a): `applyBind` rides this method's staple
+		// Return cadence: `applyBind` rides this method's staple
 		// dispatch and moves `recvGroup.pq`, so the kind can't be a static
 		// per-site tag here — snapshot both PQ trees' epoch before/after the
 		// staple applies and tag `.checkpoint` iff either actually moved.
@@ -773,7 +773,7 @@ extension TwoMLSSession {
 		// sha256 for `proposal_hash`.
 		let digest = try classicalProvider.hash(proposalMessage)
 		let isCatchUp = stampLicenseIfOffered(proposalMessage)
-		// §11 MF8: replace whatever offer was previously surfaced,
+		// Replace whatever offer was previously surfaced,
 		// unconditionally — single-occupancy, latest-wins, exactly like the
 		// approved tally it feeds.
 		offeredProposal = (digest: digest, proposing: proposing, message: proposalMessage)
@@ -797,7 +797,7 @@ extension TwoMLSSession {
 	/// `0x01`/`0x0B` welcome → join Group_B if this staple hasn't been
 	/// joined yet (idempotent otherwise, dedup-ing on the INNER `0x01`
 	/// welcome digest); `0x00` mlsMessage → the fold-only commit
-	/// apply arm (§11 checkpoint 3); `0x05` apqPrivateMessage → `applyBind`.
+	/// apply arm; `0x05` apqPrivateMessage → `applyBind`.
 	/// Returns whether a remote commit was actually applied (`false` for a
 	/// welcome/handoff, or an idempotent skip of a commit already applied
 	/// off an earlier frame). A `0x0B` staple only ever reaches this arm
@@ -837,7 +837,7 @@ extension TwoMLSSession {
 			applied: false, newSender: newSender, ownCredentialCanonicalized: false)
 	}
 
-	/// §5/§11 #8: the discharge license. If `proposalMessage` (every frame's
+	/// The discharge license. If `proposalMessage` (every frame's
 	/// routine staged proposal) decodes as a `PublicMessage` `Update` that
 	/// verifies against MY OWN `sendGroup.classical` — framed by the peer's
 	/// own leaf there, not mine — the peer has evidently applied at least my
@@ -911,7 +911,7 @@ extension TwoMLSSession {
 		}
 	}
 
-	/// Slice 11 (session-lifecycle.md:32-38): the shared join primitive for all four
+	/// The shared join primitive for all four (session-lifecycle.md:32-38)
 	/// callers (stapled/standalone × `0x01`/`0x0B`) — join Group_B from the
 	/// INNER `0x01` welcome bytes under `mode`. Callers must have already
 	/// established `recvGroup == nil` (a genuinely new join); a re-delivery
@@ -936,8 +936,8 @@ extension TwoMLSSession {
 
 		// Derive my own copy of the cross-party PSK off MY Group_A (the session's
 		// send group here — I am the initiator joining Group_B) rather than
-		// trusting any wire-carried value (m6), via the ledger-aware idempotent
-		// exporter. §11 MF4: this consumes `sendGroup.classical`'s (Group_A's)
+		// trusting any wire-carried value, via the ledger-aware idempotent
+		// exporter. This consumes `sendGroup.classical`'s (Group_A's)
 		// epoch-1 `0xFF02` leaf — the exact `(group, epoch, component)` the
 		// send-side ledger otherwise "remembers" lazily on first commit. Seed
 		// it with this already-derived value so `committingRound`'s first
@@ -997,7 +997,7 @@ extension TwoMLSSession {
 		}
 		try ownProfile.ensureAdvertised(by: creatorLeaf)
 
-		// Slice 11 (protocol-flows.md:407-432): admit the joined creator into `auth.theirs` when
+		// Admit the joined creator into `auth.theirs` (protocol-flows.md:407-432) when
 		// it's new — the born-dedicated adoption. A `.bare`-mode join can
 		// only ever reach this point already equal to `auth.theirs.current`
 		// (a mismatch there throws inside `joinClassicalOnly` instead), so
@@ -1031,7 +1031,7 @@ extension TwoMLSSession {
 		// now so it can never be archived once spent.
 		identity = identity.clearingInitSecrets(classical: true, pq: false)
 		// The initiator has nothing left to establish past this point —
-		// `pendingOutbound()` (PR3b) has no more envelope to re-seal.
+		// `pendingOutbound()` has no more envelope to re-seal.
 		initialTheirKP = nil
 		// Rule 9's seal target is gone too: a payload with no `initialTheirKP`
 		// left to carry it is dead state, and every later archive would

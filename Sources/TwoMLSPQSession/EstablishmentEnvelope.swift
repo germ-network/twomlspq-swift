@@ -38,7 +38,7 @@ enum EstablishmentEnvelope {
 	// MARK: - AAD (downgrade-binds the declared suite pair; never transmitted)
 
 	/// `[classical u16 BE][pq u16 BE]` — no suite-pair encoder existed in
-	/// the port before this slice.
+	/// the port before this envelope.
 	static func suitePairBytes() -> Data {
 		var data = Data()
 		for id in [TwoMLSSuite.classical.id, TwoMLSSuite.pq.id] {

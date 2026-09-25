@@ -7,15 +7,13 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// Slice 11: born-dedicated principal + contract-26 signed delegation
-/// handoff. Test matrix per the slice plan §F — accept cases 1-8, standalone
-/// delivery S1-S9/T1-T9, and reject/tamper cases 9-16 (16 itself is the
-/// build/format/full-suite gate, not a unit test here).
+/// Born-dedicated principal + signed delegation handoff. Covers accept,
+/// standalone-delivery, and reject/tamper cases for the handoff.
 @available(iOS 26, macOS 26, *)
 final class BornDedicatedTests: XCTestCase {
 	private let classicalProvider = SessionTestSupport.classicalProvider
 
-	/// A stand-in for the host's signed contract-26 handoff blob — this
+	/// A stand-in for the host's signed handoff blob — this
 	/// module treats `envelope` as opaque bytes (the signature verification
 	/// is the host's job, out of band, before ever calling
 	/// `installEstablishmentEnvelope`/`processIncomingApproved`), so any
@@ -152,12 +150,11 @@ final class BornDedicatedTests: XCTestCase {
 
 	/// Bob's Group_A CLASSICAL leaf converges inv → D via the first
 	/// committed Upd: his own `prepareToEncrypt` implicitly stages the
-	/// catch-up (§C.4), Alice approves+folds it, and Bob's own apply of
+	/// catch-up, Alice approves+folds it, and Bob's own apply of
 	/// that fold canonicalizes his leaf — a no-op-safe `mine.commit`, since
-	/// `auth.mine` was already D from `receive` (Fable traced this as
-	/// admitting cleanly). recv-PQ is NOT caught up by this alone:
+	/// `auth.mine` was already D from `receive`, so it admits cleanly. recv-PQ is NOT caught up by this alone:
 	/// `recvGroup.pq`'s leaf still independently presents the invitation
-	/// identity until a later slice's PQ catch-up.
+	/// identity until the PQ catch-up moves it.
 	func testRecvLeafCatchUpConvergesInvToD() throws {
 		var (alice, bob, invitationClientID, dedicatedClientID, _) =
 			try fullyEstablishedDedicated()
@@ -218,7 +215,7 @@ final class BornDedicatedTests: XCTestCase {
 
 			// License Alice + drive Bob's recv-leaf catch-up in one stroke,
 			// mirroring `RatchetTests.fullyEstablishedTurnOnBob()`'s own
-			// bootstrap-then-license recipe (§11 #8: a queued fold requires
+			// bootstrap-then-license recipe (a queued fold requires
 			// Alice to have seen at least one of Bob's send epochs).
 			_ = try bob.prepareToEncrypt()
 			let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame

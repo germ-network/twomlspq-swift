@@ -6,7 +6,7 @@ import MLSExtensions
 import MLSProfileRFC9420
 import SecretBytes
 
-// MARK: - Session restore + reconcile (slice 8a, PR1)
+// MARK: - Session restore + reconcile
 
 // Gated because it bridges to a live iOS 26 port type — see IdentityArchive in SessionArchive.swift.
 @available(iOS 26, macOS 26, *)
@@ -226,7 +226,7 @@ extension TwoMLSSession {
 		{
 			throw TwoMLSError.archiveInvalid
 		}
-		// PR2: both header-key windows are 32-byte AEAD keys (the header
+		// Both header-key windows are 32-byte AEAD keys (the header
 		// AEAD's own key size), validated the same way (book
 		// header-encryption.md:456-458).
 		if let classical = body.recvHeaderKeys,
@@ -469,7 +469,7 @@ extension TwoMLSSession {
 		// even an archive that omits the current epoch lists where the peer
 		// posts NOW rather than only after the next commit.
 		session.listenRendezvous = body.listenRendezvous?.entries ?? [:]
-		// PR2: restore is a construction site for the header-key windows too
+		// Restore is a construction site for the header-key windows too
 		// — re-derive the current classical + PQ header keys so a restored
 		// session can open an in-flight frame at once.
 		session.recvHeaderKeys = body.recvHeaderKeys?.entries ?? [:]
@@ -497,7 +497,7 @@ extension TwoMLSSession {
 		} catch is MLS.Extensions.ExporterTree.ExportError {
 			throw TwoMLSError.archiveInvalid
 		}
-		// Return cadence (slice 8a): the reconciled `stateSeq` becomes both
+		// Return cadence: the reconciled `stateSeq` becomes both
 		// the live counter to advance from and `currentStapleSeq`'s seed — a
 		// safe, never-under value for the durability gate (this blob is
 		// already durable, or the app could not have restored from it), even

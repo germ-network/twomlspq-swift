@@ -5,7 +5,7 @@ import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
 
-// MARK: - Principal (slice 8b)
+// MARK: - Principal
 //
 // The credential-scoped signer (book concepts.md's `TwoMlsPqPrincipal`): a
 // `clientID` plus the provider config, minting fresh key packages and

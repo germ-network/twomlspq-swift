@@ -549,7 +549,7 @@ final class PreEstablishmentTests: XCTestCase {
 			return XCTFail("expected .decrypted")
 		}
 		XCTAssertEqual(decrypted.applicationMessage, Data("post-join".utf8))
-		// `postJoin.frame` is header-sealed (PR2's "Sealed on exit"), unlike
+		// `postJoin.frame` is header-sealed (header-encryption.md's "Send rule"), unlike
 		// a pre-join raw HPKE envelope — `openOrRaw` recovers the plain
 		// `0x03` tag underneath.
 		XCTAssertEqual(bob.openOrRaw(postJoin.frame).first, Frames.messageFrameTag)

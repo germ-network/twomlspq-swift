@@ -7,7 +7,7 @@ import XCTest
 @testable import TwoMLSPQSession
 
 /// Differential byte-identity tests against the deployed Rust reference (golden hex +
-/// regeneration recipe in `RustWireVectors.swift`): (b) the §7 Germ message-frame /
+/// regeneration recipe in `RustWireVectors.swift`): (b) the Germ message-frame /
 /// proposal-section u32-LE framing, (c) the deployed uint32 `ComponentID` width
 /// feeding the AppDataUpdate attestation body, and (a) the deployed `opaque<V>`
 /// wrapper around the AppDataUpdate (`0x0008`) proposal — see
@@ -26,7 +26,7 @@ final class RustWireVectorsTests: XCTestCase {
 		return out
 	}
 
-	// MARK: - (b) §7 framing
+	// MARK: - (b) framing
 
 	func testMessageFrameByteIdenticalBothDirections() throws {
 		let staple = Data(repeating: 0xAA, count: 3)

@@ -4,7 +4,7 @@ import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
 
-// MARK: - Header encryption (slice 9, PR2)
+// MARK: - Header encryption
 //
 // Every blob that leaves the library past establishment is one opaque
 // `SealedFrame = [12B nonce][classicalProvider.aeadSeal ct+tag]` — the AEAD
@@ -81,8 +81,8 @@ extension TwoMLSSession {
 	/// message frames and return welcomes carry the prefix but are never
 	/// padded). Throws `.notEstablished` with no recv group — the
 	/// initiator's pre-establishment welcome travels unsealed on the
-	/// invitation channel instead (never routed through here; PR3 will
-	/// HPKE-envelope it).
+	/// invitation channel instead (never routed through here; it rides
+	/// the §A.1 HPKE establishment envelope instead).
 	func seal(_ frame: Data) throws -> Data {
 		guard let recv = recvGroup else { throw TwoMLSError.notEstablished }
 		return try sealWith(try headerKey(recv.classical), frame: frame, padTo: frame.count)
@@ -146,13 +146,13 @@ extension TwoMLSSession {
 		}
 	}
 
-	// MARK: - Standalone welcome / handoff delivery (slice 11, session-lifecycle.md:32-38)
+	// MARK: - Standalone welcome / handoff delivery (session-lifecycle.md:32-38)
 
 	/// ACCEPTOR-ORIENTED (Bob, whose `recvGroup` is populated from
 	/// construction — Group_A, joined at `receive`): the read-only PLAINTEXT
 	/// `currentStaple` iff it is still the bare `0x01` birth welcome, else
 	/// `nil` — NO gate, NO seal. This is the sign-over input a host's
-	/// contract-26 handoff-blob minting binds `sha256` over, so a RESTORED
+	/// signed handoff-blob minting binds `sha256` over, so a RESTORED
 	/// owed-but-not-installed Bob (who has no `EstablishResult.welcome` any
 	/// more) can still mint the envelope at all. An initiator's own
 	/// `currentStaple` happens to be the same welcome shape pre-join —
@@ -164,7 +164,7 @@ extension TwoMLSSession {
 		currentStaple.first == Frames.apqWelcomeTag ? currentStaple : nil
 	}
 
-	/// ACCEPTOR-ORIENTED (slice 11, session-lifecycle.md:32-38): the gated,
+	/// ACCEPTOR-ORIENTED (session-lifecycle.md:32-38): the gated,
 	/// SEALED standalone deliverable — a message-path frame every acceptor
 	/// message-path frame must be sealed under `HeaderKey(recvGroup)` like
 	/// (header-encryption.md:286-88, 327-35), re-sealed under a fresh nonce
@@ -177,7 +177,7 @@ extension TwoMLSSession {
 	/// invitation channel via `pendingOutbound()` instead) — a clean `nil`
 	/// rather than a confusing `.notEstablished` from `seal`, since calling
 	/// this at all on that side is a caller error, not a runtime race.
-	/// Throws `.establishmentEnvelopeRequired` while the contract-26 handoff
+	/// Throws `.establishmentEnvelopeRequired` while the signed handoff
 	/// is still owed — a bare, unauthenticated `0x01` standalone welcome is
 	/// exactly the emission door the gate exists to close.
 	public func standaloneWelcome() throws -> Data? {

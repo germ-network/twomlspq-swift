@@ -148,7 +148,7 @@ final class EstablishmentTests: XCTestCase {
 		XCTAssertEqual(TwoMLSSession.crossPartyComponentID.rawValue, 0xFF02)
 	}
 
-	/// MAJOR-4: once Alice has joined Group_B, a frame carrying a DIFFERENT
+	/// Once Alice has joined Group_B, a frame carrying a DIFFERENT
 	/// welcome staple — a fresh, unrelated pair's Group_B welcome — must be
 	/// rejected outright, not silently re-joined. The idempotent early-return
 	/// in `joinGroupBIfNeeded` only covers a byte-identical restaple of the
@@ -163,7 +163,7 @@ final class EstablishmentTests: XCTestCase {
 		_ = try otherBob.prepareToEncrypt()
 		let intruderFrame = try otherBob.encrypt(Data("intruder".utf8)).frame
 
-		// PR2: `intruderFrame` is header-sealed under a key from a totally
+		// `intruderFrame` is header-sealed under a key from a totally
 		// unrelated pair — alice's `openOrRaw` cannot open it (none of her
 		// window keys match) and falls back to passing the still-sealed
 		// bytes straight through, so the sealed path fails at the frame
@@ -197,7 +197,7 @@ final class EstablishmentTests: XCTestCase {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let realFrame = try bob.encrypt(Data("payload".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (_, _, appSection) = try Frames.decodeMessageFrame(alice.openOrRaw(realFrame))
 
 		let fullWelcomeStaple = Frames.encodeAPQWelcome(
@@ -418,7 +418,7 @@ final class EstablishmentTests: XCTestCase {
 		var (alice, bob, aliceIdentity, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (_, _, appSection) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(genuineFrame))
 
@@ -438,7 +438,7 @@ final class EstablishmentTests: XCTestCase {
 	/// cross-party PSK (Alice's own, exported off a copy of her Group_A) but
 	/// created under a different identity ("mallory", not the "bob" Alice is
 	/// established against) passes the PSK gate and is caught by the creator
-	/// pin. Slice 11, §C.2: a `.bare`-mode creator mismatch is no longer
+	/// pin. A `.bare`-mode creator mismatch is no longer
 	/// distinguishable from an un-approved born-dedicated welcome, so this
 	/// now throws `.establishmentEnvelopeRequired` rather than
 	/// `.remoteIdentityMismatch` (which stays reserved for `receive`'s own
@@ -448,7 +448,7 @@ final class EstablishmentTests: XCTestCase {
 		var (alice, bob, aliceIdentity, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (_, _, appSection) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(genuineFrame))
 
@@ -478,7 +478,7 @@ final class EstablishmentTests: XCTestCase {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (_, _, appSection) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(genuineFrame))
 
@@ -501,7 +501,7 @@ final class EstablishmentTests: XCTestCase {
 				alice: "alice-other", bob: "bob-other")
 		_ = try otherBob.prepareToEncrypt()
 		let otherGenuineFrame = try otherBob.encrypt(Data("other".utf8)).frame
-		// PR2: opened via `otherAlice` (the recipient in that OTHER pair).
+		// Opened via `otherAlice` (the recipient in that OTHER pair).
 		let (_, _, otherAppSection) = try Frames.decodeMessageFrame(
 			otherAlice.openOrRaw(otherGenuineFrame))
 		XCTAssertThrowsError(

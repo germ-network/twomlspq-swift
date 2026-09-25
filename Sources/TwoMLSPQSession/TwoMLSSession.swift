@@ -12,7 +12,7 @@ import TwoMLSPQCrypto
 /// welcome to hand the peer out of band (the invitation/rendezvous channel,
 /// not a header-sealed message-path frame) — the Welcome still HPKE-seals
 /// its own group secrets to the joiner; only the outer message-path seal is
-/// what `standaloneWelcome()` (slice 11) applies for a LATER re-send
+/// what `standaloneWelcome()` applies for a LATER re-send
 /// on the message path.
 @available(iOS 26, macOS 26, *)
 public struct EstablishResult: Sendable {
@@ -32,8 +32,8 @@ public struct EstablishResult: Sendable {
 }
 
 /// The result of `prepareToEncrypt`: first runs a committing round — folding
-/// an approved peer Update (§5) and/or discharging an owed bind if one is
-/// licensed (§4b) — `didCommit` reports whether that happened, then always
+/// an approved peer Update and/or discharging an owed bind if one is
+/// licensed — `didCommit` reports whether that happened, then always
 /// stages a routine `Upd(self)` into the receive group regardless.
 public struct PrepareResult: Sendable {
 	public let proposalMessage: Data
@@ -77,7 +77,7 @@ enum PQInflight: Sendable {
 	/// The initiator's §A.5 round: the parked Upd′ MLSMessage bytes, held so
 	/// `pqRekeyApply` can re-`verifying` and re-insert it into a
 	/// `ProposalStore` — `validating` resolves a Commit's `.reference` only
-	/// from the store the same call supplies (§13 M1); swift-mls keeps no
+	/// from the store the same call supplies; swift-mls keeps no
 	/// cross-call proposal cache.
 	case rekeyInitiated(updMessage: Data)
 	/// The committer's §A.5 round: the rekey Commit′ is already applied to
@@ -95,8 +95,7 @@ struct PQEphemeral: Sendable {
 }
 
 /// Alice's parked PQ-half bind commit (`owePQBind`), owed to
-/// `sendGroup.classical` until a licensed `prepareToEncrypt` can discharge it
-/// (§4).
+/// `sendGroup.classical` until a licensed `prepareToEncrypt` can discharge it.
 struct OwedBind: Sendable, Codable {
 	var pqCommitMessage: Data
 	var tEpoch: UInt64
@@ -162,7 +161,7 @@ public struct DecryptResult: Sendable {
 	public let epoch: UInt64
 	/// The app message's own carried `authenticated_data` — `sha256` of the
 	/// proposal bytes the sender framed alongside it. Round-trips as a value;
-	/// `unprotect` never checks it against `queuedProposal` (M1).
+	/// `unprotect` never checks it against `queuedProposal`.
 	public let authenticatedData: Data
 	/// Whether this frame's staple actually applied a remote commit (a `0x00`
 	/// fold or a `0x05` bind) — `false` for a welcome staple, or an
@@ -171,7 +170,7 @@ public struct DecryptResult: Sendable {
 	/// The peer's current credential id, whenever this apply moved the PEER's
 	/// leaf in this recv group to a new presentation (their own-leaf rotation
 	/// catch-up, or the first fold of their rotating `Upd`) — `nil` otherwise.
-	/// Slice 6. swift-mls's `.credentialReplaced` effect fires on EITHER the
+	/// swift-mls's `.credentialReplaced` effect fires on EITHER the
 	/// credential id or the presented signing key changing
 	/// (`CredentialPresentation` is `Equatable` over both), but `canonicalize`
 	/// filters that down to an id change only: every own-leaf move now mints
@@ -179,7 +178,7 @@ public struct DecryptResult: Sendable {
 	/// a commit's path leaf), so a same-id key-only move raises neither
 	/// `newSender` nor `ownCredentialCanonicalized`. `newSender` fires only
 	/// when the peer's id genuinely changes.
-	/// Also set (slice 11) for a Group_B join that adopts a dedicated
+	/// Also set for a Group_B join that adopts a dedicated
 	/// principal D: `didApplyRemoteCommit` stays `false` there (that Bool
 	/// means "applied a remote *commit*"; a join is not one) — `newSender`
 	/// is the sole adoption signal in that case.
@@ -187,7 +186,7 @@ public struct DecryptResult: Sendable {
 	/// Whether this apply moved MY OWN leaf in this recv group to a new
 	/// credential — the first canonicalization of a rotation I authored via
 	/// `prepareToEncrypt(rotating:)`. Named for what it reports (a Bool), not
-	/// Rust's always-present `new_recipient` id. Slice 6.
+	/// Rust's always-present `new_recipient` id.
 	public let ownCredentialCanonicalized: Bool
 	public let queuedProposal: QueuedProposal
 	/// This call's own `StateUpdate` — `.checkpoint` when the applied staple
@@ -217,7 +216,7 @@ public struct EncryptResult: Sendable {
 	public let isEstablishmentEnvelope: Bool
 }
 
-/// Slice 11 (contract-26): the paused `0x0B` establishment handoff a
+/// The paused `0x0B` establishment handoff a
 /// `processIncoming` call surfaced instead of joining — the caller verifies
 /// `envelope`'s signature out of band, then re-feeds the SAME (or a later)
 /// frame carrying this exact pair to `processIncomingApproved`.
@@ -244,7 +243,7 @@ public struct PreEstablishmentMessage: Sendable {
 	public let update: StateUpdate
 }
 
-/// The result of `processIncoming`/`processIncomingApproved` (slice 11):
+/// The result of `processIncoming`/`processIncomingApproved`:
 /// the compiler-forced-unmissable 5-case sum, Rust lib.rs:586-92.
 /// `.decrypted` is the everyday `0x03` app frame (unchanged join/commit
 /// hints ride `DecryptResult` as before); `.joined` is a STANDALONE
@@ -336,7 +335,7 @@ struct RotationCandidate: Sendable {
 }
 
 /// `handleStaple`'s internal result — `applyFoldCommit`/`applyBind` widened
-/// (slice 6) to also report a credential change this apply just canonicalized,
+/// widened to also report a credential change this apply just canonicalized,
 /// alongside whether a commit applied at all.
 struct StapleApplyResult: Sendable {
 	let applied: Bool
@@ -350,7 +349,7 @@ struct StapleApplyResult: Sendable {
 /// One directional APQ session: a send group (`sendGroup` — my Group_B,
 /// classical-only) and a receive group (`recvGroup` — my copy of the peer's
 /// Group_A, the full pair), plus the un-header-sealed staple re-sent with every
-/// frame until the first commit (slice 2+). Value type with `mutating`
+/// frame until the first commit. Value type with `mutating`
 /// methods, matching the profile `Group` idiom: a single-owner, non-forkable
 /// state machine.
 @available(iOS 26, macOS 26, *)
@@ -358,7 +357,7 @@ public struct TwoMLSSession: Sendable {
 	/// The session-layer cross-party PSK component id (`0xFF02`) — distinct
 	/// from the combiner's own `apq_psk` component (`0xFF01`, `Codepoints`);
 	/// derived on demand from each party's own Group_A.classical copy, never
-	/// carried on the wire. Since slice 5 it IS held — as a zeroizing
+	/// carried on the wire. It IS held — as a zeroizing
 	/// `ExportedPsk`/`SecretBytes`, never plaintext — in the bounded in-memory
 	/// `sendCrossPSKLedger`, so a peer commit that references a past send
 	/// epoch can still resolve it without a second (consuming, and thus
@@ -375,7 +374,7 @@ public struct TwoMLSSession: Sendable {
 	/// The credential-sequence Authentication Service state (Germ policy,
 	/// RFC 9420 §5.3.1's "application responsibility") — seeded at
 	/// `initiate`/`receive` and consulted there against the peer's other
-	/// half; slice 6 wires it further at every rotation seam:
+	/// half; it is wired further at every rotation seam:
 	/// `validateOfferedUpdate` (peer-offer authorization, +ClassicalCommit),
 	/// `committingRound` (canonicalizing our own fold), and
 	/// `applyFoldCommit`/`applyBind` (the commit-effect adjudication seam,
@@ -389,7 +388,7 @@ public struct TwoMLSSession: Sendable {
 	let initiated: Bool
 	/// KP′'s own leaf+init secrets plus the `KeyPackage` itself — the
 	/// initiator's joiner credentials for `pqBootstrapJoin`. `nil` on the
-	/// responder. The public KP′ (MLSMessage-wrapped, §11 #7) is never stored
+	/// responder. The public KP′ (MLSMessage-wrapped) is never stored
 	/// separately — it is derived on demand from `keyPackage` here
 	/// (`bootstrapKPBytes()`), so it structurally cannot outlive this secret.
 	var bootstrapKPSecret:
@@ -401,8 +400,8 @@ public struct TwoMLSSession: Sendable {
 	/// `nil` on the initiator.
 	var expectedBootstrapKPCommitment: Data?
 	/// The peer's published combiner key package (`initiate`'s `their`) —
-	/// retained ONLY on the initiator, so `pendingOutbound()` (slice 9,
-	/// PR3b) can re-seal the §A.1 establishment envelope on every re-send.
+	/// retained ONLY on the initiator, so `pendingOutbound()` can re-seal the
+	/// §A.1 establishment envelope on every re-send.
 	/// Cleared at `joinGroupBIfNeeded` (Messaging.swift) once Group_B is
 	/// joined: the initiator has nothing left to establish past that point.
 	/// `nil` on the responder, which never sends this envelope.
@@ -412,20 +411,20 @@ public struct TwoMLSSession: Sendable {
 	/// until the bind passes it back (`applyBind`).
 	var pqTurnMine: Bool
 	/// Alice's PQ-half bind commit, parked after `owePQBind` until a licensed
-	/// `prepareToEncrypt` can discharge it (§4). `nil` once discharged.
+	/// `prepareToEncrypt` can discharge it. `nil` once discharged.
 	var owedBind: OwedBind?
 	/// Which §A.3 side-band step is outstanding, if any.
 	var pqInflight: PQInflight?
 	/// The retained `0x13`/`0x15` side-band frame, for `pqBootstrapBegin`'s
 	/// idempotent re-send.
 	var pendingSideBand: Data?
-	/// The discharge license (§5): `sendGroup.classical`'s epoch, as evidenced
+	/// The discharge license: `sendGroup.classical`'s epoch, as evidenced
 	/// by the peer's inbound `Upd(self)` proposal validating against it
 	/// (`processIncoming`'s `stampLicenseIfOffered`).
 	var peerAppliedSendEpoch: UInt64?
 	/// The last `recvGroup.classical` epoch whose cross-party `0xFF02` PSK
 	/// Alice has injected into a discharge — a watermark, not a full ledger
-	/// (§11 #1). Bob seeds this to `1` in `receive` (mirroring the
+	/// Bob seeds this to `1` in `receive` (mirroring the
 	/// establishment-time cross-party binding epoch); Alice's stays `nil`
 	/// until her first discharge.
 	var lastCrossInjected: UInt64?
@@ -434,7 +433,7 @@ public struct TwoMLSSession: Sendable {
 	/// initiator's post-round `S` export) and by `pqRekeyRespond` (the
 	/// committer's cross-PSK injection into the rekey Commit′). Gates every
 	/// such export against a second, failing export of the same `(group,
-	/// epoch, component)` (§13 A1/M2/M3).
+	/// epoch, component)`.
 	var lastCrossInjectedPQ: UInt64?
 	/// The `sendGroup.pq` epoch this session last exported the cross-party
 	/// `0xFF02` PSK from — stamped by `applyBind`'s re-export arm (the
@@ -450,10 +449,10 @@ public struct TwoMLSSession: Sendable {
 	/// session-lifecycle.md, "Invitations & replayed initial frames").
 	let spawnToken: Data?
 
-	// MARK: §5 classical FOLD (slice 5, no credential rotation)
+	// MARK: Classical FOLD (no credential rotation)
 
 	/// The last peer `Upd(self)` offer surfaced by `processIncoming` — set on
-	/// every inbound frame, unconditionally (§11 MF8), from that frame's
+	/// every inbound frame, unconditionally, from that frame's
 	/// carried proposal section. `queueProposal(digest:)` is the approval
 	/// step that turns this into `queuedProposal`; a later offer simply
 	/// replaces an unapproved one (single-occupancy, latest-wins).
@@ -461,21 +460,21 @@ public struct TwoMLSSession: Sendable {
 	/// The approved fold tally (`queueProposal`) — single-occupancy,
 	/// latest-wins. `committingRound` is the only committer of
 	/// `sendGroup.classical`, and it always folds this when present, so a
-	/// queued tally can never go stale relative to that group's epoch (§11
-	/// MF8) — it is cleared only by being folded, never by a timeout or an
+	/// queued tally can never go stale relative to that group's epoch
+	/// — it is cleared only by being folded, never by a timeout or an
 	/// unrelated commit.
 	var queuedProposal: (digest: Data, proposing: Data, message: Data)? = nil
 	/// Every `Upd(self)` staged into `recvGroup.classical` at its CURRENT
-	/// epoch (§11 MF3) — `prepareToEncrypt` appends a fresh one on every
+	/// epoch — `prepareToEncrypt` appends a fresh one on every
 	/// call, and swift-mls retains every one's secrets, so the peer may fold
 	/// ANY of them (not necessarily the latest) under reorder. Re-verified
 	/// and re-inserted into a fresh `ProposalStore` on every `0x00`/`0x05`
 	/// staple apply (`rebuildStagedProposalStore`) — swift-mls keeps no
-	/// cross-call proposal cache (§13 M1). Cleared when `recvGroup.classical`
+	/// cross-call proposal cache. Cleared when `recvGroup.classical`
 	/// advances.
 	var stagedUpdates: [(digest: Data, message: Data)] = []
 	/// The bounded send-side `0xFF02` cross-party PSK ledger over
-	/// `sendGroup.classical`, keyed by epoch (§11 MF4) — mirrors the Rust
+	/// `sendGroup.classical`, keyed by epoch — mirrors the Rust
 	/// `send_psk_ledger`. `committingRound` remembers (exports once, then
 	/// never again) the departing epoch's export before committing past it,
 	/// and the newly-landed epoch's right after; the `0x00`/`0x05` apply arms
@@ -526,7 +525,7 @@ public struct TwoMLSSession: Sendable {
 	/// in-flight-commits reasoning.
 	static let attachmentLedgerWindow = 8
 
-	// MARK: Routing (rendezvous, slice 9 PR1)
+	// MARK: Routing (rendezvous)
 
 	/// Every retained classical epoch's rendezvous address for THIS
 	/// session's own send group — `rendezvousSecret(sendGroup.classical)` at
@@ -534,7 +533,7 @@ public struct TwoMLSSession: Sendable {
 	/// at every site `sendGroup.classical`'s epoch advances or the group is
 	/// first created (an exporter is only derivable at its own epoch, never
 	/// retroactively) — group creation in `initiate`/`receive`, and
-	/// `committingRound`'s success point (which also covers an owed §4b bind
+	/// `committingRound`'s success point (which also covers an owed bind
 	/// discharge: it folds into that same commit). Retained to
 	/// `sendGroup.classical.retention.resumptionPskDepth` behind the current
 	/// epoch, pruned on every capture, so the listen window is exactly the
@@ -544,7 +543,7 @@ public struct TwoMLSSession: Sendable {
 	/// contract (nothing calling it returns a `StateUpdate`).
 	var listenRendezvous: [UInt64: Data] = [:]
 
-	// MARK: Header encryption (slice 9, PR2)
+	// MARK: Header encryption
 
 	/// Every retained classical epoch's `HeaderKey` for THIS session's own
 	/// send group — captured by `recordListenRendezvous()` in lockstep with
@@ -582,25 +581,25 @@ public struct TwoMLSSession: Sendable {
 	/// resets to 0 on restore.
 	var lastMessageFrameLen: Int = 0
 
-	// MARK: §15 classical principal rotation (slice 6)
+	// MARK: Classical principal rotation
 
 	/// The classical successor minted by our own `prepareToEncrypt(rotating:)`
-	/// (F2: a single in-flight candidate) — `nil` until we author a rotation.
-	/// Retained for the life of the session once set (F4's minimal cut: the
+	/// (at most one in-flight candidate) — `nil` until we author a rotation.
+	/// Retained for the life of the session once set (a minimal cut: the
 	/// choke point (`assertLeafKeysPresented`) and every signing site read
 	/// the stored key sets, never this record's own key, so a stale
 	/// candidate is harmless — a real custodian would retire it once no
-	/// leaf presents it, which needs the PQ catch-up of a later slice).
+	/// leaf presents it, which needs a later catch-up pass).
 	var rotationCandidate: RotationCandidate? = nil
 
-	// MARK: Born-dedicated principal + contract-26 handoff (slice 11)
+	// MARK: Born-dedicated principal + signed handoff
 
 	/// The non-emittable gate: `true` from the moment a
 	/// dedicated principal is minted (`receive(newClientID:)`) until
 	/// `installEstablishmentEnvelope` succeeds. `ensureEstablishmentDelegated()`
 	/// is consulted first by every frame-producing public method while this
 	/// is set, so Bob can never emit a frame under the bare, unauthenticated
-	/// `0x01` staple before the signed contract-26 handoff wraps it.
+	/// `0x01` staple before the signed handoff wraps it.
 	var owesEstablishmentEnvelope: Bool = false
 
 	// MARK: Migration inputs on stored per-group signing keys
@@ -670,7 +669,7 @@ public struct TwoMLSSession: Sendable {
 	/// mint only; no signing site reads them directly any more.
 	var leafKeys: LeafKeys
 
-	// MARK: Return cadence (slice 8a)
+	// MARK: Return cadence
 
 	/// This session's own persistence sequence number — every state-advancing
 	/// method bumps it (checked add; stops rather than wraps past
@@ -682,7 +681,7 @@ public struct TwoMLSSession: Sendable {
 	/// alongside a stored property of that name (Swift, not a design choice).
 	public internal(set) var stateSeq: UInt64 = 0
 	/// The `stateSeq` at which `currentStaple` was last (re)installed by a
-	/// real fold/bind commit (`committingRound`) — or, since slice 11, by
+	/// real fold/bind commit (`committingRound`) — or by
 	/// `installEstablishmentEnvelope`, the SECOND writer of `currentStaple`
 	/// past construction (wrapping the bare `0x01` in the signed `0x0B`
 	/// handoff) — `PrepareResult.dependsOnSeq`'s durability watermark.
@@ -804,7 +803,7 @@ public struct TwoMLSSession: Sendable {
 		return current.signingKey
 	}
 
-	/// Resolve `sendGroup.pq`'s own leaf's CURRENT signing key (slice 11)
+	/// Resolve `sendGroup.pq`'s own leaf's CURRENT signing key
 	/// — `owePQBind`'s commit and `pqRekeyRespond`'s commit. Reads
 	/// `leafKeys.sendPQ`'s slot directly.
 	func sendPQSigningKey() throws -> MLS.SignatureSecretKey {
@@ -818,7 +817,7 @@ public struct TwoMLSSession: Sendable {
 		return current.signingKey
 	}
 
-	/// Resolve `recvGroup.pq`'s own leaf's CURRENT signing key (slice 11)
+	/// Resolve `recvGroup.pq`'s own leaf's CURRENT signing key
 	/// — `pqRekeyBegin`'s `proposeUpdate`. Reads `leafKeys.recvPQ`'s slot
 	/// directly.
 	func recvPQSigningKey() throws -> MLS.SignatureSecretKey {

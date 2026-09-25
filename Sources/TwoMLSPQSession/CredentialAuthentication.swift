@@ -13,7 +13,7 @@ import SecretBytes
 // move-to-newest `commit` did not enforce. This is Germ/TwoMLS
 // policy, not RFC 9420- or draft-defined behavior: swift-mls has no
 // Authentication Service (`NewSigningIdentity.swift`) and instead surfaces the
-// credential change (its D17 `CommitEffect.credentialReplaced` seam, RFC 9420
+// credential change (its `CommitEffect.credentialReplaced` seam, RFC 9420
 // §5.3.1-motivated) for the application to adjudicate — this file is that
 // application.
 //
@@ -293,7 +293,7 @@ struct AuthCore: Sendable, Equatable, Codable {
 	/// `CommitEffect`, a join's `RosterEntry`). Establishment, which only
 	/// ever has a raw `LeafNode.credential` to check, calls this overload
 	/// directly; `adjudicate` calls the presentation overload below, which
-	/// forwards here. (Deviation from the plan's single-signature form,
+	/// forwards here. (A two-overload form rather than a single signature,
 	/// forced by that access level — no information is lost, since identity
 	/// admission never inspects `signatureKey`.)
 	func validateMember(_ credential: MLS.RFC9420.Credential) throws {
@@ -347,7 +347,7 @@ struct AuthCore: Sendable, Equatable, Codable {
 	/// The consult point `applyFoldCommit`/`applyBind` call at the
 	/// `.credentialReplaced` seam, once a rotation's commit has already
 	/// passed the shape allow-list
-	/// (`TwoPartyRules.validateTwoPartyUpdateCommit`). Slice 6 wires the
+	/// (`TwoPartyRules.validateTwoPartyUpdateCommit`). The engine wires the
 	/// three sibling consult points this method does NOT itself perform:
 	/// `theirs.authorize` at peer-proposal approval (`validateOfferedUpdate`,
 	/// a 2nd reject site alongside `TwoMLSSession.queueProposal`, both in
@@ -363,7 +363,7 @@ struct AuthCore: Sendable, Equatable, Codable {
 	/// the Welcome to name the cross-party `0xFF02` PSK and pins the joined
 	/// creator leaf against a mode-supplied expectation (`.missingCrossPartyPSK`
 	/// / `.establishmentEnvelopeRequired` for a `.bare` join, `.establishmentCreatorMismatch`
-	/// for an `.approved` one — slice 11, `APQGroup.JoinCreatorMode`), so the
+	/// for an `.approved` one — `APQGroup.JoinCreatorMode`), so the
 	/// AS needs no separate roster admission there. `joinPQHalf` remains
 	/// credential-unadjudicated — it
 	/// discards `PendingJoin.roster` without checking the creator against

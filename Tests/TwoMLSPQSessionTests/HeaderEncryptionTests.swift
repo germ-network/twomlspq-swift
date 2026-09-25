@@ -4,7 +4,7 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// Slice 9 (PR2): header encryption — every outbound blob is one opaque
+/// Header encryption — every outbound blob is one opaque
 /// `SealedFrame`; the receiver trial-decrypts over its own windows (book
 /// header-encryption.md, "Design"/"Send rule"/"Receive rule"). Every other
 /// suite in this module now drives its A.3/A.4/A.5 rounds and message
@@ -313,7 +313,7 @@ final class HeaderEncryptionTests: XCTestCase {
 		assertOpensOnlyUnderExpectedFamily(kpFrame, isPQFamily: false, receiver: bob)
 
 		// `0x15` — bob's recv-PQ (Group_A.pq) already exists from
-		// `receive`'s `APQGroup.joinFull` at establishment (F5 correction),
+		// `receive`'s `APQGroup.joinFull` at establishment,
 		// so this is PQ.
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		assertOpensOnlyUnderExpectedFamily(welcomeFrame, isPQFamily: true, receiver: alice)

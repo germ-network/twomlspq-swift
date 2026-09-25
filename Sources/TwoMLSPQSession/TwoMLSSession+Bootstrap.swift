@@ -20,7 +20,7 @@ extension TwoMLSSession {
 	/// bind already landed) also falls through, instead of re-emitting a
 	/// stale `0x13`.
 	public mutating func pqBootstrapBegin() throws -> SideBandResult {
-		// Slice 11: the non-emittable gate.
+		// The non-emittable gate.
 		try ensureEstablishmentDelegated()
 		// Readiness first: a recv group must already exist before the
 		// idempotent branch can re-seal anything — `initiate` registers the
@@ -47,7 +47,7 @@ extension TwoMLSSession {
 		pendingSideBand = frame
 		let sealed = try sealSideBand(frame)
 
-		// Return cadence (slice 8a): parks the 0x13 frame — classical state only → `.core`.
+		// Return cadence: parks the 0x13 frame — classical state only → `.core`.
 		advanceStateSeq()
 		return SideBandResult(frame: sealed, update: try stateUpdate(kind: .core))
 	}
@@ -66,8 +66,7 @@ extension TwoMLSSession {
 	/// `.duplicateSideBand` with no state change.
 	///
 	/// Seam: this does not check KP′'s leaf credential names the already-
-	/// established peer (Rust's AS `validate_member`; no AS exists until a
-	/// later slice). It fails closed regardless — a wrong-peer KP′ founds a
+	/// established peer (Rust's AS `validate_member`). It fails closed regardless — a wrong-peer KP′ founds a
 	/// Group_B.pq the real peer never agrees to join, so the bind can never
 	/// complete.
 	public mutating func pqBootstrapRespond(_ inbound: Data) throws -> SideBandResult {
@@ -89,9 +88,9 @@ extension TwoMLSSession {
 	mutating func pqBootstrapRespond(_ inbound: Data, founding: FoundingLeaf) throws
 		-> SideBandResult
 	{
-		// Slice 11: the non-emittable gate.
+		// The non-emittable gate.
 		try ensureEstablishmentDelegated()
-		// Entry (PR2): the peer's `0x13` arrives header-sealed.
+		// Entry: the peer's `0x13` arrives header-sealed.
 		let frame = openOrRaw(inbound)
 		// Validate the frame itself FIRST — tag, decode, then the commitment
 		// check — before anything about this session's own state is even
@@ -151,7 +150,7 @@ extension TwoMLSSession {
 				throw InjectedTestFault(name: "pqBootstrapRespond.afterWriteBack")
 			}
 		#endif
-		// Founds `sendGroup.pq` (PR2): capture its birth-epoch header key.
+		// Founds `sendGroup.pq`: capture its birth-epoch header key.
 		try recordPQHeaderKey()
 
 		let welcomeBytes = try MLS.RFC9420.Message.welcome(welcome).mlsEncoded()
@@ -160,7 +159,7 @@ extension TwoMLSSession {
 		pendingSideBand = responseFrame
 		let sealed = try sealSideBand(responseFrame)
 
-		// Return cadence (slice 8a): founded `sendGroup.pq` → `.checkpoint`.
+		// Return cadence: founded `sendGroup.pq` → `.checkpoint`.
 		advanceStateSeq()
 		return SideBandResult(
 			frame: sealed, update: try stateUpdate(kind: .checkpoint))
@@ -169,11 +168,11 @@ extension TwoMLSSession {
 	/// The initiator (Alice) joins Group_B.pq off Bob's Welcome′, using the
 	/// KP′ secrets minted at `initiate` as joiner credentials, exports the
 	/// cross-party `S` off the freshly-joined epoch-1 leaf, then owes the
-	/// bind (`owePQBind(s:)`, §4a). Alice is `isFullyEstablished` once this
-	/// returns. `pendingProposal == nil` guards against staple-stacking
-	/// (§11 #4): a routine `Upd(self)` must already be discharged (`encrypt`)
+	/// bind (`owePQBind(s:)`). Alice is `isFullyEstablished` once this
+	/// returns. `pendingProposal == nil` guards against staple-stacking:
+	/// a routine `Upd(self)` must already be discharged (`encrypt`)
 	/// before the bootstrap can add its own commit to the pile. Clears
-	/// `bootstrapKPSecret` once spent (§11 #11).
+	/// `bootstrapKPSecret` once spent.
 	///
 	/// A Welcome′ can arrive before the Group_B join — the registered round
 	/// means the acceptor may answer before the initiator's first send. Read
@@ -181,7 +180,7 @@ extension TwoMLSSession {
 	/// change; a host holds the bytes and re-feeds them once the join
 	/// completes.
 	public mutating func pqBootstrapJoin(_ inbound: Data) throws -> StateUpdate {
-		// Entry (PR2): the peer's `0x15` arrives header-sealed.
+		// Entry: the peer's `0x15` arrives header-sealed.
 		let frame = openOrRaw(inbound)
 		let welcomeBytes = try Frames.decodePQBootstrapWelcome(frame)
 		guard case .welcome(let welcome) = try MLS.RFC9420.Message(mlsEncoded: welcomeBytes)
@@ -237,14 +236,14 @@ extension TwoMLSSession {
 		pqInflight = nil
 		pendingSideBand = nil
 
-		// Return cadence (slice 8a): joined `recvGroup.pq` → `.checkpoint`.
+		// Return cadence: joined `recvGroup.pq` → `.checkpoint`.
 		advanceStateSeq()
 		return try stateUpdate(kind: .checkpoint)
 	}
 
-	/// §4a/§4c: fold `s` into a pathless PARTIAL commit on `sendGroup.pq`
+	/// Fold `s` into a pathless PARTIAL commit on `sendGroup.pq`
 	/// and park the resulting commit message as `owedBind` until a licensed
-	/// `prepareToEncrypt` can discharge it (§4b). Callers supply `s` however
+	/// `prepareToEncrypt` can discharge it. Callers supply `s` however
 	/// their round obtained it — the A.3 bootstrap exports it off the
 	/// freshly-joined Group_B.pq (`pqBootstrapJoin`); the A.4 ratchet opens
 	/// it from a KEM ciphertext (`pqRatchetBind`) — this function only ever
@@ -266,10 +265,10 @@ extension TwoMLSSession {
 				tEpoch: send.classical.context.epoch + 1,
 				pqEpoch: sendPQ.context.epoch + 1)
 
-			// Id = LE64(epoch) ‖ groupID ‖ [0x52] — hand-rolled per §4, never
+			// Id = LE64(epoch) ‖ groupID ‖ [0x52] — hand-rolled, never
 			// re-derived from the wire; the peer recomputes this same id from
 			// its own mirror and matches on it exactly, not on `.external`
-			// alone (§11 #5).
+			// alone.
 			let injectedID =
 				withUnsafeBytes(of: sendPQ.context.epoch.littleEndian) { Data($0) }
 				+ sendPQ.context.groupID + Data([0x52])
@@ -310,8 +309,7 @@ extension TwoMLSSession {
 				// The single funnel for every discharge-triggering commit on
 				// `sendGroup.pq` (`pqBootstrapJoin`/`pqRatchetBind`/
 				// `pqRekeyApply` all call this) — capture its just-advanced
-				// epoch's header key here, once, rather than at each call site
-				// (PR2).
+				// epoch's header key here, once, rather than at each call site.
 				try recordPQHeaderKey()
 
 				owedBind = OwedBind(

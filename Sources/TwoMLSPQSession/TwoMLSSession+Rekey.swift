@@ -48,7 +48,7 @@ extension TwoMLSSession {
 	/// park it as a `0x1B` side-band frame. Idempotent while a begin
 	/// is already outstanding, like `pqBootstrapBegin`.
 	public mutating func pqRekeyBegin() throws -> SideBandResult {
-		// Slice 11: the non-emittable gate.
+		// The non-emittable gate.
 		try ensureEstablishmentDelegated()
 		if case .rekeyInitiated = pqInflight, let pending = pendingSideBand {
 			let sealed = try sealSideBand(pending)
@@ -140,21 +140,21 @@ extension TwoMLSSession {
 		#endif
 	}
 
-	/// The committer — never the turn-holder (§13 M5: `!pqTurnMine`) —
+	/// The committer — never the turn-holder (`!pqTurnMine`) —
 	/// receives the peer's `0x1B` Upd′, verifies it against `sendGroup.pq`
 	/// (the group actually being re-keyed), folds it into an `includePath:
 	/// true` commit there — optionally carrying a fresh cross-party `0xFF02`
 	/// PSK exported off `recvGroup.pq` (the initiator's own send-PQ mirror,
-	/// event-driven off `lastCrossInjectedPQ`, §13) — and parks the
+	/// event-driven off `lastCrossInjectedPQ`) — and parks the
 	/// result as a `0x1D` side-band frame. The proposer's leaf may keep its id
 	/// (any signature-key change) or catch up to an already-canonical one
 	/// (`validatePQLeafMove` against `auth.theirs`); the C1 announced id, when
-	/// present, is cross-checked against the proposed leaf's id. The commit's
+	/// present, is cross-checked against the proposed leaf's id (C1). The commit's
 	/// own path leaf moves this party's send-PQ leaf to `auth.mine.current`
 	/// under a freshly minted key. Every check
 	/// runs before any mutation, so a rejected round leaves `self` untouched.
 	/// Every export/write-back is deferred to the success point after the
-	/// commit lands (§13 M3): a throw above that discards the local
+	/// commit lands: a throw above that discards the local
 	/// `recv`/`send` copies untouched.
 	public mutating func pqRekeyRespond(_ inbound: Data) throws -> SideBandResult {
 		guard !pqTurnMine, pqInflight == nil, owedBind == nil else {
@@ -171,7 +171,7 @@ extension TwoMLSSession {
 		guard !noCustody.contains(.sendPQ) else {
 			throw TwoMLSError.leafCustodyUnavailable
 		}
-		// Entry (PR2): the peer's `0x1B` Upd′ arrives header-sealed.
+		// Entry: the peer's `0x1B` Upd′ arrives header-sealed.
 		let frame = openOrRaw(inbound)
 
 		return try withDeployedWireConventions {
@@ -323,7 +323,7 @@ extension TwoMLSSession {
 							name: "pqRekeyRespond.afterWriteBack")
 					}
 				#endif
-				// The committer's own advance of `sendGroup.pq` (PR2) — a second,
+				// The committer's own advance of `sendGroup.pq` — a second,
 				// independent commit from the initiator's later `owePQBind` one.
 				try recordPQHeaderKey()
 				if let crossInjectedEpoch {
@@ -336,7 +336,7 @@ extension TwoMLSSession {
 				pendingSideBand = responseFrame
 				let sealed = try sealSideBand(responseFrame)
 
-				// Return cadence (slice 8a): committed `sendGroup.pq` → `.checkpoint`.
+				// Return cadence: committed `sendGroup.pq` → `.checkpoint`.
 				advanceStateSeq()
 				return SideBandResult(
 					frame: sealed, update: try stateUpdate(kind: .checkpoint),
@@ -347,17 +347,17 @@ extension TwoMLSSession {
 	}
 
 	/// The initiator applies the committer's `0x1D` Commit′: re-verifies the
-	/// parked Upd′ and re-inserts it into a fresh `ProposalStore` (§13 M1 —
-	/// `validating` resolves a `.reference` only from the store this call
+	/// parked Upd′ and re-inserts it into a fresh `ProposalStore`
+	/// (`validating` resolves a `.reference` only from the store this call
 	/// itself supplies), pre-registers the committer's cross-party PSK off a
-	/// throwaway copy of `sendGroup.pq` (§13 M3 — never written back, so a
+	/// throwaway copy of `sendGroup.pq` (never written back, so a
 	/// retry after a later failure re-derives the same value rather than
 	/// risking `componentSecretConsumed` on the real group), validates the
 	/// mechanical rekey effects, adjudicates every `.credentialReplaced` the
 	/// Commit′ actually carries (`adjudicatePQRekeyEffects` — the committer
 	/// against `theirs`, our own proposed leaf against `mine`), applies the
 	/// Commit′ to `recvGroup.pq`, exports `S` off the freshly-rekeyed group,
-	/// and owes the classical bind (`owePQBind(s:)`, slice 3 reuse). The
+	/// and owes the classical bind (`owePQBind(s:)`, reused here). The
 	/// adjudication failure modes: `.invalidSuccession` for a non-canonical
 	/// id; a shape failure stays `.invalidRekeyEffects`; a non-`.basic`
 	/// credential surfaces as `.unsupportedCredential`, unmapped — chosen
@@ -365,7 +365,7 @@ extension TwoMLSSession {
 	/// error. Any of these leaves `pqInflight` untouched, so an honest
 	/// re-sent Commit′ still applies.
 	public mutating func pqRekeyApply(_ inbound: Data) throws -> StateUpdate {
-		// Entry (PR2): the peer's `0x1D` Commit′ arrives header-sealed.
+		// Entry: the peer's `0x1D` Commit′ arrives header-sealed.
 		let frame = openOrRaw(inbound)
 
 		return try withDeployedWireConventions {
@@ -481,7 +481,7 @@ extension TwoMLSSession {
 				updatedLeafKeys.recvPQ.pending = [:]
 			}
 
-			// §13 M2: export `S` off the just-rekeyed group and stamp the
+			// Export `S` off the just-rekeyed group and stamp the
 			// watermark right after — mirrors `pqBootstrapJoin` (the export
 			// consumes this exact `(group, epoch, component)` leaf).
 			let recvPQEpochAfterRekey = recvPQ.context.epoch
@@ -511,7 +511,7 @@ extension TwoMLSSession {
 			pqInflight = nil
 			pendingSideBand = nil
 
-			// Return cadence (slice 8a): `owePQBind` just committed `sendGroup.pq`
+			// Return cadence: `owePQBind` just committed `sendGroup.pq`
 			// (and this call committed `recvGroup.pq`) → `.checkpoint`.
 			advanceStateSeq()
 			return try stateUpdate(kind: .checkpoint)

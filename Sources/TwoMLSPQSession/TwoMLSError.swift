@@ -37,7 +37,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// identity field that does not match the group it rides in.
 	case deferredApqInfoMismatch
 	/// A staple welcome not already joined carried a non-empty pq slot — a
-	/// full (Group_A-shaped) welcome. Slice 1 only ever joins one of those via
+	/// full (Group_A-shaped) welcome. The engine only ever joins one of those via
 	/// the explicit `receive()` entry point, never through `processIncoming`.
 	case fullEstablishmentStapleUnsupported
 	/// The Group_B welcome did not name the `0xFF02` cross-party PSK derived
@@ -90,7 +90,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// A host method requiring specific turn/establishment state
 	/// (`pqBootstrapBegin`, `pqBootstrapRespond`, `pqBootstrapJoin`) was
 	/// called outside that state. Also `installEstablishmentEnvelope`'s
-	/// fail-closed catch-all (slice 11): not owed, and `currentStaple` is
+	/// fail-closed catch-all: not owed, and `currentStaple` is
 	/// not the bare `0x01` shape either — an envelope installed onto a
 	/// session that never owed one, or one whose staple already moved past
 	/// establishment.
@@ -165,8 +165,8 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// respond-side id gate's own failures, all before any commit is spent:
 	/// the proposed leaf's id is not already-canonical (or is a rollback)
 	/// per `validatePQLeafMove`; either leaf's credential is not `.basic`;
-	/// or a present C1 announced id (the Upd′'s authenticated data)
-	/// disagrees with the proposed leaf's id.
+	/// or a present announced id (the Upd′'s authenticated
+	/// data) disagrees with the proposed leaf's id.
 	case rekeyProposalRejected
 	/// `pqRekeyApply`'s applied `CommitEffects` were not the mechanical rekey
 	/// Commit's exact allow-listed shape — `[epochAdvanced, moved(proposer),
@@ -181,13 +181,13 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// against the classical `AuthCore` (D2) instead.
 	case invalidRekeyEffects
 
-	// MARK: §5 classical FOLD (slice 5, no credential rotation)
+	// MARK: Classical FOLD (no credential rotation)
 
 	/// `queueProposal` found no matching/valid offer: no `offeredProposal` was
 	/// outstanding, the supplied digest did not match it, the offered message
 	/// did not verify as a peer `.update` proposal (`.member` sender, not this
 	/// session's own leaf), or its verified leaf's `.basic` identity did not
-	/// match the frame's unauthenticated `proposing` claim (§11 MF5). Also
+	/// match the frame's unauthenticated `proposing` claim. Also
 	/// thrown by `validateOfferedUpdate`'s own leaf checks, run against every
 	/// current member (mirroring the roster a real commit validates against):
 	/// the embedded replacement leaf's own RFC 9420 section 7.3 signature
@@ -222,7 +222,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// `.externalSender` case here: the profile already rejects every
 	/// external sender with `unsupportedSender` before a credential ever
 	/// reaches this AS (this protocol is strictly 2-party and P2P, with no
-	/// external-sender path). Also thrown by `joinGroupB`'s (slice 11)
+	/// external-sender path). Also thrown by `joinGroupB`'s
 	/// defense-in-depth adoption screen: a joined creator id that is already
 	/// one of MY OWN known ids (`auth.mine.knownIDs`) is never adopted, even
 	/// if a host blunder handed it back as the dedicated principal — a
@@ -258,7 +258,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// out by the always-fresh-key invariant, not by this check.
 	case credentialRollback
 
-	// MARK: Classical principal rotation (slice 6)
+	// MARK: Classical principal rotation
 
 	/// A group's own stored key set (`GroupKeySet` — `current` plus
 	/// `pending`, one per group) has no key for a leaf presentation this
@@ -277,7 +277,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	case credentialUnknown
 	/// `prepareToEncrypt(rotating:)` was asked to author a SECOND classical
 	/// rotation while the outstanding `rotationCandidate` is either still
-	/// foldable by the peer OR has already canonicalized (F2's
+	/// foldable by the peer OR has already canonicalized (the
 	/// one-generation cap). The wedge relaxation
 	/// (`recvGroup.classical`'s epoch has moved past the epoch the
 	/// outstanding candidate's `Upd` was staged at) only ever lets a DEAD
@@ -302,7 +302,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// path above.
 	case rotationInFlight
 
-	// MARK: Session archive (slice 8a)
+	// MARK: Session archive
 
 	/// `TwoMLSSession.restore`'s decoded input failed validation: a leading
 	/// field (`version`/`classicalSuite`/`pqSuite`/`kind`) didn't match what
@@ -322,7 +322,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// partially reconstructs a session off a blob it cannot fully trust.
 	case archiveInvalid
 
-	// MARK: Invitations (slice 8b)
+	// MARK: Invitations
 
 	/// `Invitation.receive` rejected a welcome its processed-welcome ledger
 	/// or consumed-remote set already recorded: a re-delivery of the exact
@@ -343,7 +343,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// frames").
 	case misroutedSpawnToken
 
-	// MARK: §A.1 HPKE establishment envelope (slice 9, PR3b)
+	// MARK: §A.1 HPKE establishment envelope
 
 	/// `EstablishmentEnvelope.decodePlaintext` found an establishment
 	/// vector (`ESTABLISHMENT_VECTOR_TAG`) carrying neither `appPayload` nor
@@ -417,7 +417,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// be asked for it.
 	case attachmentComponentUnavailable
 
-	// MARK: Born-dedicated principal + contract-26 handoff (slice 11)
+	// MARK: Born-dedicated principal + signed handoff
 
 	/// `Invitation.receive`/`TwoMLSSession.receive` was called with a
 	/// non-nil, empty `newClientID` — the reserved slot the dedicated
@@ -429,7 +429,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// the very party it is meant to be dedicated FOR.
 	case invalidClientID
 	/// A frame-producing method was called while the acceptor still owes
-	/// the contract-26 signed handoff envelope (`owesEstablishmentEnvelope`)
+	/// the signed handoff envelope (`owesEstablishmentEnvelope`)
 	/// — the non-emittable gate. Also `installEstablishmentEnvelope`'s
 	/// own empty-argument case, and a `.bare`-mode Group_B join whose
 	/// creator differs from the invitation identity (protocol-flows.md:428

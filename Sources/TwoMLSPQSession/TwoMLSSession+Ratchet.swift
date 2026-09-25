@@ -14,7 +14,7 @@ extension TwoMLSSession {
 	/// then `unprotect`, the inner-tag check, and a peer-sender check. Any
 	/// failure to decrypt an untrusted leg (a tampered/replayed/foreign-epoch
 	/// frame) surfaces as the non-fatal `.decryptionFailed`, never a raw
-	/// `MLS.*` teardown error (§12). Mutates `group` (spends a generation);
+	/// `MLS.*` teardown error. Mutates `group` (spends a generation);
 	/// call only after the inflight/epoch-floor guards already passed.
 	private mutating func processA4Leg(
 		on group: inout MLS.RFC9420.Group, innerTag: UInt8, message: MLS.RFC9420.Message
@@ -63,7 +63,7 @@ extension TwoMLSSession {
 	/// the `0x19` CT on my OWN `sendGroup.classical` — not the mirror the EK
 	/// arrived in, which may hold an uncommitted proposal of my own.
 	public mutating func pqRatchetRespond(_ inbound: Data) throws -> SideBandResult {
-		// Entry (PR2): the peer's `0x17` EK leg arrives header-sealed.
+		// Entry: the peer's `0x17` EK leg arrives header-sealed.
 		let frame = openOrRaw(inbound)
 		let (tag, messageBytes) = try Frames.decodePQLeg(frame)
 		guard tag == Frames.pqEKTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
@@ -107,7 +107,7 @@ extension TwoMLSSession {
 		pendingSideBand = outFrame
 		let sealed = try sealSideBand(outFrame)
 
-		// Return cadence (slice 8a): classical carrier only (the PQ half is read-only
+		// Return cadence: classical carrier only (the PQ half is read-only
 		// here — `ctSealPSK`/derivation, never committed) → `.core`.
 		advanceStateSeq()
 		return SideBandResult(frame: sealed, update: try stateUpdate(kind: .core))
@@ -118,11 +118,11 @@ extension TwoMLSSession {
 	/// the `ctSealPSK` derived off `sendGroup.pq` (the same group/epoch the
 	/// responder sealed against, via its `recvGroup.pq` mirror) using the
 	/// ephemeral secret key held since `stageRatchet`, then owe the bind
-	/// (`owePQBind(s:)`, §4c). `CTSeal.open`'s AEAD failure is the explicit
+	/// (`owePQBind(s:)`). `CTSeal.open`'s AEAD failure is the explicit
 	/// reject for a tampered/misdirected CT — it propagates as thrown, not a
 	/// silent no-op.
 	public mutating func pqRatchetBind(_ inbound: Data) throws -> StateUpdate {
-		// Entry (PR2): the peer's `0x19` CT leg arrives header-sealed.
+		// Entry: the peer's `0x19` CT leg arrives header-sealed.
 		let frame = openOrRaw(inbound)
 		let (tag, messageBytes) = try Frames.decodePQLeg(frame)
 		guard tag == Frames.pqCTTag else { throw TwoMLSError.unsupportedSideBandTag(tag) }
@@ -186,27 +186,27 @@ extension TwoMLSSession {
 			aead: classicalProvider)
 
 		try owePQBind(s: s)
-		// §13g/§12#2: clear BOTH — the spent EK must not be re-handed by
+		// Clear BOTH — the spent EK must not be re-handed by
 		// `pqPendingOutbound`, and `maybeStageNextRound`'s
 		// `pendingSideBand == nil` gate must reopen, or the self-driver
 		// wedges for life.
 		pqInflight = nil
 		pendingSideBand = nil
 
-		// Return cadence (slice 8a): `owePQBind` just committed `sendGroup.pq` → `.checkpoint`.
+		// Return cadence: `owePQBind` just committed `sendGroup.pq` → `.checkpoint`.
 		advanceStateSeq()
 		return try stateUpdate(kind: .checkpoint)
 	}
 
 	/// Peek the parked `0x17`/`0x19`/`0x1B`/`0x1D` side-band frame, if any —
 	/// non-mutating re the round; the host sends it alongside the message
-	/// frame. Sealed on exit (PR2): re-seals the retained plaintext under a
+	/// frame. Sealed on exit: re-seals the retained plaintext under a
 	/// fresh nonce on every call (never caches the sealed bytes), so
 	/// repeated peeks of the same parked leg are byte-different but open to
 	/// the same plaintext — matching `seal`/`sealSideBand`'s own contract.
 	/// `nil` both when nothing is parked and, defensively, if sealing itself
 	/// fails (never falls back to returning the leg unsealed). Also `nil`
-	/// while `owesEstablishmentEnvelope` (defense-in-depth, slice 11): every
+	/// while `owesEstablishmentEnvelope` (defense-in-depth): every
 	/// side-band round-starter already gates on
 	/// `ensureEstablishmentDelegated()` before ever parking a leg, so this
 	/// should be unreachable in practice, but matches the Rust peer's own

@@ -83,10 +83,10 @@ enum SessionTestSupport {
 	/// to Alice, so both sides are `isEstablished` — matching the reference's
 	/// "initiator established only once it has received the acceptor's first
 	/// frame" ordering.
-	/// Slice 11: `established()`'s born-dedicated analogue — Bob receives
+	/// `established()`'s born-dedicated analogue — Bob receives
 	/// under a fresh `newClientID`, so his session founds Group_B under a
 	/// dedicated principal D distinct from the invitation identity, and owes
-	/// the contract-26 handoff envelope. `invitationClientID` is Bob's
+	/// the signed handoff envelope. `invitationClientID` is Bob's
 	/// invitation identity's own clientID (== `bobName`, `TwoMLSIdentity.
 	/// generate`'s `clientID` param passed straight through by
 	/// `Principal.generateInvitation`) — the id `bob.leafKeys.recvClassical`
@@ -282,7 +282,7 @@ enum SessionTestSupport {
 	}
 }
 
-/// Slice 11: `processIncoming` now returns the 4-case `IncomingResult`
+/// `processIncoming` now returns the 4-case `IncomingResult`
 /// instead of a bare `DecryptResult` — this mechanically migrates the
 /// hundreds of pre-existing call sites that only ever cared about the
 /// everyday `0x03` app-frame path. Fails the test (via `XCTFail`, not a
