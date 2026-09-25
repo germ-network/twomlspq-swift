@@ -10,8 +10,11 @@ import SecretBytes
 extension TwoMLSSession {
 	/// Stage a routine `Upd(self)` into the **receive** group (the peer's send
 	/// group, where the peer folds it) — framed `.publicMessage` to match the
-	/// Rust reference's control-message framing (m4). Requires `isEstablished`:
-	/// the initiator cannot send before its first inbound frame joins Group_B.
+	/// Rust reference's control-message framing (m4). Requires `isEstablished`
+	/// — UNLESS this is a pre-join initiator (`recvGroup == nil, initiated,
+	/// initialTheirKP != nil`), which instead returns a stateless, empty
+	/// proposal keyed to the current staple (book §A.1 pre-establishment
+	/// send; see `prepareToEncryptPreEstablishment`, below).
 	///
 	/// First runs a `committingRound` (§4b/§5/§3c) — folding an approved peer
 	/// Update, discharging an owed bind if one is licensed, and/or catching up
@@ -41,14 +44,20 @@ extension TwoMLSSession {
 	/// second rotation on an already-converged leaf must instead wait for
 	/// a later slice's PQ catch-up.
 	public mutating func prepareToEncrypt(rotating: Data? = nil) throws -> PrepareResult {
-		guard recvGroup != nil, sendGroup != nil else {
-			throw TwoMLSError.notEstablished
-		}
 		// Slice 11: the non-emittable gate, BEFORE `committingRound()`
 		// — a commit landing here before install would replace the bare
 		// `0x01` staple and make `installEstablishmentEnvelope` fail
-		// `.sessionNotReady` forever.
+		// `.sessionNotReady` forever. First, ahead of the pre-join branch
+		// below too, though a dedicated-principal handoff can never
+		// actually be owed pre-join (`owesEstablishmentEnvelope` is only
+		// ever set on a born-dedicated ACCEPTOR).
 		try ensureEstablishmentDelegated()
+		if recvGroup == nil, initiated, initialTheirKP != nil {
+			return try prepareToEncryptPreEstablishment(rotating: rotating)
+		}
+		guard recvGroup != nil, sendGroup != nil else {
+			throw TwoMLSError.notEstablished
+		}
 		// No-custody guard, before `committingRound()` — it writes
 		// `recvGroup` even for a bare catch-up-only round
 		// (`TwoMLSSession+ClassicalCommit.swift`'s cross-party PSK export).
@@ -365,6 +374,33 @@ extension TwoMLSSession {
 		)
 	}
 
+	/// The pre-join branch of `prepareToEncrypt`: no recv group exists yet,
+	/// so there is nothing to stage an `Upd(self)` into — a stateless no-op
+	/// that only reports the AAD `encryptPreEstablishment` will seal under
+	/// (`H(currentStaple)`, the book's fixed proposal-hash convention). Sets
+	/// no `pendingProposal`, deliberately: the A.3/A.4/A.5 doors gated on it
+	/// staying `nil`, and `validateLeafKeys`, are untouched, and a stale pre-join
+	/// prepare followed by a join and an `encrypt` fails closed with
+	/// `.noPendingProposal` — the ordinary post-join guard, unmodified.
+	private mutating func prepareToEncryptPreEstablishment(rotating: Data?) throws
+		-> PrepareResult
+	{
+		// No recv group can ever carry an `Upd`, so a rotation request here
+		// can never be honored — Rust parity (`SessionNotReady`).
+		guard rotating == nil else { throw TwoMLSError.sessionNotReady }
+		guard !noCustody.contains(.sendClassical) else {
+			throw TwoMLSError.leafCustodyUnavailable
+		}
+		advanceStateSeq()
+		let update = try stateUpdate(kind: .core)
+		return PrepareResult(
+			proposalMessage: Data(),
+			proposalHash: try classicalProvider.hash(currentStaple),
+			didCommit: false, committedRemoteClientID: nil,
+			update: update, dependsOnSeq: currentStapleSeq
+		)
+	}
+
 	/// Seal `app` on the send group with the pending proposal's hash as its
 	/// carried `authenticated_data`, and frame it alongside that proposal and
 	/// the current staple. The AEAD binds the hash to *this* app message, not
@@ -374,6 +410,9 @@ extension TwoMLSSession {
 	public mutating func encrypt(_ app: Data) throws -> EncryptResult {
 		// Slice 11: the non-emittable gate.
 		try ensureEstablishmentDelegated()
+		if recvGroup == nil, initiated, initialTheirKP != nil {
+			return try encryptPreEstablishment(app)
+		}
 		guard let pending = pendingProposal else { throw TwoMLSError.noPendingProposal }
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
 		let appPM = try send.classical.protect(
@@ -410,7 +449,56 @@ extension TwoMLSSession {
 		// send reports `.checkpoint` instead.
 		advanceStateSeq()
 		let update = try stateUpdate(kind: stagedRekey ? .checkpoint : .core)
-		return EncryptResult(frame: sealedFrame, update: update)
+		return EncryptResult(
+			frame: sealedFrame, update: update, isEstablishmentEnvelope: false)
+	}
+
+	/// The pre-join branch of `encrypt`: no recv group exists yet, so there
+	/// is nothing to header-seal against — protect `app` on the SEND
+	/// group's classical half instead (ASG-cl), AAD-bound to
+	/// `H(currentStaple)` (the book's fixed proposal-hash convention, matching
+	/// `prepareToEncryptPreEstablishment`'s reported hash), staple it as a
+	/// `0x09` §A.1 app section, and seal the whole thing as a fresh HPKE
+	/// establishment envelope via `composeInitialEnvelope` — the invitation
+	/// channel, not the rendezvous one, which
+	/// `EncryptResult.isEstablishmentEnvelope` reports.
+	///
+	/// No `rewrapSideBand`/`maybeStageNextRound`: both are provable no-ops
+	/// pre-join (`decodePQLeg` rejects the parked `0x13`; `isFullyEstablished`
+	/// is false), and no `lastMessageFrameLen` update — there is no
+	/// co-stapled side-band frame pre-join.
+	private mutating func encryptPreEstablishment(_ app: Data) throws -> EncryptResult {
+		guard !noCustody.contains(.sendClassical) else {
+			throw TwoMLSError.leafCustodyUnavailable
+		}
+		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
+		let aad = try classicalProvider.hash(currentStaple)
+		let appPM = try send.classical.protect(
+			classicalProvider, applicationData: app, authenticatedData: aad,
+			signingKey: try sendClassicalSigningKey())
+		let appBytes = try MLS.RFC9420.Message.privateMessage(appPM).mlsEncoded()
+		// Composed BEFORE the write-back below: a seal failure here must
+		// consume no generation.
+		let envelope = try composeInitialEnvelope(
+			stapled: Frames.encodePreEstablishmentApp(appBytes))
+		// (DEBUG only): a fault point AFTER `protect` (a generation is
+		// already consumed on the LOCAL `send` copy) but before the
+		// write-back below — proves a fault here leaves `sendGroup`
+		// unchanged, so the next `encrypt` still protects at the same
+		// generation the peer expects.
+		#if DEBUG
+			if TwoMLSSessionTestHooks.shouldFault(
+				"encryptPreEstablishment.afterProtectBeforeWriteBack")
+			{
+				throw InjectedTestFault(
+					name: "encryptPreEstablishment.afterProtectBeforeWriteBack")
+			}
+		#endif
+		sendGroup = send
+
+		advanceStateSeq()
+		let update = try stateUpdate(kind: .core)
+		return EncryptResult(frame: envelope, update: update, isEstablishmentEnvelope: true)
 	}
 
 	/// Slice 11 (protocol-flows.md:407-432): which pre-verified `0x0B` (envelope, welcome)

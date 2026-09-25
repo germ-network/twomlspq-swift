@@ -19,6 +19,11 @@ enum Frames {
 	/// book's `APQWelcome_A` label — a book-internal naming slip; see
 	/// protocol-flows.md:407-432).
 	static let establishmentHandoffTag: UInt8 = 0x0B
+	/// §A.1 pre-establishment app staple, envelope-interior only
+	/// (wire-format.md:16) — `[0x09][ASG-cl PrivateMessage]`, an
+	/// MLSMessage-framed `PrivateMessage`, matching the `0x03` app section's
+	/// own framing rule.
+	static let preEstablishmentAppTag: UInt8 = 0x09
 
 	/// The staple slot self-discriminates by its first byte.
 	enum StapleKind: Equatable {
@@ -339,5 +344,24 @@ enum Frames {
 			throw TwoMLSError.unsupportedStapleTag(sections[1][sections[1].startIndex])
 		}
 		return (sections[0], sections[1])
+	}
+
+	// MARK: - `0x09` pre-establishment app staple
+
+	/// `[0x09][messageBytes]` — bare remainder, no inner length prefix, like
+	/// `encodePQBootstrapKP`. `messageBytes` is an MLSMessage-framed
+	/// `PrivateMessage` (§A.1's `ASG-cl PrivateMessage`).
+	static func encodePreEstablishmentApp(_ messageBytes: Data) -> Data {
+		Data([preEstablishmentAppTag]) + messageBytes
+	}
+
+	static func decodePreEstablishmentApp(_ frame: Data) throws -> Data {
+		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
+		guard tag == preEstablishmentAppTag else {
+			throw TwoMLSError.unsupportedFrameTag(tag)
+		}
+		let body = Data(frame[frame.index(after: frame.startIndex)...])
+		guard !body.isEmpty else { throw TwoMLSError.truncatedSection }
+		return body
 	}
 }

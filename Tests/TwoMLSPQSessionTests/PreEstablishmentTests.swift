@@ -379,4 +379,256 @@ final class PreEstablishmentTests: XCTestCase {
 		}
 		XCTAssertEqual(frame.appPayload, payload)
 	}
+
+	// MARK: - Pre-join send
+
+	/// The pre-join `prepareToEncrypt` — empty `proposalMessage`,
+	/// `proposalHash == H(currentStaple)`, `didCommit == false`, and no
+	/// `pendingProposal` set. `rotating:` non-nil -> `.sessionNotReady`.
+	/// `noCustody ⊇ {.sendClassical}` -> `.leafCustodyUnavailable`. Kills:
+	/// staging into a nil recv group, a wrong hash, a missing custody
+	/// guard.
+	func testPreJoinPrepareIsStatelessAndKeyedToTheStaple() throws {
+		var (alice, _) = try setup()
+		let result = try alice.prepareToEncrypt()
+		XCTAssertEqual(result.proposalMessage, Data())
+		XCTAssertEqual(
+			result.proposalHash,
+			try SessionTestSupport.classicalProvider.hash(alice.currentStaple))
+		XCTAssertFalse(result.didCommit)
+		XCTAssertNil(result.committedRemoteClientID)
+		XCTAssertNil(alice.pendingProposal)
+
+		XCTAssertThrowsError(
+			try alice.prepareToEncrypt(rotating: Data("someone-else".utf8))
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		}
+
+		alice.noCustody = [.sendClassical]
+		XCTAssertThrowsError(try alice.prepareToEncrypt()) { error in
+			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
+		}
+	}
+
+	/// The pre-join `encrypt` shape, in the BARE shape (no payload set).
+	/// The envelope opens via `openInitial` with `stapledMessage.first ==
+	/// 0x09`; the rest decodes as an MLSMessage `privateMessage` with
+	/// `groupID == sendGroup.classical.context.groupID` and epoch 1.
+	/// `isEstablishmentEnvelope == true`, and two encrypts give distinct
+	/// envelope bytes. Kills: header-sealing instead of HPKE, a wrong tag,
+	/// a missing staple, a reused ephemeral, the wrong group.
+	func testPreJoinEncryptShape() throws {
+		var (alice, invitation) = try setup()
+		let sendGroupID = try XCTUnwrap(alice.sendGroup).classical.context.groupID
+
+		_ = try alice.prepareToEncrypt()
+		let first = try alice.encrypt(Data("hello, pre-join".utf8))
+		XCTAssertTrue(first.isEstablishmentEnvelope)
+
+		guard case .establishment(let frame) = try invitation.openInitial(first.frame)
+		else {
+			return XCTFail("expected .establishment")
+		}
+		let staple = try XCTUnwrap(frame.stapledMessage)
+		XCTAssertEqual(staple.first, Frames.preEstablishmentAppTag)
+		let appBytes = try Frames.decodePreEstablishmentApp(staple)
+		guard case .privateMessage(let pm) = try MLS.RFC9420.Message(mlsEncoded: appBytes)
+		else {
+			return XCTFail("expected a privateMessage app section")
+		}
+		XCTAssertEqual(pm.groupID, sendGroupID)
+		XCTAssertEqual(pm.epoch, 1)
+
+		_ = try alice.prepareToEncrypt()
+		let second = try alice.encrypt(Data("hello again, pre-join".utf8))
+		XCTAssertNotEqual(first.frame, second.frame)
+	}
+
+	/// The pre-join `encrypt` shape once a payload is set: the opened
+	/// envelope carries `appPayload == p` alone — `welcome` and
+	/// `returnKeyPackage` are both nil — with the `0x09` staple still
+	/// present alongside it. `encryptPreEstablishment` must build its
+	/// envelope through the shared either/or composer rather than sealing
+	/// the bare sections directly; a mutation that has it do the latter
+	/// (bypassing `composeInitialEnvelope`) passes every OTHER native test
+	/// in this file but fails this one.
+	func testPreJoinEncryptCarriesThePayloadShapeOnceSet() throws {
+		var (alice, invitation) = try setup()
+		let payload = Data("host app payload".utf8)
+		_ = try alice.setInitialAppPayload(payload)
+
+		_ = try alice.prepareToEncrypt()
+		let sent = try alice.encrypt(Data("hello, pre-join".utf8))
+		guard case .establishment(let frame) = try invitation.openInitial(sent.frame) else {
+			return XCTFail("expected .establishment")
+		}
+		XCTAssertEqual(frame.appPayload, payload)
+		XCTAssertNil(frame.welcome)
+		XCTAssertNil(frame.returnKeyPackage)
+		XCTAssertNotNil(frame.stapledMessage)
+	}
+
+	/// `encrypt`'s OWN `noCustody` guard, isolated from
+	/// `sendClassicalSigningKey()`'s own (key-absence-driven) check by
+	/// leaving the send-classical key in place and setting only the
+	/// `noCustody` flag — the artificial state the pre-join prepare test
+	/// above can't isolate this from, since removing the guard there still
+	/// leaves the key-lookup's independent check to fail closed. Kills:
+	/// dropping `encryptPreEstablishment`'s own custody guard specifically.
+	func testPreJoinEncryptGuardsNoCustodySeparatelyFromPrepare() throws {
+		var (alice, _) = try setup()
+		_ = try alice.prepareToEncrypt()
+		alice.noCustody = [.sendClassical]
+		XCTAssertThrowsError(try alice.encrypt(Data("blocked".utf8))) { error in
+			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
+		}
+	}
+
+	/// Atomicity. A fault injected between `protect` and the
+	/// write-back leaves `sendGroup` byte-identical to its pre-call
+	/// snapshot (`GroupEntry` — includes the message-protection ratchet
+	/// state, so ANY consumed generation would show up as a diff) — the
+	/// next `encrypt` then protects at the same generation the peer
+	/// expects, rather than skipping one the faulted attempt silently
+	/// spent. Kills: writing `sendGroup` back before the compose.
+	func testPreJoinEncryptWriteBackIsAtomic() throws {
+		var (alice, _) = try setup()
+		_ = try alice.prepareToEncrypt()
+
+		let before = try XCTUnwrap(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
+		TwoMLSSessionTestHooks.armFault(
+			"encryptPreEstablishment.afterProtectBeforeWriteBack")
+		XCTAssertThrowsError(try alice.encrypt(Data("faulted".utf8))) { error in
+			XCTAssertTrue(error is InjectedTestFault)
+		}
+		TwoMLSSessionTestHooks.disarmAllFaults()
+		let after = try XCTUnwrap(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
+		XCTAssertEqual(before, after)
+
+		// The session is not bricked: a retry (fault no longer armed)
+		// completes normally.
+		_ = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("recovered".utf8))
+	}
+
+	/// Cutover. A pre-join prepare followed by a join, followed by
+	/// `encrypt`, throws `.noPendingProposal` (the stale prepare fails
+	/// closed). Post-join prepare/encrypt then gives
+	/// `isEstablishmentEnvelope == false`, and Bob's `processIncoming`
+	/// yields a `0x03` frame. `pendingOutbound()` throws once joined. Kills:
+	/// a branch predicate that isn't `recvGroup == nil`, and a stale
+	/// pre-join prepare leaking across the join.
+	func testCutoverAtTheJoin() throws {
+		var (alice, invitation) = try setup()
+		_ = try alice.prepareToEncrypt()
+
+		let returnKP = try EstablishmentMessages.decodeKeyPackage(
+			try EstablishmentMessages.encodeKeyPackage(
+				alice.identity.keyPackage.classical))
+		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
+		let received = try invitation.receive(
+			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
+			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
+			spawnToken: spawnToken)
+		var bob = received.session
+		_ = try bob.prepareToEncrypt()
+		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		_ = try alice.processIncoming(bobFrame)
+		XCTAssertTrue(alice.isEstablished)
+
+		XCTAssertThrowsError(try alice.encrypt(Data("stale".utf8))) { error in
+			XCTAssertEqual(error as? TwoMLSError, .noPendingProposal)
+		}
+
+		_ = try alice.prepareToEncrypt()
+		let postJoin = try alice.encrypt(Data("post-join".utf8))
+		XCTAssertFalse(postJoin.isEstablishmentEnvelope)
+		let opened = try bob.processIncoming(postJoin.frame)
+		guard case .decrypted(let decrypted) = opened else {
+			return XCTFail("expected .decrypted")
+		}
+		XCTAssertEqual(decrypted.applicationMessage, Data("post-join".utf8))
+		// `postJoin.frame` is header-sealed (PR2's "Sealed on exit"), unlike
+		// a pre-join raw HPKE envelope — `openOrRaw` recovers the plain
+		// `0x03` tag underneath.
+		XCTAssertEqual(bob.openOrRaw(postJoin.frame).first, Frames.messageFrameTag)
+
+		XCTAssertThrowsError(try alice.pendingOutbound()) { error in
+			XCTAssertEqual(error as? TwoMLSError, .noPendingEstablishmentEnvelope)
+		}
+	}
+
+	/// `canSend` is true pre-join, false with `sendClassical`
+	/// no-custody, and true post-join. Kills: the widened predicate.
+	func testCanSendPreJoinAndPostJoin() throws {
+		var (alice, invitation) = try setup()
+		XCTAssertTrue(alice.canSend)
+
+		alice.noCustody = [.sendClassical]
+		XCTAssertFalse(alice.canSend)
+		alice.noCustody = []
+
+		let returnKP = try EstablishmentMessages.decodeKeyPackage(
+			try EstablishmentMessages.encodeKeyPackage(
+				alice.identity.keyPackage.classical))
+		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
+		let received = try invitation.receive(
+			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
+			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
+			spawnToken: spawnToken)
+		var bob = received.session
+		_ = try bob.prepareToEncrypt()
+		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		_ = try alice.processIncoming(bobFrame)
+		XCTAssertTrue(alice.canSend)
+	}
+
+	/// The parked §A.3 bootstrap KP is unaffected: `pqBootstrapEnvelope()`
+	/// stays non-nil before and after two pre-join encrypts, and
+	/// `pqInflight`/`pendingSideBand` are unchanged. Kills: a pre-join
+	/// encrypt disturbing the parked `0x13`.
+	func testPreJoinEncryptDoesNotDisturbTheParkedBootstrapKP() throws {
+		var (alice, _) = try setup()
+		XCTAssertNotNil(try alice.pqBootstrapEnvelope())
+		guard case .bootstrapInitiated = alice.pqInflight else {
+			return XCTFail("expected .bootstrapInitiated")
+		}
+		let pendingBefore = alice.pendingSideBand
+
+		_ = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("one".utf8))
+		_ = try alice.prepareToEncrypt()
+		_ = try alice.encrypt(Data("two".utf8))
+
+		XCTAssertNotNil(alice.pqBootstrapEnvelope())
+		guard case .bootstrapInitiated = alice.pqInflight else {
+			return XCTFail("expected .bootstrapInitiated")
+		}
+		XCTAssertEqual(alice.pendingSideBand, pendingBefore)
+	}
+
+	// MARK: - The `0x09` Frames codec
+
+	func testPreEstablishmentAppCodecRoundTrips() throws {
+		let body = Data("an MLSMessage-framed PrivateMessage".utf8)
+		let encoded = Frames.encodePreEstablishmentApp(body)
+		XCTAssertEqual(encoded.first, Frames.preEstablishmentAppTag)
+		let decoded = try Frames.decodePreEstablishmentApp(encoded)
+		XCTAssertEqual(decoded, body)
+	}
+
+	func testPreEstablishmentAppCodecRejectsAnEmptyBody() throws {
+		let encoded = Data([Frames.preEstablishmentAppTag])
+		XCTAssertThrowsError(try Frames.decodePreEstablishmentApp(encoded)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
+		}
+	}
+
+	func testPreEstablishmentAppCodecRejectsAWrongTag() throws {
+		let encoded = Data([0x00]) + Data("body".utf8)
+		XCTAssertThrowsError(try Frames.decodePreEstablishmentApp(encoded)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .unsupportedFrameTag(0x00))
+		}
+	}
 }

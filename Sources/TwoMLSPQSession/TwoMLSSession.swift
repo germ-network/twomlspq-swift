@@ -209,6 +209,12 @@ public struct GroupEpochs: Sendable, Hashable {
 public struct EncryptResult: Sendable {
 	public let frame: Data
 	public let update: StateUpdate
+	/// `true` when `frame` is a raw HPKE §A.1 envelope for the invitation
+	/// channel (a pre-join send); `false` when it is a header-sealed frame
+	/// for the rendezvous channel — misrouting either fails silently, so a
+	/// host branches on this rather than inferring the channel from
+	/// `isEstablished` alone.
+	public let isEstablishmentEnvelope: Bool
 }
 
 /// Slice 11 (contract-26): the paused `0x0B` establishment handoff a
@@ -615,13 +621,17 @@ public struct TwoMLSSession: Sendable {
 	/// discharge or classical messaging.
 	public var pqSideBandWedged: Bool { pqWedge != nil }
 
-	/// Read-only query: true when both classical roles
-	/// currently have signing custody and the session is established — a
-	/// recv-classical no-custody session cannot even mint its own
-	/// `Upd(self)`.
+	/// Read-only query: true when both classical roles currently have
+	/// signing custody and the session is established — a recv-classical
+	/// no-custody session cannot even mint its own `Upd(self)` — OR this is
+	/// a pre-join initiator with send-classical custody, the same predicate
+	/// `prepareToEncrypt`/`encrypt` branch pre-join on. Widened so a host
+	/// gating on this query reaches the pre-join send path at all.
 	public var canSend: Bool {
-		isEstablished && !noCustody.contains(.sendClassical)
-			&& !noCustody.contains(.recvClassical)
+		(isEstablished && !noCustody.contains(.sendClassical)
+			&& !noCustody.contains(.recvClassical))
+			|| (recvGroup == nil && initiated && initialTheirKP != nil
+				&& !noCustody.contains(.sendClassical))
 	}
 
 	/// The id of this session's own-offer window record, if
