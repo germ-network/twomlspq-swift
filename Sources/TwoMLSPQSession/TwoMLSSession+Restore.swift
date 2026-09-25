@@ -405,7 +405,8 @@ extension TwoMLSSession {
 		let (pqWedge, noCustody, ownOfferWindowRecord) = try decodeDeployedCarry(
 			body.deployedCarry, recvGroup: recvGroup)
 		try validateInitialAppPayload(
-			body.initialAppPayload, initiated: body.initiated, recvGroup: recvGroup)
+			body.initialAppPayload, initiated: body.initiated, recvGroup: recvGroup,
+			hasInitialTheirKP: body.initialTheirKP != nil)
 
 		try validateLeafKeys(
 			leafKeys, sendGroup: sendGroup, recvGroup: recvGroup, identity: identity,
@@ -569,13 +570,16 @@ extension TwoMLSSession {
 		return (pqWedge, noCustody, ownOfferWindow)
 	}
 
-	/// Rule 9, re-checked at restore: non-empty, and only for a pre-join
-	/// initiator.
+	/// Rule 9, re-checked at restore: non-empty, only for a pre-join
+	/// initiator, and only while a seal target (`initialTheirKP`) remains to
+	/// carry it. Reads the archive's OWN `initialTheirKP` field (not the
+	/// restored, decoded value) — this runs before that field's own
+	/// `.restore()` call, further down.
 	private static func validateInitialAppPayload(
-		_ payload: Data?, initiated: Bool, recvGroup: APQGroup?
+		_ payload: Data?, initiated: Bool, recvGroup: APQGroup?, hasInitialTheirKP: Bool
 	) throws {
 		guard let payload else { return }
-		guard !payload.isEmpty, initiated, recvGroup == nil else {
+		guard !payload.isEmpty, initiated, recvGroup == nil, hasInitialTheirKP else {
 			throw TwoMLSError.archiveInvalid
 		}
 	}

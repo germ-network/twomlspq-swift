@@ -896,6 +896,10 @@ extension TwoMLSSession {
 		// The initiator has nothing left to establish past this point —
 		// `pendingOutbound()` (PR3b) has no more envelope to re-seal.
 		initialTheirKP = nil
+		// Rule 9's seal target is gone too: a payload with no `initialTheirKP`
+		// left to carry it is dead state, and every later archive would
+		// otherwise fail restore's own rule-9 check below.
+		initialAppPayload = nil
 		return newSender
 	}
 }

@@ -595,10 +595,12 @@ public struct TwoMLSSession: Sendable {
 	/// its internal `pq_wedged: Option<PqWedge>` from its public
 	/// `pq_side_band_wedged() -> bool`.
 	var pqWedge: MigratedPQWedge? = nil
-	/// The migrated deployed engine's carried pre-establishment app
-	/// payload, when supplied. Stored and validated only (rule 9) — no host
-	/// accessor; a later step's envelope/pre-establishment change consumes
-	/// it through `pendingOutbound()`.
+	/// The host's establishment-self-sufficient app payload, set via
+	/// `setInitialAppPayload` or carried by migration (rule 9: non-empty
+	/// only for a pre-join initiator that still retains a seal target,
+	/// `initialTheirKP`). Consumed by `composeInitialEnvelope`, both from
+	/// `pendingOutbound()` and from a pre-join `encrypt`. Drains alongside
+	/// `initialTheirKP` the moment the initiator joins.
 	var initialAppPayload: Data? = nil
 	/// The migrated deployed engine's set of groups this session presently
 	/// has no signing custody over — a read-only query,
