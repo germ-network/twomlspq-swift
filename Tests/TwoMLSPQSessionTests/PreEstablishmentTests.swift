@@ -86,15 +86,21 @@ final class PreEstablishmentTests: XCTestCase {
 		alice.initialAppPayload = Data("host app payload".utf8)
 		XCTAssertNotNil(alice.initialAppPayload)
 
+		// With a payload set, `pendingOutbound()` seals the payload-only
+		// shape (the either/or composer) — `frame.welcome` is nil, so the
+		// welcome/return-KP a real host would extract FROM the (opaque, to
+		// this engine) payload are instead read straight off `alice` here.
 		let envelope = try alice.pendingOutbound()
 		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
 			return XCTFail("expected .establishment")
 		}
+		XCTAssertEqual(frame.appPayload, alice.initialAppPayload)
 		let returnKP = try EstablishmentMessages.decodeKeyPackage(
-			try XCTUnwrap(frame.returnKeyPackage))
+			try EstablishmentMessages.encodeKeyPackage(
+				alice.identity.keyPackage.classical))
 		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
 		let received = try invitation.receive(
-			welcome: try XCTUnwrap(frame.welcome), theirClassicalKeyPackage: returnKP,
+			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
 			spawnToken: spawnToken)
 		var bob = received.session
@@ -214,5 +220,163 @@ final class PreEstablishmentTests: XCTestCase {
 		) { error in
 			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
+	}
+
+	// MARK: - The payload slot and composer
+
+	/// The setter's guards. Empty payload -> `.emptySection`. An
+	/// acceptor (never a pre-join initiator) -> `.sessionNotReady`. A
+	/// post-join initiator -> `.sessionNotReady`. Kills: removing any one
+	/// guard.
+	func testSetterGuards() throws {
+		var (alice, invitation) = try setup()
+		XCTAssertThrowsError(try alice.setInitialAppPayload(Data())) { error in
+			XCTAssertEqual(error as? TwoMLSError, .emptySection)
+		}
+
+		let returnKP = try EstablishmentMessages.decodeKeyPackage(
+			try EstablishmentMessages.encodeKeyPackage(
+				alice.identity.keyPackage.classical))
+		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
+		let received = try invitation.receive(
+			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
+			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
+			spawnToken: spawnToken)
+		var bob = received.session
+		XCTAssertThrowsError(
+			try bob.setInitialAppPayload(Data("host app payload".utf8))
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		}
+
+		_ = try bob.prepareToEncrypt()
+		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		_ = try alice.processIncoming(bobFrame)
+		XCTAssertTrue(alice.isEstablished)
+		XCTAssertThrowsError(
+			try alice.setInitialAppPayload(Data("host app payload".utf8))
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		}
+	}
+
+	/// The setter's `initialTheirKP != nil` clause alone, isolated from
+	/// every other guard (`initiated`, `recvGroup == nil`, the staple tag,
+	/// all held true) — a state `receive()`'s always-established
+	/// construction can never itself produce, so isolated here via direct
+	/// field mutation. Kills: dropping the `initialTheirKP != nil` clause
+	/// specifically (the acceptor/post-join scenarios above hold several
+	/// guards false at once and can't isolate it).
+	func testSetterGuardIsolatesMissingInitialTheirKP() throws {
+		var (alice, _) = try setup()
+		alice.initialTheirKP = nil
+		XCTAssertThrowsError(
+			try alice.setInitialAppPayload(Data("host app payload".utf8))
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		}
+	}
+
+	/// The setter's `recvGroup == nil` clause alone, isolated the same way
+	/// as the `initialTheirKP` isolation above.
+	func testSetterGuardIsolatesRecvGroupPresent() throws {
+		var (alice, invitation) = try setup()
+		let returnKP = try EstablishmentMessages.decodeKeyPackage(
+			try EstablishmentMessages.encodeKeyPackage(
+				alice.identity.keyPackage.classical))
+		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
+		let received = try invitation.receive(
+			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
+			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
+			spawnToken: spawnToken)
+		// Graft the ESTABLISHED acceptor's `recvGroup` onto Alice's own
+		// still-pre-join fields (`initiated`/`initialTheirKP`/`currentStaple`
+		// all stay hers) — an artificial state, but it isolates exactly the
+		// `recvGroup == nil` clause.
+		alice.recvGroup = received.session.recvGroup
+		XCTAssertThrowsError(
+			try alice.setInitialAppPayload(Data("host app payload".utf8))
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		}
+	}
+
+	/// Once a payload is set, `pendingOutbound()`'s opened frame carries
+	/// `appPayload` alone; `welcome`/`returnKeyPackage`/`stapledMessage` are
+	/// all nil. Kills: emitting both shapes, or ignoring the payload.
+	func testEitherOrPayloadShape() throws {
+		var (alice, invitation) = try setup()
+		let payload = Data("host app payload".utf8)
+		_ = try alice.setInitialAppPayload(payload)
+
+		let envelope = try alice.pendingOutbound()
+		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
+			return XCTFail("expected .establishment")
+		}
+		XCTAssertEqual(frame.appPayload, payload)
+		XCTAssertNil(frame.welcome)
+		XCTAssertNil(frame.returnKeyPackage)
+		XCTAssertNil(frame.stapledMessage)
+	}
+
+	/// A second setter call replaces the payload, and the next envelope
+	/// carries the REPLACEMENT. Kills: set-once behavior.
+	func testSetterReplacesAnEarlierPayload() throws {
+		var (alice, invitation) = try setup()
+		_ = try alice.setInitialAppPayload(Data("first payload".utf8))
+		let second = Data("second payload".utf8)
+		_ = try alice.setInitialAppPayload(second)
+
+		let envelope = try alice.pendingOutbound()
+		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
+			return XCTFail("expected .establishment")
+		}
+		XCTAssertEqual(frame.appPayload, second)
+	}
+
+	/// The setter's success advances `currentStapleSeq` to its own
+	/// `stateSeq` — the durability watermark a pre-join `prepareToEncrypt`'s
+	/// `PrepareResult.dependsOnSeq` mirrors. Kills: a missing
+	/// `markStapleInstalled()` in the setter.
+	func testSetterAdvancesTheDurabilityWatermark() throws {
+		var (alice, _) = try setup()
+		let before = alice.currentStapleSeq
+		let update = try alice.setInitialAppPayload(Data("host app payload".utf8))
+		XCTAssertGreaterThan(update.stateSeq, before)
+		XCTAssertEqual(alice.currentStapleSeq, update.stateSeq)
+	}
+
+	/// The payload survives a pre-join restore (setter's `.core` update
+	/// plus the baseline checkpoint), and the restored session's
+	/// `pendingOutbound()` carries it. Kills: the archive dropping the
+	/// payload field on the live encode.
+	func testPayloadSurvivesPreJoinRestore() throws {
+		let alicePrincipal = try Principal.generate(
+			clientID: Data("alice".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let bobPrincipal = try Principal.generate(
+			clientID: Data("bob".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirKP)
+		var alice = initiated.session
+		let payload = Data("host app payload".utf8)
+		_ = try alice.setInitialAppPayload(payload)
+
+		let checkpoint = try alice.makeSessionArchive(kind: .checkpoint)
+		let restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: try sealAndOpen(checkpoint),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		let envelope = try restored.pendingOutbound()
+		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
+			return XCTFail("expected .establishment")
+		}
+		XCTAssertEqual(frame.appPayload, payload)
 	}
 }

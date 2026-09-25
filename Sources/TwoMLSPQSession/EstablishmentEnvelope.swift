@@ -14,10 +14,12 @@ import MLSProfileRFC9420
 // bootstrap-KP frame, carried verbatim — both sealed the same way
 // (`EstablishmentEnvelope.seal(to:plaintext:pqProvider:)`), so the
 // invitation-channel opener handles either without distinguishing them.
-// This populates only the BARE either/or shape (`welcome` +
-// `returnKeyPackage`, no `appPayload`) — protocol-flows.md's self-sufficient
-// signed-`appPayload` shape needs an app-layer identity envelope the port
-// doesn't have.
+// `composeInitialEnvelope` seals either/or: the BARE shape (`welcome` +
+// `returnKeyPackage`, no `appPayload`) by default, or — once the host has
+// called `setInitialAppPayload` (or a migrated pre-join initiator carried
+// one) — the self-sufficient signed-`appPayload` shape
+// (protocol-flows.md:399-405). The engine never interprets the payload
+// itself; the host is responsible for making it establishment-self-sufficient.
 
 /// The inner plaintext tag and framing constants. Declared here, not in
 /// `Frames.swift`'s session-frame registry, because this tags the HPKE
@@ -160,10 +162,10 @@ public enum OpenedInitial: Sendable, Equatable {
 }
 
 /// The establishment reply's four optional sections (empty on the wire =
-/// absent). This slice populates only `welcome`/`returnKeyPackage` (the
-/// no-app-payload shape, `TwoMLSSession.pendingOutbound()`);
-/// `appPayload`/`stapledMessage` decode for completeness but are never
-/// populated here. `welcome` and `returnKeyPackage` are each an RFC 9420
+/// absent), either/or per protocol-flows.md:399-405: `appPayload` alone
+/// (once `TwoMLSSession.setInitialAppPayload` was called, or a migrated
+/// pre-join initiator carried one), or `welcome`/`returnKeyPackage` alone
+/// (the bare shape). `welcome` and `returnKeyPackage` are each an RFC 9420
 /// `MLSMessage`.
 public struct InitialFrame: Sendable, Equatable {
 	public var appPayload: Data?
@@ -176,24 +178,82 @@ public struct InitialFrame: Sendable, Equatable {
 
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
-	/// Re-composes and re-seals the bare §A.1 establishment vector — this
-	/// session's own `currentStaple` (still the plaintext `APQWelcome_A`
-	/// pre-Group_B-join, header-encryption.md 404-409) plus the initiator's
-	/// classical return key package — under a FRESH HPKE ephemeral every
-	/// call (wire-format.md: re-send unlinkability — same plaintext,
-	/// distinct outer bytes each send). `initialTheirKP` going `nil` means
-	/// there is nothing left to (re-)send: the initiator has already joined
-	/// Group_B (`joinGroupBIfNeeded` clears it), or this is a responder
-	/// session, which never retains one.
-	public func pendingOutbound() throws -> Data {
+	/// Attach (or replace) the host's establishment-self-sufficient app
+	/// payload — protocol-flows.md's "one envelope, two shapes (either/or)":
+	/// once set, every later `composeInitialEnvelope` call (`pendingOutbound()`
+	/// and, from the pre-join send path, `encrypt`) seals the payload-only
+	/// shape instead of the bare `welcome`/`returnKeyPackage` sections. The
+	/// engine cannot verify the payload actually carries the welcome pair,
+	/// the classical return key package and `H(KP′)` — that is the host's
+	/// own responsibility (protocol-flows.md:363).
+	///
+	/// Guards, in order: `payload` non-empty (else `.emptySection`); then
+	/// `initiated`, `recvGroup == nil`, `initialTheirKP != nil` and
+	/// `currentStaple.first == Frames.apqWelcomeTag` (else
+	/// `.sessionNotReady`, Rust parity — `set_initial_field`).
+	///
+	/// Doc rule: persist the returned update before transmitting anything
+	/// built from it — a session captured before this call restores as a
+	/// bare-shape replier (Rust mod.rs:2048-2051, same rule).
+	public mutating func setInitialAppPayload(_ payload: Data) throws -> StateUpdate {
+		guard !payload.isEmpty else { throw TwoMLSError.emptySection }
+		guard initiated, recvGroup == nil, initialTheirKP != nil,
+			currentStaple.first == Frames.apqWelcomeTag
+		else {
+			throw TwoMLSError.sessionNotReady
+		}
+		initialAppPayload = payload
+		advanceStateSeq()
+		// The frame-content durability gate: a later pre-join send built
+		// around this payload gates on THIS update's durability, same as a
+		// fresh staple (`markStapleInstalled`'s own doc).
+		markStapleInstalled()
+		return try stateUpdate(kind: .core)
+	}
+
+	/// The shared §A.1 composer: `pendingOutbound()` and (from the pre-join
+	/// send path) `encrypt` both build their envelope here. Either/or per
+	/// protocol-flows.md:399-405 — a payload set by `setInitialAppPayload`
+	/// (or carried by migration) seals ONLY `appPayload`/`stapled`; else
+	/// today's bare `welcome`/`returnKeyPackage` sections, plus `stapled`.
+	/// A fresh HPKE ephemeral every call (wire-format.md: re-send
+	/// unlinkability — same plaintext, distinct outer bytes each send).
+	///
+	/// Guards: `initialTheirKP` (else `.noPendingEstablishmentEnvelope`,
+	/// `pendingOutbound()`'s existing error) and
+	/// `currentStaple.first == Frames.apqWelcomeTag` (else `.sessionNotReady`
+	/// — unreachable pre-join in practice, defense only).
+	func composeInitialEnvelope(stapled: Data?) throws -> Data {
 		guard let theirKP = initialTheirKP else {
 			throw TwoMLSError.noPendingEstablishmentEnvelope
+		}
+		guard currentStaple.first == Frames.apqWelcomeTag else {
+			throw TwoMLSError.sessionNotReady
+		}
+		if let payload = initialAppPayload {
+			return try EstablishmentEnvelope.seal(
+				to: theirKP, appPayload: payload, welcome: nil,
+				returnKeyPackage: nil,
+				stapledMessage: stapled, pqProvider: pqProvider)
 		}
 		return try EstablishmentEnvelope.seal(
 			to: theirKP, appPayload: nil, welcome: currentStaple,
 			returnKeyPackage: try EstablishmentMessages.encodeKeyPackage(
 				identity.keyPackage.classical),
-			stapledMessage: nil, pqProvider: pqProvider)
+			stapledMessage: stapled, pqProvider: pqProvider)
+	}
+
+	/// Re-composes and re-seals the §A.1 establishment vector — either the
+	/// payload shape (once `setInitialAppPayload` has been called, or a
+	/// migrated pre-join initiator carried one) or the bare shape: this
+	/// session's own `currentStaple` (still the plaintext `APQWelcome_A`
+	/// pre-Group_B-join, header-encryption.md 404-409) plus the initiator's
+	/// classical return key package. `initialTheirKP` going `nil` means
+	/// there is nothing left to (re-)send: the initiator has already joined
+	/// Group_B (`joinGroupBIfNeeded` clears it), or this is a responder
+	/// session, which never retains one.
+	public func pendingOutbound() throws -> Data {
+		try composeInitialEnvelope(stapled: nil)
 	}
 
 	/// The §A.3 parallel pre-delivery: the round `initiate` registered,

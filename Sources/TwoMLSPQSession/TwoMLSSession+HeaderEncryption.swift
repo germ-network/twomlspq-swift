@@ -155,9 +155,11 @@ extension TwoMLSSession {
 	/// contract-26 handoff-blob minting binds `sha256` over, so a RESTORED
 	/// owed-but-not-installed Bob (who has no `EstablishResult.welcome` any
 	/// more) can still mint the envelope at all. An initiator's own
-	/// `currentStaple` happens to be the same welcome shape pre-join, but
-	/// this accessor has no initiator use — nothing on that side ever signs
-	/// over it.
+	/// `currentStaple` happens to be the same welcome shape pre-join —
+	/// unlike the acceptor's `0x0B` handoff, an initiator's app payload is
+	/// never signed over `initialWelcome()`'s bytes directly by the engine;
+	/// a value host composing the payload shape (`setInitialAppPayload`)
+	/// reads this to fold the welcome into what it signs.
 	public func initialWelcome() -> Data? {
 		currentStaple.first == Frames.apqWelcomeTag ? currentStaple : nil
 	}
