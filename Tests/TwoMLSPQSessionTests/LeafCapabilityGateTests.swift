@@ -596,7 +596,8 @@ final class LeafCapabilityGateTests: XCTestCase {
 			guard let welcome = sent.welcome else {
 				throw MLS.Combiner.Error.missingWelcome
 			}
-			return Frames.encodeAPQWelcome(t: try welcome.mlsEncoded(), pq: Data())
+			return Frames.encodeAPQWelcome(
+				t: try EstablishmentMessages.encodeWelcome(welcome), pq: Data())
 		}
 	}
 

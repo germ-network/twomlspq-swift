@@ -214,7 +214,8 @@ final class SessionArchiveTests: XCTestCase {
 		XCTAssertEqual(frame.welcome, initiated.welcome)
 		XCTAssertEqual(
 			frame.returnKeyPackage,
-			try initiated.session.identity.keyPackage.classical.mlsEncoded())
+			try EstablishmentMessages.encodeKeyPackage(
+				initiated.session.identity.keyPackage.classical))
 	}
 
 	/// The headline PR3c proof: a session archived mid-establishment — an
@@ -259,8 +260,8 @@ final class SessionArchiveTests: XCTestCase {
 		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
 			return XCTFail("expected .establishment")
 		}
-		let returnKP = try MLS.RFC9420.KeyPackage(
-			mlsEncoded: try XCTUnwrap(frame.returnKeyPackage))
+		let returnKP = try EstablishmentMessages.decodeKeyPackage(
+			try XCTUnwrap(frame.returnKeyPackage))
 		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
 		let received = try invitation.receive(
 			welcome: try XCTUnwrap(frame.welcome), theirClassicalKeyPackage: returnKP,

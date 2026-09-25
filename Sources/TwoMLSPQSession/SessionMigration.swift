@@ -368,9 +368,10 @@ public struct MigratedSession: Sendable {
 	/// `nil` falls back to the temporary owner-keyed conversion
 	/// (`convertDeployedKeys`), deleted once every migrator supplies this.
 	public var leafKeys: MigratedLeafKeys?
-	/// Rule 9: non-empty only for a pre-join initiator. Stored and
-	/// validated only — there is no host accessor; a later step's envelope/
-	/// pre-establishment change consumes it through `pendingOutbound()`.
+	/// Rule 9: non-empty only for a pre-join initiator that still retains a
+	/// seal target (`initialTheirKP`). Drains alongside `initialTheirKP` the
+	/// moment the initiator joins — a payload with nothing left to re-seal
+	/// to is dead state.
 	public var initialAppPayload: Data?
 
 	public init(
@@ -872,10 +873,13 @@ public enum SessionMigration {
 				count: UInt32(window.offers.count))
 		}
 
-		// Rule 9: `initialAppPayload` is non-empty and accepted only for a
-		// pre-join initiator.
+		// Rule 9: `initialAppPayload` is non-empty, accepted only for a
+		// pre-join initiator, and only while a seal target
+		// (`initialTheirKP`) remains to carry it — a payload with nothing
+		// left to re-seal to is dead state.
 		if let initialAppPayload = parts.initialAppPayload {
-			guard !initialAppPayload.isEmpty, parts.initiated, parts.recvGroup == nil
+			guard !initialAppPayload.isEmpty, parts.initiated, parts.recvGroup == nil,
+				parts.initialTheirKP != nil
 			else {
 				throw TwoMLSError.archiveInvalid
 			}

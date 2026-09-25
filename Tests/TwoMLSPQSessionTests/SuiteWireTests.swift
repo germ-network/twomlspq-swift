@@ -22,13 +22,25 @@ final class SuiteWireTests: XCTestCase {
 			try SessionTestSupport.established()
 
 		// RFC 9420 Welcome.cipher_suite: a plain uint16, big-endian on the wire.
-		let (tBytesA, _) = try Frames.decodeAPQWelcome(welcomeA)
-		XCTAssertEqual(tBytesA.prefix(2), Data([0x00, 0x03]))
-		XCTAssertEqual(try MLS.RFC9420.Welcome(mlsEncoded: tBytesA).cipherSuite.id, 0x0003)
+		let (tBytesA, pqBytesA) = try Frames.decodeAPQWelcome(welcomeA)
+		XCTAssertEqual(tBytesA.prefix(6), Data([0x00, 0x01, 0x00, 0x03, 0x00, 0x03]))
+		XCTAssertEqual(
+			try EstablishmentMessages.decodeWelcome(tBytesA).cipherSuite.id, 0x0003)
+
+		// The pq half pins its own prefix too — decoded via `MLS.RFC9420.Message`
+		// directly rather than the helper, so this pin cannot pass on a bare
+		// (unwrapped) pq half that the helper alone would still refuse.
+		XCTAssertEqual(pqBytesA.prefix(6), Data([0x00, 0x01, 0x00, 0x03, 0xFD, 0xEA]))
+		guard case .welcome(let pqWelcomeA) = try MLS.RFC9420.Message(mlsEncoded: pqBytesA)
+		else {
+			return XCTFail("expected the pq half to decode as a welcome message")
+		}
+		XCTAssertEqual(pqWelcomeA.cipherSuite.id, 0xFDEA)
 
 		let (tBytesB, _) = try Frames.decodeAPQWelcome(welcomeB)
-		XCTAssertEqual(tBytesB.prefix(2), Data([0x00, 0x03]))
-		XCTAssertEqual(try MLS.RFC9420.Welcome(mlsEncoded: tBytesB).cipherSuite.id, 0x0003)
+		XCTAssertEqual(tBytesB.prefix(6), Data([0x00, 0x01, 0x00, 0x03, 0x00, 0x03]))
+		XCTAssertEqual(
+			try EstablishmentMessages.decodeWelcome(tBytesB).cipherSuite.id, 0x0003)
 
 		// Live group contexts: Group_A (both halves, both sides) and Group_B
 		// (classical-only, Bob's founder copy).

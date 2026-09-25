@@ -17,6 +17,8 @@ import TwoMLSPQCrypto
 @available(iOS 26, macOS 26, *)
 public struct EstablishResult: Sendable {
 	public let session: TwoMLSSession
+	/// Each half of the `0x01` APQ welcome is an RFC 9420
+	/// `MLSMessage`-wrapped `Welcome`.
 	public let welcome: Data
 	/// The baseline `StateUpdate` (always `.checkpoint`) — there is no
 	/// sink/`installSink`; this return IS the first thing the app saves.
@@ -24,7 +26,8 @@ public struct EstablishResult: Sendable {
 	/// The session's own classical KeyPackage — the establishment product an
 	/// initiator/replier puts into the welcome's keyMaterial (the Rust
 	/// `PQClient.reply`'s `myKeyPackage` 4th value; the invitation path's
-	/// `InitialFrame.returnKeyPackage` is the same idea).
+	/// `InitialFrame.returnKeyPackage` is the same idea). Its wire and signed
+	/// form is its RFC 9420 `MLSMessage` encoding.
 	public let returnKeyPackage: MLS.RFC9420.KeyPackage
 }
 
@@ -206,6 +209,12 @@ public struct GroupEpochs: Sendable, Hashable {
 public struct EncryptResult: Sendable {
 	public let frame: Data
 	public let update: StateUpdate
+	/// `true` when `frame` is a raw HPKE §A.1 envelope for the invitation
+	/// channel (a pre-join send); `false` when it is a header-sealed frame
+	/// for the rendezvous channel — misrouting either fails silently, so a
+	/// host branches on this rather than inferring the channel from
+	/// `isEstablished` alone.
+	public let isEstablishmentEnvelope: Bool
 }
 
 /// Slice 11 (contract-26): the paused `0x0B` establishment handoff a
@@ -217,8 +226,26 @@ public struct PendingEstablishment: Sendable, Equatable {
 	public let welcome: Data
 }
 
+/// The book §A.1 pre-establishment app message a `0x09` staple decrypts to
+/// (`processPreEstablishmentApp`) — an application message the initiator
+/// sent before joining the acceptor's group, so it carries no staple and no
+/// staged proposal (unlike `DecryptResult`, which always pairs an app
+/// message with one).
+public struct PreEstablishmentMessage: Sendable {
+	public let applicationMessage: Data
+	public let sender: MLS.LeafIndex
+	public let epoch: UInt64
+	/// The sender's own carried `authenticated_data` — `H(currentStaple)`
+	/// on the sender's side (`sha256` for the deployed classical suite).
+	/// Round-trips as a value; surfaced, not enforced — the book is
+	/// silent and the ciphertext is already bound to Group_A.
+	public let authenticatedData: Data
+	/// This call's own `StateUpdate` (`.core` — no PQ tree moves here).
+	public let update: StateUpdate
+}
+
 /// The result of `processIncoming`/`processIncomingApproved` (slice 11):
-/// the compiler-forced-unmissable 4-case sum, Rust lib.rs:586-92.
+/// the compiler-forced-unmissable 5-case sum, Rust lib.rs:586-92.
 /// `.decrypted` is the everyday `0x03` app frame (unchanged join/commit
 /// hints ride `DecryptResult` as before); `.joined` is a STANDALONE
 /// welcome's FIRST join (a bare `0x01`, or an approved standalone `0x0B`) —
@@ -227,12 +254,15 @@ public struct PendingEstablishment: Sendable, Equatable {
 /// state change at all; `.ignored` is idempotent welcome RE-DELIVERY only,
 /// never a first join (a first join is always state-advancing, so it is
 /// always `.joined`/`.decrypted` — never this case, else a restore would
-/// lose it).
+/// lose it); `.preEstablishment` is a `0x09` pre-establishment app message
+/// (book §A.1) — an app message with no offer, decoded on the acceptor
+/// before the initiator has joined.
 public enum IncomingResult: Sendable {
 	case decrypted(DecryptResult)
 	case joined(newSender: Data?, update: StateUpdate)
 	case pendingEstablishment(PendingEstablishment)
 	case ignored
+	case preEstablishment(PreEstablishmentMessage)
 }
 
 /// The shared result shape for every side-band round-starter/responder that
@@ -592,10 +622,12 @@ public struct TwoMLSSession: Sendable {
 	/// its internal `pq_wedged: Option<PqWedge>` from its public
 	/// `pq_side_band_wedged() -> bool`.
 	var pqWedge: MigratedPQWedge? = nil
-	/// The migrated deployed engine's carried pre-establishment app
-	/// payload, when supplied. Stored and validated only (rule 9) — no host
-	/// accessor; a later step's envelope/pre-establishment change consumes
-	/// it through `pendingOutbound()`.
+	/// The host's establishment-self-sufficient app payload, set via
+	/// `setInitialAppPayload` or carried by migration (rule 9: non-empty
+	/// only for a pre-join initiator that still retains a seal target,
+	/// `initialTheirKP`). Consumed by `composeInitialEnvelope`, both from
+	/// `pendingOutbound()` and from a pre-join `encrypt`. Drains alongside
+	/// `initialTheirKP` the moment the initiator joins.
 	var initialAppPayload: Data? = nil
 	/// The migrated deployed engine's set of groups this session presently
 	/// has no signing custody over — a read-only query,
@@ -610,13 +642,17 @@ public struct TwoMLSSession: Sendable {
 	/// discharge or classical messaging.
 	public var pqSideBandWedged: Bool { pqWedge != nil }
 
-	/// Read-only query: true when both classical roles
-	/// currently have signing custody and the session is established — a
-	/// recv-classical no-custody session cannot even mint its own
-	/// `Upd(self)`.
+	/// Read-only query: true when both classical roles currently have
+	/// signing custody and the session is established — a recv-classical
+	/// no-custody session cannot even mint its own `Upd(self)` — OR this is
+	/// a pre-join initiator with send-classical custody, the same predicate
+	/// `prepareToEncrypt`/`encrypt` branch pre-join on. Widened so a host
+	/// gating on this query reaches the pre-join send path at all.
 	public var canSend: Bool {
-		isEstablished && !noCustody.contains(.sendClassical)
-			&& !noCustody.contains(.recvClassical)
+		(isEstablished && !noCustody.contains(.sendClassical)
+			&& !noCustody.contains(.recvClassical))
+			|| (recvGroup == nil && initiated && initialTheirKP != nil
+				&& !noCustody.contains(.sendClassical))
 	}
 
 	/// The id of this session's own-offer window record, if

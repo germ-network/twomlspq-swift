@@ -209,6 +209,8 @@ final class LifecycleE2ETests: XCTestCase {
 						line: line)
 				case .joined(_, let u):
 					persist(u)
+				case .preEstablishment(let m):
+					persist(m.update)
 				case .pendingEstablishment, .ignored:
 					break
 				}

@@ -132,7 +132,8 @@ extension TwoMLSSession {
 			appBinding: appBinding, codepoints: codepoints)
 
 		let apqWelcomeA = Frames.encodeAPQWelcome(
-			t: try welcome.tWelcome.mlsEncoded(), pq: try welcome.pqWelcome.mlsEncoded()
+			t: try EstablishmentMessages.encodeWelcome(welcome.tWelcome),
+			pq: try EstablishmentMessages.encodeWelcome(welcome.pqWelcome)
 		)
 
 		// KP′ IS `identity`'s own PQ half now (Group_A's PQ leaf is the
@@ -339,8 +340,8 @@ extension TwoMLSSession {
 		}
 		let (tBytes, pqBytes) = try Frames.decodeAPQWelcome(welcome)
 		let apqWelcome = MLS.Combiner.APQWelcome(
-			tWelcome: try MLS.RFC9420.Welcome(mlsEncoded: tBytes),
-			pqWelcome: try MLS.RFC9420.Welcome(mlsEncoded: pqBytes))
+			tWelcome: try EstablishmentMessages.decodeWelcome(tBytes),
+			pqWelcome: try EstablishmentMessages.decodeWelcome(pqBytes))
 
 		var groupA = try APQGroup.joinFull(
 			welcome: apqWelcome,
@@ -438,7 +439,7 @@ extension TwoMLSSession {
 		try TwoPartyRules.ensureTwoParty(groupB.classical)
 
 		let apqWelcomeB = Frames.encodeAPQWelcome(
-			t: try classicalWelcomeB.mlsEncoded(), pq: Data())
+			t: try EstablishmentMessages.encodeWelcome(classicalWelcomeB), pq: Data())
 
 		// Both of `identity`'s init secrets are now spent: `classicalJoin-
 		// Credentials`/`pqJoinCredentials` already joined `groupA` above (the

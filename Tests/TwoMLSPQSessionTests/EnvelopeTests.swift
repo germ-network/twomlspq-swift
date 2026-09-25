@@ -55,8 +55,9 @@ final class EnvelopeTests: XCTestCase {
 		let returnKPBytes = try XCTUnwrap(frame.returnKeyPackage)
 		XCTAssertEqual(
 			returnKPBytes,
-			try initiated.session.identity.keyPackage.classical.mlsEncoded())
-		let returnKP = try MLS.RFC9420.KeyPackage(mlsEncoded: returnKPBytes)
+			try EstablishmentMessages.encodeKeyPackage(
+				initiated.session.identity.keyPackage.classical))
+		let returnKP = try EstablishmentMessages.decodeKeyPackage(returnKPBytes)
 
 		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
 		let received = try invitation.receive(
@@ -202,8 +203,8 @@ final class EnvelopeTests: XCTestCase {
 	) throws -> Data {
 		let plaintext = EstablishmentEnvelope.encodePlaintext(
 			appPayload: nil, welcome: initiated.welcome,
-			returnKeyPackage: try initiated.session.identity.keyPackage.classical
-				.mlsEncoded(),
+			returnKeyPackage: try EstablishmentMessages.encodeKeyPackage(
+				initiated.session.identity.keyPackage.classical),
 			stapledMessage: nil)
 		let info = try basicIdentifier(theirKP.pq.leafNode.credential)
 		let (enc, ciphertext) = try SessionTestSupport.pqProvider.hpkeSeal(

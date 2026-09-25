@@ -283,7 +283,7 @@ extension TwoMLSSession {
 		switch try processIncoming(inbound) {
 		case .decrypted(let result):
 			return result
-		case .joined, .pendingEstablishment, .ignored:
+		case .joined, .pendingEstablishment, .ignored, .preEstablishment:
 			XCTFail(
 				"expected .decrypted, got a non-decrypted IncomingResult",
 				file: file,

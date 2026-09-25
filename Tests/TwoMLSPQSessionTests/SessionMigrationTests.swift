@@ -1136,8 +1136,8 @@ final class SessionMigrationTests: XCTestCase {
 		else {
 			return XCTFail("expected .establishment")
 		}
-		let returnKP = try MLS.RFC9420.KeyPackage(
-			mlsEncoded: try XCTUnwrap(frame.returnKeyPackage))
+		let returnKP = try EstablishmentMessages.decodeKeyPackage(
+			try XCTUnwrap(frame.returnKeyPackage))
 		let received = try invitation.receive(
 			welcome: try XCTUnwrap(frame.welcome),
 			theirClassicalKeyPackage: returnKP,

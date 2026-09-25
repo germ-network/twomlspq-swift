@@ -61,6 +61,13 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// the case its tag promised (`.keyPackage` for `0x13`, `.welcome` for
 	/// `0x15`).
 	case malformedSideBandMessage
+	/// A §A.1 Welcome/KeyPackage slot (the `0x01` welcome halves, the return
+	/// key package) held bytes that did not decode as the RFC 9420
+	/// `MLSMessage` wrapper its slot promised, or decoded to the wrong case —
+	/// including a bare (unwrapped) struct, since every deployed peer emits
+	/// the wrapped form. Folds swift-mls's `MLS.CodecError`/
+	/// `MLS.RFC9420.WireError` at these decode sites.
+	case malformedEstablishmentMessage
 
 	// MARK: §A.3 PQ bootstrap
 
