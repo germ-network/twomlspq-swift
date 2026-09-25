@@ -4,8 +4,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -19,8 +19,7 @@ import XCTest
 /// while the party's canonical head has moved on elsewhere, or a
 /// fast-forward to a non-head history element) must never reach `commit`
 /// at all, or it would incorrectly throw `.credentialRollback`.
-@available(iOS 26, macOS 26, *)
-final class CanonicalizeKnownCredentialTests: XCTestCase {
+@Suite struct CanonicalizeKnownCredentialTests {
 	/// Hand-builds a SOLO `includePath: true` commit on `committer`'s OWN
 	/// `sendGroup.classical` moving the committer's own leaf's presentation
 	/// to `(newID, newKey)` — no proposals, no license needed (unlike the
@@ -29,6 +28,7 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 	/// events could otherwise produce this exact commit shape). Applies the
 	/// commit to the committer's OWN group (so its later frames stay
 	/// consistent) and returns the wire bytes.
+	@available(iOS 26, macOS 26, *)
 	private func handBuildSoloClassicalMove(
 		committer: inout TwoMLSSession, newID: Data,
 		newKey: (signingKey: MLS.SignatureSecretKey, signatureKey: MLS.SignaturePublicKey)
@@ -67,6 +67,7 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 	/// (`TwoMLSSession+Messaging.swift`'s `handleStaple`), skipping the
 	/// surrounding frame/app-section machinery this test has no need to
 	/// forge. This is what exercises `canonicalize`.
+	@available(iOS 26, macOS 26, *)
 	private func deliver(_ commitBytes: Data, to alice: inout TwoMLSSession) throws
 		-> StapleApplyResult
 	{
@@ -79,6 +80,7 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 	/// bob's actual classical leaf (still presenting `id0` for real), so a
 	/// hand-built move off `id0` is a genuine fast-forward/refresh over
 	/// real, book-shaped history.
+	@available(iOS 26, macOS 26, *)
 	private func seededFixture() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, id0: Data, s1: Data, s2: Data
 	) {
@@ -99,7 +101,8 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 	/// stays out of the caller's view — `history`/`current` unchanged).
 	/// Mutation: reverting the guard (calling `commit` unconditionally)
 	/// makes this throw `.credentialRollback` instead.
-	func testSameIDKeyRefreshWhileCurrentIsAheadIsAcceptedAndCanonicalizesNothing() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func sameIDKeyRefreshWhileCurrentIsAheadIsAcceptedAndCanonicalizesNothing() throws {
 		var fixture = try seededFixture()
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let commitBytes = try handBuildSoloClassicalMove(
@@ -108,14 +111,14 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 
 		let historyBefore = fixture.alice.auth.theirs.history
 		let result = try deliver(commitBytes, to: &fixture.alice)
-		XCTAssertTrue(result.applied)
+		#expect(result.applied)
 		// D3: a same-id move (a key refresh only) surfaces no `newSender` —
 		// only an id change does.
-		XCTAssertNil(result.newSender)
-		XCTAssertEqual(
-			fixture.alice.auth.theirs.history, historyBefore,
+		#expect(result.newSender == nil)
+		#expect(
+			fixture.alice.auth.theirs.history == historyBefore,
 			"nothing new was canonicalized")
-		XCTAssertEqual(fixture.alice.auth.theirs.current, fixture.s2)
+		#expect(fixture.alice.auth.theirs.current == fixture.s2)
 	}
 
 	/// (b) A fast-forward from `id0` straight to `s1` — an already-
@@ -125,7 +128,8 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 	/// guard makes this throw `.credentialRollback` too (the pre-fix bug:
 	/// `commit` sees `s1 ∈ history`, `s1 != current`, and treats a
 	/// legitimate partial catch-up as a rollback).
-	func testFastForwardToANonHeadHistoryIDIsAcceptedAndCanonicalizesNothing() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func fastForwardToANonHeadHistoryIDIsAcceptedAndCanonicalizesNothing() throws {
 		var fixture = try seededFixture()
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let commitBytes = try handBuildSoloClassicalMove(
@@ -134,12 +138,12 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 
 		let historyBefore = fixture.alice.auth.theirs.history
 		let result = try deliver(commitBytes, to: &fixture.alice)
-		XCTAssertTrue(result.applied)
-		XCTAssertEqual(result.newSender, fixture.s1)
-		XCTAssertEqual(
-			fixture.alice.auth.theirs.history, historyBefore,
+		#expect(result.applied)
+		#expect(result.newSender == fixture.s1)
+		#expect(
+			fixture.alice.auth.theirs.history == historyBefore,
 			"nothing new was canonicalized")
-		XCTAssertEqual(fixture.alice.auth.theirs.current, fixture.s2)
+		#expect(fixture.alice.auth.theirs.current == fixture.s2)
 	}
 
 	/// Negative control: a move to an id `theirs` has NEVER heard of (not
@@ -148,7 +152,8 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 	/// gets a chance to skip anything, so the guard added here never masks
 	/// a genuine rollback/forgery. Proves the guard is exactly "already
 	/// known," not "anything goes."
-	func testMoveToAnUnknownIDIsStillRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func moveToAnUnknownIDIsStillRejected() throws {
 		var fixture = try seededFixture()
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let unknownID = Data("canon-never-authorized-\(UUID())".utf8)
@@ -156,10 +161,10 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 			committer: &fixture.bob, newID: unknownID,
 			newKey: (freshSigningKey, freshSignatureKey))
 
-		XCTAssertThrowsError(try deliver(commitBytes, to: &fixture.alice)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		#expect(throws: TwoMLSError.invalidSuccession) {
+			try deliver(commitBytes, to: &fixture.alice)
 		}
-		XCTAssertFalse(fixture.alice.auth.theirs.history.contains(unknownID))
+		#expect(!fixture.alice.auth.theirs.history.contains(unknownID))
 	}
 
 	// MARK: - (c) A pinned, history-evicted id
@@ -173,7 +178,8 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 	/// Accepted, canonicalizes nothing. Mutation: dropping the `pinned`
 	/// clause of the `theirs` guard makes this throw `.credentialRollback`
 	/// (id0 absent from `history`, and the guard would then see only that).
-	func testSameIDKeyRefreshOnAPinnedEvictedIDIsAcceptedAndCanonicalizesNothing() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func sameIDKeyRefreshOnAPinnedEvictedIDIsAcceptedAndCanonicalizesNothing() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged(
 			alice: "canon-pin-alice-\(UUID())", bob: "canon-pin-bob-\(UUID())")
 		let id0 = bob.identity.clientID
@@ -182,9 +188,9 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 			try alice.auth.theirs.commit(stepID)
 			try bob.auth.mine.commit(stepID)
 		}
-		XCTAssertFalse(alice.auth.theirs.history.contains(id0))
+		#expect(!alice.auth.theirs.history.contains(id0))
 		_ = try alice.prepareToEncrypt()
-		XCTAssertTrue(
+		#expect(
 			alice.auth.theirs.pinned.contains(id0),
 			"bob's live PQ leaves still present id0, untouched")
 
@@ -194,11 +200,11 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 
 		let historyBefore = alice.auth.theirs.history
 		let result = try deliver(commitBytes, to: &alice)
-		XCTAssertTrue(result.applied)
+		#expect(result.applied)
 		// D3: a same-id move surfaces no `newSender`.
-		XCTAssertNil(result.newSender)
-		XCTAssertEqual(
-			alice.auth.theirs.history, historyBefore, "nothing new was canonicalized")
+		#expect(result.newSender == nil)
+		#expect(
+			alice.auth.theirs.history == historyBefore, "nothing new was canonicalized")
 	}
 
 	/// Hand-builds a validly-framed Update proposal for `mover`'s own leaf
@@ -217,6 +223,7 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 	/// Standing in for whatever real approval/fold sequence could
 	/// otherwise produce this exact commit shape — same rationale as
 	/// `handBuildSoloClassicalMove` above.
+	@available(iOS 26, macOS 26, *)
 	private func handBuildFoldedOwnLeafMove(
 		committer: inout TwoMLSSession, mover: inout TwoMLSSession, newID: Data,
 		newKey: (signingKey: MLS.SignatureSecretKey, signatureKey: MLS.SignaturePublicKey)
@@ -285,7 +292,8 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 	/// commit bob folds and she then applies. Accepted, canonicalizes
 	/// nothing. Mutation: dropping the `pinned` clause of the `mine` guard
 	/// makes this throw `.credentialRollback`.
-	func testOwnSameIDKeyRefreshOnAPinnedEvictedIDIsAcceptedAndCanonicalizesNothing() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func ownSameIDKeyRefreshOnAPinnedEvictedIDIsAcceptedAndCanonicalizesNothing() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged(
 			alice: "canon-pin-mine-alice-\(UUID())", bob: "canon-pin-mine-bob-\(UUID())"
 		)
@@ -295,7 +303,7 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 			try alice.auth.mine.commit(stepID)
 			try bob.auth.theirs.commit(stepID)
 		}
-		XCTAssertFalse(alice.auth.mine.history.contains(id0))
+		#expect(!alice.auth.mine.history.contains(id0))
 		// Pin directly rather than through a routine `prepareToEncrypt()`
 		// round (as the `theirs` mirror above does): alice's own recv-
 		// classical leaf still genuinely presents id0 while
@@ -306,7 +314,7 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 		// `ReciprocalCatchUpConformanceTests.testRule4Pin`; this test's
 		// job is only the guard.
 		alice.auth.mine.pin(id0)
-		XCTAssertTrue(alice.auth.mine.pinned.contains(id0))
+		#expect(alice.auth.mine.pinned.contains(id0))
 
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let commitBytes = try handBuildFoldedOwnLeafMove(
@@ -315,10 +323,10 @@ final class CanonicalizeKnownCredentialTests: XCTestCase {
 
 		let historyBefore = alice.auth.mine.history
 		let result = try alice.applyFoldCommit(commitBytes)
-		XCTAssertTrue(result.applied)
+		#expect(result.applied)
 		// D3: a same-id move surfaces no `ownCredentialCanonicalized`.
-		XCTAssertFalse(result.ownCredentialCanonicalized)
-		XCTAssertEqual(
-			alice.auth.mine.history, historyBefore, "nothing new was canonicalized")
+		#expect(!result.ownCredentialCanonicalized)
+		#expect(
+			alice.auth.mine.history == historyBefore, "nothing new was canonicalized")
 	}
 }

@@ -4,8 +4,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -17,12 +17,12 @@ import XCTest
 /// with the turn on Bob — so round 1 here is **Bob-initiated**, re-keying
 /// Group_A.pq (`alice.sendGroup.pq` / `bob.recvGroup.pq`), the group Alice
 /// founded — not Group_B.pq, which A.3's bind already advanced.
-@available(iOS 26, macOS 26, *)
-final class RekeyTests: XCTestCase {
+@Suite struct RekeyTests {
 	/// Drive one full mechanical §A.5 round to completion: `initiator`
 	/// proposes, `committer` folds + commits, `initiator` applies + owes the
 	/// bind, and the ack rides `initiator`'s next classical commit —
 	/// mirroring `RatchetTests`'s own bob-initiated round.
+	@available(iOS 26, macOS 26, *)
 	@discardableResult
 	private func driveMechanicalRekeyRound(
 		initiator: inout TwoMLSSession, committer: inout TwoMLSSession
@@ -45,49 +45,52 @@ final class RekeyTests: XCTestCase {
 	/// at the same new epoch on both sides and passing the turn back to
 	/// Alice. Also proves the round-trip: an app message still works each
 	/// direction afterward.
-	func testMechanicalRekeyRoundAdvancesRekeyedGroupOnBothSidesAndReturnsTurn() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mechanicalRekeyRoundAdvancesRekeyedGroupOnBothSidesAndReturnsTurn() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
-		XCTAssertTrue(bob.myPQTurn)
-		XCTAssertFalse(alice.myPQTurn)
+		#expect(bob.myPQTurn)
+		#expect(!alice.myPQTurn)
 
-		let rekeyedEpochBefore = try XCTUnwrap(alice.sendGroup?.pq?.context.epoch)
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, rekeyedEpochBefore)
+		let rekeyedEpochBefore = try #require(alice.sendGroup?.pq?.context.epoch)
+		#expect(bob.recvGroup?.pq?.context.epoch == rekeyedEpochBefore)
 
 		// 1: Bob (initiator) proposes Upd′ into his recv mirror.
 		let updFrame = try bob.pqRekeyBegin().frame
 		// Opened via `alice` (the recipient).
-		XCTAssertEqual(alice.openOrRaw(updFrame).first, Frames.pqRekeyUpdTag)
+		#expect(alice.openOrRaw(updFrame).first == Frames.pqRekeyUpdTag)
 		guard case .rekeyInitiated = bob.pqInflight else {
-			XCTFail("expected bob to hold .rekeyInitiated after pqRekeyBegin")
+			Issue.record("expected bob to hold .rekeyInitiated after pqRekeyBegin")
 			return
 		}
 		// `pqPendingOutbound()` re-seals under a fresh nonce every call, so
 		// compare the OPENED plaintexts, not the sealed bytes.
-		XCTAssertEqual(alice.openOrRaw(bob.pqPendingOutbound()!), alice.openOrRaw(updFrame))
+		#expect(
+			alice.openOrRaw(try #require(bob.pqPendingOutbound()))
+				== alice.openOrRaw(updFrame))
 
 		// 2: Alice (committer) folds it into a Commit′ on her own send-PQ —
 		// the group actually being re-keyed.
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
 		// Opened via `bob` (the recipient).
-		XCTAssertEqual(bob.openOrRaw(commitFrame).first, Frames.pqRekeyCommitTag)
+		#expect(bob.openOrRaw(commitFrame).first == Frames.pqRekeyCommitTag)
 		guard case .rekeyResponded = alice.pqInflight else {
-			XCTFail("expected alice to hold .rekeyResponded after pqRekeyRespond")
+			Issue.record("expected alice to hold .rekeyResponded after pqRekeyRespond")
 			return
 		}
-		XCTAssertNil(alice.owedBind)
-		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, rekeyedEpochBefore + 1)
+		#expect(alice.owedBind == nil)
+		#expect(alice.sendGroup?.pq?.context.epoch == rekeyedEpochBefore + 1)
 
 		// 3: Bob applies the Commit′, exports `S` off the rekeyed mirror,
 		// and owes the classical bind.
 		_ = try bob.pqRekeyApply(commitFrame)
-		XCTAssertNotNil(bob.owedBind)
-		XCTAssertNil(bob.pqInflight)
-		XCTAssertNil(bob.pqPendingOutbound())
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, rekeyedEpochBefore + 1)
+		#expect(bob.owedBind != nil)
+		#expect(bob.pqInflight == nil)
+		#expect(bob.pqPendingOutbound() == nil)
+		#expect(bob.recvGroup?.pq?.context.epoch == rekeyedEpochBefore + 1)
 
 		// A bind is now owed: a further `pqRekeyBegin` must refuse.
-		XCTAssertThrowsError(try bob.pqRekeyBegin()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		#expect(throws: TwoMLSError.sessionNotReady) {
+			try bob.pqRekeyBegin()
 		}
 
 		// 4: Bob discharges (already licensed by Alice's earlier "bound"
@@ -95,31 +98,31 @@ final class RekeyTests: XCTestCase {
 		// `0x05` ack — re-exporting `S` off her OWN rekeyed send-PQ (the
 		// `.rekeyResponded` re-export arm).
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(boundFrame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
+		#expect(decrypted.applicationMessage == Data("bound".utf8))
 
-		XCTAssertTrue(alice.myPQTurn)
-		XCTAssertFalse(bob.myPQTurn)
-		XCTAssertNil(alice.pqInflight)
-		XCTAssertNil(alice.pqPendingOutbound())
-		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, rekeyedEpochBefore + 1)
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, rekeyedEpochBefore + 1)
-		XCTAssertEqual(
-			bob.sendGroup?.classical.context.epoch,
-			alice.recvGroup?.classical.context.epoch)
+		#expect(alice.myPQTurn)
+		#expect(!bob.myPQTurn)
+		#expect(alice.pqInflight == nil)
+		#expect(alice.pqPendingOutbound() == nil)
+		#expect(alice.sendGroup?.pq?.context.epoch == rekeyedEpochBefore + 1)
+		#expect(bob.recvGroup?.pq?.context.epoch == rekeyedEpochBefore + 1)
+		#expect(
+			bob.sendGroup?.classical.context.epoch
+				== alice.recvGroup?.classical.context.epoch)
 
 		// 5: round-trip app messages both directions still work post-rekey.
 		_ = try alice.prepareToEncrypt()
 		let aliceMsg = try alice.encrypt(Data("post-rekey-alice".utf8)).frame
 		let fromAlice = try bob.processIncomingDecrypted(aliceMsg)
-		XCTAssertEqual(fromAlice.applicationMessage, Data("post-rekey-alice".utf8))
+		#expect(fromAlice.applicationMessage == Data("post-rekey-alice".utf8))
 
 		_ = try bob.prepareToEncrypt()
 		let bobMsg = try bob.encrypt(Data("post-rekey-bob".utf8)).frame
 		let fromBob = try alice.processIncomingDecrypted(bobMsg)
-		XCTAssertEqual(fromBob.applicationMessage, Data("post-rekey-bob".utf8))
+		#expect(fromBob.applicationMessage == Data("post-rekey-bob".utf8))
 	}
 
 	// MARK: - Watermark lockstep (the A.5-specific correctness test)
@@ -138,13 +141,14 @@ final class RekeyTests: XCTestCase {
 	/// of skipping — is covered separately by
 	/// `testInjectRoundCompletesWithLockstepWatermarks` and
 	/// `testInjectConfigTamperedApplyThenGenuineRetrySucceeds`.
-	func testSecondRoundWithSwappedRolesSkipsAlreadyConsumedCrossInjection() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func secondRoundWithSwappedRolesSkipsAlreadyConsumedCrossInjection() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 
 		// Round 1: Bob initiates (re-keys Group_A.pq, alice's send-PQ).
-		XCTAssertTrue(try driveMechanicalRekeyRound(initiator: &bob, committer: &alice))
-		XCTAssertTrue(alice.myPQTurn)
-		XCTAssertFalse(bob.myPQTurn)
+		#expect(try driveMechanicalRekeyRound(initiator: &bob, committer: &alice))
+		#expect(alice.myPQTurn)
+		#expect(!bob.myPQTurn)
 
 		// Round 1's `owePQBind` (inside bob's `pqRekeyApply`) committed onto
 		// bob's OWN send-PQ (Group_B.pq), and bob's `pqRekeyApply` stamped
@@ -154,8 +158,8 @@ final class RekeyTests: XCTestCase {
 		// the same group) at that same new epoch.
 		let bobLastCrossInjectedAfterRound1 = bob.lastCrossInjectedPQ
 		let aliceLastSendPQExportedAfterRound1 = alice.lastSendPQExported
-		XCTAssertNotNil(bobLastCrossInjectedAfterRound1)
-		XCTAssertNotNil(aliceLastSendPQExportedAfterRound1)
+		#expect(bobLastCrossInjectedAfterRound1 != nil)
+		#expect(aliceLastSendPQExportedAfterRound1 != nil)
 
 		// Round 2: roles swapped — Alice initiates, re-keying Group_B.pq
 		// (bob's send-PQ). Bob (now committer) mirrors Group_A.pq as HIS
@@ -164,42 +168,43 @@ final class RekeyTests: XCTestCase {
 		// untouched since round 1. Neither watermark has moved, so both
 		// sides must skip re-exporting rather than throw
 		// `componentSecretConsumed` on the already-consumed leaf.
-		XCTAssertTrue(try driveMechanicalRekeyRound(initiator: &alice, committer: &bob))
+		#expect(try driveMechanicalRekeyRound(initiator: &alice, committer: &bob))
 
-		XCTAssertEqual(bob.lastCrossInjectedPQ, bobLastCrossInjectedAfterRound1)
-		XCTAssertEqual(alice.lastSendPQExported, aliceLastSendPQExportedAfterRound1)
+		#expect(bob.lastCrossInjectedPQ == bobLastCrossInjectedAfterRound1)
+		#expect(alice.lastSendPQExported == aliceLastSendPQExportedAfterRound1)
 
 		// The round still completed via the updatePath alone: turn flips
 		// back, and app traffic round-trips.
-		XCTAssertTrue(bob.myPQTurn)
-		XCTAssertFalse(alice.myPQTurn)
+		#expect(bob.myPQTurn)
+		#expect(!alice.myPQTurn)
 		_ = try bob.prepareToEncrypt()
 		let msg = try bob.encrypt(Data("post-round-2".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(msg)
-		XCTAssertEqual(decrypted.applicationMessage, Data("post-round-2".utf8))
+		#expect(decrypted.applicationMessage == Data("post-round-2".utf8))
 	}
 
 	// MARK: - `pqRekeyBegin` guards
 
-	func testRekeyBeginGuardsRejectWrongState() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rekeyBeginGuardsRejectWrongState() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 
 		// Not my turn: alice must not stage an Upd′.
-		XCTAssertThrowsError(try alice.pqRekeyBegin()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		#expect(throws: TwoMLSError.sessionNotReady) {
+			try alice.pqRekeyBegin()
 		}
-		XCTAssertNil(alice.pendingSideBand)
+		#expect(alice.pendingSideBand == nil)
 
 		// A different round is already in flight (an A.4 EK self-staged on
 		// `encrypt`): `pqRekeyBegin` must not stage a second round on top.
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
 		guard case .initiating = bob.pqInflight else {
-			XCTFail("expected bob to hold .initiating after the A.4 self-drive")
+			Issue.record("expected bob to hold .initiating after the A.4 self-drive")
 			return
 		}
-		XCTAssertThrowsError(try bob.pqRekeyBegin()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		#expect(throws: TwoMLSError.sessionNotReady) {
+			try bob.pqRekeyBegin()
 		}
 	}
 
@@ -209,7 +214,8 @@ final class RekeyTests: XCTestCase {
 	/// `.decryptionFailed` and burns no durable state: the initiator keeps
 	/// `.rekeyInitiated` and the rekeyed group's epoch is untouched. The
 	/// genuine Commit′ still applies cleanly afterward.
-	func testTamperedRekeyCommitThrowsAndBurnsNoState() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func tamperedRekeyCommitThrowsAndBurnsNoState() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let updFrame = try bob.pqRekeyBegin().frame
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
@@ -223,29 +229,31 @@ final class RekeyTests: XCTestCase {
 		tampered[tampered.index(before: tampered.endIndex)] ^= 0xFF
 
 		let recvPQEpochBefore = bob.recvGroup?.pq?.context.epoch
-		XCTAssertThrowsError(try bob.pqRekeyApply(tampered)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .decryptionFailed)
+		#expect(throws: TwoMLSError.decryptionFailed) {
+			try bob.pqRekeyApply(tampered)
 		}
-		XCTAssertNil(bob.owedBind)
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, recvPQEpochBefore)
+		#expect(bob.owedBind == nil)
+		#expect(bob.recvGroup?.pq?.context.epoch == recvPQEpochBefore)
 		guard case .rekeyInitiated = bob.pqInflight else {
-			XCTFail("expected bob to still hold .rekeyInitiated after a rejected apply")
+			Issue.record(
+				"expected bob to still hold .rekeyInitiated after a rejected apply")
 			return
 		}
 
 		_ = try bob.pqRekeyApply(commitFrame)
-		XCTAssertNotNil(bob.owedBind)
+		#expect(bob.owedBind != nil)
 	}
 
 	/// A `0x1B` carrying a commit behind the tag (rather than a proposal) is
 	/// rejected before any `committing` — `verifying(proposal:)` itself
 	/// refuses non-proposal content, remapped to `.decryptionFailed`
 	/// — and the committer's own send-PQ epoch is untouched.
-	func testRekeyRespondRejectsCommitBehindTheTag() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rekeyRespondRejectsCommitBehindTheTag() throws {
 		let (fixtureAlice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		var alice = fixtureAlice
 
-		let sneakyPQ = try XCTUnwrap(bob.recvGroup?.pq)
+		let sneakyPQ = try #require(bob.recvGroup?.pq)
 		let transition = try sneakyPQ.committing(
 			SessionTestSupport.pqProvider, proposals: [],
 			signingKey: try bob.recvPQSigningKey(),
@@ -255,11 +263,11 @@ final class RekeyTests: XCTestCase {
 		let sneakyFrame = Frames.encodePQRekeyUpd(commitBytes)
 
 		let sendPQEpochBefore = alice.sendGroup?.pq?.context.epoch
-		XCTAssertThrowsError(try alice.pqRekeyRespond(sneakyFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .decryptionFailed)
+		#expect(throws: TwoMLSError.decryptionFailed) {
+			try alice.pqRekeyRespond(sneakyFrame)
 		}
-		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
-		XCTAssertNil(alice.pqInflight)
+		#expect(alice.sendGroup?.pq?.context.epoch == sendPQEpochBefore)
+		#expect(alice.pqInflight == nil)
 	}
 
 	/// A Commit′ that folds the peer's Update AND an extra Add is rejected —
@@ -270,7 +278,8 @@ final class RekeyTests: XCTestCase {
 	/// smuggled `Add` before `validating` ever runs — A.5's expected set
 	/// never includes `.add` — so this throws `.unexpectedProposal` rather
 	/// than reaching the post-apply `.invalidRekeyEffects` shape check.
-	func testRekeyApplyRejectsCommitWithExtraAddEffect() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rekeyApplyRejectsCommitWithExtraAddEffect() throws {
 		let (alice, fixtureBob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		var bob = fixtureBob
 		let updFrame = try bob.pqRekeyBegin().frame
@@ -282,10 +291,10 @@ final class RekeyTests: XCTestCase {
 			case .publicMessage(let updPub) = try MLS.RFC9420.Message(
 				mlsEncoded: updBytes)
 		else {
-			XCTFail("expected a publicMessage-framed Upd′")
+			Issue.record("expected a publicMessage-framed Upd′")
 			return
 		}
-		let sendPQ = try XCTUnwrap(alice.sendGroup?.pq)
+		let sendPQ = try #require(alice.sendGroup?.pq)
 		let verified = try sendPQ.verifying(SessionTestSupport.pqProvider, proposal: updPub)
 		var proposalStore = MLS.RFC9420.ProposalStore()
 		let ref = try proposalStore.insert(verified, SessionTestSupport.pqProvider)
@@ -300,13 +309,14 @@ final class RekeyTests: XCTestCase {
 		let badFrame = Frames.encodePQRekeyCommit(commitBytes)
 
 		let recvPQEpochBefore = bob.recvGroup?.pq?.context.epoch
-		XCTAssertThrowsError(try bob.pqRekeyApply(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unexpectedProposal)
+		#expect(throws: TwoMLSError.unexpectedProposal) {
+			try bob.pqRekeyApply(badFrame)
 		}
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, recvPQEpochBefore)
-		XCTAssertNil(bob.owedBind)
+		#expect(bob.recvGroup?.pq?.context.epoch == recvPQEpochBefore)
+		#expect(bob.owedBind == nil)
 		guard case .rekeyInitiated = bob.pqInflight else {
-			XCTFail("expected bob to still hold .rekeyInitiated after a rejected apply")
+			Issue.record(
+				"expected bob to still hold .rekeyInitiated after a rejected apply")
 			return
 		}
 	}
@@ -323,7 +333,8 @@ final class RekeyTests: XCTestCase {
 	/// AS has never seen must not silently desync the PQ roster from the
 	/// tracked identity. The committer's group is untouched, and a subsequent
 	/// honest mechanical round still completes.
-	func testRekeyRejectsAnUnapprovedCredentialReplacementAtRespond() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rekeyRejectsAnUnapprovedCredentialReplacementAtRespond() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 
 		// Author a rotating Upd′ on Bob's recv-PQ mirror by hand: fresh
@@ -332,8 +343,9 @@ final class RekeyTests: XCTestCase {
 		// (`validatePQLeafMove`) — never a signature failure — is what has
 		// to catch it.
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		var mirror = try XCTUnwrap(bob.recvGroup)
-		let (rotatingUpd, _) = try mirror.pq!.proposeUpdate(
+		var mirror = try #require(bob.recvGroup)
+		var pq = try #require(mirror.pq)
+		let (rotatingUpd, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider,
@@ -342,62 +354,64 @@ final class RekeyTests: XCTestCase {
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: Data("mallory-never-approved".utf8)),
 				signatureKey: freshSignatureKey))
+		mirror.pq = pq
 		bob.recvGroup = mirror
 		let forgedUpdFrame = Frames.encodePQRekeyUpd(try rotatingUpd.mlsEncoded())
 
-		let sendPQEpochBefore = try XCTUnwrap(alice.sendGroup?.pq?.context.epoch)
-		XCTAssertEqual(alice.auth.theirs.current, bob.identity.clientID)
+		let sendPQEpochBefore = try #require(alice.sendGroup?.pq?.context.epoch)
+		#expect(alice.auth.theirs.current == bob.identity.clientID)
 
-		XCTAssertThrowsError(try alice.pqRekeyRespond(forgedUpdFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .rekeyProposalRejected)
+		#expect(throws: TwoMLSError.rekeyProposalRejected) {
+			try alice.pqRekeyRespond(forgedUpdFrame)
 		}
-		XCTAssertNil(alice.pqInflight)
-		XCTAssertNil(alice.pendingSideBand)
-		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
+		#expect(alice.pqInflight == nil)
+		#expect(alice.pendingSideBand == nil)
+		#expect(alice.sendGroup?.pq?.context.epoch == sendPQEpochBefore)
 
 		// The peer's PQ leaf credential is untouched (still bob's founding
 		// id): `auth.theirs` WAS consulted — `mallory-never-approved` isn't
 		// canonical there, which is exactly why the move was refused — and
 		// an honest round below proves the roster still converges cleanly.
-		let sendPQ = try XCTUnwrap(alice.sendGroup?.pq)
-		let peerEntry = try XCTUnwrap(
+		let sendPQ = try #require(alice.sendGroup?.pq)
+		let peerEntry = try #require(
 			sendPQ.tree.nonBlankLeaves().first { $0.index != sendPQ.myLeafIndex })
 		let peerCredential = try MLS.RFC9420.LeafNode(
 			mlsEncoded: peerEntry.record.encoded
 		).credential
-		XCTAssertEqual(try basicIdentifier(peerCredential), bob.identity.clientID)
+		#expect(try basicIdentifier(peerCredential) == bob.identity.clientID)
 
 		// A subsequent honest mechanical §A.5 round still completes.
 		let updFrame = try bob.pqRekeyBegin().frame
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
 		_ = try bob.pqRekeyApply(commitFrame)
-		XCTAssertNotNil(bob.owedBind)
+		#expect(bob.owedBind != nil)
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(boundFrame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertEqual(alice.auth.theirs.current, bob.identity.clientID)
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(alice.auth.theirs.current == bob.identity.clientID)
 	}
 
 	/// A `0x1B`/`0x1D` re-delivered after the round has fully closed (turn
 	/// flipped, both sides' inflight/parked state spent) is refused as
 	/// `.sessionNotReady` rather than reprocessed.
-	func testDuplicateLegsAfterRoundClosedThrowSessionNotReady() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func duplicateLegsAfterRoundClosedThrowSessionNotReady() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let updFrame = try bob.pqRekeyBegin().frame
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
 		_ = try bob.pqRekeyApply(commitFrame)
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 		_ = try alice.processIncomingDecrypted(boundFrame)
 
-		XCTAssertThrowsError(try alice.pqRekeyRespond(updFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		#expect(throws: TwoMLSError.sessionNotReady) {
+			try alice.pqRekeyRespond(updFrame)
 		}
-		XCTAssertThrowsError(try bob.pqRekeyApply(commitFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		#expect(throws: TwoMLSError.sessionNotReady) {
+			try bob.pqRekeyApply(commitFrame)
 		}
 	}
 
@@ -420,6 +434,7 @@ final class RekeyTests: XCTestCase {
 	/// (`nil` vs. Group_A.pq's live epoch), and injects a fresh cross-party
 	/// PSK into the Commit′ rather than skipping. Returns the pair plus
 	/// Bob's resulting `0x1D` Commit′ — `pqRekeyApply` not yet called.
+	@available(iOS 26, macOS 26, *)
 	private func reachInjectConfig() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, commitFrame: Data
 	) {
@@ -427,15 +442,15 @@ final class RekeyTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ekFrame = try #require(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 		_ = try bob.pqRatchetBind(ctFrame)
 		let preparedA4 = try bob.prepareToEncrypt()
-		XCTAssertTrue(preparedA4.didCommit)
+		#expect(preparedA4.didCommit)
 		let boundFrameA4 = try bob.encrypt(Data("bound-a4".utf8)).frame
 		_ = try alice.processIncomingDecrypted(boundFrameA4)
-		XCTAssertTrue(alice.myPQTurn)
-		XCTAssertNil(bob.lastCrossInjectedPQ)
+		#expect(alice.myPQTurn)
+		#expect(bob.lastCrossInjectedPQ == nil)
 
 		let updFrame = try alice.pqRekeyBegin().frame
 		let commitFrame = try bob.pqRekeyRespond(updFrame).frame
@@ -446,6 +461,7 @@ final class RekeyTests: XCTestCase {
 	/// injected PSK, when present, carries a `ComponentID`).
 	/// `commitFrame` is header-sealed on exit; `opener` (the recipient)
 	/// is the one whose receive window opens it.
+	@available(iOS 26, macOS 26, *)
 	private func rekeyCommitProposalCount(_ commitFrame: Data, opener: TwoMLSSession) throws
 		-> Int
 	{
@@ -456,7 +472,7 @@ final class RekeyTests: XCTestCase {
 					mlsEncoded: commitBytes),
 				case .commit(let commit) = commitPub.content.content
 			else {
-				XCTFail("expected a publicMessage commit")
+				Issue.record("expected a publicMessage commit")
 				return 0
 			}
 			return commit.proposals.count
@@ -470,33 +486,34 @@ final class RekeyTests: XCTestCase {
 	/// epoch — Group_A.pq's live epoch, the opposite group both sides read
 	/// off — in lockstep. The round still completes end to end
 	/// (apply → bind → discharge → applyBind) and app traffic round-trips.
-	func testInjectRoundCompletesWithLockstepWatermarks() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func injectRoundCompletesWithLockstepWatermarks() throws {
 		var (alice, bob, commitFrame) = try reachInjectConfig()
 
-		XCTAssertEqual(try rekeyCommitProposalCount(commitFrame, opener: alice), 2)
+		#expect(try rekeyCommitProposalCount(commitFrame, opener: alice) == 2)
 
-		let groupAEpoch = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
-		XCTAssertEqual(bob.lastCrossInjectedPQ, groupAEpoch)
+		let groupAEpoch = try #require(bob.recvGroup?.pq?.context.epoch)
+		#expect(bob.lastCrossInjectedPQ == groupAEpoch)
 
 		_ = try alice.pqRekeyApply(commitFrame)
-		XCTAssertEqual(alice.lastSendPQExported, groupAEpoch)
-		XCTAssertEqual(bob.lastCrossInjectedPQ, alice.lastSendPQExported)
+		#expect(alice.lastSendPQExported == groupAEpoch)
+		#expect(bob.lastCrossInjectedPQ == alice.lastSendPQExported)
 
-		XCTAssertNotNil(alice.owedBind)
+		#expect(alice.owedBind != nil)
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundFrame = try alice.encrypt(Data("inject-bound".utf8)).frame
 		_ = try bob.processIncomingDecrypted(boundFrame)
 
-		XCTAssertTrue(bob.myPQTurn)
-		XCTAssertFalse(alice.myPQTurn)
-		XCTAssertNil(alice.pqInflight)
-		XCTAssertNil(bob.pqInflight)
+		#expect(bob.myPQTurn)
+		#expect(!alice.myPQTurn)
+		#expect(alice.pqInflight == nil)
+		#expect(bob.pqInflight == nil)
 
 		_ = try alice.prepareToEncrypt()
 		let msg = try alice.encrypt(Data("post-inject".utf8)).frame
 		let decrypted = try bob.processIncomingDecrypted(msg)
-		XCTAssertEqual(decrypted.applicationMessage, Data("post-inject".utf8))
+		#expect(decrypted.applicationMessage == Data("post-inject".utf8))
 	}
 
 	/// In the same inject config, a tampered Commit′ throws
@@ -509,12 +526,13 @@ final class RekeyTests: XCTestCase {
 	/// `lastSendPQExported` had been stamped before `validating`, this retry
 	/// would fail `componentSecretConsumed` on the already-burned leaf, or
 	/// skip the pre-register the retry still needs.
-	func testInjectConfigTamperedApplyThenGenuineRetrySucceeds() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func injectConfigTamperedApplyThenGenuineRetrySucceeds() throws {
 		var (alice, _, commitFrame) = try reachInjectConfig()
-		XCTAssertEqual(try rekeyCommitProposalCount(commitFrame, opener: alice), 2)
+		#expect(try rekeyCommitProposalCount(commitFrame, opener: alice) == 2)
 
-		XCTAssertNil(alice.lastSendPQExported)
-		let sendGroupAEpochBefore = try XCTUnwrap(alice.sendGroup?.pq?.context.epoch)
+		#expect(alice.lastSendPQExported == nil)
+		let sendGroupAEpochBefore = try #require(alice.sendGroup?.pq?.context.epoch)
 
 		// Tamper the OPENED inner Commit′ (its own MLS framing
 		// signature, `decryptionFailed`'s `validating` catch), not the outer
@@ -523,21 +541,21 @@ final class RekeyTests: XCTestCase {
 		var tampered = alice.openOrRaw(commitFrame)
 		tampered[tampered.index(before: tampered.endIndex)] ^= 0xFF
 
-		XCTAssertThrowsError(try alice.pqRekeyApply(tampered)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .decryptionFailed)
+		#expect(throws: TwoMLSError.decryptionFailed) {
+			try alice.pqRekeyApply(tampered)
 		}
-		XCTAssertNil(alice.lastSendPQExported)
-		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendGroupAEpochBefore)
-		XCTAssertNil(alice.owedBind)
+		#expect(alice.lastSendPQExported == nil)
+		#expect(alice.sendGroup?.pq?.context.epoch == sendGroupAEpochBefore)
+		#expect(alice.owedBind == nil)
 		guard case .rekeyInitiated = alice.pqInflight else {
-			XCTFail(
+			Issue.record(
 				"expected alice to still hold .rekeyInitiated after a rejected apply"
 			)
 			return
 		}
 
 		_ = try alice.pqRekeyApply(commitFrame)
-		XCTAssertEqual(alice.lastSendPQExported, sendGroupAEpochBefore)
-		XCTAssertNotNil(alice.owedBind)
+		#expect(alice.lastSendPQExported == sendGroupAEpochBefore)
+		#expect(alice.owedBind != nil)
 	}
 }

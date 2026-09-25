@@ -31,7 +31,8 @@ enum SessionProfile: Sendable, Equatable {
 	/// The profiles a leaf advertises, in `recognized` order.
 	static func advertised(by leaf: MLS.RFC9420.LeafNode) -> [SessionProfile] {
 		recognized.filter { profile in
-			profile.extensionType.map { leaf.capabilities.extensions.contains($0) } ?? false
+			profile.extensionType.map { leaf.capabilities.extensions.contains($0) }
+				?? false
 		}
 	}
 
@@ -55,7 +56,9 @@ enum SessionProfile: Sendable, Equatable {
 	/// is present, or one is present with non-empty contents.
 	static func recorded(in context: MLS.RFC9420.GroupContext) throws -> SessionProfile {
 		let matches = recognized.flatMap { profile in
-			context.extensions.filter { $0.type == profile.extensionType }.map { (profile, $0) }
+			context.extensions.filter { $0.type == profile.extensionType }.map {
+				(profile, $0)
+			}
 		}
 		guard let (profile, ext) = matches.first else { return .deployedCompatible }
 		guard matches.count == 1, ext.data.isEmpty else {

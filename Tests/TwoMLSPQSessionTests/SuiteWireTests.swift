@@ -3,7 +3,7 @@ import MLSCodec
 import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
-import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
@@ -15,84 +15,85 @@ import XCTest
 /// same constant under test would not catch a regression in that constant
 /// itself. Fails if the classical suite ever regresses to `0x0001`
 /// (curve25519Aes128).
-@available(iOS 26, macOS 26, *)
-final class SuiteWireTests: XCTestCase {
-	func testClassicalSuiteIsPinnedAcrossWelcomeGroupsAndKeyPackage() throws {
+@Suite struct SuiteWireTests {
+	@available(iOS 26, macOS 26, *)
+	@Test func classicalSuiteIsPinnedAcrossWelcomeGroupsAndKeyPackage() throws {
 		let (alice, bob, identity, _, welcomeA, welcomeB) =
 			try SessionTestSupport.established()
 
 		// RFC 9420 Welcome.cipher_suite: a plain uint16, big-endian on the wire.
 		let (tBytesA, pqBytesA) = try Frames.decodeAPQWelcome(welcomeA)
-		XCTAssertEqual(tBytesA.prefix(6), Data([0x00, 0x01, 0x00, 0x03, 0x00, 0x03]))
-		XCTAssertEqual(
-			try EstablishmentMessages.decodeWelcome(tBytesA).cipherSuite.id, 0x0003)
+		#expect(tBytesA.prefix(6) == Data([0x00, 0x01, 0x00, 0x03, 0x00, 0x03]))
+		#expect(
+			try EstablishmentMessages.decodeWelcome(tBytesA).cipherSuite.id == 0x0003)
 
 		// The pq half pins its own prefix too — decoded via `MLS.RFC9420.Message`
 		// directly rather than the helper, so this pin cannot pass on a bare
 		// (unwrapped) pq half that the helper alone would still refuse.
-		XCTAssertEqual(pqBytesA.prefix(6), Data([0x00, 0x01, 0x00, 0x03, 0xFD, 0xEA]))
+		#expect(pqBytesA.prefix(6) == Data([0x00, 0x01, 0x00, 0x03, 0xFD, 0xEA]))
 		guard case .welcome(let pqWelcomeA) = try MLS.RFC9420.Message(mlsEncoded: pqBytesA)
 		else {
-			return XCTFail("expected the pq half to decode as a welcome message")
+			Issue.record("expected the pq half to decode as a welcome message")
+			return
 		}
-		XCTAssertEqual(pqWelcomeA.cipherSuite.id, 0xFDEA)
+		#expect(pqWelcomeA.cipherSuite.id == 0xFDEA)
 
 		let (tBytesB, _) = try Frames.decodeAPQWelcome(welcomeB)
-		XCTAssertEqual(tBytesB.prefix(6), Data([0x00, 0x01, 0x00, 0x03, 0x00, 0x03]))
-		XCTAssertEqual(
-			try EstablishmentMessages.decodeWelcome(tBytesB).cipherSuite.id, 0x0003)
+		#expect(tBytesB.prefix(6) == Data([0x00, 0x01, 0x00, 0x03, 0x00, 0x03]))
+		#expect(
+			try EstablishmentMessages.decodeWelcome(tBytesB).cipherSuite.id == 0x0003)
 
 		// Live group contexts: Group_A (both halves, both sides) and Group_B
 		// (classical-only, Bob's founder copy).
-		let groupA = try XCTUnwrap(alice.sendGroup)
-		XCTAssertEqual(groupA.classical.context.cipherSuite.id, 0x0003)
-		XCTAssertEqual(try XCTUnwrap(groupA.pq).context.cipherSuite.id, 0xFDEA)
+		let groupA = try #require(alice.sendGroup)
+		#expect(groupA.classical.context.cipherSuite.id == 0x0003)
+		#expect(try #require(groupA.pq).context.cipherSuite.id == 0xFDEA)
 
-		let bobGroupA = try XCTUnwrap(bob.recvGroup)
-		XCTAssertEqual(bobGroupA.classical.context.cipherSuite.id, 0x0003)
+		let bobGroupA = try #require(bob.recvGroup)
+		#expect(bobGroupA.classical.context.cipherSuite.id == 0x0003)
 
-		let bobGroupB = try XCTUnwrap(bob.sendGroup)
-		XCTAssertEqual(bobGroupB.classical.context.cipherSuite.id, 0x0003)
+		let bobGroupB = try #require(bob.sendGroup)
+		#expect(bobGroupB.classical.context.cipherSuite.id == 0x0003)
 
 		// The APQInfo GCE, read off both Group_A's and Group_B's classical half.
-		let groupAInfo = try XCTUnwrap(
+		let groupAInfo = try #require(
 			try MLS.Combiner.APQInfo.read(
 				fromExtensionsOf: groupA.classical.context,
 				type: MLS.Combiner.Codepoints.deployed.apqInfoExtensionType))
-		XCTAssertEqual(groupAInfo.tCipherSuite.id, 0x0003)
+		#expect(groupAInfo.tCipherSuite.id == 0x0003)
 
-		let groupBInfo = try XCTUnwrap(
+		let groupBInfo = try #require(
 			try MLS.Combiner.APQInfo.read(
 				fromExtensionsOf: bobGroupB.classical.context,
 				type: MLS.Combiner.Codepoints.deployed.apqInfoExtensionType))
-		XCTAssertEqual(groupBInfo.tCipherSuite.id, 0x0003)
+		#expect(groupBInfo.tCipherSuite.id == 0x0003)
 
 		// The identity's own signed KeyPackage + advertised leaf capabilities.
-		XCTAssertEqual(identity.keyPackage.classical.cipherSuite.id, 0x0003)
-		XCTAssertEqual(
-			identity.keyPackage.classical.leafNode.capabilities.cipherSuites.map(\.id),
-			[0x0003, 0xFDEA])
+		#expect(identity.keyPackage.classical.cipherSuite.id == 0x0003)
+		#expect(
+			identity.keyPackage.classical.leafNode.capabilities.cipherSuites.map(\.id)
+				== [0x0003, 0xFDEA])
 	}
 
-	func testProviderAeadKeySizesMatchDeployedSuites() {
-		XCTAssertEqual(SessionTestSupport.classicalProvider.aeadKeySize, 32)
-		XCTAssertEqual(SessionTestSupport.pqProvider.aeadKeySize, 16)
+	@available(iOS 26, macOS 26, *)
+	@Test func providerAeadKeySizesMatchDeployedSuites() {
+		#expect(SessionTestSupport.classicalProvider.aeadKeySize == 32)
+		#expect(SessionTestSupport.pqProvider.aeadKeySize == 16)
 	}
 
 	/// `TwoMLSIdentity.generate` rejects a classical provider whose suite is
 	/// not `TwoMLSSuite.classical`, before claiming any state — the up-front
 	/// guard mirroring the Rust reference's early `CipherSuiteMismatch`.
-	func testGenerateRejectsWrongClassicalProvider() throws {
-		let wrongClassicalProvider = try XCTUnwrap(
+	@available(iOS 26, macOS 26, *)
+	@Test func generateRejectsWrongClassicalProvider() throws {
+		let wrongClassicalProvider = try #require(
 			SwiftCryptoProvider().cipherSuiteProvider(for: .curve25519Aes128))
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.cipherSuiteMismatch) {
 			try TwoMLSIdentity.generate(
 				clientID: Data("carol".utf8),
 				classicalProvider: wrongClassicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .cipherSuiteMismatch)
 		}
 	}
 }

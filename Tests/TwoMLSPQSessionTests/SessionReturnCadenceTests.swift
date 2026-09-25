@@ -4,8 +4,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -14,8 +14,7 @@ import XCTest
 /// directly-constructed archive (that's `SessionArchiveTests`'s own fixed
 /// stand-ins). Every save below is a `StateUpdate` a real call returned,
 /// sealed through the same app-boundary `SecretArchive.seal`/`.open`.
-@available(iOS 26, macOS 26, *)
-final class SessionReturnCadenceTests: XCTestCase {
+@Suite struct SessionReturnCadenceTests {
 	private let testKey = SecretBytes(randomByteCount: 32)
 	private let testAAD = Data("twomlspq-session-return-cadence-tests".utf8)
 
@@ -57,7 +56,8 @@ final class SessionReturnCadenceTests: XCTestCase {
 	/// not saved into Alice's store); restores Alice mid-stream from
 	/// whatever the store holds at that point, then confirms both directions
 	/// still work off the restored session.
-	func testLiveRoundTripSavingReturnedUpdatesRestoresMidStreamAndContinues() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func liveRoundTripSavingReturnedUpdatesRestoresMidStreamAndContinues() throws {
 		let store = BlobStore(seal: sealAndOpen)
 
 		let aliceIdentity = try SessionTestSupport.identity("alice")
@@ -99,7 +99,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		try store.save(alice.queueProposal(digest: aliceOffered.queuedProposal.digest))
 
 		let alicePrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(alicePrepared.didCommit)
+		#expect(alicePrepared.didCommit)
 		try store.save(alicePrepared.update)
 		let aliceFolded = try alice.encrypt(Data("folded".utf8))
 		try store.save(aliceFolded.update)
@@ -122,30 +122,30 @@ final class SessionReturnCadenceTests: XCTestCase {
 		try store.save(joined)
 
 		let boundPrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(boundPrepared.didCommit)
+		#expect(boundPrepared.didCommit)
 		try store.save(boundPrepared.update)
 		let boundFrame = try alice.encrypt(Data("bound".utf8))
 		try store.save(boundFrame.update)
 		_ = try bob.processIncomingDecrypted(boundFrame.frame)
 
 		// Mid-stream restore of Alice from whatever the store holds now.
-		let savedCheckpoint = try XCTUnwrap(store.checkpoint)
+		let savedCheckpoint = try #require(store.checkpoint)
 		var restoredAlice = try TwoMLSSession.restore(
 			core: store.core, checkpoint: savedCheckpoint,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertTrue(restoredAlice.isFullyEstablished)
+		#expect(restoredAlice.isFullyEstablished)
 
 		// Both directions continue off the restored session.
 		_ = try restoredAlice.prepareToEncrypt()
 		let postRestore = try restoredAlice.encrypt(Data("post-restore".utf8))
 		let bobDecrypted = try bob.processIncomingDecrypted(postRestore.frame)
-		XCTAssertEqual(bobDecrypted.applicationMessage, Data("post-restore".utf8))
+		#expect(bobDecrypted.applicationMessage == Data("post-restore".utf8))
 
 		_ = try bob.prepareToEncrypt()
 		let bobReply = try bob.encrypt(Data("reply".utf8))
 		let aliceDecrypted = try restoredAlice.processIncomingDecrypted(bobReply.frame)
-		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("reply".utf8))
+		#expect(aliceDecrypted.applicationMessage == Data("reply".utf8))
 	}
 
 	// MARK: - 2. Cadence correctness: Core vs Checkpoint per method
@@ -156,37 +156,38 @@ final class SessionReturnCadenceTests: XCTestCase {
 	/// `pqBootstrapJoin`/`pqRatchetBind`/`pqRekeyBegin`/`pqRekeyRespond`/
 	/// `pqRekeyApply`) always returns `.checkpoint` — the static per-site
 	/// tags, exercised across a full bootstrap + ratchet + re-key lifecycle.
-	func testStaticKindAssignmentsMatchCoreVsCheckpoint() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func staticKindAssignmentsMatchCoreVsCheckpoint() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		let alicePrepared = try alice.prepareToEncrypt()
-		XCTAssertEqual(alicePrepared.update.kind, .core)
+		#expect(alicePrepared.update.kind == .core)
 		let aliceHello = try alice.encrypt(Data("hello".utf8))
-		XCTAssertEqual(aliceHello.update.kind, .core)
+		#expect(aliceHello.update.kind == .core)
 		_ = try bob.processIncomingDecrypted(aliceHello.frame)
 
 		// §A.3 bootstrap: begin (classical-only parking) → .core; respond
 		// (founds sendGroup.pq) / join (joins recvGroup.pq) → .checkpoint.
 		let kp = try alice.pqBootstrapBegin()
-		XCTAssertEqual(kp.update.kind, .core)
+		#expect(kp.update.kind == .core)
 		let welcome = try bob.pqBootstrapRespond(kp.frame)
-		XCTAssertEqual(welcome.update.kind, .checkpoint)
+		#expect(welcome.update.kind == .checkpoint)
 		let joined = try alice.pqBootstrapJoin(welcome.frame)
-		XCTAssertEqual(joined.kind, .checkpoint)
+		#expect(joined.kind == .checkpoint)
 
 		// Discharge the owed bind: prepareToEncrypt/encrypt stay .core even
 		// though committingRound folds the bind's PQ-half commit message —
 		// these two methods are tagged statically, deliberately, regardless.
 		let boundPrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(boundPrepared.didCommit)
-		XCTAssertEqual(boundPrepared.update.kind, .core)
+		#expect(boundPrepared.didCommit)
+		#expect(boundPrepared.update.kind == .core)
 		let boundFrame = try alice.encrypt(Data("bound".utf8))
-		XCTAssertEqual(boundFrame.update.kind, .core)
+		#expect(boundFrame.update.kind == .core)
 		let bobGotBind = try bob.processIncomingDecrypted(boundFrame.frame)
 		// `applyBind` rides `processIncoming` and moves Bob's recvGroup.pq —
 		// the ONE dynamically-derived kind, covered on its own below.
-		XCTAssertEqual(bobGotBind.update.kind, .checkpoint)
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bobGotBind.update.kind == .checkpoint)
+		#expect(bob.myPQTurn)
 
 		// §A.4 ratchet: Bob (turn-holder) stages, Alice responds
 		// (`pqRatchetRespond`, a classical carrier only → .core), Bob binds
@@ -194,27 +195,27 @@ final class SessionReturnCadenceTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let stage = try bob.encrypt(Data("stage-ek".utf8))
 		_ = try alice.processIncomingDecrypted(stage.frame)
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ekFrame = try #require(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame)
-		XCTAssertEqual(ctFrame.update.kind, .core)
+		#expect(ctFrame.update.kind == .core)
 		let bindUpdate = try bob.pqRatchetBind(ctFrame.frame)
-		XCTAssertEqual(bindUpdate.kind, .checkpoint)
+		#expect(bindUpdate.kind == .checkpoint)
 		let ratchetPrepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(ratchetPrepared.didCommit)
+		#expect(ratchetPrepared.didCommit)
 		let ratchetBound = try bob.encrypt(Data("ratchet-bound".utf8))
 		_ = try alice.processIncomingDecrypted(ratchetBound.frame)
-		XCTAssertTrue(alice.myPQTurn)
+		#expect(alice.myPQTurn)
 
 		// §A.5 mechanical re-key: begin (stages Upd′ into recvGroup.pq — no
 		// epoch change, but per the map still .checkpoint), respond (commits
 		// sendGroup.pq → .checkpoint), apply (commits recvGroup.pq +
 		// owePQBind → .checkpoint).
 		let updFrame = try alice.pqRekeyBegin()
-		XCTAssertEqual(updFrame.update.kind, .checkpoint)
+		#expect(updFrame.update.kind == .checkpoint)
 		let commitFrame = try bob.pqRekeyRespond(updFrame.frame)
-		XCTAssertEqual(commitFrame.update.kind, .checkpoint)
+		#expect(commitFrame.update.kind == .checkpoint)
 		let rekeyApplied = try alice.pqRekeyApply(commitFrame.frame)
-		XCTAssertEqual(rekeyApplied.kind, .checkpoint)
+		#expect(rekeyApplied.kind == .checkpoint)
 	}
 
 	/// The idempotent re-serve branches (`pqBootstrapBegin`/
@@ -222,7 +223,8 @@ final class SessionReturnCadenceTests: XCTestCase {
 	/// still outstanding) still return a `StateUpdate` of the same kind as a
 	/// fresh call, even though nothing about the session actually changed
 	/// the second time.
-	func testIdempotentResendsStillReturnAStateUpdateOfTheSameKind() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func idempotentResendsStillReturnAStateUpdateOfTheSameKind() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		// Each re-serve re-seals under a fresh nonce, so the SEALED
@@ -231,16 +233,16 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// instead.
 		let first = try alice.pqBootstrapBegin()
 		let second = try alice.pqBootstrapBegin()
-		XCTAssertEqual(bob.openOrRaw(first.frame), bob.openOrRaw(second.frame))
-		XCTAssertEqual(second.update.kind, .core)
+		#expect(bob.openOrRaw(first.frame) == bob.openOrRaw(second.frame))
+		#expect(second.update.kind == .core)
 
 		let welcome1 = try bob.pqBootstrapRespond(first.frame)
 		let welcome2 = try bob.pqBootstrapRespond(first.frame)
-		XCTAssertEqual(alice.openOrRaw(welcome1.frame), alice.openOrRaw(welcome2.frame))
+		#expect(alice.openOrRaw(welcome1.frame) == alice.openOrRaw(welcome2.frame))
 		// The re-serve moves nothing group-level (unlike the founding
 		// answer above, `welcome1`, which is still `.checkpoint`) — a host
 		// attaches the twin on every send instead.
-		XCTAssertEqual(welcome2.update.kind, .core)
+		#expect(welcome2.update.kind == .core)
 	}
 
 	/// `processIncoming`'s kind is derived from an actual PQ-tree delta, not
@@ -252,7 +254,8 @@ final class SessionReturnCadenceTests: XCTestCase {
 	/// the PQ-epoch manifest and `restore` would fail closed. The real
 	/// cadence instead hands back `.checkpoint` at exactly this call, and
 	/// restoring from THAT succeeds and the PQ round completes.
-	func testProcessIncomingOfBindFrameReturnsCheckpointMutationVerified() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func processIncomingOfBindFrameReturnsCheckpointMutationVerified() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kp = try alice.pqBootstrapBegin()
 		let welcome = try bob.pqBootstrapRespond(kp.frame)
@@ -263,24 +266,22 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let staleCheckpoint = try bob.makeSessionArchive(kind: .checkpoint)
 
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let bound = try alice.encrypt(Data("bound".utf8))
 
 		let decrypted = try bob.processIncomingDecrypted(bound.frame)
-		XCTAssertEqual(decrypted.update.kind, .checkpoint)
+		#expect(decrypted.update.kind == .checkpoint)
 
 		// Counterfactual: a Core taken from Bob NOW (always PQ-tree-omitting,
 		// regardless of any mistagging) paired with the stale pre-bind
 		// Checkpoint — exactly what the app would be left holding had this
 		// call wrongly returned `.core` instead of `.checkpoint` here.
 		let coreTakenNow = try bob.makeSessionArchive(kind: .core)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
 				core: coreTakenNow, checkpoint: staleCheckpoint,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 
 		// The real cadence's own Checkpoint, taken at exactly this call,
@@ -290,40 +291,41 @@ final class SessionReturnCadenceTests: XCTestCase {
 			core: nil, checkpoint: freshCheckpoint,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertTrue(restoredBob.myPQTurn)
+		#expect(restoredBob.myPQTurn)
 
 		let rekeyed = try restoredBob.pqRekeyBegin()
-		XCTAssertEqual(rekeyed.update.kind, .checkpoint)
+		#expect(rekeyed.update.kind == .checkpoint)
 	}
 
 	// MARK: - 3. stateSeq monotonicity
 
 	/// `stateSeq` strictly increases across every state-advancing call, and
 	/// a restored session's own `stateSeq` equals the reconciled blob's.
-	func testStateSeqStrictlyIncreasesAndSurvivesRestore() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func stateSeqStrictlyIncreasesAndSurvivesRestore() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let afterEstablish = alice.stateSeq  // baseline (0) + Bob's founding frame
 
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertGreaterThan(prepared.update.stateSeq, afterEstablish)
+		#expect(prepared.update.stateSeq > afterEstablish)
 
 		let encrypted = try alice.encrypt(Data("hello".utf8))
-		XCTAssertGreaterThan(encrypted.update.stateSeq, prepared.update.stateSeq)
+		#expect(encrypted.update.stateSeq > prepared.update.stateSeq)
 		_ = try bob.processIncomingDecrypted(encrypted.frame)
 
 		let kp = try alice.pqBootstrapBegin()
-		XCTAssertGreaterThan(kp.update.stateSeq, encrypted.update.stateSeq)
+		#expect(kp.update.stateSeq > encrypted.update.stateSeq)
 		let welcome = try bob.pqBootstrapRespond(kp.frame)
 		let joined = try alice.pqBootstrapJoin(welcome.frame)
-		XCTAssertGreaterThan(joined.stateSeq, kp.update.stateSeq)
+		#expect(joined.stateSeq > kp.update.stateSeq)
 
-		XCTAssertEqual(alice.stateSeq, joined.stateSeq)
+		#expect(alice.stateSeq == joined.stateSeq)
 
 		let restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: try sealAndOpen(joined.archive),
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertEqual(restored.stateSeq, joined.stateSeq)
+		#expect(restored.stateSeq == joined.stateSeq)
 	}
 
 	// MARK: - 4. Durability gate (`dependsOnSeq`)
@@ -334,7 +336,8 @@ final class SessionReturnCadenceTests: XCTestCase {
 	/// transmitting the frame that carries the fresh staple. A later routine
 	/// `prepareToEncrypt`/`encrypt` pair (no new key material) reports the
 	/// SAME `dependsOnSeq` as before — already durable, no additional wait.
-	func testDurabilityGateDependsOnSeqTracksTheLastFreshStaple() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func durabilityGateDependsOnSeqTracksTheLastFreshStaple() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		// Bob offers; Alice approves and folds — a fresh commit/staple.
@@ -344,17 +347,17 @@ final class SessionReturnCadenceTests: XCTestCase {
 		_ = try alice.queueProposal(digest: offered.queuedProposal.digest)
 
 		let foldPrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(foldPrepared.didCommit)
-		XCTAssertEqual(foldPrepared.dependsOnSeq, foldPrepared.update.stateSeq)
+		#expect(foldPrepared.didCommit)
+		#expect(foldPrepared.dependsOnSeq == foldPrepared.update.stateSeq)
 		let foldFrame = try alice.encrypt(Data("folded".utf8))
 		_ = try bob.processIncomingDecrypted(foldFrame.frame)
 
 		// A routine round after that: no new commit, so `dependsOnSeq` stays
 		// pinned to the fold's own seq — already durable, no additional wait.
 		let routinePrepared = try alice.prepareToEncrypt()
-		XCTAssertFalse(routinePrepared.didCommit)
-		XCTAssertEqual(routinePrepared.dependsOnSeq, foldPrepared.dependsOnSeq)
-		XCTAssertLessThan(routinePrepared.dependsOnSeq, routinePrepared.update.stateSeq)
+		#expect(!routinePrepared.didCommit)
+		#expect(routinePrepared.dependsOnSeq == foldPrepared.dependsOnSeq)
+		#expect(routinePrepared.dependsOnSeq < routinePrepared.update.stateSeq)
 		_ = try alice.encrypt(Data("routine".utf8))
 	}
 
@@ -362,7 +365,8 @@ final class SessionReturnCadenceTests: XCTestCase {
 	/// reconciled `stateSeq` itself — pin that seed through `dependsOnSeq`: a
 	/// routine `prepareToEncrypt` right after restore (nothing queued or
 	/// owed, so no fresh commit) reports `dependsOnSeq == restored.stateSeq`.
-	func testRestoreSeedsCurrentStapleSeqFromTheReconciledStateSeq() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreSeedsCurrentStapleSeqFromTheReconciledStateSeq() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		// Bob's own `.checkpoint` return (founding `sendGroup.pq`) — restore
 		// needs a `.checkpoint`-kind archive in the `checkpoint:` slot.
@@ -378,8 +382,8 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let seededStateSeq = restored.stateSeq
 
 		let routine = try restored.prepareToEncrypt()
-		XCTAssertFalse(routine.didCommit)
-		XCTAssertEqual(routine.dependsOnSeq, seededStateSeq)
+		#expect(!routine.didCommit)
+		#expect(routine.dependsOnSeq == seededStateSeq)
 		_ = try alice.processIncomingDecrypted(
 			try restored.encrypt(Data("post-restore".utf8)).frame)
 	}
@@ -390,7 +394,8 @@ final class SessionReturnCadenceTests: XCTestCase {
 	/// `testMidA3CheckpointRestoreThenBootstrapCompletes`: reach mid-A.3
 	/// (Alice's Group_B.pq still deferred) by driving the live methods, save
 	/// the returned `StateUpdate`, restore, and complete the bootstrap+bind.
-	func testMidA3ReachedViaLiveCadenceRestoresAndCompletes() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func midA3ReachedViaLiveCadenceRestoresAndCompletes() throws {
 		let aliceIdentity = try SessionTestSupport.identity("alice")
 		let bobIdentity = try SessionTestSupport.identity("bob")
 
@@ -418,8 +423,8 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let kp = try alice.pqBootstrapBegin()
 		let welcome = try bob.pqBootstrapRespond(kp.frame)
 
-		XCTAssertNil(alice.recvGroup?.pq)
-		XCTAssertNotNil(alice.bootstrapKPSecret)
+		#expect(alice.recvGroup?.pq == nil)
+		#expect(alice.bootstrapKPSecret != nil)
 
 		// `kp.update` (`.core`, mid-A.3) is newer than the baseline
 		// Checkpoint — `recvClassicalGroupID` going nil→some on the newer
@@ -432,16 +437,16 @@ final class SessionReturnCadenceTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 		// The winning (Core) body's own `stateSeq` is what the restored
 		// session's live counter picks up — not the (older) Checkpoint's.
-		XCTAssertEqual(restoredAlice.stateSeq, kp.update.stateSeq)
+		#expect(restoredAlice.stateSeq == kp.update.stateSeq)
 
 		_ = try restoredAlice.pqBootstrapJoin(welcome.frame)
-		XCTAssertTrue(restoredAlice.isFullyEstablished)
+		#expect(restoredAlice.isFullyEstablished)
 
 		let prepared = try restoredAlice.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let bound = try restoredAlice.encrypt(Data("bound".utf8))
 		let decrypted = try bob.processIncomingDecrypted(bound.frame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
+		#expect(decrypted.applicationMessage == Data("bound".utf8))
 	}
 
 	/// The live-cadence analogue of `SessionArchiveTests`'
@@ -449,7 +454,8 @@ final class SessionReturnCadenceTests: XCTestCase {
 	/// (Alice holding `.responding` — her sealed `S`/parked CT) by driving
 	/// the live methods, save the returned `StateUpdate`, restore, and finish
 	/// the round.
-	func testMidA4ReachedViaLiveCadenceRestoresAndCompletes() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func midA4ReachedViaLiveCadenceRestoresAndCompletes() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kp = try alice.pqBootstrapBegin()
 		let welcome = try bob.pqBootstrapRespond(kp.frame)
@@ -459,10 +465,10 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let joined = try alice.pqBootstrapJoin(welcome.frame)
 
 		let boundPrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(boundPrepared.didCommit)
+		#expect(boundPrepared.didCommit)
 		let bound = try alice.encrypt(Data("bound".utf8))
 		_ = try bob.processIncomingDecrypted(bound.frame)
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPQTurn)
 
 		// §A.4: Bob (turn-holder) stages an EK; Alice responds, sealing `S`
 		// and holding `.responding` — classical-only from Alice's side
@@ -471,10 +477,11 @@ final class SessionReturnCadenceTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let staged = try bob.encrypt(Data("m".utf8))
 		_ = try alice.processIncomingDecrypted(staged.frame)
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ekFrame = try #require(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame)
 		guard case .responding = alice.pqInflight else {
-			return XCTFail("expected alice to hold `.responding` after sealing")
+			Issue.record("expected alice to hold `.responding` after sealing")
+			return
 		}
 
 		var restoredAlice = try TwoMLSSession.restore(
@@ -485,12 +492,12 @@ final class SessionReturnCadenceTests: XCTestCase {
 
 		_ = try bob.pqRatchetBind(ctFrame.frame)
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundAgain = try bob.encrypt(Data("bound-again".utf8))
 
 		let decrypted = try restoredAlice.processIncomingDecrypted(boundAgain.frame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bound-again".utf8))
-		XCTAssertTrue(restoredAlice.myPQTurn)
+		#expect(decrypted.applicationMessage == Data("bound-again".utf8))
+		#expect(restoredAlice.myPQTurn)
 	}
 
 	// MARK: - 6. Regression: an un-checkpointed PQ-tree move survives a later throw
@@ -507,7 +514,8 @@ final class SessionReturnCadenceTests: XCTestCase {
 	/// `stateUpdate(kind:)`'s sticky invariant (comparing the live PQ-epoch
 	/// manifest against the manifest as of the last `.checkpoint` this
 	/// session actually minted) is what has to catch the drift instead.
-	func testUnCheckpointedPQMoveSurvivingAThrowIsRepairedByTheStickyCheckpointInvariant()
+	@available(iOS 26, macOS 26, *)
+	@Test func unCheckpointedPQMoveSurvivingAThrowIsRepairedByTheStickyCheckpointInvariant()
 		throws
 	{
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -518,7 +526,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 
 		_ = try alice.pqBootstrapJoin(welcome.frame)
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let bound = try alice.encrypt(Data("bound".utf8))
 
 		// A tampered COPY of the bind frame: the `0x05` staple rides intact
@@ -537,7 +545,9 @@ final class SessionReturnCadenceTests: XCTestCase {
 		let tamperedFrame = Frames.encodeMessageFrame(
 			staple: staple, proposal: proposal, app: tamperedApp)
 
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(tamperedFrame))
+		#expect(throws: (any Error).self) {
+			try bob.processIncomingDecrypted(tamperedFrame)
+		}
 		// The bind already landed on `bob.recvGroup.pq` despite the throw —
 		// an un-checkpointed PQ-tree move, with no `StateUpdate` ever
 		// returned for it. `advanceStateSeq()` sits AFTER the throwing step
@@ -545,7 +555,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// here — a restore right now would just take the Checkpoint outright
 		// (the tie rule) and hide the drift; it only surfaces once a LATER
 		// successful call moves `stateSeq` past it, below.
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPQTurn)
 
 		// The peer just re-rides the SAME staple on its next frame — Bob's
 		// `.skip` path applies no further PQ delta of its own, so
@@ -559,7 +569,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// The sticky invariant catches the manifest drift and upgrades this
 		// call's own kind, even though its own before/after snapshot saw
 		// none — this assertion is exactly what would fail without it.
-		XCTAssertEqual(decrypted.update.kind, .checkpoint)
+		#expect(decrypted.update.kind == .checkpoint)
 
 		// What the app would be left holding WITHOUT the sticky invariant:
 		// the SAME live state as `decrypted.update`, but encoded as a bare
@@ -568,13 +578,11 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// Checkpoint above, which is still pre-bind. Pairing them is exactly
 		// the un-reconcilable state described above.
 		let coreWithoutStickyFix = try bob.makeSessionArchive(kind: .core)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
 				core: coreWithoutStickyFix, checkpoint: lastSavedCheckpoint,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 
 		// The real cadence's own return instead restores cleanly, and the
@@ -583,11 +591,11 @@ final class SessionReturnCadenceTests: XCTestCase {
 			core: nil, checkpoint: try sealAndOpen(decrypted.update.archive),
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertTrue(restoredBob.isFullyEstablished)
+		#expect(restoredBob.isFullyEstablished)
 
 		_ = try restoredBob.prepareToEncrypt()
 		let post = try restoredBob.encrypt(Data("post-repair".utf8))
 		let final = try alice.processIncomingDecrypted(post.frame)
-		XCTAssertEqual(final.applicationMessage, Data("post-repair".utf8))
+		#expect(final.applicationMessage == Data("post-repair".utf8))
 	}
 }

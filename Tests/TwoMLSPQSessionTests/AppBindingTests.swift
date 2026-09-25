@@ -5,8 +5,8 @@ import MLSCrypto
 import MLSExtensions
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -20,8 +20,7 @@ import XCTest
 /// `test_initiate_rejects_empty_app_binding`,
 /// `test_welcome_with_pq_half_binding_rejected`), ported to this module's own
 /// identity-based establishment primitives.
-@available(iOS 26, macOS 26, *)
-final class AppBindingTests: XCTestCase {
+@Suite struct AppBindingTests {
 	private static let binding = Data("relationship-digest".utf8)
 
 	// MARK: - Codec
@@ -32,56 +31,57 @@ final class AppBindingTests: XCTestCase {
 	/// 3-byte payload round-trips as exactly 4 bytes, byte-matching the Rust
 	/// reference's `AppBinding { data: Vec<u8> }` (`mls_rs_codec::byte_vec`
 	/// uses the same varint-length-prefixed encoding).
-	func testAppBindingWireShapeIsLengthPrefixedNotRawDigest() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func appBindingWireShapeIsLengthPrefixedNotRawDigest() throws {
 		let encoded = try AppBinding(data: Data([1, 2, 3])).mlsEncoded()
-		XCTAssertEqual(encoded, Data([3, 1, 2, 3]))
+		#expect(encoded == Data([3, 1, 2, 3]))
 
 		var reader = MLS.Reader(encoded)
 		let decoded = try AppBinding(from: &reader)
 		try reader.finish()
-		XCTAssertEqual(decoded.data, Data([1, 2, 3]))
+		#expect(decoded.data == Data([1, 2, 3]))
 	}
 
 	/// `AppBinding.read`: `nil` when absent, the bytes when present, and
 	/// NEVER `nil` for a corrupt extension — trailing bytes throw
 	/// `.appBindingMismatch` rather than silently reading back as "unbound"
 	/// (mirrors `APQInfo.read`'s same rule).
-	func testAppBindingReadIsNilWhenAbsentAndNeverNilWhenCorrupt() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func appBindingReadIsNilWhenAbsentAndNeverNilWhenCorrupt() throws {
 		let emptyContext = MLS.RFC9420.GroupContext(
 			version: .mls10,
 			cipherSuite: SessionTestSupport.classicalProvider.cipherSuite,
 			groupID: Data([1]), epoch: 0, treeHash: Data(),
 			confirmedTranscriptHash: Data(),
 			extensions: [])
-		XCTAssertNil(try AppBinding.read(fromExtensionsOf: emptyContext))
+		#expect(try AppBinding.read(fromExtensionsOf: emptyContext) == nil)
 
 		let goodExtension = try AppBinding(data: Self.binding).asExtension()
 		var boundContext = emptyContext
 		boundContext.extensions = [goodExtension]
-		XCTAssertEqual(try AppBinding.read(fromExtensionsOf: boundContext), Self.binding)
+		#expect(try AppBinding.read(fromExtensionsOf: boundContext) == Self.binding)
 
 		// Trailing bytes after the declared opaque length: undecodable, not absent.
 		var truncatedExtension = goodExtension
 		truncatedExtension.data.append(0xFF)
 		var corruptContext = emptyContext
 		corruptContext.extensions = [truncatedExtension]
-		XCTAssertThrowsError(try AppBinding.read(fromExtensionsOf: corruptContext)) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
+		#expect(throws: TwoMLSError.appBindingMismatch) {
+			try AppBinding.read(fromExtensionsOf: corruptContext)
 		}
 
 		// A duplicate `0xF0A2` extension is not a legitimate shape either.
 		var duplicateContext = emptyContext
 		duplicateContext.extensions = [goodExtension, goodExtension]
-		XCTAssertThrowsError(try AppBinding.read(fromExtensionsOf: duplicateContext)) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
+		#expect(throws: TwoMLSError.appBindingMismatch) {
+			try AppBinding.read(fromExtensionsOf: duplicateContext)
 		}
 	}
 
 	// MARK: - `verifyAppBinding` / `verifyPQHalfUnbound`
 
-	func testVerifyAppBindingIsExactAndSymmetric() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func verifyAppBindingIsExactAndSymmetric() throws {
 		let solo = try SessionTestSupport.identity("solo-verify")
 		let provider = SessionTestSupport.classicalProvider
 
@@ -91,13 +91,14 @@ final class AppBindingTests: XCTestCase {
 			leafSecretKey: solo.classicalLeafSecretKey,
 			extensions: [try AppBinding(data: Self.binding).asExtension()],
 			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
-		XCTAssertNoThrow(try verifyAppBinding(boundGroup, expected: Self.binding))
-		XCTAssertThrowsError(try verifyAppBinding(boundGroup, expected: Data("other".utf8)))
-		{
-			XCTAssertEqual($0 as? TwoMLSError, .appBindingMismatch)
+		#expect(throws: Never.self) {
+			try verifyAppBinding(boundGroup, expected: Self.binding)
 		}
-		XCTAssertThrowsError(try verifyAppBinding(boundGroup, expected: nil)) {
-			XCTAssertEqual($0 as? TwoMLSError, .appBindingMismatch)
+		#expect(throws: TwoMLSError.appBindingMismatch) {
+			try verifyAppBinding(boundGroup, expected: Data("other".utf8))
+		}
+		#expect(throws: TwoMLSError.appBindingMismatch) {
+			try verifyAppBinding(boundGroup, expected: nil)
 		}
 
 		let unboundGroup = try MLS.RFC9420.Group.create(
@@ -105,9 +106,9 @@ final class AppBindingTests: XCTestCase {
 			leafNode: solo.keyPackage.classical.leafNode,
 			leafSecretKey: solo.classicalLeafSecretKey, extensions: [],
 			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
-		XCTAssertNoThrow(try verifyAppBinding(unboundGroup, expected: nil))
-		XCTAssertThrowsError(try verifyAppBinding(unboundGroup, expected: Self.binding)) {
-			XCTAssertEqual($0 as? TwoMLSError, .appBindingMismatch)
+		#expect(throws: Never.self) { try verifyAppBinding(unboundGroup, expected: nil) }
+		#expect(throws: TwoMLSError.appBindingMismatch) {
+			try verifyAppBinding(unboundGroup, expected: Self.binding)
 		}
 	}
 
@@ -117,7 +118,8 @@ final class AppBindingTests: XCTestCase {
 	/// group both pass. Mirrors Rust's `test_welcome_with_pq_half_binding_rejected`
 	/// at the level of the primitive it turns on, per the brief: "construct a
 	/// Group with a 0xF0A2 on a PQ half."
-	func testVerifyPQHalfUnboundRejectsASmuggledBinding() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func verifyPQHalfUnboundRejectsASmuggledBinding() throws {
 		let solo = try SessionTestSupport.identity("solo-pq")
 		let provider = SessionTestSupport.pqProvider
 
@@ -127,8 +129,8 @@ final class AppBindingTests: XCTestCase {
 			leafNode: solo.keyPackage.pq.leafNode, leafSecretKey: solo.pqLeafSecretKey,
 			extensions: [smuggledExtension],
 			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
-		XCTAssertThrowsError(try verifyPQHalfUnbound(smuggledGroup)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
+		#expect(throws: TwoMLSError.appBindingMismatch) {
+			try verifyPQHalfUnbound(smuggledGroup)
 		}
 
 		let cleanGroup = try MLS.RFC9420.Group.create(
@@ -136,8 +138,8 @@ final class AppBindingTests: XCTestCase {
 			leafNode: solo.keyPackage.pq.leafNode, leafSecretKey: solo.pqLeafSecretKey,
 			extensions: [], epochSecret: SecretBytes(randomByteCount: provider.hashSize)
 		)
-		XCTAssertNoThrow(try verifyPQHalfUnbound(cleanGroup))
-		XCTAssertNoThrow(try verifyPQHalfUnbound(nil))
+		#expect(throws: Never.self) { try verifyPQHalfUnbound(cleanGroup) }
+		#expect(throws: Never.self) { try verifyPQHalfUnbound(nil) }
 	}
 
 	/// End-to-end counterpart of the unit test above: a crafted `APQWelcome`
@@ -152,7 +154,8 @@ final class AppBindingTests: XCTestCase {
 	/// exposes `classicalExtraExtensions`, with no PQ-half seam a wired
 	/// caller could ever misuse this way), so the smuggled shape is one a
 	/// wired initiator can never itself produce.
-	func testReceiveRejectsAWelcomeWithASmuggledPQHalfBinding() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func receiveRejectsAWelcomeWithASmuggledPQHalfBinding() throws {
 		let alice = try SessionTestSupport.identity("pq-smuggle-alice")
 		let bob = try SessionTestSupport.identity("pq-smuggle-bob")
 		let classicalProvider = SessionTestSupport.classicalProvider
@@ -191,7 +194,8 @@ final class AppBindingTests: XCTestCase {
 				psk: { _ in nil })
 			let pqAdopted = pqTransition.group
 			let pqSent = pqTransition.takeOutput()
-			let pqWelcome = try XCTUnwrap(pqSent.welcome)
+			let rawPqWelcome = pqSent.welcome
+			let pqWelcome = try #require(rawPqWelcome)
 			var pqGroup = try pqSent.takePending().apply(onto: pqAdopted).group
 
 			let apqPSK = try MLS.Combiner.ExportedPsk.export(
@@ -221,7 +225,8 @@ final class AppBindingTests: XCTestCase {
 				psk: pskStore.resolver())
 			let tAdopted = tTransition.group
 			let tSent = tTransition.takeOutput()
-			let tWelcome = try XCTUnwrap(tSent.welcome)
+			let rawTWelcome = tSent.welcome
+			let tWelcome = try #require(rawTWelcome)
 			_ = try tSent.takePending().apply(onto: tAdopted)
 
 			let crafted = Frames.encodeAPQWelcome(
@@ -229,7 +234,7 @@ final class AppBindingTests: XCTestCase {
 				pq: try EstablishmentMessages.encodeWelcome(pqWelcome))
 
 			// The REAL join path — not just `verifyPQHalfUnbound` in isolation.
-			XCTAssertThrowsError(
+			#expect(throws: TwoMLSError.appBindingMismatch) {
 				try TwoMLSSession.receive(
 					identity: bob, welcome: crafted,
 					theirClassicalKeyPackage: alice.keyPackage.classical,
@@ -237,8 +242,6 @@ final class AppBindingTests: XCTestCase {
 					classicalProvider: classicalProvider,
 					pqProvider: pqProvider,
 					expectedAppBinding: Self.binding)
-			) { error in
-				XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
 			}
 		}
 	}
@@ -249,25 +252,27 @@ final class AppBindingTests: XCTestCase {
 	/// a leaf whose `Capabilities.extensions` lacks `0xF0A2` — a
 	/// pre-AppBinding-cut key package — and accept this module's own leaves
 	/// (which always advertise it, `TwoMLSIdentity.leafCapabilities`).
-	func testLeafAdvertHelpersRejectAnUncapableLeaf() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func leafAdvertHelpersRejectAnUncapableLeaf() throws {
 		let capable = try SessionTestSupport.identity("capable")
 		let rogue = try Self.rogueClassicalKeyPackage(clientID: Data("rogue".utf8))
 
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try ensureAppBindingLeafAdvert(
 				founder: capable.keyPackage.classical.leafNode,
-				peer: capable.keyPackage.classical.leafNode))
-		XCTAssertThrowsError(
+				peer: capable.keyPackage.classical.leafNode)
+		}
+		#expect(throws: TwoMLSError.appBindingLeafUnadvertised) {
 			try ensureAppBindingLeafAdvert(
 				founder: capable.keyPackage.classical.leafNode, peer: rogue.leafNode
 			)
-		) { XCTAssertEqual($0 as? TwoMLSError, .appBindingLeafUnadvertised) }
+		}
 
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try ensureAppBindingCreatorLeafAdvert(capable.keyPackage.classical.leafNode)
-		)
-		XCTAssertThrowsError(try ensureAppBindingCreatorLeafAdvert(rogue.leafNode)) {
-			XCTAssertEqual($0 as? TwoMLSError, .appBindingLeafUnadvertised)
+		}
+		#expect(throws: TwoMLSError.appBindingLeafUnadvertised) {
+			try ensureAppBindingCreatorLeafAdvert(rogue.leafNode)
 		}
 	}
 
@@ -279,7 +284,8 @@ final class AppBindingTests: XCTestCase {
 	/// The same peer key package is perfectly fine for an UNBOUND session
 	/// (`appBinding: nil`), matching Rust's
 	/// `test_binding_group_rejects_uncapable_key_package`'s "control" case.
-	func testInitiateRejectsAPeerKeyPackageNotAdvertisingAppBindingOnlyWhenBound() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func initiateRejectsAPeerKeyPackageNotAdvertisingAppBindingOnlyWhenBound() throws {
 		let alice = try SessionTestSupport.identity("as-alice-rogue-peer")
 		let rogueClassical = try Self.rogueClassicalKeyPackage(
 			clientID: Data("rogue-bob".utf8))
@@ -287,22 +293,21 @@ final class AppBindingTests: XCTestCase {
 		let theirs = CombinerKeyPackage(
 			classical: rogueClassical, pq: rogueBob.keyPackage.pq)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.appBindingLeafUnadvertised) {
 			try TwoMLSSession.initiate(
 				identity: alice, their: theirs,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider, appBinding: Self.binding)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingLeafUnadvertised)
 		}
 
 		// Control: the very same rogue peer key package still founds a bare
 		// (unbound) Group_A just fine.
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try TwoMLSSession.initiate(
 				identity: alice, their: theirs,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider))
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// Rule 8's tail (group-rules.md:77-78): "Leaves advertise the extension
@@ -320,16 +325,16 @@ final class AppBindingTests: XCTestCase {
 	/// binding) rejects it; the identical forgery into an UNBOUND acceptor's
 	/// send group is accepted — the gate is binding-conditional, not
 	/// unconditional.
-	func testQueueProposalRejectsAnUncapableReplacementLeafOnlyWhenGroupIsBound() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func queueProposalRejectsAnUncapableReplacementLeafOnlyWhenGroupIsBound() throws {
 		let bound = try Self.forgedUncapableUpdate(
 			appBinding: Self.binding, suffix: "bound")
 		var boundCommitter = bound.committer
 		boundCommitter.offeredProposal = (
 			digest: bound.digest, proposing: bound.proposingID, message: bound.message
 		)
-		XCTAssertThrowsError(try boundCommitter.queueProposal(digest: bound.digest)) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingLeafUnadvertised)
+		#expect(throws: TwoMLSError.appBindingLeafUnadvertised) {
+			try boundCommitter.queueProposal(digest: bound.digest)
 		}
 
 		let unbound = try Self.forgedUncapableUpdate(appBinding: nil, suffix: "unbound")
@@ -338,7 +343,9 @@ final class AppBindingTests: XCTestCase {
 			digest: unbound.digest, proposing: unbound.proposingID,
 			message: unbound.message
 		)
-		XCTAssertNoThrow(try unboundCommitter.queueProposal(digest: unbound.digest))
+		#expect(throws: Never.self) {
+			try unboundCommitter.queueProposal(digest: unbound.digest)
+		}
 	}
 
 	// MARK: - Establishment round trip
@@ -350,7 +357,8 @@ final class AppBindingTests: XCTestCase {
 	/// back the same bytes (mirrors Rust's `app_binding` round-trip, and
 	/// exercises the initiator's return-welcome verification, book
 	/// group-rules.md rule 8).
-	func testAppBindingRoundTripsThroughEstablishmentAndExchange() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func appBindingRoundTripsThroughEstablishmentAndExchange() throws {
 		let alice = try SessionTestSupport.identity("bound-alice")
 		let bob = try SessionTestSupport.identity("bound-bob")
 
@@ -367,23 +375,24 @@ final class AppBindingTests: XCTestCase {
 
 		var aliceSession = initiated.session
 		var bobSession = received.session
-		XCTAssertEqual(try bobSession.appBinding(), Self.binding)
+		#expect(try bobSession.appBinding() == Self.binding)
 
 		_ = try bobSession.prepareToEncrypt()
 		let bobFrame = try bobSession.encrypt(Data("bob-hello".utf8)).frame
 		_ = try aliceSession.processIncomingDecrypted(bobFrame)
-		XCTAssertTrue(aliceSession.isEstablished)
-		XCTAssertEqual(try aliceSession.appBinding(), Self.binding)
+		#expect(aliceSession.isEstablished)
+		#expect(try aliceSession.appBinding() == Self.binding)
 	}
 
 	/// The control case: no `appBinding` on either side reads back `nil` on
 	/// both, and establishment/exchange proceeds exactly as an ordinary
 	/// unbound session.
-	func testUnboundSessionReadsBackNilOnBothSides() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func unboundSessionReadsBackNilOnBothSides() throws {
 		let (alice, bob) = try SessionTestSupport.establishedAndExchanged(
 			alice: "unbound-alice", bob: "unbound-bob")
-		XCTAssertNil(try alice.appBinding())
-		XCTAssertNil(try bob.appBinding())
+		#expect(try alice.appBinding() == nil)
+		#expect(try bob.appBinding() == nil)
 	}
 
 	// MARK: - `receive`/`Invitation.receive` verification
@@ -393,7 +402,8 @@ final class AppBindingTests: XCTestCase {
 	/// honest `receive` with the correct expectation still succeeds (book
 	/// group-rules.md rule 8, "raised before any invitation state is
 	/// claimed").
-	func testInvitationReceiveRejectsMismatchBeforeConsumptionAndStaysReusable() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func invitationReceiveRejectsMismatchBeforeConsumptionAndStaysReusable() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("mismatch-alice".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -403,13 +413,13 @@ final class AppBindingTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
-		let theirCombinerKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let theirCombinerKP = try #require(invitation.combinerKeyPackage)
 
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirCombinerKP, appBinding: Self.binding)
 		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.appBindingMismatch) {
 			try invitation.receive(
 				welcome: initiated.welcome,
 				theirClassicalKeyPackage: initiated.session.identity.keyPackage
@@ -418,8 +428,6 @@ final class AppBindingTests: XCTestCase {
 					.bootstrapKPCommitment(),
 				spawnToken: spawnToken,
 				expectedAppBinding: Data("wrong-digest".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
 		}
 		// CODE FIX 2: `generateInvitation(lastResort: true)` never nils
 		// `identity`, so `combinerKeyPackage != nil` would pass here
@@ -427,11 +435,11 @@ final class AppBindingTests: XCTestCase {
 		// the invitation's OWN tables instead: neither the digest-keyed nor
 		// the token-keyed table a successful `receive` would have written
 		// got written.
-		XCTAssertNil(
-			invitation.processedWelcomeGroupID(welcome: initiated.welcome),
+		#expect(
+			invitation.processedWelcomeGroupID(welcome: initiated.welcome) == nil,
 			"a rejected welcome must not be recorded as processed")
-		XCTAssertNil(
-			invitation.forwardGroupID(spawnToken: spawnToken),
+		#expect(
+			invitation.forwardGroupID(spawnToken: spawnToken) == nil,
 			"a rejected welcome must not claim its spawn token")
 
 		// The same welcome, now with the CORRECT expectation, still receives.
@@ -440,8 +448,8 @@ final class AppBindingTests: XCTestCase {
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
 			spawnToken: spawnToken, expectedAppBinding: Self.binding)
-		XCTAssertTrue(received.session.isEstablished)
-		XCTAssertEqual(try received.session.appBinding(), Self.binding)
+		#expect(received.session.isEstablished)
+		#expect(try received.session.appBinding() == Self.binding)
 	}
 
 	/// The `lastResort` invitation above can never tell a claim-nothing
@@ -451,7 +459,8 @@ final class AppBindingTests: XCTestCase {
 	/// `receive` (`Invitation.receive`'s `if !lastResort { next.identity =
 	/// nil }`) — so asserting it stays non-nil after a REJECTED one here
 	/// actually proves the KP was never consumed.
-	func testInvitationReceiveRejectsMismatchLeavesASingleUseKeyPackageUnconsumed() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func invitationReceiveRejectsMismatchLeavesASingleUseKeyPackageUnconsumed() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("single-use-mismatch-alice".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -461,13 +470,13 @@ final class AppBindingTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
-		let theirCombinerKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let theirCombinerKP = try #require(invitation.combinerKeyPackage)
 
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirCombinerKP, appBinding: Self.binding)
 		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.appBindingMismatch) {
 			try invitation.receive(
 				welcome: initiated.welcome,
 				theirClassicalKeyPackage: initiated.session.identity.keyPackage
@@ -476,11 +485,9 @@ final class AppBindingTests: XCTestCase {
 					.bootstrapKPCommitment(),
 				spawnToken: spawnToken,
 				expectedAppBinding: Data("wrong-digest".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
 		}
-		XCTAssertNotNil(
-			invitation.combinerKeyPackage,
+		#expect(
+			invitation.combinerKeyPackage != nil,
 			"a single-use invitation's KP must remain unconsumed by a rejected receive"
 		)
 
@@ -490,12 +497,13 @@ final class AppBindingTests: XCTestCase {
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
 			spawnToken: spawnToken, expectedAppBinding: Self.binding)
-		XCTAssertTrue(received.session.isEstablished)
-		XCTAssertNil(invitation.combinerKeyPackage)
+		#expect(received.session.isEstablished)
+		#expect(invitation.combinerKeyPackage == nil)
 	}
 
 	/// `Some` expected, welcome carries none — rejected.
-	func testReceiveRejectsMissingWhenExpected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func receiveRejectsMissingWhenExpected() throws {
 		let alice = try SessionTestSupport.identity("missing-alice")
 		let bob = try SessionTestSupport.identity("missing-bob")
 		let initiated = try TwoMLSSession.initiate(
@@ -503,7 +511,7 @@ final class AppBindingTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.appBindingMismatch) {
 			try TwoMLSSession.receive(
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
@@ -512,14 +520,13 @@ final class AppBindingTests: XCTestCase {
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider,
 				expectedAppBinding: Self.binding)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
 		}
 	}
 
 	/// Welcome carries a binding, expected `None` — rejected: a binding the
 	/// caller did not state is never silently accepted.
-	func testReceiveRejectsUnexpectedBinding() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func receiveRejectsUnexpectedBinding() throws {
 		let alice = try SessionTestSupport.identity("unexpected-alice")
 		let bob = try SessionTestSupport.identity("unexpected-bob")
 		let initiated = try TwoMLSSession.initiate(
@@ -527,7 +534,7 @@ final class AppBindingTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider, appBinding: Self.binding)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.appBindingMismatch) {
 			try TwoMLSSession.receive(
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
@@ -535,8 +542,6 @@ final class AppBindingTests: XCTestCase {
 					.bootstrapKPCommitment(),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
 		}
 	}
 
@@ -549,10 +554,11 @@ final class AppBindingTests: XCTestCase {
 	/// real ones (CODE FIX 4: the old version used a genuine welcome, which
 	/// the verifier would ALSO have rejected for the same error, so it could
 	/// not tell the two guards apart).
-	func testReceiveRejectsEmptyExpectation() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func receiveRejectsEmptyExpectation() throws {
 		let bob = try SessionTestSupport.identity("empty-expect-bob")
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.appBindingMismatch) {
 			try TwoMLSSession.receive(
 				identity: bob, welcome: Data("not-a-real-welcome".utf8),
 				theirClassicalKeyPackage: bob.keyPackage.classical,
@@ -560,8 +566,6 @@ final class AppBindingTests: XCTestCase {
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider,
 				expectedAppBinding: Data())
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
 		}
 	}
 
@@ -569,25 +573,24 @@ final class AppBindingTests: XCTestCase {
 
 	/// An EMPTY `appBinding` is rejected at `initiate`, before any group is
 	/// built — `None` is the deliberate unbound state, not an empty digest.
-	func testInitiateRejectsEmptyAppBinding() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func initiateRejectsEmptyAppBinding() throws {
 		let alice = try SessionTestSupport.identity("empty-initiate-alice")
 		let bob = try SessionTestSupport.identity("empty-initiate-bob")
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.appBindingMismatch) {
 			try TwoMLSSession.initiate(
 				identity: alice, their: bob.keyPackage,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider, appBinding: Data())
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
 		}
 		// The same identity/peer pair still establishes with a real binding.
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try TwoMLSSession.initiate(
 				identity: alice, their: bob.keyPackage,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider, appBinding: Self.binding)
-		)
+		}
 	}
 
 	// MARK: - Initiator return-welcome join
@@ -599,7 +602,8 @@ final class AppBindingTests: XCTestCase {
 	/// unjoined (mirrors Rust's
 	/// `test_return_welcome_without_app_binding_rejected`; hand-rolling below
 	/// mirrors `EstablishmentTests.forgedGroupBWelcome`'s technique).
-	func testReturnWelcomeWithoutAppBindingRejectedOnInitiatorSide() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func returnWelcomeWithoutAppBindingRejectedOnInitiatorSide() throws {
 		let alice = try SessionTestSupport.identity("strip-alice")
 		let bob = try SessionTestSupport.identity("strip-bob")
 		let provider = SessionTestSupport.classicalProvider
@@ -630,7 +634,7 @@ final class AppBindingTests: XCTestCase {
 		// (exported off a copy of her live Group_A, so the export leaf isn't
 		// consumed) but NO AppBinding — the strip a wired acceptor can never
 		// itself produce.
-		var groupACopy = try XCTUnwrap(aliceSession.sendGroup)
+		var groupACopy = try #require(aliceSession.sendGroup)
 		let crossPSK = try MLS.Combiner.ExportedPsk.export(
 			from: &groupACopy.classical, provider,
 			componentID: TwoMLSSession.crossPartyComponentID)
@@ -655,19 +659,18 @@ final class AppBindingTests: XCTestCase {
 		let forgedFrame = Frames.encodeMessageFrame(
 			staple: strippedStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try aliceSession.processIncomingDecrypted(forgedFrame)) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .appBindingMismatch)
+		#expect(throws: TwoMLSError.appBindingMismatch) {
+			try aliceSession.processIncomingDecrypted(forgedFrame)
 		}
-		XCTAssertNil(aliceSession.recvGroup)
-		XCTAssertNil(aliceSession.joinedWelcomeDigest)
+		#expect(aliceSession.recvGroup == nil)
+		#expect(aliceSession.joinedWelcomeDigest == nil)
 
 		// Bob's real, un-stripped first frame still joins cleanly afterward —
 		// value semantics leave nothing wedged (mirrors
 		// `testMalformedWelcomeStapleLeavesTheGenuineOneJoinable`).
 		let decrypted = try aliceSession.processIncomingDecrypted(genuineFrame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("genuine".utf8))
-		XCTAssertTrue(aliceSession.isEstablished)
+		#expect(decrypted.applicationMessage == Data("genuine".utf8))
+		#expect(aliceSession.isEstablished)
 	}
 
 	// MARK: - Archive restore
@@ -676,7 +679,8 @@ final class AppBindingTests: XCTestCase {
 	/// `appBinding()` reads back the same bytes after a restore, on both
 	/// roles; an unbound session's restore still reads back `nil` (mirrors
 	/// Rust's `test_app_binding_survives_archive_restore`).
-	func testAppBindingSurvivesArchiveRestore() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func appBindingSurvivesArchiveRestore() throws {
 		let alice = try SessionTestSupport.identity("restore-alice")
 		let bob = try SessionTestSupport.identity("restore-bob")
 		let initiated = try TwoMLSSession.initiate(
@@ -696,7 +700,7 @@ final class AppBindingTests: XCTestCase {
 			core: nil, checkpoint: checkpoint,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertEqual(try restoredBob.appBinding(), Self.binding)
+		#expect(try restoredBob.appBinding() == Self.binding)
 
 		// An unbound session's restore reads back `nil` on the same getter.
 		let (_, unboundBob, _, _, _, _) = try SessionTestSupport.established(
@@ -707,7 +711,7 @@ final class AppBindingTests: XCTestCase {
 			core: nil, checkpoint: unboundCheckpoint,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertNil(try restoredUnbound.appBinding())
+		#expect(try restoredUnbound.appBinding() == nil)
 	}
 
 	// MARK: - Test helpers
@@ -715,6 +719,12 @@ final class AppBindingTests: XCTestCase {
 	/// Capabilities matching a pre-AppBinding-cut leaf: both suites,
 	/// `APQInfo`, and `AppDataUpdate`, but NOT `0xF0A2` — standing in for an
 	/// old client build, shared by every rogue-leaf helper below.
+	///
+	/// `Capabilities` itself is not availability-gated, but its initializer
+	/// reads `TwoMLSSuite.classical`/`.pq`, which is (`@available(iOS 26,
+	/// macOS 26, *)` on `TwoMLSSuite`'s own declaration) — so this static
+	/// property needs the same gate, even though the stored TYPE doesn't.
+	@available(iOS 26, macOS 26, *)
 	private static let preCutCapabilities = MLS.RFC9420.Capabilities(
 		versions: [.mls10],
 		cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
@@ -728,6 +738,7 @@ final class AppBindingTests: XCTestCase {
 	/// credentials carry no proof (the leaf's signing key need not match any
 	/// real identity's), matching `EstablishmentTests.forgedGroupBWelcome`'s
 	/// same technique.
+	@available(iOS 26, macOS 26, *)
 	private static func rogueClassicalKeyPackage(clientID: Data) throws
 		-> MLS.RFC9420.KeyPackage
 	{
@@ -763,6 +774,7 @@ final class AppBindingTests: XCTestCase {
 	/// this is a plain non-rotating Update, never touching AS/successor
 	/// logic. Mirrors `EstablishmentTests.forgedGroupBWelcome`'s hand-rolling
 	/// technique one level down (a proposal instead of a welcome).
+	@available(iOS 26, macOS 26, *)
 	private static func forgedUncapableUpdate(appBinding: Data?, suffix: String) throws -> (
 		committer: TwoMLSSession, message: Data, digest: Data, proposingID: Data
 	) {
@@ -780,11 +792,11 @@ final class AppBindingTests: XCTestCase {
 			classicalProvider: provider, pqProvider: SessionTestSupport.pqProvider,
 			expectedAppBinding: appBinding)
 
-		let committerSend = try XCTUnwrap(received.session.sendGroup).classical
-		let aliceLeafIndex = try XCTUnwrap(
+		let committerSend = try #require(received.session.sendGroup).classical
+		let aliceLeafIndex = try #require(
 			committerSend.tree.nonBlankLeaves()
 				.first { $0.index != committerSend.myLeafIndex }?.index)
-		let realLeafRecord = try XCTUnwrap(committerSend.tree.leaf(at: aliceLeafIndex))
+		let realLeafRecord = try #require(committerSend.tree.leaf(at: aliceLeafIndex))
 		let realLeaf = try MLS.RFC9420.LeafNode(mlsEncoded: realLeafRecord.encoded)
 
 		let (_, rogueEncryptionKey) = try provider.hpkeGenerateKeyPair()

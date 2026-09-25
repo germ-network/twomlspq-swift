@@ -5,8 +5,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -18,8 +18,7 @@ import XCTest
 /// each covering both the 0x0008-missing and the 0xF0A1-missing variant,
 /// asserting `.leafCapabilityUnadvertised` and that the rejected leaf never
 /// took effect.
-@available(iOS 26, macOS 26, *)
-final class LeafCapabilityGateTests: XCTestCase {
+@Suite struct LeafCapabilityGateTests {
 
 	// MARK: - Rogue capability sets
 
@@ -30,6 +29,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 		case appDataUpdate  // missing 0x0008
 		case apqInfo  // missing 0xF0A1
 
+		@available(iOS 26, macOS 26, *)
 		var capabilities: MLS.RFC9420.Capabilities {
 			switch self {
 			case .appDataUpdate:
@@ -85,6 +85,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 	/// leafCapabilities` — built via the internal memberwise init (this
 	/// module's own `@testable` access), since the public `generate()`
 	/// factory always uses the real set.
+	@available(iOS 26, macOS 26, *)
 	private static func rogueIdentity(
 		_ name: String, capabilities: MLS.RFC9420.Capabilities
 	) throws -> TwoMLSIdentity {
@@ -95,6 +96,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 	/// The general form: classical and PQ halves may carry DIFFERENT
 	/// capability sets, so a caller can isolate which half's own gate it is
 	/// exercising.
+	@available(iOS 26, macOS 26, *)
 	private static func rogueIdentity(
 		_ name: String, classicalCapabilities: MLS.RFC9420.Capabilities,
 		pqCapabilities: MLS.RFC9420.Capabilities
@@ -136,6 +138,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 	/// — no `TwoMLSIdentity` behind it (Basic credentials carry no proof, so
 	/// this is enough to stand in for "what the caller CLAIMS the peer's
 	/// KeyPackage looks like").
+	@available(iOS 26, macOS 26, *)
 	private static func rogueClassicalKeyPackage(
 		_ name: String, capabilities: MLS.RFC9420.Capabilities
 	) throws -> MLS.RFC9420.KeyPackage {
@@ -160,6 +163,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 	/// `missing`'s rogue capabilities — credential and signature key stay
 	/// identical to Alice's real leaf, so this is a plain non-rotating
 	/// Update. Mirrors `AppBindingTests.forgedUncapableUpdate`'s technique.
+	@available(iOS 26, macOS 26, *)
 	private func forgedRogueUpdate(missing: MissingCapability) throws -> (
 		committer: TwoMLSSession, message: Data, digest: Data, proposingID: Data
 	) {
@@ -169,11 +173,11 @@ final class LeafCapabilityGateTests: XCTestCase {
 		var received = bob
 		_ = try received.prepareToEncrypt()
 
-		let committerSend = try XCTUnwrap(received.sendGroup).classical
-		let aliceLeafIndex = try XCTUnwrap(
+		let committerSend = try #require(received.sendGroup).classical
+		let aliceLeafIndex = try #require(
 			committerSend.tree.nonBlankLeaves()
 				.first { $0.index != committerSend.myLeafIndex }?.index)
-		let realLeafRecord = try XCTUnwrap(committerSend.tree.leaf(at: aliceLeafIndex))
+		let realLeafRecord = try #require(committerSend.tree.leaf(at: aliceLeafIndex))
 		let realLeaf = try MLS.RFC9420.LeafNode(mlsEncoded: realLeafRecord.encoded)
 
 		let (_, rogueEncryptionKey) = try provider.hpkeGenerateKeyPair()
@@ -182,7 +186,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 		rogueLeaf.capabilities = missing.capabilities
 		rogueLeaf.source = .update
 		guard case .basic(let aliceID) = realLeaf.credential else {
-			XCTFail("expected a Basic credential")
+			Issue.record("expected a Basic credential")
 			throw TwoMLSError.unsupportedCredential
 		}
 
@@ -227,7 +231,8 @@ final class LeafCapabilityGateTests: XCTestCase {
 	/// Offer approval: `validateOfferedUpdate` (via `queueProposal`) rejects a peer's
 	/// replacement leaf missing either codepoint, before `offeredProposal`
 	/// is ever cleared.
-	func testOfferApprovalRejectsCapabilityLessReplacementLeaf() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func offerApprovalRejectsCapabilityLessReplacementLeaf() throws {
 		for missing in MissingCapability.allCases {
 			let round = try forgedRogueUpdate(missing: missing)
 			var committer = round.committer
@@ -235,12 +240,11 @@ final class LeafCapabilityGateTests: XCTestCase {
 				digest: round.digest, proposing: round.proposingID,
 				message: round.message
 			)
-			XCTAssertThrowsError(try committer.queueProposal(digest: round.digest)) {
-				error in
-				XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)
+			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
+				try committer.queueProposal(digest: round.digest)
 			}
-			XCTAssertNotNil(committer.offeredProposal, "the rejected offer is restored")
-			XCTAssertNil(committer.queuedProposal)
+			#expect(committer.offeredProposal != nil, "the rejected offer is restored")
+			#expect(committer.queuedProposal == nil)
 		}
 	}
 
@@ -249,7 +253,8 @@ final class LeafCapabilityGateTests: XCTestCase {
 	/// `queuedProposal` injected directly, bypassing `queueProposal`'s own
 	/// gate, exactly as an already-approved-but-now-rogue offer would
 	/// reach this second check).
-	func testFoldCommitRejectsCapabilityLessFoldedLeaf() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func foldCommitRejectsCapabilityLessFoldedLeaf() throws {
 		for missing in MissingCapability.allCases {
 			let round = try forgedRogueUpdate(missing: missing)
 			var committer = round.committer
@@ -257,8 +262,8 @@ final class LeafCapabilityGateTests: XCTestCase {
 				digest: round.digest, proposing: round.proposingID,
 				message: round.message
 			)
-			XCTAssertThrowsError(try committer.prepareToEncrypt()) { error in
-				XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)
+			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
+				try committer.prepareToEncrypt()
 			}
 			// The queued fold is DROPPED, not left silently re-triable — the
 			// commit that would have folded it never landed. (This fold is
@@ -266,12 +271,13 @@ final class LeafCapabilityGateTests: XCTestCase {
 			// the revoke-on-failure behavior itself is
 			// `testInjectedInvalidQueuedProposalIsWithdrawnOnFailureAndRecovers`'s
 			// own job.)
-			XCTAssertNil(committer.queuedProposal)
+			#expect(committer.queuedProposal == nil)
 		}
 	}
 
 	// MARK: - `initiate`'s peer KeyPackage halves
 
+	@available(iOS 26, macOS 26, *)
 	private static func rogueBobPQKeyPackage(
 		_ name: String, capabilities: MLS.RFC9420.Capabilities
 	) throws -> MLS.RFC9420.KeyPackage {
@@ -290,7 +296,8 @@ final class LeafCapabilityGateTests: XCTestCase {
 	/// Each half is checked independently: a rogue CLASSICAL half with a
 	/// well-capable PQ half still throws, and vice versa — proving neither
 	/// of `initiate`'s two checks can silently ride on the other.
-	func testInitiateRejectsACapabilityLessPeerKeyPackage() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func initiateRejectsACapabilityLessPeerKeyPackage() throws {
 		for missing in MissingCapability.allCases {
 			let bobName = "cap-gate-s3-bob-\(missing)"
 			let wellCapablePQ = try Self.rogueBobPQKeyPackage(
@@ -302,37 +309,34 @@ final class LeafCapabilityGateTests: XCTestCase {
 				bobName, capabilities: missing.capabilities)
 			let alice1 = try SessionTestSupport.identity(
 				"cap-gate-s3-alice1-\(missing)")
-			XCTAssertThrowsError(
+			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
 				try TwoMLSSession.initiate(
 					identity: alice1,
 					their: CombinerKeyPackage(
 						classical: rogueClassical, pq: wellCapablePQ),
 					classicalProvider: SessionTestSupport.classicalProvider,
 					pqProvider: SessionTestSupport.pqProvider)
-			) { error in
-				XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)
 			}
 
 			let roguePQ = try Self.rogueBobPQKeyPackage(
 				bobName, capabilities: missing.capabilities)
 			let alice2 = try SessionTestSupport.identity(
 				"cap-gate-s3-alice2-\(missing)")
-			XCTAssertThrowsError(
+			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
 				try TwoMLSSession.initiate(
 					identity: alice2,
 					their: CombinerKeyPackage(
 						classical: wellCapableClassical, pq: roguePQ),
 					classicalProvider: SessionTestSupport.classicalProvider,
 					pqProvider: SessionTestSupport.pqProvider)
-			) { error in
-				XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)
 			}
 		}
 	}
 
 	// MARK: - `receive`'s caller-supplied `theirClassicalKeyPackage`
 
-	func testReceiveRejectsACapabilityLessTheirClassicalKeyPackageClaim() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func receiveRejectsACapabilityLessTheirClassicalKeyPackageClaim() throws {
 		for missing in MissingCapability.allCases {
 			let aliceName = "cap-gate-s4-alice-\(missing)"
 			let alice = try SessionTestSupport.identity(aliceName)
@@ -344,7 +348,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 			let rogueClaim = try Self.rogueClassicalKeyPackage(
 				aliceName, capabilities: missing.capabilities)
 
-			XCTAssertThrowsError(
+			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
 				try TwoMLSSession.receive(
 					identity: bob, welcome: initiated.welcome,
 					theirClassicalKeyPackage: rogueClaim,
@@ -352,15 +356,14 @@ final class LeafCapabilityGateTests: XCTestCase {
 						.bootstrapKPCommitment(),
 					classicalProvider: SessionTestSupport.classicalProvider,
 					pqProvider: SessionTestSupport.pqProvider)
-			) { error in
-				XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)
 			}
 		}
 	}
 
 	// MARK: - `pqBootstrapRespond`'s incoming KP′
 
-	func testPqBootstrapRespondRejectsACapabilityLessKPPrime() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func pqBootstrapRespondRejectsACapabilityLessKPPrime() throws {
 		for missing in MissingCapability.allCases {
 			var (alice, bob, _, _, _, _) = try SessionTestSupport.established(
 				alice: "cap-gate-s5-alice-\(missing)",
@@ -398,24 +401,26 @@ final class LeafCapabilityGateTests: XCTestCase {
 			_ = try initiatedSession.processIncomingDecrypted(frame)
 
 			let inbound = Frames.encodePQBootstrapKP(rogueKPBytes)
-			XCTAssertThrowsError(try received.pqBootstrapRespond(inbound)) { error in
-				XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)
+			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
+				try received.pqBootstrapRespond(inbound)
 			}
-			XCTAssertNil(received.sendGroup?.pq, "Group_B.pq was never founded")
+			#expect(received.sendGroup?.pq == nil, "Group_B.pq was never founded")
 		}
 	}
 
 	// MARK: - `pqRekeyRespond`'s proposed Upd′
 
-	func testPqRekeyRespondRejectsACapabilityLessUpdPrime() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func pqRekeyRespondRejectsACapabilityLessUpdPrime() throws {
 		for missing in MissingCapability.allCases {
 			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 			_ = alice
 
-			var mirror = try XCTUnwrap(bob.recvGroup)
+			let mirror = try #require(bob.recvGroup)
+			var pq = try #require(mirror.pq)
 			let (freshSigningKey, freshSignatureKey) =
 				try TwoMLSIdentity.mintSignatureKeypair()
-			let (message, _) = try mirror.pq!.proposeUpdate(
+			let (message, _) = try pq.proposeUpdate(
 				SessionTestSupport.pqProvider,
 				sign: MLS.RFC9420.signingClosure(
 					SessionTestSupport.pqProvider,
@@ -428,12 +433,12 @@ final class LeafCapabilityGateTests: XCTestCase {
 			// mirrors the offer-approval/fold-commit forged-leaf technique one layer down (a PQ
 			// proposal instead of classical).
 			guard case .publicMessage(var proposalPub) = message else {
-				XCTFail("expected a publicMessage-framed Upd′")
+				Issue.record("expected a publicMessage-framed Upd′")
 				return
 			}
 			guard case .proposal(.update(var rogueLeaf)) = proposalPub.content.content
 			else {
-				XCTFail("expected an .update proposal")
+				Issue.record("expected an .update proposal")
 				return
 			}
 			rogueLeaf.capabilities = missing.capabilities
@@ -442,22 +447,22 @@ final class LeafCapabilityGateTests: XCTestCase {
 				label: "LeafNodeTBS",
 				content: try rogueLeaf.toBeSigned(
 					placement: .inGroup(
-						groupID: mirror.pq!.context.groupID,
-						leafIndex: mirror.pq!.myLeafIndex)))
+						groupID: pq.context.groupID,
+						leafIndex: pq.myLeafIndex)))
 			proposalPub.content.content = .proposal(.update(rogueLeaf))
 			proposalPub = try MLS.RFC9420.protectPublic(
 				SessionTestSupport.pqProvider, content: proposalPub.content,
-				groupContext: mirror.pq!.context, confirmationTag: nil,
+				groupContext: pq.context, confirmationTag: nil,
 				signingKey: try bob.recvPQSigningKey(),
-				membershipKey: mirror.pq!.epoch.membershipKey)
+				membershipKey: pq.epoch.membershipKey)
 			let updBytes = try MLS.RFC9420.Message.publicMessage(proposalPub)
 				.mlsEncoded()
 			let frame = Frames.encodePQRekeyUpd(updBytes)
 
-			XCTAssertThrowsError(try alice.pqRekeyRespond(frame)) { error in
-				XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)
+			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
+				try alice.pqRekeyRespond(frame)
 			}
-			XCTAssertNil(alice.pqInflight)
+			#expect(alice.pqInflight == nil)
 		}
 	}
 
@@ -471,7 +476,8 @@ final class LeafCapabilityGateTests: XCTestCase {
 	/// supplied to `receive` is a SEPARATE, fully-capable claim for the
 	/// same id, so only the Group_A join check on the REAL joined tree leaf can catch
 	/// this.
-	func testGroupAJoinRejectsACapabilityLessCreatorLeaf() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func groupAJoinRejectsACapabilityLessCreatorLeaf() throws {
 		// `.appDataUpdate` alone is unreachable here: `establishFull`'s own
 		// founding commit carries the `AppDataUpdate` attestation, and
 		// swift-mls's own proposal-type-support enforcement
@@ -497,6 +503,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 		}
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private func assertR1Rejects(_ aliceRogue: TwoMLSIdentity, suffix: String) throws {
 		let bob = try SessionTestSupport.identity("cap-gate-\(suffix)-bob")
 		// `initiate` mints its own clean founding leaves by default, so a
@@ -528,7 +535,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 		let wellCapableClaim = try Self.rogueClassicalKeyPackage(
 			"cap-gate-\(suffix)", capabilities: TwoMLSIdentity.leafCapabilities)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
 			try TwoMLSSession.receive(
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: wellCapableClaim,
@@ -536,8 +543,6 @@ final class LeafCapabilityGateTests: XCTestCase {
 					.bootstrapKPCommitment(),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)
 		}
 	}
 
@@ -547,6 +552,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 	/// `EstablishmentTests.forgedGroupBWelcome`, but the creator leaf
 	/// carries rogue capabilities and a REAL cross-party PSK rides it (so
 	/// `.missingCrossPartyPSK` never fires first) — isolating the Group_B join check.
+	@available(iOS 26, macOS 26, *)
 	private func forgedRogueGroupBWelcome(
 		creatorName: String, adding joinerKP: MLS.RFC9420.KeyPackage,
 		crossPSK: MLS.Combiner.ExportedPsk, capabilities: MLS.RFC9420.Capabilities
@@ -601,7 +607,8 @@ final class LeafCapabilityGateTests: XCTestCase {
 		}
 	}
 
-	func testGroupBJoinRejectsACapabilityLessCreatorLeaf() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func groupBJoinRejectsACapabilityLessCreatorLeaf() throws {
 		for missing in MissingCapability.allCases {
 			var (alice, bob, aliceIdentity, _, _, _) =
 				try SessionTestSupport.established(
@@ -613,7 +620,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 				alice.openOrRaw(genuineFrame))
 
 			guard var groupA = alice.sendGroup else {
-				XCTFail("expected alice's Group_A")
+				Issue.record("expected alice's Group_A")
 				return
 			}
 			let crossPSK = try MLS.Combiner.ExportedPsk.export(
@@ -630,10 +637,10 @@ final class LeafCapabilityGateTests: XCTestCase {
 			let forgedFrame = Frames.encodeMessageFrame(
 				staple: forgedStaple, proposal: proposalSection, app: appSection)
 
-			XCTAssertThrowsError(try alice.processIncoming(forgedFrame)) { error in
-				XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)
+			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
+				try alice.processIncoming(forgedFrame)
 			}
-			XCTAssertNil(alice.recvGroup, "the rogue join never landed")
+			#expect(alice.recvGroup == nil, "the rogue join never landed")
 		}
 	}
 
@@ -653,7 +660,8 @@ final class LeafCapabilityGateTests: XCTestCase {
 	/// itself, so this reaches `pqBootstrapRespond` unblocked, and only the
 	/// Group_B.pq join check, on Alice's side, catches the rogue creator
 	/// leaf she just joined.
-	func testGroupBPQJoinRejectsACapabilityLessCreatorLeaf() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func groupBPQJoinRejectsACapabilityLessCreatorLeaf() throws {
 		for missing in MissingCapability.allCases {
 			var (aliceSession, bobSession, aliceIdentity, bobIdentity, _, _) =
 				try SessionTestSupport.established(
@@ -686,11 +694,10 @@ final class LeafCapabilityGateTests: XCTestCase {
 			let welcomeFrame = try bobSession.pqBootstrapRespond(
 				kpFrame, founding: rogueFounding
 			).frame
-			XCTAssertThrowsError(try aliceSession.pqBootstrapJoin(welcomeFrame)) {
-				error in
-				XCTAssertEqual(error as? TwoMLSError, .leafCapabilityUnadvertised)
+			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
+				try aliceSession.pqBootstrapJoin(welcomeFrame)
 			}
-			XCTAssertNil(aliceSession.recvGroup?.pq, "the rogue join never landed")
+			#expect(aliceSession.recvGroup?.pq == nil, "the rogue join never landed")
 		}
 	}
 
@@ -698,6 +705,7 @@ final class LeafCapabilityGateTests: XCTestCase {
 	/// key but with `capabilities` swapped for the rogue set — same id,
 	/// same encryption/signature keys, so `leafKeys.sendPQ.current`
 	/// (already seeded from the real pair) still matches.
+	@available(iOS 26, macOS 26, *)
 	private static func rogueSignedPQLeaf(
 		_ identity: TwoMLSIdentity, capabilities: MLS.RFC9420.Capabilities
 	) throws -> MLS.RFC9420.KeyPackage {

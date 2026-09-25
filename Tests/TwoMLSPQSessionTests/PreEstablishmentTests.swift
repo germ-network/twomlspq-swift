@@ -4,24 +4,17 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
-// XCTest (not swift-testing): Swift Testing rejects an `@available`-gated
-// `@Suite` TYPE (this whole session API is `@available(iOS 26, macOS 26)`,
-// so the suite would have to carry that gate) — an ungated suite with
-// per-test gates works, but this file follows the module's existing XCTest
-// convention instead.
-//
 // Book §A.1: the host app payload carried in the establishment envelope,
 // and app messages sent before the initiator joins the acceptor's group.
 // Companion coverage lives alongside the existing suites (`EnvelopeTests`,
 // `SessionArchiveTests`, `SessionMigrationTests`); this is the new file
 // this change adds.
-@available(iOS 26, macOS 26, *)
-final class PreEstablishmentTests: XCTestCase {
+@Suite struct PreEstablishmentTests {
 	private let testKey = SecretBytes(randomByteCount: 32)
 	private let testAAD = Data("pre-establishment-tests".utf8)
 
@@ -36,6 +29,7 @@ final class PreEstablishmentTests: XCTestCase {
 	/// (non-owner-keyed) `initiate()` session's leaves can still resolve —
 	/// `initiate` founds on FRESH leaves, never `identity`'s own, so the
 	/// owner-keyed fallback conversion can't find them without this.
+	@available(iOS 26, macOS 26, *)
 	private func migratedLeafKeys(from leafKeys: LeafKeys) -> MigratedLeafKeys {
 		func convert(_ set: GroupKeySet) -> MigratedGroupKeys {
 			MigratedGroupKeys(
@@ -60,6 +54,7 @@ final class PreEstablishmentTests: XCTestCase {
 
 	/// A last-resort invitation plus native `initiate` — a fresh pre-join
 	/// initiator (Alice) and the invitation Bob published it against.
+	@available(iOS 26, macOS 26, *)
 	private func setup() throws -> (alice: TwoMLSSession, invitation: Invitation) {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8),
@@ -70,7 +65,7 @@ final class PreEstablishmentTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
-		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirKP)
 		return (initiated.session, invitation)
@@ -81,10 +76,11 @@ final class PreEstablishmentTests: XCTestCase {
 	/// A live pre-join initiator carrying a payload drains it the
 	/// moment it joins Group_B, and the restore after that join succeeds.
 	/// Kills: dropping the clear in `joinGroupB`.
-	func testPayloadDrainsAtTheJoinAndRestoreAfterJoinSucceeds() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func payloadDrainsAtTheJoinAndRestoreAfterJoinSucceeds() throws {
 		var (alice, invitation) = try setup()
 		alice.initialAppPayload = Data("host app payload".utf8)
-		XCTAssertNotNil(alice.initialAppPayload)
+		#expect(alice.initialAppPayload != nil)
 
 		// With a payload set, `pendingOutbound()` seals the payload-only
 		// shape (the either/or composer) — `frame.welcome` is nil, so the
@@ -92,9 +88,10 @@ final class PreEstablishmentTests: XCTestCase {
 		// this engine) payload are instead read straight off `alice` here.
 		let envelope = try alice.pendingOutbound()
 		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		XCTAssertEqual(frame.appPayload, alice.initialAppPayload)
+		#expect(frame.appPayload == alice.initialAppPayload)
 		let returnKP = try EstablishmentMessages.decodeKeyPackage(
 			try EstablishmentMessages.encodeKeyPackage(
 				alice.identity.keyPackage.classical))
@@ -108,24 +105,25 @@ final class PreEstablishmentTests: XCTestCase {
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 
 		_ = try alice.processIncoming(bobFrame)
-		XCTAssertTrue(alice.isEstablished)
-		XCTAssertNil(alice.initialAppPayload)
+		#expect(alice.isEstablished)
+		#expect(alice.initialAppPayload == nil)
 
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		let restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: try sealAndOpen(archive),
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertTrue(restored.isEstablished)
+		#expect(restored.isEstablished)
 	}
 
 	/// A migrated pre-join initiator's payload is rejected at the mint once
 	/// it carries no seal target (`initialTheirKP == nil`) — a payload
 	/// with nothing left to carry it is dead state. Kills: dropping the
 	/// new clause at the mint site.
-	func testMintRejectsAPayloadWithNoSealTarget() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintRejectsAPayloadWithNoSealTarget() throws {
 		let (alice, _) = try setup()
-		let send = try XCTUnwrap(alice.sendGroup)
+		let send = try #require(alice.sendGroup)
 		let identity = alice.identity
 		let migrated = try MigratedSession(
 			stateSeq: alice.stateSeq,
@@ -188,37 +186,34 @@ final class PreEstablishmentTests: XCTestCase {
 		// reasons (it carries none of a live session's captured
 		// routing/header-key state) — restore's OWN seal-target check is
 		// the separate restore-half test, below.
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .core, parts: migrated,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// A hand-edited archive body carrying a payload but no `initialTheirKP`
 	/// fails restore. Mirrors `LeafKeysTests`' mirrored-body pattern. Kills:
 	/// dropping the new clause at the restore site.
-	func testRestoreRejectsAPayloadWithNoSealTarget() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreRejectsAPayloadWithNoSealTarget() throws {
 		var (alice, _) = try setup()
 		alice.initialAppPayload = Data("host app payload".utf8)
 
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		var body = try sealAndOpen(archive).decode(SessionArchive.self)
-		XCTAssertNotNil(body.initialAppPayload)
-		XCTAssertNotNil(body.initialTheirKP)
+		#expect(body.initialAppPayload != nil)
+		#expect(body.initialTheirKP != nil)
 		body.initialTheirKP = nil
 
 		let edited = try sealAndOpen(try SecretArchive(encoding: body))
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
 				core: nil, checkpoint: edited,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -228,10 +223,11 @@ final class PreEstablishmentTests: XCTestCase {
 	/// acceptor (never a pre-join initiator) -> `.sessionNotReady`. A
 	/// post-join initiator -> `.sessionNotReady`. Kills: removing any one
 	/// guard.
-	func testSetterGuards() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func setterGuards() throws {
 		var (alice, invitation) = try setup()
-		XCTAssertThrowsError(try alice.setInitialAppPayload(Data())) { error in
-			XCTAssertEqual(error as? TwoMLSError, .emptySection)
+		#expect(throws: TwoMLSError.emptySection) {
+			try alice.setInitialAppPayload(Data())
 		}
 
 		let returnKP = try EstablishmentMessages.decodeKeyPackage(
@@ -243,20 +239,16 @@ final class PreEstablishmentTests: XCTestCase {
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
 			spawnToken: spawnToken)
 		var bob = received.session
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.sessionNotReady) {
 			try bob.setInitialAppPayload(Data("host app payload".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
 		}
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncoming(bobFrame)
-		XCTAssertTrue(alice.isEstablished)
-		XCTAssertThrowsError(
+		#expect(alice.isEstablished)
+		#expect(throws: TwoMLSError.sessionNotReady) {
 			try alice.setInitialAppPayload(Data("host app payload".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
 		}
 	}
 
@@ -267,19 +259,19 @@ final class PreEstablishmentTests: XCTestCase {
 	/// field mutation. Kills: dropping the `initialTheirKP != nil` clause
 	/// specifically (the acceptor/post-join scenarios above hold several
 	/// guards false at once and can't isolate it).
-	func testSetterGuardIsolatesMissingInitialTheirKP() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func setterGuardIsolatesMissingInitialTheirKP() throws {
 		var (alice, _) = try setup()
 		alice.initialTheirKP = nil
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.sessionNotReady) {
 			try alice.setInitialAppPayload(Data("host app payload".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
 		}
 	}
 
 	/// The setter's `recvGroup == nil` clause alone, isolated the same way
 	/// as the `initialTheirKP` isolation above.
-	func testSetterGuardIsolatesRecvGroupPresent() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func setterGuardIsolatesRecvGroupPresent() throws {
 		var (alice, invitation) = try setup()
 		let returnKP = try EstablishmentMessages.decodeKeyPackage(
 			try EstablishmentMessages.encodeKeyPackage(
@@ -294,34 +286,35 @@ final class PreEstablishmentTests: XCTestCase {
 		// all stay hers) — an artificial state, but it isolates exactly the
 		// `recvGroup == nil` clause.
 		alice.recvGroup = received.session.recvGroup
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.sessionNotReady) {
 			try alice.setInitialAppPayload(Data("host app payload".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
 		}
 	}
 
 	/// Once a payload is set, `pendingOutbound()`'s opened frame carries
 	/// `appPayload` alone; `welcome`/`returnKeyPackage`/`stapledMessage` are
 	/// all nil. Kills: emitting both shapes, or ignoring the payload.
-	func testEitherOrPayloadShape() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func eitherOrPayloadShape() throws {
 		var (alice, invitation) = try setup()
 		let payload = Data("host app payload".utf8)
 		_ = try alice.setInitialAppPayload(payload)
 
 		let envelope = try alice.pendingOutbound()
 		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		XCTAssertEqual(frame.appPayload, payload)
-		XCTAssertNil(frame.welcome)
-		XCTAssertNil(frame.returnKeyPackage)
-		XCTAssertNil(frame.stapledMessage)
+		#expect(frame.appPayload == payload)
+		#expect(frame.welcome == nil)
+		#expect(frame.returnKeyPackage == nil)
+		#expect(frame.stapledMessage == nil)
 	}
 
 	/// A second setter call replaces the payload, and the next envelope
 	/// carries the REPLACEMENT. Kills: set-once behavior.
-	func testSetterReplacesAnEarlierPayload() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func setterReplacesAnEarlierPayload() throws {
 		var (alice, invitation) = try setup()
 		_ = try alice.setInitialAppPayload(Data("first payload".utf8))
 		let second = Data("second payload".utf8)
@@ -329,28 +322,31 @@ final class PreEstablishmentTests: XCTestCase {
 
 		let envelope = try alice.pendingOutbound()
 		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		XCTAssertEqual(frame.appPayload, second)
+		#expect(frame.appPayload == second)
 	}
 
 	/// The setter's success advances `currentStapleSeq` to its own
 	/// `stateSeq` — the durability watermark a pre-join `prepareToEncrypt`'s
 	/// `PrepareResult.dependsOnSeq` mirrors. Kills: a missing
 	/// `markStapleInstalled()` in the setter.
-	func testSetterAdvancesTheDurabilityWatermark() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func setterAdvancesTheDurabilityWatermark() throws {
 		var (alice, _) = try setup()
 		let before = alice.currentStapleSeq
 		let update = try alice.setInitialAppPayload(Data("host app payload".utf8))
-		XCTAssertGreaterThan(update.stateSeq, before)
-		XCTAssertEqual(alice.currentStapleSeq, update.stateSeq)
+		#expect(update.stateSeq > before)
+		#expect(alice.currentStapleSeq == update.stateSeq)
 	}
 
 	/// The payload survives a pre-join restore (setter's `.core` update
 	/// plus the baseline checkpoint), and the restored session's
 	/// `pendingOutbound()` carries it. Kills: the archive dropping the
 	/// payload field on the live encode.
-	func testPayloadSurvivesPreJoinRestore() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func payloadSurvivesPreJoinRestore() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -360,7 +356,7 @@ final class PreEstablishmentTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
-		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirKP)
 		var alice = initiated.session
@@ -375,9 +371,10 @@ final class PreEstablishmentTests: XCTestCase {
 
 		let envelope = try restored.pendingOutbound()
 		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		XCTAssertEqual(frame.appPayload, payload)
+		#expect(frame.appPayload == payload)
 	}
 
 	// MARK: - Pre-join send
@@ -388,26 +385,25 @@ final class PreEstablishmentTests: XCTestCase {
 	/// `noCustody ⊇ {.sendClassical}` -> `.leafCustodyUnavailable`. Kills:
 	/// staging into a nil recv group, a wrong hash, a missing custody
 	/// guard.
-	func testPreJoinPrepareIsStatelessAndKeyedToTheStaple() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func preJoinPrepareIsStatelessAndKeyedToTheStaple() throws {
 		var (alice, _) = try setup()
 		let result = try alice.prepareToEncrypt()
-		XCTAssertEqual(result.proposalMessage, Data())
-		XCTAssertEqual(
-			result.proposalHash,
-			try SessionTestSupport.classicalProvider.hash(alice.currentStaple))
-		XCTAssertFalse(result.didCommit)
-		XCTAssertNil(result.committedRemoteClientID)
-		XCTAssertNil(alice.pendingProposal)
+		#expect(result.proposalMessage == Data())
+		#expect(
+			try SessionTestSupport.classicalProvider.hash(alice.currentStaple)
+				== result.proposalHash)
+		#expect(!result.didCommit)
+		#expect(result.committedRemoteClientID == nil)
+		#expect(alice.pendingProposal == nil)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.sessionNotReady) {
 			try alice.prepareToEncrypt(rotating: Data("someone-else".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
 		}
 
 		alice.noCustody = [.sendClassical]
-		XCTAssertThrowsError(try alice.prepareToEncrypt()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
+		#expect(throws: TwoMLSError.leafCustodyUnavailable) {
+			try alice.prepareToEncrypt()
 		}
 	}
 
@@ -418,31 +414,34 @@ final class PreEstablishmentTests: XCTestCase {
 	/// `isEstablishmentEnvelope == true`, and two encrypts give distinct
 	/// envelope bytes. Kills: header-sealing instead of HPKE, a wrong tag,
 	/// a missing staple, a reused ephemeral, the wrong group.
-	func testPreJoinEncryptShape() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func preJoinEncryptShape() throws {
 		var (alice, invitation) = try setup()
-		let sendGroupID = try XCTUnwrap(alice.sendGroup).classical.context.groupID
+		let sendGroupID = try #require(alice.sendGroup).classical.context.groupID
 
 		_ = try alice.prepareToEncrypt()
 		let first = try alice.encrypt(Data("hello, pre-join".utf8))
-		XCTAssertTrue(first.isEstablishmentEnvelope)
+		#expect(first.isEstablishmentEnvelope)
 
 		guard case .establishment(let frame) = try invitation.openInitial(first.frame)
 		else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		let staple = try XCTUnwrap(frame.stapledMessage)
-		XCTAssertEqual(staple.first, Frames.preEstablishmentAppTag)
+		let staple = try #require(frame.stapledMessage)
+		#expect(staple.first == Frames.preEstablishmentAppTag)
 		let appBytes = try Frames.decodePreEstablishmentApp(staple)
 		guard case .privateMessage(let pm) = try MLS.RFC9420.Message(mlsEncoded: appBytes)
 		else {
-			return XCTFail("expected a privateMessage app section")
+			Issue.record("expected a privateMessage app section")
+			return
 		}
-		XCTAssertEqual(pm.groupID, sendGroupID)
-		XCTAssertEqual(pm.epoch, 1)
+		#expect(pm.groupID == sendGroupID)
+		#expect(pm.epoch == 1)
 
 		_ = try alice.prepareToEncrypt()
 		let second = try alice.encrypt(Data("hello again, pre-join".utf8))
-		XCTAssertNotEqual(first.frame, second.frame)
+		#expect(first.frame != second.frame)
 	}
 
 	/// The pre-join `encrypt` shape once a payload is set: the opened
@@ -453,7 +452,8 @@ final class PreEstablishmentTests: XCTestCase {
 	/// the bare sections directly; a mutation that has it do the latter
 	/// (bypassing `composeInitialEnvelope`) passes every OTHER native test
 	/// in this file but fails this one.
-	func testPreJoinEncryptCarriesThePayloadShapeOnceSet() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func preJoinEncryptCarriesThePayloadShapeOnceSet() throws {
 		var (alice, invitation) = try setup()
 		let payload = Data("host app payload".utf8)
 		_ = try alice.setInitialAppPayload(payload)
@@ -461,12 +461,13 @@ final class PreEstablishmentTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let sent = try alice.encrypt(Data("hello, pre-join".utf8))
 		guard case .establishment(let frame) = try invitation.openInitial(sent.frame) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		XCTAssertEqual(frame.appPayload, payload)
-		XCTAssertNil(frame.welcome)
-		XCTAssertNil(frame.returnKeyPackage)
-		XCTAssertNotNil(frame.stapledMessage)
+		#expect(frame.appPayload == payload)
+		#expect(frame.welcome == nil)
+		#expect(frame.returnKeyPackage == nil)
+		#expect(frame.stapledMessage != nil)
 	}
 
 	/// `encrypt`'s OWN `noCustody` guard, isolated from
@@ -476,12 +477,13 @@ final class PreEstablishmentTests: XCTestCase {
 	/// above can't isolate this from, since removing the guard there still
 	/// leaves the key-lookup's independent check to fail closed. Kills:
 	/// dropping `encryptPreEstablishment`'s own custody guard specifically.
-	func testPreJoinEncryptGuardsNoCustodySeparatelyFromPrepare() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func preJoinEncryptGuardsNoCustodySeparatelyFromPrepare() throws {
 		var (alice, _) = try setup()
 		_ = try alice.prepareToEncrypt()
 		alice.noCustody = [.sendClassical]
-		XCTAssertThrowsError(try alice.encrypt(Data("blocked".utf8))) { error in
-			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
+		#expect(throws: TwoMLSError.leafCustodyUnavailable) {
+			try alice.encrypt(Data("blocked".utf8))
 		}
 	}
 
@@ -492,25 +494,32 @@ final class PreEstablishmentTests: XCTestCase {
 	/// next `encrypt` then protects at the same generation the peer
 	/// expects, rather than skipping one the faulted attempt silently
 	/// spent. Kills: writing `sendGroup` back before the compose.
-	func testPreJoinEncryptWriteBackIsAtomic() throws {
-		var (alice, _) = try setup()
-		_ = try alice.prepareToEncrypt()
+	// `TwoMLSSessionTestHooks`/`InjectedTestFault` are `#if DEBUG` in Sources
+	// (see TwoMLSSession+TestHooks.swift), so this test must be too, or
+	// `swift test -c release` fails to build.
+	#if DEBUG
+		@available(iOS 26, macOS 26, *)
+		@Test func preJoinEncryptWriteBackIsAtomic() throws {
+			var (alice, _) = try setup()
+			_ = try alice.prepareToEncrypt()
 
-		let before = try XCTUnwrap(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
-		TwoMLSSessionTestHooks.armFault(
-			"encryptPreEstablishment.afterProtectBeforeWriteBack")
-		XCTAssertThrowsError(try alice.encrypt(Data("faulted".utf8))) { error in
-			XCTAssertTrue(error is InjectedTestFault)
+			let before = try #require(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault(
+					"encryptPreEstablishment.afterProtectBeforeWriteBack")
+				#expect(throws: InjectedTestFault.self) {
+					try alice.encrypt(Data("faulted".utf8))
+				}
+			}
+			let after = try #require(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
+			#expect(before == after)
+
+			// The session is not bricked: a retry (fault no longer armed)
+			// completes normally.
+			_ = try alice.prepareToEncrypt()
+			_ = try alice.encrypt(Data("recovered".utf8))
 		}
-		TwoMLSSessionTestHooks.disarmAllFaults()
-		let after = try XCTUnwrap(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
-		XCTAssertEqual(before, after)
-
-		// The session is not bricked: a retry (fault no longer armed)
-		// completes normally.
-		_ = try alice.prepareToEncrypt()
-		_ = try alice.encrypt(Data("recovered".utf8))
-	}
+	#endif
 
 	/// Cutover. A pre-join prepare followed by a join, followed by
 	/// `encrypt`, throws `.noPendingProposal` (the stale prepare fails
@@ -519,7 +528,8 @@ final class PreEstablishmentTests: XCTestCase {
 	/// yields a `0x03` frame. `pendingOutbound()` throws once joined. Kills:
 	/// a branch predicate that isn't `recvGroup == nil`, and a stale
 	/// pre-join prepare leaking across the join.
-	func testCutoverAtTheJoin() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func cutoverAtTheJoin() throws {
 		var (alice, invitation) = try setup()
 		_ = try alice.prepareToEncrypt()
 
@@ -535,38 +545,40 @@ final class PreEstablishmentTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncoming(bobFrame)
-		XCTAssertTrue(alice.isEstablished)
+		#expect(alice.isEstablished)
 
-		XCTAssertThrowsError(try alice.encrypt(Data("stale".utf8))) { error in
-			XCTAssertEqual(error as? TwoMLSError, .noPendingProposal)
+		#expect(throws: TwoMLSError.noPendingProposal) {
+			try alice.encrypt(Data("stale".utf8))
 		}
 
 		_ = try alice.prepareToEncrypt()
 		let postJoin = try alice.encrypt(Data("post-join".utf8))
-		XCTAssertFalse(postJoin.isEstablishmentEnvelope)
+		#expect(!postJoin.isEstablishmentEnvelope)
 		let opened = try bob.processIncoming(postJoin.frame)
 		guard case .decrypted(let decrypted) = opened else {
-			return XCTFail("expected .decrypted")
+			Issue.record("expected .decrypted")
+			return
 		}
-		XCTAssertEqual(decrypted.applicationMessage, Data("post-join".utf8))
+		#expect(decrypted.applicationMessage == Data("post-join".utf8))
 		// `postJoin.frame` is header-sealed (header-encryption.md's "Send rule"), unlike
 		// a pre-join raw HPKE envelope — `openOrRaw` recovers the plain
 		// `0x03` tag underneath.
-		XCTAssertEqual(bob.openOrRaw(postJoin.frame).first, Frames.messageFrameTag)
+		#expect(bob.openOrRaw(postJoin.frame).first == Frames.messageFrameTag)
 
-		XCTAssertThrowsError(try alice.pendingOutbound()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .noPendingEstablishmentEnvelope)
+		#expect(throws: TwoMLSError.noPendingEstablishmentEnvelope) {
+			try alice.pendingOutbound()
 		}
 	}
 
 	/// `canSend` is true pre-join, false with `sendClassical`
 	/// no-custody, and true post-join. Kills: the widened predicate.
-	func testCanSendPreJoinAndPostJoin() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func canSendPreJoinAndPostJoin() throws {
 		var (alice, invitation) = try setup()
-		XCTAssertTrue(alice.canSend)
+		#expect(alice.canSend)
 
 		alice.noCustody = [.sendClassical]
-		XCTAssertFalse(alice.canSend)
+		#expect(!alice.canSend)
 		alice.noCustody = []
 
 		let returnKP = try EstablishmentMessages.decodeKeyPackage(
@@ -581,18 +593,20 @@ final class PreEstablishmentTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncoming(bobFrame)
-		XCTAssertTrue(alice.canSend)
+		#expect(alice.canSend)
 	}
 
 	/// The parked §A.3 bootstrap KP is unaffected: `pqBootstrapEnvelope()`
 	/// stays non-nil before and after two pre-join encrypts, and
 	/// `pqInflight`/`pendingSideBand` are unchanged. Kills: a pre-join
 	/// encrypt disturbing the parked `0x13`.
-	func testPreJoinEncryptDoesNotDisturbTheParkedBootstrapKP() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func preJoinEncryptDoesNotDisturbTheParkedBootstrapKP() throws {
 		var (alice, _) = try setup()
-		XCTAssertNotNil(try alice.pqBootstrapEnvelope())
+		#expect(try alice.pqBootstrapEnvelope() != nil)
 		guard case .bootstrapInitiated = alice.pqInflight else {
-			return XCTFail("expected .bootstrapInitiated")
+			Issue.record("expected .bootstrapInitiated")
+			return
 		}
 		let pendingBefore = alice.pendingSideBand
 
@@ -601,39 +615,44 @@ final class PreEstablishmentTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		_ = try alice.encrypt(Data("two".utf8))
 
-		XCTAssertNotNil(alice.pqBootstrapEnvelope())
+		#expect(try alice.pqBootstrapEnvelope() != nil)
 		guard case .bootstrapInitiated = alice.pqInflight else {
-			return XCTFail("expected .bootstrapInitiated")
+			Issue.record("expected .bootstrapInitiated")
+			return
 		}
-		XCTAssertEqual(alice.pendingSideBand, pendingBefore)
+		#expect(alice.pendingSideBand == pendingBefore)
 	}
 
 	// MARK: - The `0x09` Frames codec
 
-	func testPreEstablishmentAppCodecRoundTrips() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func preEstablishmentAppCodecRoundTrips() throws {
 		let body = Data("an MLSMessage-framed PrivateMessage".utf8)
 		let encoded = Frames.encodePreEstablishmentApp(body)
-		XCTAssertEqual(encoded.first, Frames.preEstablishmentAppTag)
+		#expect(encoded.first == Frames.preEstablishmentAppTag)
 		let decoded = try Frames.decodePreEstablishmentApp(encoded)
-		XCTAssertEqual(decoded, body)
+		#expect(decoded == body)
 	}
 
-	func testPreEstablishmentAppCodecRejectsAnEmptyBody() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func preEstablishmentAppCodecRejectsAnEmptyBody() throws {
 		let encoded = Data([Frames.preEstablishmentAppTag])
-		XCTAssertThrowsError(try Frames.decodePreEstablishmentApp(encoded)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .truncatedSection)
+		#expect(throws: TwoMLSError.truncatedSection) {
+			try Frames.decodePreEstablishmentApp(encoded)
 		}
 	}
 
-	func testPreEstablishmentAppCodecRejectsAWrongTag() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func preEstablishmentAppCodecRejectsAWrongTag() throws {
 		let encoded = Data([0x00]) + Data("body".utf8)
-		XCTAssertThrowsError(try Frames.decodePreEstablishmentApp(encoded)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .unsupportedFrameTag(0x00))
+		#expect(throws: TwoMLSError.unsupportedFrameTag(0x00)) {
+			try Frames.decodePreEstablishmentApp(encoded)
 		}
 	}
 
 	// MARK: - The acceptor's `0x09` arm
 
+	@available(iOS 26, macOS 26, *)
 	private func establishedAcceptor() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, invitation: Invitation
 	) {
@@ -656,23 +675,26 @@ final class PreEstablishmentTests: XCTestCase {
 	/// the restored session then processes Alice's post-join `0x03`. Kills:
 	/// a missing dispatch arm (`unsupportedFrameTag(0x09)`), decrypting in
 	/// the wrong group, the update not persisting the ratchet.
-	func testRoundTrip() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func roundTrip() throws {
 		var (alice, bob, invitation) = try establishedAcceptor()
 		_ = try alice.prepareToEncrypt()
 		let sent = try alice.encrypt(Data("pre-join hello".utf8))
 		guard case .establishment(let frame) = try invitation.openInitial(sent.frame) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		let staple = try XCTUnwrap(frame.stapledMessage)
+		let staple = try #require(frame.stapledMessage)
 
 		guard case .preEstablishment(let message) = try bob.processIncoming(staple) else {
-			return XCTFail("expected .preEstablishment")
+			Issue.record("expected .preEstablishment")
+			return
 		}
-		XCTAssertEqual(message.applicationMessage, Data("pre-join hello".utf8))
-		XCTAssertEqual(message.epoch, 1)
-		XCTAssertEqual(
-			message.authenticatedData,
-			try SessionTestSupport.classicalProvider.hash(alice.currentStaple))
+		#expect(message.applicationMessage == Data("pre-join hello".utf8))
+		#expect(message.epoch == 1)
+		#expect(
+			try SessionTestSupport.classicalProvider.hash(alice.currentStaple)
+				== message.authenticatedData)
 
 		let archive = try bob.makeSessionArchive(kind: .checkpoint)
 		var restored = try TwoMLSSession.restore(
@@ -683,13 +705,14 @@ final class PreEstablishmentTests: XCTestCase {
 		_ = try restored.prepareToEncrypt()
 		let bobFrame = try restored.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncoming(bobFrame)
-		XCTAssertTrue(alice.isEstablished)
+		#expect(alice.isEstablished)
 	}
 
 	/// A `0x09` staple whose body decodes as an `MLSMessage` but not a
 	/// `.privateMessage` fails `.appSectionNotPrivateMessage`. Kills:
 	/// dropping that guard.
-	func testRoundTripRejectsAppSectionNotAPrivateMessage() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func roundTripRejectsAppSectionNotAPrivateMessage() throws {
 		let (_, bob, _) = try establishedAcceptor()
 		let notAPrivateMessage = try MLS.RFC9420.Message.keyPackage(
 			bob.identity.keyPackage.classical
@@ -697,14 +720,15 @@ final class PreEstablishmentTests: XCTestCase {
 		let staple = Frames.encodePreEstablishmentApp(notAPrivateMessage)
 
 		var mutableBob = bob
-		XCTAssertThrowsError(try mutableBob.processIncoming(staple)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .appSectionNotPrivateMessage)
+		#expect(throws: TwoMLSError.appSectionNotPrivateMessage) {
+			try mutableBob.processIncoming(staple)
 		}
 	}
 
 	/// Out of order: staples 2 then 1 both decrypt. Kills: a stricter
 	/// generation check.
-	func testOutOfOrderStaplesBothDecrypt() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func outOfOrderStaplesBothDecrypt() throws {
 		var (alice, bob, invitation) = try establishedAcceptor()
 		func staple(_ text: String) throws -> Data {
 			_ = try alice.prepareToEncrypt()
@@ -713,116 +737,127 @@ final class PreEstablishmentTests: XCTestCase {
 				case .establishment(let frame) = try invitation.openInitial(
 					sent.frame)
 			else {
-				XCTFail("expected .establishment")
+				Issue.record("expected .establishment")
 				return Data()
 			}
-			return try XCTUnwrap(frame.stapledMessage)
+			return try #require(frame.stapledMessage)
 		}
 		let staple1 = try staple("first")
 		let staple2 = try staple("second")
 
 		guard case .preEstablishment(let m2) = try bob.processIncoming(staple2) else {
-			return XCTFail("expected .preEstablishment")
+			Issue.record("expected .preEstablishment")
+			return
 		}
-		XCTAssertEqual(m2.applicationMessage, Data("second".utf8))
+		#expect(m2.applicationMessage == Data("second".utf8))
 		guard case .preEstablishment(let m1) = try bob.processIncoming(staple1) else {
-			return XCTFail("expected .preEstablishment")
+			Issue.record("expected .preEstablishment")
+			return
 		}
-		XCTAssertEqual(m1.applicationMessage, Data("first".utf8))
+		#expect(m1.applicationMessage == Data("first".utf8))
 	}
 
 	/// Replay throws with `stateSeq` unchanged. Kills: bumping state
 	/// on failure.
-	func testReplayThrowsWithStateUnchanged() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func replayThrowsWithStateUnchanged() throws {
 		var (alice, bob, invitation) = try establishedAcceptor()
 		_ = try alice.prepareToEncrypt()
 		let sent = try alice.encrypt(Data("once".utf8))
 		guard case .establishment(let frame) = try invitation.openInitial(sent.frame) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		let staple = try XCTUnwrap(frame.stapledMessage)
+		let staple = try #require(frame.stapledMessage)
 
 		guard case .preEstablishment = try bob.processIncoming(staple) else {
-			return XCTFail("expected .preEstablishment")
+			Issue.record("expected .preEstablishment")
+			return
 		}
 		let before = bob.stateSeq
-		XCTAssertThrowsError(try bob.processIncoming(staple))
-		XCTAssertEqual(bob.stateSeq, before)
+		#expect(throws: (any Error).self) {
+			try bob.processIncoming(staple)
+		}
+		#expect(bob.stateSeq == before)
 	}
 
 	/// A late staple, delivered after Alice's first post-join fold, still
 	/// decrypts — pins the verified behavior (probed across one fold).
 	/// Kills: an epoch-floor check copied from the side-band.
-	func testLateStapleAfterAliceFirstFoldStillDecrypts() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func lateStapleAfterAliceFirstFoldStillDecrypts() throws {
 		var (alice, bob, invitation) = try establishedAcceptor()
 		_ = try alice.prepareToEncrypt()
 		let held = try alice.encrypt(Data("held back".utf8))
 		guard case .establishment(let frame) = try invitation.openInitial(held.frame) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		let lateStaple = try XCTUnwrap(frame.stapledMessage)
+		let lateStaple = try #require(frame.stapledMessage)
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncoming(bobFrame)
-		XCTAssertTrue(alice.isEstablished)
+		#expect(alice.isEstablished)
 
 		// Alice's first post-join fold: Bob offers, Alice folds it in.
 		_ = try bob.prepareToEncrypt()
 		let bobOffer = try bob.encrypt(Data("post-join offer".utf8)).frame
 		let offerResult = try alice.processIncoming(bobOffer)
 		guard case .decrypted(let d) = offerResult else {
-			return XCTFail("expected .decrypted")
+			Issue.record("expected .decrypted")
+			return
 		}
 		_ = try alice.queueProposal(digest: d.queuedProposal.digest)
 		_ = try alice.prepareToEncrypt()
 		let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
 		guard case .decrypted(let folded) = try bob.processIncoming(foldFrame) else {
-			return XCTFail("expected .decrypted")
+			Issue.record("expected .decrypted")
+			return
 		}
-		XCTAssertTrue(folded.didApplyRemoteCommit)
+		#expect(folded.didApplyRemoteCommit)
 
 		guard case .preEstablishment(let late) = try bob.processIncoming(lateStaple) else {
-			return XCTFail("expected .preEstablishment")
+			Issue.record("expected .preEstablishment")
+			return
 		}
-		XCTAssertEqual(late.applicationMessage, Data("held back".utf8))
-		XCTAssertEqual(late.epoch, 1)
+		#expect(late.applicationMessage == Data("held back".utf8))
+		#expect(late.epoch == 1)
 	}
 
 	/// A `0x09` frame on the INITIATOR — pre-join and post-join —
 	/// throws `.unsupportedFrameTag(0x09)` (a reflected own frame). Kills:
 	/// accepting it.
-	func testInitiatorRejectsAReflectedPreEstablishmentFrame() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func initiatorRejectsAReflectedPreEstablishmentFrame() throws {
 		var (alice, bob, invitation) = try establishedAcceptor()
 		_ = try alice.prepareToEncrypt()
 		let sent = try alice.encrypt(Data("hello".utf8))
 		guard case .establishment(let frame) = try invitation.openInitial(sent.frame) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		let staple = try XCTUnwrap(frame.stapledMessage)
+		let staple = try #require(frame.stapledMessage)
 
-		XCTAssertThrowsError(try alice.processIncoming(staple)) { error in
-			XCTAssertEqual(
-				error as? TwoMLSError,
-				.unsupportedFrameTag(Frames.preEstablishmentAppTag))
+		#expect(throws: TwoMLSError.unsupportedFrameTag(Frames.preEstablishmentAppTag)) {
+			try alice.processIncoming(staple)
 		}
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncoming(bobFrame)
-		XCTAssertTrue(alice.isEstablished)
+		#expect(alice.isEstablished)
 
-		XCTAssertThrowsError(try alice.processIncoming(staple)) { error in
-			XCTAssertEqual(
-				error as? TwoMLSError,
-				.unsupportedFrameTag(Frames.preEstablishmentAppTag))
+		#expect(throws: TwoMLSError.unsupportedFrameTag(Frames.preEstablishmentAppTag)) {
+			try alice.processIncoming(staple)
 		}
 	}
 
 	/// A born-dedicated acceptor BEFORE install still processes a
 	/// `0x09` — receiving is fine on an owed acceptor. Kills: over-gating
 	/// with `ensureEstablishmentDelegated`.
-	func testBornDedicatedAcceptorBeforeInstallProcessesPreEstablishmentApp() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bornDedicatedAcceptorBeforeInstallProcessesPreEstablishmentApp() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -832,7 +867,7 @@ final class PreEstablishmentTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
-		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let theirKP = try #require(invitation.combinerKeyPackage)
 		var alice = try TwoMLSSession.initiate(principal: alicePrincipal, their: theirKP)
 			.session
 		let received = try invitation.receive(
@@ -842,18 +877,20 @@ final class PreEstablishmentTests: XCTestCase {
 			spawnToken: SessionTestSupport.classicalProvider.randomBytes(16),
 			newClientID: Data("bob-dedicated".utf8))
 		var bob = received.session
-		XCTAssertTrue(bob.owesEstablishmentEnvelope)
+		#expect(bob.owesEstablishmentEnvelope)
 
 		_ = try alice.prepareToEncrypt()
 		let sent = try alice.encrypt(Data("pre-install".utf8))
 		guard case .establishment(let frame) = try invitation.openInitial(sent.frame) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
-		let staple = try XCTUnwrap(frame.stapledMessage)
+		let staple = try #require(frame.stapledMessage)
 
 		guard case .preEstablishment(let message) = try bob.processIncoming(staple) else {
-			return XCTFail("expected .preEstablishment")
+			Issue.record("expected .preEstablishment")
+			return
 		}
-		XCTAssertEqual(message.applicationMessage, Data("pre-install".utf8))
+		#expect(message.applicationMessage == Data("pre-install".utf8))
 	}
 }

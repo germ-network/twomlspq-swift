@@ -3,8 +3,8 @@ import MLSCodec
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -16,8 +16,7 @@ import XCTest
 /// format-2 snapshot `SecretArchive`s, the value `Group.archive()` produces
 /// and what a Rust exporter's bytes ingest via
 /// `SecretArchive(decodingPlaintext:)`).
-@available(iOS 26, macOS 26, *)
-final class SessionMigrationTests: XCTestCase {
+@Suite struct SessionMigrationTests {
 	/// Decomposes a live session into the exact raw parts a migrator would
 	/// read off a legacy Rust session (same byte representations the native
 	/// state holds). The kind is deliberately NOT part of the parts: the
@@ -32,13 +31,14 @@ final class SessionMigrationTests: XCTestCase {
 	/// catch-up custody carries no key of its own) — a born-dedicated
 	/// fixture that needs the migrator's retained-custody record supplies
 	/// it explicitly.
+	@available(iOS 26, macOS 26, *)
 	private func migratedParts(
 		_ session: TwoMLSSession, identityOverride: TwoMLSIdentity? = nil,
 		recvLeafPrincipal: MigratedRecvLeafPrincipal? = nil,
 		suppliedLeafKeys: Bool = false
 	) throws -> MigratedSession {
 		let identity = identityOverride ?? session.identity
-		let send = try XCTUnwrap(session.sendGroup)
+		let send = try #require(session.sendGroup)
 		let sendClassicalSnapshot = try send.classical.archive()
 		let sendPQSnapshot = try send.pq?.archive()
 		return try MigratedSession(
@@ -149,9 +149,9 @@ final class SessionMigrationTests: XCTestCase {
 					try basicIdentifier(
 						TwoMLSSession.ownLeaf(of: $0.classical).credential)
 				}) == candidate.clientID {
-					key = try XCTUnwrap(session.leafKeys.sendClassical.current)
+					key = try #require(session.leafKeys.sendClassical.current)
 				} else {
-					key = try XCTUnwrap(session.leafKeys.recvClassical.current)
+					key = try #require(session.leafKeys.recvClassical.current)
 				}
 				return MigratedRotationCandidate(
 					clientID: candidate.clientID,
@@ -189,6 +189,7 @@ final class SessionMigrationTests: XCTestCase {
 	// actually accept. D1 (fresh, independent founding leaves) is proven
 	// by the native-path tests elsewhere, never here.
 
+	@available(iOS 26, macOS 26, *)
 	private func deployedShapedFounding(
 		_ half: MLS.RFC9420.KeyPackage, secret: MLS.HpkeSecretKey,
 		signingKey: MLS.SignatureSecretKey,
@@ -204,6 +205,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// founds Group_A's classical+PQ halves on her own already-signed KP
 	/// leaves (never a freshly minted founding leaf), and Bob founds
 	/// Group_B's classical half on his.
+	@available(iOS 26, macOS 26, *)
 	private func deployedShapedEstablished(
 		alice aliceName: String = "alice", bob bobName: String = "bob"
 	) throws -> (
@@ -247,6 +249,7 @@ final class SessionMigrationTests: XCTestCase {
 		)
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private func deployedShapedEstablishedAndExchanged(
 		alice aliceName: String = "alice", bob bobName: String = "bob"
 	) throws -> (
@@ -268,6 +271,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// analogue: Bob's A.3 founding leaf is his own already-signed PQ KP
 	/// leaf too, signed with the same key his classical founding leaf uses
 	/// — exactly the deployed engine's one-key-per-party shape.
+	@available(iOS 26, macOS 26, *)
 	private func deployedShapedFullyEstablishedTurnOnBob() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession
 	) {
@@ -286,8 +290,8 @@ final class SessionMigrationTests: XCTestCase {
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		_ = try bob.processIncomingDecrypted(boundFrame)
 
-		XCTAssertTrue(bob.myPQTurn)
-		XCTAssertFalse(alice.myPQTurn)
+		#expect(bob.myPQTurn)
+		#expect(!(alice.myPQTurn))
 		return (alice, bob)
 	}
 
@@ -299,6 +303,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// SAME key (the deployed engine mints exactly one key per party), so
 	/// `catchUpKey` reuses `founding.key` rather than a second, independent
 	/// mint.
+	@available(iOS 26, macOS 26, *)
 	private func deployedShapedEstablishedDedicated(
 		bob bobName: String = "bob", dedicatedClientID: Data = Data("bob-dedicated".utf8)
 	) throws -> (
@@ -352,6 +357,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// A fully-established session pair — post-A.3 bootstrap plus one
 	/// complete PQ round (`RatchetTests`' own flow), landing at PQ epoch 2,
 	/// quiescent (no inflight/owed state), ledgers and windows populated.
+	@available(iOS 26, macOS 26, *)
 	private func fullyEstablishedPair() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession
 	) {
@@ -361,15 +367,15 @@ final class SessionMigrationTests: XCTestCase {
 		// RatchetTests.testBobInitiatedRatchetRoundAdvancesGroupBPQAndReturnsTurn):
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ekFrame = try #require(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 		_ = try bob.pqRatchetBind(ctFrame)
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 		_ = try alice.processIncomingDecrypted(boundFrame)
 
-		XCTAssertTrue(alice.myPQTurn)
+		#expect(alice.myPQTurn)
 		return (alice: alice, bob: bob)
 	}
 
@@ -378,134 +384,131 @@ final class SessionMigrationTests: XCTestCase {
 	/// `SessionArchive` field compares equal between the minted and the
 	/// native body — the group entries and `auth` via their `Equatable`
 	/// conformances, the rest field by field.
+	@available(iOS 26, macOS 26, *)
 	private func assertMintedMatchesNative(
 		_ minted: SecretArchive, _ native: SecretArchive, kind: BlobKind
 	) throws {
 		let mintedBody = try minted.decode(SessionArchive.self)
 		let nativeBody = try native.decode(SessionArchive.self)
 
-		XCTAssertEqual(mintedBody.version, nativeBody.version)
-		XCTAssertEqual(mintedBody.classicalSuite, nativeBody.classicalSuite)
-		XCTAssertEqual(mintedBody.pqSuite, nativeBody.pqSuite)
-		XCTAssertEqual(mintedBody.kind, nativeBody.kind)
-		XCTAssertEqual(mintedBody.kind, kind)
-		XCTAssertEqual(mintedBody.stateSeq, nativeBody.stateSeq)
-		XCTAssertEqual(mintedBody.sendPQEpoch, nativeBody.sendPQEpoch)
-		XCTAssertEqual(mintedBody.recvPQEpoch, nativeBody.recvPQEpoch)
-		XCTAssertEqual(
-			mintedBody.sendClassicalGroupID, nativeBody.sendClassicalGroupID)
-		XCTAssertEqual(
-			mintedBody.recvClassicalGroupID, nativeBody.recvClassicalGroupID)
+		#expect(mintedBody.version == nativeBody.version)
+		#expect(mintedBody.classicalSuite == nativeBody.classicalSuite)
+		#expect(mintedBody.pqSuite == nativeBody.pqSuite)
+		#expect(mintedBody.kind == nativeBody.kind)
+		#expect(mintedBody.kind == kind)
+		#expect(mintedBody.stateSeq == nativeBody.stateSeq)
+		#expect(mintedBody.sendPQEpoch == nativeBody.sendPQEpoch)
+		#expect(mintedBody.recvPQEpoch == nativeBody.recvPQEpoch)
+		#expect(mintedBody.sendClassicalGroupID == nativeBody.sendClassicalGroupID)
+		#expect(mintedBody.recvClassicalGroupID == nativeBody.recvClassicalGroupID)
 
 		let mintedIdentity = mintedBody.identity
 		let nativeIdentity = nativeBody.identity
-		XCTAssertEqual(mintedIdentity.clientID, nativeIdentity.clientID)
-		XCTAssertEqual(mintedIdentity.signingKey, nativeIdentity.signingKey)
-		XCTAssertEqual(mintedIdentity.signatureKey, nativeIdentity.signatureKey)
-		XCTAssertEqual(mintedIdentity.pqSigningKey, nativeIdentity.pqSigningKey)
-		XCTAssertEqual(
-			mintedIdentity.pqSignatureKey, nativeIdentity.pqSignatureKey)
-		XCTAssertEqual(
-			mintedIdentity.classicalLeafSecretKey,
-			nativeIdentity.classicalLeafSecretKey)
-		XCTAssertEqual(
-			mintedIdentity.classicalInitSecretKey,
-			nativeIdentity.classicalInitSecretKey)
-		XCTAssertEqual(mintedIdentity.pqLeafSecretKey, nativeIdentity.pqLeafSecretKey)
-		XCTAssertEqual(mintedIdentity.pqInitSecretKey, nativeIdentity.pqInitSecretKey)
-		XCTAssertEqual(
-			mintedIdentity.classicalKeyPackage, nativeIdentity.classicalKeyPackage)
-		XCTAssertEqual(mintedIdentity.pqKeyPackage, nativeIdentity.pqKeyPackage)
+		#expect(mintedIdentity.clientID == nativeIdentity.clientID)
+		#expect(mintedIdentity.signingKey == nativeIdentity.signingKey)
+		#expect(mintedIdentity.signatureKey == nativeIdentity.signatureKey)
+		#expect(mintedIdentity.pqSigningKey == nativeIdentity.pqSigningKey)
+		#expect(mintedIdentity.pqSignatureKey == nativeIdentity.pqSignatureKey)
+		#expect(
+			mintedIdentity.classicalLeafSecretKey
+				== nativeIdentity.classicalLeafSecretKey)
+		#expect(
+			mintedIdentity.classicalInitSecretKey
+				== nativeIdentity.classicalInitSecretKey)
+		#expect(mintedIdentity.pqLeafSecretKey == nativeIdentity.pqLeafSecretKey)
+		#expect(mintedIdentity.pqInitSecretKey == nativeIdentity.pqInitSecretKey)
+		#expect(mintedIdentity.classicalKeyPackage == nativeIdentity.classicalKeyPackage)
+		#expect(mintedIdentity.pqKeyPackage == nativeIdentity.pqKeyPackage)
 
-		XCTAssertEqual(mintedBody.auth, nativeBody.auth)
-		XCTAssertEqual(mintedBody.sendGroup, nativeBody.sendGroup)
-		XCTAssertEqual(mintedBody.recvGroup, nativeBody.recvGroup)
+		#expect(mintedBody.auth == nativeBody.auth)
+		#expect(mintedBody.sendGroup == nativeBody.sendGroup)
+		#expect(mintedBody.recvGroup == nativeBody.recvGroup)
 
-		XCTAssertEqual(mintedBody.currentStaple, nativeBody.currentStaple)
-		XCTAssertEqual(mintedBody.pendingProposal, nativeBody.pendingProposal)
-		XCTAssertEqual(
-			mintedBody.joinedWelcomeDigest, nativeBody.joinedWelcomeDigest)
-		XCTAssertEqual(mintedBody.initiated, nativeBody.initiated)
-		XCTAssertEqual(
-			mintedBody.bootstrapKPSecret?.leafSecretKey,
-			nativeBody.bootstrapKPSecret?.leafSecretKey)
-		XCTAssertEqual(
-			mintedBody.bootstrapKPSecret?.initSecretKey,
-			nativeBody.bootstrapKPSecret?.initSecretKey)
-		XCTAssertEqual(
-			mintedBody.bootstrapKPSecret?.keyPackage,
-			nativeBody.bootstrapKPSecret?.keyPackage)
-		XCTAssertEqual(
-			mintedBody.expectedBootstrapKPCommitment,
-			nativeBody.expectedBootstrapKPCommitment)
-		XCTAssertEqual(mintedBody.pqTurnMine, nativeBody.pqTurnMine)
-		XCTAssertEqual(
-			mintedBody.owedBind?.pqCommitMessage, nativeBody.owedBind?.pqCommitMessage)
-		XCTAssertEqual(mintedBody.owedBind?.tEpoch, nativeBody.owedBind?.tEpoch)
-		XCTAssertEqual(mintedBody.owedBind?.pqEpoch, nativeBody.owedBind?.pqEpoch)
-		XCTAssertEqual(mintedBody.pqInflight, nativeBody.pqInflight)
-		XCTAssertEqual(mintedBody.pendingSideBand, nativeBody.pendingSideBand)
-		XCTAssertEqual(
-			mintedBody.peerAppliedSendEpoch, nativeBody.peerAppliedSendEpoch)
-		XCTAssertEqual(
-			mintedBody.lastCrossInjected, nativeBody.lastCrossInjected)
-		XCTAssertEqual(
-			mintedBody.lastCrossInjectedPQ, nativeBody.lastCrossInjectedPQ)
-		XCTAssertEqual(
-			mintedBody.lastSendPQExported, nativeBody.lastSendPQExported)
-		XCTAssertEqual(mintedBody.offeredProposal, nativeBody.offeredProposal)
-		XCTAssertEqual(mintedBody.queuedProposal, nativeBody.queuedProposal)
-		XCTAssertEqual(mintedBody.stagedUpdates, nativeBody.stagedUpdates)
-		XCTAssertEqual(
-			mintedBody.sendCrossPSKLedger.entries.count,
-			nativeBody.sendCrossPSKLedger.entries.count)
+		#expect(mintedBody.currentStaple == nativeBody.currentStaple)
+		#expect(mintedBody.pendingProposal == nativeBody.pendingProposal)
+		#expect(mintedBody.joinedWelcomeDigest == nativeBody.joinedWelcomeDigest)
+		#expect(mintedBody.initiated == nativeBody.initiated)
+		#expect(
+			mintedBody.bootstrapKPSecret?.leafSecretKey
+				== nativeBody.bootstrapKPSecret?.leafSecretKey)
+		#expect(
+			mintedBody.bootstrapKPSecret?.initSecretKey
+				== nativeBody.bootstrapKPSecret?.initSecretKey)
+		#expect(
+			mintedBody.bootstrapKPSecret?.keyPackage
+				== nativeBody.bootstrapKPSecret?.keyPackage)
+		#expect(
+			mintedBody.expectedBootstrapKPCommitment
+				== nativeBody.expectedBootstrapKPCommitment)
+		#expect(mintedBody.pqTurnMine == nativeBody.pqTurnMine)
+		#expect(
+			mintedBody.owedBind?.pqCommitMessage == nativeBody.owedBind?.pqCommitMessage
+		)
+		#expect(mintedBody.owedBind?.tEpoch == nativeBody.owedBind?.tEpoch)
+		#expect(mintedBody.owedBind?.pqEpoch == nativeBody.owedBind?.pqEpoch)
+		#expect(mintedBody.pqInflight == nativeBody.pqInflight)
+		#expect(mintedBody.pendingSideBand == nativeBody.pendingSideBand)
+		#expect(mintedBody.peerAppliedSendEpoch == nativeBody.peerAppliedSendEpoch)
+		#expect(mintedBody.lastCrossInjected == nativeBody.lastCrossInjected)
+		#expect(mintedBody.lastCrossInjectedPQ == nativeBody.lastCrossInjectedPQ)
+		#expect(mintedBody.lastSendPQExported == nativeBody.lastSendPQExported)
+		#expect(mintedBody.offeredProposal == nativeBody.offeredProposal)
+		#expect(mintedBody.queuedProposal == nativeBody.queuedProposal)
+		#expect(mintedBody.stagedUpdates == nativeBody.stagedUpdates)
+		#expect(
+			mintedBody.sendCrossPSKLedger.entries.count
+				== nativeBody.sendCrossPSKLedger.entries.count)
 		for (epoch, mintedPsk) in mintedBody.sendCrossPSKLedger.entries {
-			let nativePsk = try XCTUnwrap(
+			let nativePsk = try #require(
 				nativeBody.sendCrossPSKLedger.entries[epoch])
-			XCTAssertEqual(mintedPsk.componentID, nativePsk.componentID)
-			XCTAssertEqual(mintedPsk.pskID, nativePsk.pskID)
-			XCTAssertEqual(mintedPsk.psk, nativePsk.psk)
+			#expect(mintedPsk.componentID == nativePsk.componentID)
+			#expect(mintedPsk.pskID == nativePsk.pskID)
+			#expect(mintedPsk.psk == nativePsk.psk)
 		}
-		XCTAssertEqual(
-			mintedBody.rotationCandidate?.clientID,
-			nativeBody.rotationCandidate?.clientID)
-		XCTAssertEqual(
-			mintedBody.rotationCandidate?.proposedAtRecvEpoch,
-			nativeBody.rotationCandidate?.proposedAtRecvEpoch)
-		XCTAssertEqual(mintedBody.spawnToken, nativeBody.spawnToken)
-		XCTAssertEqual(
-			mintedBody.listenRendezvous?.entries, nativeBody.listenRendezvous?.entries)
-		XCTAssertEqual(
-			mintedBody.recvHeaderKeys?.entries, nativeBody.recvHeaderKeys?.entries)
-		XCTAssertEqual(
-			mintedBody.recvHeaderKeysPQ?.entries,
-			nativeBody.recvHeaderKeysPQ?.entries)
-		XCTAssertEqual(
-			mintedBody.initialTheirKP?.classical, nativeBody.initialTheirKP?.classical)
-		XCTAssertEqual(mintedBody.initialTheirKP?.pq, nativeBody.initialTheirKP?.pq)
-		XCTAssertEqual(
-			mintedBody.sendAttachmentLedger?.entries.mapValues { $0.wrappedValue },
-			nativeBody.sendAttachmentLedger?.entries.mapValues { $0.wrappedValue })
-		XCTAssertEqual(
-			mintedBody.recvAttachmentLedger?.entries.mapValues { $0.wrappedValue },
-			nativeBody.recvAttachmentLedger?.entries.mapValues { $0.wrappedValue })
-		XCTAssertEqual(
-			mintedBody.owesEstablishmentEnvelope,
-			nativeBody.owesEstablishmentEnvelope)
+		#expect(
+			mintedBody.rotationCandidate?.clientID
+				== nativeBody.rotationCandidate?.clientID)
+		#expect(
+			mintedBody.rotationCandidate?.proposedAtRecvEpoch
+				== nativeBody.rotationCandidate?.proposedAtRecvEpoch)
+		#expect(mintedBody.spawnToken == nativeBody.spawnToken)
+		#expect(
+			mintedBody.listenRendezvous?.entries == nativeBody.listenRendezvous?.entries
+		)
+		#expect(mintedBody.recvHeaderKeys?.entries == nativeBody.recvHeaderKeys?.entries)
+		#expect(
+			mintedBody.recvHeaderKeysPQ?.entries == nativeBody.recvHeaderKeysPQ?.entries
+		)
+		#expect(
+			mintedBody.initialTheirKP?.classical == nativeBody.initialTheirKP?.classical
+		)
+		#expect(mintedBody.initialTheirKP?.pq == nativeBody.initialTheirKP?.pq)
+		#expect(
+			mintedBody.sendAttachmentLedger?.entries.mapValues { $0.wrappedValue }
+				== nativeBody.sendAttachmentLedger?.entries.mapValues {
+					$0.wrappedValue
+				})
+		#expect(
+			mintedBody.recvAttachmentLedger?.entries.mapValues { $0.wrappedValue }
+				== nativeBody.recvAttachmentLedger?.entries.mapValues {
+					$0.wrappedValue
+				})
+		#expect(
+			mintedBody.owesEstablishmentEnvelope == nativeBody.owesEstablishmentEnvelope
+		)
 		// The temporary conversion must land on exactly the same four
 		// stored key sets (current + pending, by target) as the live path's
 		// own seeding/staging — this is the direct parity check for "the
 		// conversion crosses halves or ignores staged/parked proposals."
-		XCTAssertEqual(mintedBody.leafKeys, nativeBody.leafKeys)
-		XCTAssertEqual(
-			mintedBody.sendPQKeysFingerprint, nativeBody.sendPQKeysFingerprint)
-		XCTAssertEqual(
-			mintedBody.recvPQKeysFingerprint, nativeBody.recvPQKeysFingerprint)
+		#expect(mintedBody.leafKeys == nativeBody.leafKeys)
+		#expect(mintedBody.sendPQKeysFingerprint == nativeBody.sendPQKeysFingerprint)
+		#expect(mintedBody.recvPQKeysFingerprint == nativeBody.recvPQKeysFingerprint)
 	}
 
 	// MARK: - AC 1: equivalence with the native path
 
-	func testMintedCheckpointDecodesToTheNativeBody() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedCheckpointDecodesToTheNativeBody() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		let native = try alice.makeSessionArchive(kind: .checkpoint)
 		let minted = try SessionMigration.mintArchive(
@@ -515,7 +518,8 @@ final class SessionMigrationTests: XCTestCase {
 		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
 	}
 
-	func testMintedCoreDecodesToTheNativeBody() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedCoreDecodesToTheNativeBody() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		let native = try alice.makeSessionArchive(kind: .core)
 		let minted = try SessionMigration.mintArchive(
@@ -534,7 +538,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// `parts.auth.mine.pinned`/`parts.auth.theirs.pinned` straight through
 	/// (instead of deriving via `livePQPresentedIDs`/`AuthCore.withPQPins`)
 	/// makes this fail.
-	func testMintDerivesPinsFromRestoredPQTreesAndDropsAStaleLegacyPin() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintDerivesPinsFromRestoredPQTreesAndDropsAStaleLegacyPin() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		let aliceID = alice.identity.clientID
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
@@ -547,10 +552,10 @@ final class SessionMigrationTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 		let mintedBody = try minted.decode(SessionArchive.self)
 
-		XCTAssertEqual(mintedBody.auth.mine.pinned, [aliceID])
-		XCTAssertFalse(
-			mintedBody.auth.mine.pinned.contains(
-				Data("legacy-rust-founding-pin-only".utf8)))
+		#expect(mintedBody.auth.mine.pinned == [aliceID])
+		#expect(
+			!(mintedBody.auth.mine.pinned.contains(
+				Data("legacy-rust-founding-pin-only".utf8))))
 
 		// The minted archive must still restore and keep messaging — proves
 		// the derived pins are themselves well-formed, not merely present.
@@ -569,12 +574,13 @@ final class SessionMigrationTests: XCTestCase {
 	/// parked proposals" (the classical half; PQ has no resolvable-but-
 	/// new-key migrated scenario here). Send-classical never holds a
 	/// pending entry — the candidate's key lives in recv-classical only.
-	func testMintedMidRotationConvertsStagedUpdateAndLeafKeysMatch() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedMidRotationConvertsStagedUpdateAndLeafKeysMatch() throws {
 		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
 		let newID = Data("alice-v2".utf8)
 		_ = try alice.prepareToEncrypt(rotating: newID)
-		XCTAssertNotNil(alice.rotationCandidate)
-		XCTAssertFalse(alice.stagedUpdates.isEmpty)
+		#expect(alice.rotationCandidate != nil)
+		#expect(!(alice.stagedUpdates.isEmpty))
 
 		let native = try alice.makeSessionArchive(kind: .checkpoint)
 		let minted = try SessionMigration.mintArchive(
@@ -584,10 +590,10 @@ final class SessionMigrationTests: XCTestCase {
 		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
 
 		let mintedBody = try minted.decode(SessionArchive.self)
-		XCTAssertFalse(
-			mintedBody.leafKeys.recvClassical.pending.isEmpty,
+		#expect(
+			!(mintedBody.leafKeys.recvClassical.pending.isEmpty),
 			"the staged rotating Upd(self) must convert into recvClassical.pending")
-		XCTAssertTrue(
+		#expect(
 			mintedBody.leafKeys.sendClassical.pending.isEmpty,
 			"send-classical never holds a pending entry")
 	}
@@ -598,7 +604,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// `.archiveInvalid`, not silently accepted. Kills: dropping/weakening
 	/// this cross-check, or comparing against the wrong (e.g. discarded
 	/// send-classical) entry.
-	func testMintRejectsRotationCandidateSignatureKeyMismatchingRecvClassical() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintRejectsRotationCandidateSignatureKeyMismatchingRecvClassical() throws {
 		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
 		let newID = Data("alice-v2".utf8)
 		_ = try alice.prepareToEncrypt(rotating: newID)
@@ -608,22 +615,20 @@ final class SessionMigrationTests: XCTestCase {
 		// which has its own (different) key-consistency checks.
 		var parts = try migratedParts(alice)
 		parts.leafKeys = migratedLeafKeys(from: alice.leafKeys)
-		let candidate = try XCTUnwrap(parts.rotationCandidate)
+		let candidate = try #require(parts.rotationCandidate)
 		let (wrongSigningKey, wrongSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		XCTAssertNotEqual(wrongSignatureKey.data, candidate.signatureKey)
+		#expect(wrongSignatureKey.data != candidate.signatureKey)
 		parts.rotationCandidate = MigratedRotationCandidate(
 			clientID: candidate.clientID,
 			signingKey: wrongSigningKey.data,
 			signatureKey: wrongSignatureKey.data,
 			proposedAtRecvEpoch: candidate.proposedAtRecvEpoch)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -637,13 +642,14 @@ final class SessionMigrationTests: XCTestCase {
 	/// Both must be present, with the SAME key. A build that comments out
 	/// item (c) entirely makes `pending[C]` vanish while `pending[C′]`
 	/// still exists — this is the test that catches it.
-	func testMintedConversionItemCPopulatesTheStagedTargetIndependentlyOfItemA() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedConversionItemCPopulatesTheStagedTargetIndependentlyOfItemA() throws {
 		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
 		let c = Data("alice-c".utf8)
 		_ = try alice.prepareToEncrypt(rotating: c)
-		XCTAssertNotNil(alice.rotationCandidate)
-		let candidateKey = try XCTUnwrap(alice.leafKeys.recvClassical.pending[c])
-		XCTAssertFalse(alice.stagedUpdates.isEmpty)
+		#expect(alice.rotationCandidate != nil)
+		let candidateKey = try #require(alice.leafKeys.recvClassical.pending[c])
+		#expect(!(alice.stagedUpdates.isEmpty))
 
 		var parts = try migratedParts(alice)
 		let cPrime = Data("alice-c-prime".utf8)
@@ -655,12 +661,12 @@ final class SessionMigrationTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 		let mintedBody = try minted.decode(SessionArchive.self)
 
-		let fromItemC = try XCTUnwrap(
+		let fromItemC = try #require(
 			mintedBody.leafKeys.recvClassical.pending.first { $0.target == c })
-		let fromItemA = try XCTUnwrap(
+		let fromItemA = try #require(
 			mintedBody.leafKeys.recvClassical.pending.first { $0.target == cPrime })
-		XCTAssertEqual(fromItemC.key.signatureKey, candidateKey.signatureKey.data)
-		XCTAssertEqual(fromItemA.key.signatureKey, candidateKey.signatureKey.data)
+		#expect(fromItemC.key.signatureKey == candidateKey.signatureKey.data)
+		#expect(fromItemA.key.signatureKey == candidateKey.signatureKey.data)
 	}
 
 	/// The miss path: with NO outstanding candidate at all (and no
@@ -668,35 +674,36 @@ final class SessionMigrationTests: XCTestCase {
 	/// otherwise convert can no longer resolve under any of
 	/// `lookupClassical`'s three arms — mint must fail closed rather than
 	/// silently drop the entry.
-	func testMintedConversionRejectsAStagedUpdateWithNoCandidateToResolveIt() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedConversionRejectsAStagedUpdateWithNoCandidateToResolveIt() throws {
 		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
 		let c = Data("alice-c".utf8)
 		_ = try alice.prepareToEncrypt(rotating: c)
-		XCTAssertFalse(alice.stagedUpdates.isEmpty)
+		#expect(!(alice.stagedUpdates.isEmpty))
 
 		var parts = try migratedParts(alice)
 		parts.rotationCandidate = nil
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// A mid-A.4 `.responding` mint: the held `S`/parked CT map, the body
 	/// matches the native one, and the restored session completes the round.
-	func testMintedMidFlightResponderRoundTripsAndCompletesRound() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedMidFlightResponderRoundTripsAndCompletesRound() throws {
 		var (alice, bob) = try deployedShapedFullyEstablishedTurnOnBob()
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ekFrame = try #require(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 		guard case .responding = alice.pqInflight else {
-			return XCTFail("expected alice to hold `.responding` after sealing")
+			Issue.record("expected alice to hold `.responding` after sealing")
+			return
 		}
 
 		let native = try alice.makeSessionArchive(kind: .checkpoint)
@@ -712,10 +719,10 @@ final class SessionMigrationTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 		_ = try bob.pqRatchetBind(ctFrame)
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 		let decrypted = try restored.processIncomingDecrypted(boundFrame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
+		#expect(decrypted.applicationMessage == Data("bound".utf8))
 	}
 
 	// MARK: - Mint parity across more of the rotation/A.3 lifecycle
@@ -725,7 +732,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// send-classical still lags (the outstanding candidate's key is still
 	/// only `pending`) — a DIFFERENT point in the lifecycle from the
 	/// mid-rotation (staged-but-unfolded) test above.
-	func testMintedRotationFoldedMatchesNative() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedRotationFoldedMatchesNative() throws {
 		var (alice, bob, _, _) = try deployedShapedEstablishedAndExchanged()
 		let newID = Data("alice-v2".utf8)
 		_ = try alice.prepareToEncrypt(rotating: newID)
@@ -735,7 +743,7 @@ final class SessionMigrationTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		let foldDecrypted = try alice.processIncomingDecrypted(foldFrame)
-		XCTAssertTrue(foldDecrypted.ownCredentialCanonicalized)
+		#expect(foldDecrypted.ownCredentialCanonicalized)
 
 		let native = try alice.makeSessionArchive(kind: .checkpoint)
 		let minted = try SessionMigration.mintArchive(
@@ -748,7 +756,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// Mint parity once the rotation has FULLY converged — both leaves
 	/// present the new id, and the outstanding candidate's `pending`
 	/// entries are gone (promoted to `current` on both classical sets).
-	func testMintedRotationConvergedMatchesNative() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedRotationConvergedMatchesNative() throws {
 		var (alice, bob, _, _) = try deployedShapedEstablishedAndExchanged()
 		let newID = Data("alice-v2".utf8)
 		_ = try alice.prepareToEncrypt(rotating: newID)
@@ -761,8 +770,8 @@ final class SessionMigrationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpFrame)
-		XCTAssertEqual(catchUpDecrypted.newSender, newID)
-		XCTAssertEqual(alice.myPrincipalState, .sync(newID))
+		#expect(catchUpDecrypted.newSender == newID)
+		#expect(alice.myPrincipalState == .sync(newID))
 
 		let native = try alice.makeSessionArchive(kind: .checkpoint)
 		var parts = try migratedParts(alice)
@@ -796,17 +805,14 @@ final class SessionMigrationTests: XCTestCase {
 		// there. Every other field, and both classical sets, still match.
 		let mintedBody = try minted.decode(SessionArchive.self)
 		let nativeBody = try native.decode(SessionArchive.self)
-		XCTAssertEqual(mintedBody.auth, nativeBody.auth)
-		XCTAssertEqual(mintedBody.sendGroup, nativeBody.sendGroup)
-		XCTAssertEqual(mintedBody.recvGroup, nativeBody.recvGroup)
-		XCTAssertEqual(
-			mintedBody.leafKeys.sendClassical, nativeBody.leafKeys.sendClassical)
-		XCTAssertEqual(
-			mintedBody.leafKeys.recvClassical, nativeBody.leafKeys.recvClassical)
-		XCTAssertEqual(
-			mintedBody.leafKeys.sendPQ?.current, nativeBody.leafKeys.sendPQ?.current)
-		XCTAssertEqual(mintedBody.leafKeys.recvPQ, nativeBody.leafKeys.recvPQ)
-		XCTAssertTrue(
+		#expect(mintedBody.auth == nativeBody.auth)
+		#expect(mintedBody.sendGroup == nativeBody.sendGroup)
+		#expect(mintedBody.recvGroup == nativeBody.recvGroup)
+		#expect(mintedBody.leafKeys.sendClassical == nativeBody.leafKeys.sendClassical)
+		#expect(mintedBody.leafKeys.recvClassical == nativeBody.leafKeys.recvClassical)
+		#expect(mintedBody.leafKeys.sendPQ?.current == nativeBody.leafKeys.sendPQ?.current)
+		#expect(mintedBody.leafKeys.recvPQ == nativeBody.leafKeys.recvPQ)
+		#expect(
 			mintedBody.leafKeys.sendClassical.pending.isEmpty,
 			"a converged rotation leaves no outstanding send-classical pending entry")
 	}
@@ -816,10 +822,11 @@ final class SessionMigrationTests: XCTestCase {
 	/// carries its PQ half, but Group_B (`recvGroup`, classical-only until
 	/// the §A.3 bootstrap) does not yet — `recvPQ` converts to its
 	/// identity-keyed reservation.
-	func testMintedPreA3InitiatorMatchesNative() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedPreA3InitiatorMatchesNative() throws {
 		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
-		XCTAssertNotNil(alice.sendGroup?.pq)
-		XCTAssertNil(alice.recvGroup?.pq)
+		#expect(alice.sendGroup?.pq != nil)
+		#expect(alice.recvGroup?.pq == nil)
 
 		let native = try alice.makeSessionArchive(kind: .checkpoint)
 		let minted = try SessionMigration.mintArchive(
@@ -832,7 +839,7 @@ final class SessionMigrationTests: XCTestCase {
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertNil(restored.recvGroup?.pq)
+		#expect(restored.recvGroup?.pq == nil)
 	}
 
 	/// The mirror image on the acceptor: bob's `recvGroup` (Group_A) already
@@ -840,10 +847,11 @@ final class SessionMigrationTests: XCTestCase {
 	/// (Group_B) is still classical-only pre-A.3 — `sendPQ` converts to the
 	/// canonical present-but-empty shape: nothing is reserved ahead of A.3
 	/// founding.
-	func testMintedPreA3AcceptorMatchesNative() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedPreA3AcceptorMatchesNative() throws {
 		let (_, bob, _, _) = try deployedShapedEstablishedAndExchanged()
-		XCTAssertNotNil(bob.recvGroup?.pq)
-		XCTAssertNil(bob.sendGroup?.pq)
+		#expect(bob.recvGroup?.pq != nil)
+		#expect(bob.sendGroup?.pq == nil)
 
 		let native = try bob.makeSessionArchive(kind: .checkpoint)
 		let minted = try SessionMigration.mintArchive(
@@ -856,8 +864,8 @@ final class SessionMigrationTests: XCTestCase {
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertNil(restored.sendGroup?.pq)
-		XCTAssertNil(restored.leafKeys.sendPQ.current)
+		#expect(restored.sendGroup?.pq == nil)
+		#expect(restored.leafKeys.sendPQ.current == nil)
 	}
 
 	/// A deployed-shaped pre-A.3 acceptor's mint+restore never founds
@@ -867,7 +875,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// non-nil `sendPQ.current` reservation is dropped without throwing,
 	/// and the canonical present-but-empty `.mintConverted` shape is
 	/// accepted as-is.
-	func testMigratedPreA3AcceptorFoundsSendPQOnAFreshKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func migratedPreA3AcceptorFoundsSendPQOnAFreshKey() throws {
 		for suppliedReservation in [false, true] {
 			var (alice, bob, aliceIdentity, bobIdentity) =
 				try deployedShapedEstablishedAndExchanged(
@@ -884,7 +893,7 @@ final class SessionMigrationTests: XCTestCase {
 			bob.leafKeys.recvClassical.pending = [:]
 			bob.pendingProposal = nil
 			bob.stagedUpdates = []
-			XCTAssertNil(bob.sendGroup?.pq)
+			#expect(bob.sendGroup?.pq == nil)
 
 			var parts = try migratedParts(bob)
 			if suppliedReservation {
@@ -896,12 +905,12 @@ final class SessionMigrationTests: XCTestCase {
 				parts.leafKeys = MigratedLeafKeys(
 					sendClassical: MigratedGroupKeys(
 						current: migratedKey(
-							try XCTUnwrap(
+							try #require(
 								bob.leafKeys.sendClassical.current))
 					),
 					recvClassical: MigratedGroupKeys(
 						current: migratedKey(
-							try XCTUnwrap(
+							try #require(
 								bob.leafKeys.recvClassical.current))
 					),
 					// A supplied reservation — must be dropped, never thrown on.
@@ -914,7 +923,7 @@ final class SessionMigrationTests: XCTestCase {
 									.pqSignatureKey))),
 					recvPQ: MigratedGroupKeys(
 						current: migratedKey(
-							try XCTUnwrap(bob.leafKeys.recvPQ.current)))
+							try #require(bob.leafKeys.recvPQ.current)))
 				)
 			}
 			let minted = try SessionMigration.mintArchive(
@@ -925,19 +934,19 @@ final class SessionMigrationTests: XCTestCase {
 				core: nil, checkpoint: minted,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-			XCTAssertNil(restored.leafKeys.sendPQ.current)
-			XCTAssertNil(restored.sendGroup?.pq)
+			#expect(restored.leafKeys.sendPQ.current == nil)
+			#expect(restored.sendGroup?.pq == nil)
 
 			let kpFrame = try alice.pqBootstrapBegin().frame
 			_ = try restored.pqBootstrapRespond(kpFrame)
-			let foundedKey = try XCTUnwrap(restored.leafKeys.sendPQ.current)
+			let foundedKey = try #require(restored.leafKeys.sendPQ.current)
 			let presentedKey = try TwoMLSSession.ownLeaf(
-				of: try XCTUnwrap(restored.sendGroup?.pq)
+				of: try #require(restored.sendGroup?.pq)
 			).signatureKey
-			XCTAssertEqual(foundedKey.signatureKey, presentedKey)
-			XCTAssertNotEqual(foundedKey.signatureKey, bobIdentity.pqSignatureKey)
-			XCTAssertNotEqual(foundedKey.signatureKey, restored.identity.pqSignatureKey)
-			XCTAssertNotEqual(foundedKey.signatureKey, aliceIdentity.pqSignatureKey)
+			#expect(foundedKey.signatureKey == presentedKey)
+			#expect(foundedKey.signatureKey != bobIdentity.pqSignatureKey)
+			#expect(foundedKey.signatureKey != restored.identity.pqSignatureKey)
+			#expect(foundedKey.signatureKey != aliceIdentity.pqSignatureKey)
 			try restored.assertLeafKeysPresented()
 		}
 	}
@@ -945,15 +954,17 @@ final class SessionMigrationTests: XCTestCase {
 	/// Mint parity for the A.3-stalled initiator: the founder has sent its
 	/// KP′ and is waiting on the peer's Welcome′ — `bootstrapKPSecret`
 	/// held, `pqInflight == .bootstrapInitiated`, `recvGroup.pq` still nil.
-	func testMintedA3StalledInitiatorMatchesNative() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedA3StalledInitiatorMatchesNative() throws {
 		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
 		_ = try alice.pqBootstrapBegin()
-		XCTAssertNotNil(alice.bootstrapKPSecret)
+		#expect(alice.bootstrapKPSecret != nil)
 		guard case .bootstrapInitiated = alice.pqInflight else {
-			return XCTFail(
+			Issue.record(
 				"expected alice to hold .bootstrapInitiated after pqBootstrapBegin")
+			return
 		}
-		XCTAssertNil(alice.recvGroup?.pq)
+		#expect(alice.recvGroup?.pq == nil)
 
 		let native = try alice.makeSessionArchive(kind: .checkpoint)
 		let minted = try SessionMigration.mintArchive(
@@ -968,28 +979,29 @@ final class SessionMigrationTests: XCTestCase {
 	/// Book group-rules.md rule 9: the deployed engine never records a
 	/// profile, so a migrated session carrying one is refused. Kills:
 	/// dropping the mint check.
-	func testMintRefusesARecordedSessionProfile() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintRefusesARecordedSessionProfile() throws {
 		for profile in [SessionProfile.correct, .deployedCompatible] {
 			let (alice, _) = try SessionTestSupport.establishedAndExchanged(
 				alice: "mint-profile-a", bob: "mint-profile-b", profile: profile)
 			let mint = {
 				try SessionMigration.mintArchive(
 					kind: .checkpoint,
-					parts: try self.migratedParts(alice, suppliedLeafKeys: true),
+					parts: try self.migratedParts(
+						alice, suppliedLeafKeys: true),
 					classicalProvider: SessionTestSupport.classicalProvider,
 					pqProvider: SessionTestSupport.pqProvider)
 			}
 			if profile == .correct {
-				XCTAssertThrowsError(try mint()) {
-					XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
-				}
+				#expect(throws: TwoMLSError.archiveInvalid) { try mint() }
 			} else {
-				XCTAssertNoThrow(try mint())
+				#expect(throws: Never.self) { try mint() }
 			}
 		}
 	}
 
-	func testMintedCheckpointRestoresAndKeepsMessaging() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedCheckpointRestoresAndKeepsMessaging() throws {
 		var (alice, bob) = try fullyEstablishedPair()
 		let minted = try SessionMigration.mintArchive(
 			kind: .checkpoint, parts: try migratedParts(alice, suppliedLeafKeys: true),
@@ -999,23 +1011,24 @@ final class SessionMigrationTests: XCTestCase {
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertTrue(restored.isFullyEstablished)
+		#expect(restored.isFullyEstablished)
 
 		_ = try restored.prepareToEncrypt()
 		let frame = try restored.encrypt(Data("hello".utf8)).frame
 		let decrypted = try bob.processIncomingDecrypted(frame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("hello".utf8))
+		#expect(decrypted.applicationMessage == Data("hello".utf8))
 
 		_ = try bob.prepareToEncrypt()
 		let reply = try bob.encrypt(Data("hi".utf8)).frame
 		let replyDecrypted = try restored.processIncomingDecrypted(reply)
-		XCTAssertEqual(replyDecrypted.applicationMessage, Data("hi".utf8))
+		#expect(replyDecrypted.applicationMessage == Data("hi".utf8))
 	}
 
 	/// The responder-side mint: `initiated == false` flips restore's
 	/// standard/deferred interpretation of the two halves (Bob's sendGroup is
 	/// the classical-only Group_B, his recvGroup the full Group_A).
-	func testMintedResponderCheckpointRestoresAndKeepsMessaging() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedResponderCheckpointRestoresAndKeepsMessaging() throws {
 		var (alice, bob) = try fullyEstablishedPair()
 		let minted = try SessionMigration.mintArchive(
 			kind: .checkpoint, parts: try migratedParts(bob, suppliedLeafKeys: true),
@@ -1025,24 +1038,25 @@ final class SessionMigrationTests: XCTestCase {
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertTrue(restored.isFullyEstablished)
+		#expect(restored.isFullyEstablished)
 
 		_ = try restored.prepareToEncrypt()
 		let frame = try restored.encrypt(Data("from-restored-bob".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(frame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("from-restored-bob".utf8))
+		#expect(decrypted.applicationMessage == Data("from-restored-bob".utf8))
 	}
 
 	/// A supplied send-classical `pending` entry is dropped at mint —
 	/// `.core` and `.checkpoint` alike — never carried through into the
 	/// minted body. Kills: the mint forwarding a supplied send-classical
 	/// pending entry.
-	func testMintDropsSuppliedSendClassicalPending() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintDropsSuppliedSendClassicalPending() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		let (smuggledSigningKey, smuggledSignatureKey) =
 			try TwoMLSIdentity.mintSignatureKeypair()
-		var leafKeys = try XCTUnwrap(parts.leafKeys)
+		var leafKeys = try #require(parts.leafKeys)
 		leafKeys.sendClassical.pending.append(
 			MigratedPendingLeafKey(
 				target: Data("smuggled".utf8),
@@ -1057,7 +1071,7 @@ final class SessionMigrationTests: XCTestCase {
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 			let mintedBody = try minted.decode(SessionArchive.self)
-			XCTAssertTrue(
+			#expect(
 				mintedBody.leafKeys.sendClassical.pending.isEmpty,
 				"\(kind): a supplied send-classical pending entry must be dropped")
 		}
@@ -1068,11 +1082,12 @@ final class SessionMigrationTests: XCTestCase {
 	/// native move — the send leaf at its first commit, the recv leaf at
 	/// its first fold — never together. PQ divergence (the first A.5) is
 	/// deferred to the commit that mints per-move PQ keys.
-	func testMigratedSharedKeysDivergeAtEachLeafsNextMove() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func migratedSharedKeysDivergeAtEachLeafsNextMove() throws {
 		var (alice, bob, aliceIdentity, _) = try deployedShapedEstablishedAndExchanged()
 		let sharedKey = aliceIdentity.signatureKey
-		XCTAssertEqual(alice.leafKeys.sendClassical.current?.signatureKey, sharedKey)
-		XCTAssertEqual(alice.leafKeys.recvClassical.current?.signatureKey, sharedKey)
+		#expect(alice.leafKeys.sendClassical.current?.signatureKey == sharedKey)
+		#expect(alice.leafKeys.recvClassical.current?.signatureKey == sharedKey)
 
 		// The first COMMIT: alice approves and folds bob's routine offer,
 		// which diverges her send-classical leaf from the shared key — and,
@@ -1082,10 +1097,10 @@ final class SessionMigrationTests: XCTestCase {
 		let bobOfferDecrypted = try alice.processIncomingDecrypted(bobOfferFrame)
 		_ = try alice.queueProposal(digest: bobOfferDecrypted.queuedProposal.digest)
 		let foldPrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(foldPrepared.didCommit)
-		XCTAssertNotEqual(alice.leafKeys.sendClassical.current?.signatureKey, sharedKey)
-		XCTAssertEqual(
-			alice.leafKeys.recvClassical.current?.signatureKey, sharedKey,
+		#expect(foldPrepared.didCommit)
+		#expect(alice.leafKeys.sendClassical.current?.signatureKey != sharedKey)
+		#expect(
+			alice.leafKeys.recvClassical.current?.signatureKey == sharedKey,
 			"recv-classical has not folded yet")
 
 		// The first FOLD: bob approves and folds alice's own offer (minted
@@ -1094,10 +1109,10 @@ final class SessionMigrationTests: XCTestCase {
 		let aliceOfferDecrypted = try bob.processIncomingDecrypted(aliceFrame)
 		_ = try bob.queueProposal(digest: aliceOfferDecrypted.queuedProposal.digest)
 		let bobFoldPrepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(bobFoldPrepared.didCommit)
+		#expect(bobFoldPrepared.didCommit)
 		let bobFoldFrame = try bob.encrypt(Data("bob-fold".utf8)).frame
 		_ = try alice.processIncomingDecrypted(bobFoldFrame)
-		XCTAssertNotEqual(alice.leafKeys.recvClassical.current?.signatureKey, sharedKey)
+		#expect(alice.leafKeys.recvClassical.current?.signatureKey != sharedKey)
 	}
 
 	// MARK: - AC 4: spent/edge — pre-establishment initiator
@@ -1105,7 +1120,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// A pre-establishment initiator (`recvGroup == nil`) mints with its
 	/// classical init secret carried, restores, and COMPLETES establishment —
 	/// the full mid-establishment restore flow a migrated session needs.
-	func testMintedPreEstablishmentInitiatorCompletesEstablishment() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedPreEstablishmentInitiatorCompletesEstablishment() throws {
 		// Deployed-shaped: founds Group_A on alice's own
 		// already-signed KP leaves directly, rather than the public
 		// `initiate(principal:their:)`'s fresh founding leaves — this test
@@ -1117,7 +1133,7 @@ final class SessionMigrationTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
-		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
 			identity: aliceIdentity, their: theirKP,
 			founding: (
@@ -1136,8 +1152,8 @@ final class SessionMigrationTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 
 		let parts = try migratedParts(initiated.session)
-		XCTAssertNotNil(parts.identity.classicalInitSecretKey)
-		XCTAssertNil(parts.identity.pqInitSecretKey)
+		#expect(parts.identity.classicalInitSecretKey != nil)
+		#expect(parts.identity.pqInitSecretKey == nil)
 		let native = try initiated.session.makeSessionArchive(kind: .checkpoint)
 		let minted = try SessionMigration.mintArchive(
 			kind: .checkpoint, parts: parts,
@@ -1153,28 +1169,29 @@ final class SessionMigrationTests: XCTestCase {
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertFalse(restored.isEstablished)
+		#expect(!(restored.isEstablished))
 
 		let envelope = try restored.pendingOutbound()
 		guard case .establishment(let frame) = try invitation.openInitial(envelope)
 		else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
 		let returnKP = try EstablishmentMessages.decodeKeyPackage(
-			try XCTUnwrap(frame.returnKeyPackage))
+			try #require(frame.returnKeyPackage))
 		let received = try invitation.receive(
-			welcome: try XCTUnwrap(frame.welcome),
+			welcome: try #require(frame.welcome),
 			theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try restored.bootstrapKPCommitment(),
 			spawnToken: SessionTestSupport.classicalProvider.randomBytes(16))
 		var bob = received.session
-		XCTAssertTrue(bob.isEstablished)
+		#expect(bob.isEstablished)
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		let decrypted = try restored.processIncomingDecrypted(bobFrame)
-		XCTAssertTrue(restored.isEstablished)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
+		#expect(restored.isEstablished)
+		#expect(decrypted.applicationMessage == Data("bob-hello".utf8))
 	}
 
 	// MARK: - Windows: safe-to-empty vs must-carry
@@ -1182,7 +1199,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// The three re-derivable windows may mint EMPTY — restore re-captures
 	/// the current epoch's entries at once (only the retained past-epoch
 	/// entries are lost, the documented scope choice).
-	func testEmptyDerivableWindowsMintAndRestore() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func emptyDerivableWindowsMintAndRestore() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.listenRendezvous = [:]
@@ -1196,27 +1214,26 @@ final class SessionMigrationTests: XCTestCase {
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertEqual(restored.listenRendezvous.count, 1)
-		XCTAssertEqual(restored.recvHeaderKeys.count, 1)
-		XCTAssertEqual(restored.recvHeaderKeysPQ.count, 1)
+		#expect(restored.listenRendezvous.count == 1)
+		#expect(restored.recvHeaderKeys.count == 1)
+		#expect(restored.recvHeaderKeysPQ.count == 1)
 	}
 
 	/// The attachment ledgers are NOT safe to empty: the live path consumes
 	/// the current epoch's `0xFF03` exporter leaf at group creation, so
 	/// restore's re-capture of a ledger missing that epoch throws — the mint
 	/// (whose trial restore runs the same capture) must reject it loudly.
-	func testEmptyAttachmentLedgerIsRejectedAtMint() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func emptyAttachmentLedgerIsRejectedAtMint() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.sendAttachmentLedger = [:]
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -1226,6 +1243,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// and either half of a retained `initialTheirKP` — must advertise the
 	/// `APQInfo` extension and the `AppDataUpdate` proposal, or mint
 	/// refuses with `.archiveInvalid`.
+	@available(iOS 26, macOS 26, *)
 	private func rogueKeyPackage(
 		named name: String, capabilities: MLS.RFC9420.Capabilities
 	) throws -> MLS.RFC9420.KeyPackage {
@@ -1250,13 +1268,22 @@ final class SessionMigrationTests: XCTestCase {
 		return keyPackage
 	}
 
-	private static let rogueCapabilities = MLS.RFC9420.Capabilities(
-		versions: [.mls10], cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
-		extensions: [], proposals: [], credentials: [MLS.RFC9420.CredentialType(.basic)])
+	/// Computed, not stored: `TwoMLSSuite` is gated to iOS/macOS 26, so it
+	/// cannot back a stored `static let` in this ungated suite — see
+	/// `CombinerKeyPackageWireTests.makeIdentity()`'s stored-property
+	/// workaround for the same restriction.
+	@available(iOS 26, macOS 26, *)
+	private static var rogueCapabilities: MLS.RFC9420.Capabilities {
+		MLS.RFC9420.Capabilities(
+			versions: [.mls10], cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
+			extensions: [], proposals: [],
+			credentials: [MLS.RFC9420.CredentialType(.basic)])
+	}
 
 	/// Each half checked independently: a rogue CLASSICAL half with a
 	/// well-capable PQ one still throws, and vice versa.
-	func testCapabilityLessInitialTheirKPIsRejectedAtMint() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func capabilityLessInitialTheirKPIsRejectedAtMint() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		let wellCapableKP = try rogueKeyPackage(
 			named: "well-capable-their-kp",
@@ -1268,60 +1295,54 @@ final class SessionMigrationTests: XCTestCase {
 		classicalRogueParts.initialTheirKP = (
 			classical: try rogueKP.mlsEncoded(), pq: try wellCapableKP.mlsEncoded()
 		)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: classicalRogueParts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 
 		var pqRogueParts = try migratedParts(alice, suppliedLeafKeys: true)
 		pqRogueParts.initialTheirKP = (
 			classical: try wellCapableKP.mlsEncoded(), pq: try rogueKP.mlsEncoded()
 		)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: pqRogueParts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
-	func testCorruptedClassicalSigningKeyIsRejectedAtMint() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func corruptedClassicalSigningKeyIsRejectedAtMint() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.identity.signingKey = SecretBytes(randomByteCount: 32)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// A VALID but different ML-KEM leaf secret — one that passes the 96-B
 	/// integrity check — is rejected by the derived-public vs KeyPackage
 	/// comparison, which is the check that actually catches a mis-mapped key.
-	func testValidButWrongPqLeafSecretIsRejectedAtMint() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func validButWrongPqLeafSecretIsRejectedAtMint() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		let (wrongSecret, _) = try SessionTestSupport.pqProvider.hpkeGenerateKeyPair()
 		parts.identity.pqLeafSecretKey = wrongSecret.data
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -1329,7 +1350,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// is rejected — the half-swap mis-mapping this minter exists to catch.
 	/// Needs the pre-establishment fixture (the only state where an init
 	/// secret is supplied at all).
-	func testSwappedClassicalLeafAndInitSecretsAreRejectedAtMint() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func swappedClassicalLeafAndInitSecretsAreRejectedAtMint() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -1341,38 +1363,35 @@ final class SessionMigrationTests: XCTestCase {
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal,
-			their: try XCTUnwrap(invitation.combinerKeyPackage))
+			their: try #require(invitation.combinerKeyPackage))
 		var parts = try migratedParts(initiated.session)
 		let leaf = parts.identity.classicalLeafSecretKey
 		parts.identity.classicalLeafSecretKey =
-			try XCTUnwrap(parts.identity.classicalInitSecretKey)
+			try #require(parts.identity.classicalInitSecretKey)
 		parts.identity.classicalInitSecretKey = leaf
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// An init secret supplied for an ESTABLISHED session — the native path
 	/// can never produce one (`includeInitSecrets: recvGroup == nil`) — is
 	/// rejected at mint.
-	func testInitSecretSuppliedForEstablishedSessionIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func initSecretSuppliedForEstablishedSessionIsRejected() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.identity.classicalInitSecretKey = SecretBytes(randomByteCount: 32)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -1382,7 +1401,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// mapped legacy PQ init secret would otherwise pass), so the rejection
 	/// is the gate's regardless of the supplied value's validity — hence a
 	/// freshly generated key suffices here.
-	func testPqInitSecretIsAlwaysRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func pqInitSecretIsAlwaysRejected() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -1394,18 +1414,16 @@ final class SessionMigrationTests: XCTestCase {
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal,
-			their: try XCTUnwrap(invitation.combinerKeyPackage))
+			their: try #require(invitation.combinerKeyPackage))
 		var parts = try migratedParts(initiated.session)
 		let (pqInitSecret, _) = try SessionTestSupport.pqProvider.hpkeGenerateKeyPair()
 		parts.identity.pqInitSecretKey = pqInitSecret.data
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -1417,54 +1435,52 @@ final class SessionMigrationTests: XCTestCase {
 	/// self-consistent (the pair-identity checks are per-pair, custody is
 	/// symmetric), so no mint-time signal distinguishes them. The migrator's
 	/// own send/recv mapping discipline is what prevents that one.
-	func testResponderTopologyWithoutRecvGroupIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func responderTopologyWithoutRecvGroupIsRejected() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.initiated = false
 		parts.recvGroup = nil
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// The standard (full-combiner) pair's PQ snapshot is mandatory —
 	/// `restoreStandardPair` fail-closes on its absence.
-	func testStandardHalfWithoutPQSnapshotIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func standardHalfWithoutPQSnapshotIsRejected() throws {
 		let (alice, _) = try fullyEstablishedPair()
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.sendGroup.pq = nil
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// A provider that doesn't back its suite is `.cipherSuiteMismatch`
 	/// (the `TwoMLSIdentity.generate` precedent), not a profile-internal
 	/// snapshot error.
-	func testWrongSuiteProviderIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func wrongSuiteProviderIsRejected() throws {
 		let (alice, _) = try fullyEstablishedPair()
-		let wrongProvider = SwiftCryptoProvider().cipherSuiteProvider(for: .p256Aes128)!
+		let wrongProvider = try #require(
+			SwiftCryptoProvider().cipherSuiteProvider(for: .p256Aes128))
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.cipherSuiteMismatch) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint,
 				parts: try migratedParts(alice, suppliedLeafKeys: true),
 				classicalProvider: wrongProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .cipherSuiteMismatch)
 		}
 	}
 
@@ -1474,7 +1490,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// the pair reconciles: the newer Core wins the stateSeq comparison and
 	/// splices the Checkpoint's PQ halves in — the minted core's only
 	/// consumer path, since a Core alone is never restorable.
-	func testMintedCoreAndCheckpointPairReconcilesAndMessages() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedCoreAndCheckpointPairReconcilesAndMessages() throws {
 		var (alice, bob) = try fullyEstablishedPair()
 		let parts = try migratedParts(alice, suppliedLeafKeys: true)
 
@@ -1495,13 +1512,13 @@ final class SessionMigrationTests: XCTestCase {
 			core: core, checkpoint: checkpoint,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertTrue(restored.isFullyEstablished)
-		XCTAssertEqual(restored.stateSeq, 6)
+		#expect(restored.isFullyEstablished)
+		#expect(restored.stateSeq == 6)
 
 		_ = try restored.prepareToEncrypt()
 		let frame = try restored.encrypt(Data("paired".utf8)).frame
 		let decrypted = try bob.processIncomingDecrypted(frame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("paired".utf8))
+		#expect(decrypted.applicationMessage == Data("paired".utf8))
 	}
 
 	// MARK: - Custody arms: born-dedicated recvLeafPrincipal
@@ -1523,19 +1540,20 @@ final class SessionMigrationTests: XCTestCase {
 	/// check below, against both the minted archive directly and the
 	/// restored session, is the direct proof: it fails if that resolution
 	/// is wrong.
-	func testMintedBornDedicatedAcceptorRestoresWithCustodyIntact() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedBornDedicatedAcceptorRestoresWithCustodyIntact() throws {
 		let established = try deployedShapedEstablishedDedicated(bob: "bob-d")
 		let bob = established.bob
-		XCTAssertTrue(bob.owesEstablishmentEnvelope)
+		#expect(bob.owesEstablishmentEnvelope)
 		// `bob.identity` stays the invitation bundle throughout (never
 		// replaced with D's), so it IS the retained recv-leaf custody the
 		// migrator must supply explicitly.
 		let invitationCustody = bob.identity
-		XCTAssertNotEqual(established.dIdentity.clientID, invitationCustody.clientID)
-		XCTAssertNotNil(
-			bob.recvGroup?.pq, "Group_A.pq already exists at mint time")
-		XCTAssertEqual(
-			bob.leafKeys.recvPQ.current?.signatureKey, invitationCustody.pqSignatureKey,
+		#expect(established.dIdentity.clientID != invitationCustody.clientID)
+		#expect(bob.recvGroup?.pq != nil, "Group_A.pq already exists at mint time")
+		#expect(
+			bob.leafKeys.recvPQ.current?.signatureKey
+				== invitationCustody.pqSignatureKey,
 			"recv-PQ still presents the invitation identity's key, not D's")
 
 		let migratedCustody = MigratedRecvLeafPrincipal(
@@ -1552,9 +1570,9 @@ final class SessionMigrationTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		let mintedBody = try minted.decode(SessionArchive.self)
-		XCTAssertEqual(
-			mintedBody.leafKeys.recvPQ?.current?.signatureKey,
-			invitationCustody.pqSignatureKey.data,
+		#expect(
+			mintedBody.leafKeys.recvPQ?.current?.signatureKey
+				== invitationCustody.pqSignatureKey.data,
 			"minted recvPQ.current must resolve via the retained custody's PQ slot, not identity's (D's)"
 		)
 
@@ -1562,13 +1580,13 @@ final class SessionMigrationTests: XCTestCase {
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertEqual(
-			restored.leafKeys.recvPQ.current?.signatureKey,
-			invitationCustody.pqSignatureKey,
+		#expect(
+			restored.leafKeys.recvPQ.current?.signatureKey
+				== invitationCustody.pqSignatureKey,
 			"restored recvPQ.current must still present the invitation identity's PQ key"
 		)
-		XCTAssertEqual(restored.identity.clientID, established.dIdentity.clientID)
-		XCTAssertTrue(restored.owesEstablishmentEnvelope)
+		#expect(restored.identity.clientID == established.dIdentity.clientID)
+		#expect(restored.owesEstablishmentEnvelope)
 	}
 
 	/// A one-sided rotation. Alice's classical rotation has FULLY
@@ -1588,7 +1606,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// minted value directly, and the restored session's own choke point,
 	/// which independently re-derives the tree's actual presented key and
 	/// would fail closed if the conversion had gotten this wrong.
-	func testMintedOneSidedRotationResolvesSendPQToTheOriginalKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedOneSidedRotationResolvesSendPQToTheOriginalKey() throws {
 		// Both PQ halves already exist, idle, turn on bob — reusing this
 		// fixture (rather than hand-driving §A.3) starts past the PQ
 		// bootstrap/ratchet entirely, so the classical rotation driven below
@@ -1610,12 +1629,13 @@ final class SessionMigrationTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpFrame)
-		XCTAssertEqual(catchUpDecrypted.newSender, newID)
-		XCTAssertEqual(alice.myPrincipalState, .sync(newID))
-		XCTAssertNotNil(alice.rotationCandidate, "convergence doesn't clear the candidate")
-		XCTAssertEqual(
-			try TwoMLSSession.ownLeaf(of: alice.sendGroup!.pq!).signatureKey,
-			alice.identity.pqSignatureKey,
+		#expect(catchUpDecrypted.newSender == newID)
+		#expect(alice.myPrincipalState == .sync(newID))
+		#expect(alice.rotationCandidate != nil, "convergence doesn't clear the candidate")
+		let alicesSendPQ = try #require(alice.sendGroup?.pq)
+		#expect(
+			try TwoMLSSession.ownLeaf(of: alicesSendPQ).signatureKey
+				== alice.identity.pqSignatureKey,
 			"send-PQ never moved off alice's original PQ key")
 
 		let freshN = try TwoMLSIdentity.generate(
@@ -1673,11 +1693,10 @@ final class SessionMigrationTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		let mintedBody = try minted.decode(SessionArchive.self)
-		XCTAssertEqual(
-			mintedBody.leafKeys.sendPQ?.current?.signatureKey, oldPQSignatureKey.data)
-		XCTAssertNotEqual(
-			mintedBody.leafKeys.sendPQ?.current?.signatureKey,
-			freshN.pqSignatureKey.data)
+		#expect(mintedBody.leafKeys.sendPQ?.current?.signatureKey == oldPQSignatureKey.data)
+		#expect(
+			mintedBody.leafKeys.sendPQ?.current?.signatureKey
+				!= freshN.pqSignatureKey.data)
 
 		var restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: minted,
@@ -1690,26 +1709,25 @@ final class SessionMigrationTests: XCTestCase {
 		// pass here means any future `owePQBind` call is GUARANTEED to
 		// sign with the key the tree really presents.
 		try restored.assertLeafKeysPresented()
-		XCTAssertEqual(
-			restored.leafKeys.sendPQ.current?.signingKey.data, oldPQSigningKey.data,
+		#expect(
+			restored.leafKeys.sendPQ.current?.signingKey.data == oldPQSigningKey.data,
 			"owePQBind reads exactly this slot, so this IS the old-key proof")
 	}
 
 	/// The negative arm: dropping `recvLeafPrincipal` from a born-dedicated
 	/// acceptor's parts leaves the invitation-keyed leaves unresolvable —
 	/// the custody check (not the trial restore) must catch it at mint.
-	func testBornDedicatedPartsMissingRecvLeafPrincipalIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bornDedicatedPartsMissingRecvLeafPrincipalIsRejected() throws {
 		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
 		var parts = try migratedParts(established.bob)
 		parts.recvLeafPrincipal = nil
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -1720,6 +1738,7 @@ final class SessionMigrationTests: XCTestCase {
 	/// never discover on its own (a window offer's target, never framed
 	/// into `stagedUpdates`), so they supply it directly instead of relying
 	/// on the temporary owner-keyed conversion.
+	@available(iOS 26, macOS 26, *)
 	private func migratedLeafKeys(from leafKeys: LeafKeys) -> MigratedLeafKeys {
 		func convert(_ set: GroupKeySet) -> MigratedGroupKeys {
 			MigratedGroupKeys(
@@ -1750,10 +1769,11 @@ final class SessionMigrationTests: XCTestCase {
 	/// (a migrated session's framed store may not carry every offer the
 	/// window does). Returns everything a `MigratedOwnOffer`/window record
 	/// needs.
+	@available(iOS 26, macOS 26, *)
 	private func handBuiltOwnOffer(in session: inout TwoMLSSession) throws -> (
 		ref: Data, bareProposal: Data, epoch: UInt64, groupID: Data, senderLeafIndex: UInt32
 	) {
-		var mirror = try XCTUnwrap(session.recvGroup)
+		var mirror = try #require(session.recvGroup)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (message, _) = try mirror.classical.proposeUpdate(
 			SessionTestSupport.classicalProvider,
@@ -1781,7 +1801,7 @@ final class SessionMigrationTests: XCTestCase {
 		session.stagedUpdates = []
 		session.pendingProposal = nil
 		guard case .publicMessage(let updatePub) = message else {
-			XCTFail("expected a publicMessage-framed Update")
+			Issue.record("expected a publicMessage-framed Update")
 			throw TwoMLSError.malformedSideBandMessage
 		}
 		var scratchStore = MLS.RFC9420.ProposalStore()
@@ -1789,7 +1809,7 @@ final class SessionMigrationTests: XCTestCase {
 			SessionTestSupport.classicalProvider, proposal: updatePub)
 		let ref = try scratchStore.insert(verified, SessionTestSupport.classicalProvider)
 		guard case .proposal(let bareProposal) = updatePub.content.content else {
-			XCTFail("expected a proposal-carrying PublicMessage")
+			Issue.record("expected a proposal-carrying PublicMessage")
 			throw TwoMLSError.malformedSideBandMessage
 		}
 		return (
@@ -1803,7 +1823,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// Rule 10: `mintArchive(deployedState:)` and `mintOwnOfferWindow`
 	/// must agree on the window id given the SAME window array, unchanged —
 	/// they share the one `OwnOfferWindow.id` function.
-	func testMintArchiveAndMintOwnOfferWindowAgreeOnTheWindowID() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintArchiveAndMintOwnOfferWindowAgreeOnTheWindowID() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		let built = try handBuiltOwnOffer(in: &bob)
 		let offer = MigratedOwnOffer(
@@ -1825,41 +1846,38 @@ final class SessionMigrationTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider,
 			deployedState: MigratedDeployedState(ownOffers: window))
 		let archiveBody = try mintedArchive.decode(SessionArchive.self)
-		let recordID = try XCTUnwrap(archiveBody.deployedCarry?.ownOfferWindow?.id)
-		XCTAssertEqual(recordID.count, 32)
+		let recordID = try #require(archiveBody.deployedCarry?.ownOfferWindow?.id)
+		#expect(recordID.count == 32)
 
 		let mintedWindow = try SessionMigration.mintOwnOfferWindow(
 			window, parts: parts,
 			classicalProvider: SessionTestSupport.classicalProvider)
-		XCTAssertEqual(mintedWindow.id, recordID)
+		#expect(mintedWindow.id == recordID)
 	}
 
 	/// An empty `offers` array is `.archiveInvalid` in both mints (A.2's
 	/// "an empty window ⇒ .archiveInvalid in both mints").
-	func testEmptyOwnOfferWindowIsRejectedByBothMints() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func emptyOwnOfferWindowIsRejectedByBothMints() throws {
 		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
-		let recv = try XCTUnwrap(bob.recvGroup)
+		let recv = try #require(bob.recvGroup)
 		let window = MigratedOwnOfferWindow(
 			epoch: recv.classical.context.epoch,
 			groupID: recv.classical.context.groupID,
 			senderLeafIndex: recv.classical.myLeafIndex.value, offers: [])
 		let parts = try migratedParts(bob)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider,
 				deployedState: MigratedDeployedState(ownOffers: window))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintOwnOfferWindow(
 				window, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -1871,7 +1889,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// would make this assertion fail while leaving every mint-level test
 	/// (which also rejects the tampered proposal on STRUCTURAL grounds,
 	/// independent of the id) still passing.
-	func testTheIDFunctionCoversTheProposalBytes() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func theIDFunctionCoversTheProposalBytes() throws {
 		let ref = Data(repeating: 0x11, count: 32)
 		let groupID = Data("group".utf8)
 		let offerA = OwnOfferWindow.SortedOffer(
@@ -1884,13 +1903,14 @@ final class SessionMigrationTests: XCTestCase {
 			epoch: 1, groupID: groupID, senderLeafIndex: 0, sorted: [offerA])
 		let idB = OwnOfferWindow.id(
 			epoch: 1, groupID: groupID, senderLeafIndex: 0, sorted: [offerB])
-		XCTAssertNotEqual(idA, idB)
+		#expect(idA != idB)
 	}
 
 	/// A single flipped proposal byte changes the id (so a load elsewhere
 	/// fails `.archiveInvalid` on the recompute-and-compare) — the direct
 	/// negative for the id function actually covering the proposal bytes.
-	func testFlippingAProposalByteChangesTheWindowID() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func flippingAProposalByteChangesTheWindowID() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		let built = try handBuiltOwnOffer(in: &bob)
 		var tamperedProposal = built.bareProposal
@@ -1917,17 +1937,16 @@ final class SessionMigrationTests: XCTestCase {
 		// own self-signature), so rule 10's shape check rejects it before
 		// the id ever matters here — proves the tamper is real, not a
 		// silent id-only difference an attacker could route around.
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintOwnOfferWindow(
 				tampered, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try SessionMigration.mintOwnOfferWindow(
 				genuine, parts: parts,
-				classicalProvider: SessionTestSupport.classicalProvider))
+				classicalProvider: SessionTestSupport.classicalProvider)
+		}
 	}
 
 	/// The other half of the id function's coverage: `canonicalOrder`'s own
@@ -1935,7 +1954,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// must produce the same window id and a byte-identical archive — the
 	/// id (and the wire shape) depends only on the offer SET, never on the
 	/// order a migrator happened to enumerate them in.
-	func testMintingTheSameOffersInDifferentInputOrdersProducesIdenticalWindows() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintingTheSameOffersInDifferentInputOrdersProducesIdenticalWindows() throws {
 		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		let g = try knownSecretOffers(3, in: bob)
 		let parts = try migratedParts(bob)
@@ -1951,15 +1971,15 @@ final class SessionMigrationTests: XCTestCase {
 		let reordered = [g.offers[2], g.offers[0], g.offers[1]]
 		let shuffled = try mint(reordered)
 
-		XCTAssertEqual(forward.id, shuffled.id)
+		#expect(forward.id == shuffled.id)
 		let forwardBody = try forward.archive.decode(OwnOfferWindowArchive.self)
 		let shuffledBody = try shuffled.archive.decode(OwnOfferWindowArchive.self)
-		XCTAssertEqual(forwardBody.refs, shuffledBody.refs)
-		XCTAssertEqual(forwardBody.proposalLengths, shuffledBody.proposalLengths)
-		XCTAssertEqual(forwardBody.proposals, shuffledBody.proposals)
-		XCTAssertEqual(
-			forwardBody.leafSecrets.withUnsafeBytes { Data($0) },
-			shuffledBody.leafSecrets.withUnsafeBytes { Data($0) })
+		#expect(forwardBody.refs == shuffledBody.refs)
+		#expect(forwardBody.proposalLengths == shuffledBody.proposalLengths)
+		#expect(forwardBody.proposals == shuffledBody.proposals)
+		#expect(
+			forwardBody.leafSecrets.withUnsafeBytes { Data($0) }
+				== shuffledBody.leafSecrets.withUnsafeBytes { Data($0) })
 	}
 
 	/// Generalized catch-up, `.mintSupplied`: every existing own leaf whose
@@ -1969,7 +1989,9 @@ final class SessionMigrationTests: XCTestCase {
 	/// PQ groups. Send-classical is the one exception — it never holds
 	/// a `pending` entry, so a supplied one there is silently dropped at
 	/// mint rather than carried through to restore.
-	func testMintSuppliedLeafKeysSatisfyTheGeneralizedCatchUpRuleAcrossAllFourGroups() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintSuppliedLeafKeysSatisfyTheGeneralizedCatchUpRuleAcrossAllFourGroups() throws
+	{
 		// Needs both PQ halves genuinely established (not the reservation
 		// shape from before A.3, which requires an EMPTY pending) so a
 		// non-empty PQ `pending` is check 3's "existing group" arm, not
@@ -2009,16 +2031,16 @@ final class SessionMigrationTests: XCTestCase {
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertTrue(restored.leafKeys.sendClassical.pending.isEmpty)
-		XCTAssertEqual(
-			restored.leafKeys.recvClassical.pending[newID]?.signatureKey.data,
-			freshSignatureKey.data)
-		XCTAssertEqual(
-			restored.leafKeys.sendPQ.pending[newID]?.signatureKey.data,
-			freshSignatureKey.data)
-		XCTAssertEqual(
-			restored.leafKeys.recvPQ.pending[newID]?.signatureKey.data,
-			freshSignatureKey.data)
+		#expect(restored.leafKeys.sendClassical.pending.isEmpty)
+		#expect(
+			restored.leafKeys.recvClassical.pending[newID]?.signatureKey.data
+				== freshSignatureKey.data)
+		#expect(
+			restored.leafKeys.sendPQ.pending[newID]?.signatureKey.data
+				== freshSignatureKey.data)
+		#expect(
+			restored.leafKeys.recvPQ.pending[newID]?.signatureKey.data
+				== freshSignatureKey.data)
 	}
 
 	/// "A rotation Rust won" — `mine.current` moved to `c` but
@@ -2031,7 +2053,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// predicate (half 1b) and, together with
 	/// `BornDedicatedTests.testGeneralizedCatchUpReadsOnlyLeafKeys`, the
 	/// recv-side revert (half 1a) in this non-born-dedicated shape too.
-	func testRustWonRotationCatchesUpBothClassicalLeaves() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rustWonRotationCatchesUpBothClassicalLeaves() throws {
 		var (alice, bob) = try deployedShapedFullyEstablishedTurnOnBob()
 		var parts = try migratedParts(bob)
 		let c = Data("bob-rust-rotated".utf8)
@@ -2078,7 +2101,7 @@ final class SessionMigrationTests: XCTestCase {
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertNil(restoredBob.rotationCandidate)
+		#expect(restoredBob.rotationCandidate == nil)
 
 		// `alice` is a live, un-migrated session: the send-catch-up commit
 		// below lands as a fold, not a queued-and-authorized offer, so her
@@ -2088,34 +2111,34 @@ final class SessionMigrationTests: XCTestCase {
 		alice.auth.theirs.history.append(c)
 
 		let prepared = try restoredBob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit, "the licensed send-classical catch-up (1b)")
-		XCTAssertEqual(
-			restoredBob.pendingProposal?.proposing, c,
+		#expect(prepared.didCommit, "the licensed send-classical catch-up (1b)")
+		#expect(
+			restoredBob.pendingProposal?.proposing == c,
 			"the staged recv-classical catch-up offer (1a)")
-		XCTAssertEqual(
+		#expect(
 			try basicIdentifier(
 				TwoMLSSession.ownLeaf(
-					of: XCTUnwrap(restoredBob.sendGroup?.classical)
+					of: #require(restoredBob.sendGroup?.classical)
 				)
-				.credential), c)
+				.credential) == c)
 
 		let frame = try restoredBob.encrypt(Data("bob-catchup".utf8)).frame
 		let aliceSaw = try alice.processIncomingDecrypted(frame)
-		XCTAssertTrue(aliceSaw.didApplyRemoteCommit, "1b, mirrored at alice")
-		XCTAssertEqual(aliceSaw.queuedProposal.proposing, c, "1a's offer, surfaced")
+		#expect(aliceSaw.didApplyRemoteCommit, "1b, mirrored at alice")
+		#expect(aliceSaw.queuedProposal.proposing == c, "1a's offer, surfaced")
 
 		try alice.queueProposal(digest: aliceSaw.queuedProposal.digest)
 		let aliceFolded = try alice.prepareToEncrypt()
-		XCTAssertTrue(aliceFolded.didCommit)
+		#expect(aliceFolded.didCommit)
 		let foldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 		let bobApplied = try restoredBob.processIncomingDecrypted(foldFrame)
-		XCTAssertTrue(bobApplied.didApplyRemoteCommit, "1a lands at bob")
-		XCTAssertEqual(
+		#expect(bobApplied.didApplyRemoteCommit, "1a lands at bob")
+		#expect(
 			try basicIdentifier(
 				TwoMLSSession.ownLeaf(
-					of: XCTUnwrap(restoredBob.recvGroup?.classical)
+					of: #require(restoredBob.recvGroup?.classical)
 				)
-				.credential), c)
+				.credential) == c)
 	}
 
 	/// The generalized catch-up's `.mintSupplied`-only PQ enforcement: a born-dedicated bob
@@ -2126,7 +2149,8 @@ final class SessionMigrationTests: XCTestCase {
 	/// until a later step; `testMintedBornDedicatedAcceptorRestoresWithCustodyIntact`
 	/// pins exactly this) but `.mintSupplied` must enforce once the caller
 	/// is on the hook for rule 7's PQ arm.
-	func testMintSuppliedModeRequiresThePQCatchUpKeyThatMintConvertedTolerates() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintSuppliedModeRequiresThePQCatchUpKeyThatMintConvertedTolerates() throws {
 		let established = try deployedShapedEstablishedDedicated(bob: "bob-d")
 		let bob = established.bob
 		let dIdentity = established.dIdentity
@@ -2143,11 +2167,12 @@ final class SessionMigrationTests: XCTestCase {
 			bob, identityOverride: dIdentity, recvLeafPrincipal: migratedCustody)
 
 		// `.mintConverted` (parts.leafKeys == nil): tolerated.
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider))
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 
 		// `.mintSupplied`, mirroring conversion's own shape everywhere
 		// EXCEPT the recv-PQ catch-up key: rejected.
@@ -2173,20 +2198,19 @@ final class SessionMigrationTests: XCTestCase {
 			sendPQ: MigratedGroupKeys(current: nil),
 			// No `pending[D]` here — the missing catch-up key.
 			recvPQ: MigratedGroupKeys(current: invitationPQKey))
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: suppliedParts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// Archive keys 44/45 round-trip a no-custody classical role and a PQ
 	/// wedge through restore, and the three read-only queries
 	/// read them back correctly.
-	func testDeployedCarryRoundTripsNoCustodyAndWedgeThroughRestore() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func deployedCarryRoundTripsNoCustodyAndWedgeThroughRestore() throws {
 		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		var parts = try migratedParts(bob)
 		let identityClassicalKey = MigratedLeafKey(
@@ -2218,19 +2242,19 @@ final class SessionMigrationTests: XCTestCase {
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertEqual(restored.noCustody, [.sendClassical])
-		XCTAssertTrue(restored.pqSideBandWedged)
-		XCTAssertFalse(restored.canSend, "no-custody on a classical role blocks canSend")
-		XCTAssertThrowsError(try restored.sendClassicalSigningKey()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
+		#expect(restored.noCustody == [.sendClassical])
+		#expect(restored.pqSideBandWedged)
+		#expect(!(restored.canSend), "no-custody on a classical role blocks canSend")
+		#expect(throws: TwoMLSError.leafCustodyUnavailable) {
+			try restored.sendClassicalSigningKey()
 		}
 	}
 }
 
 // MARK: - Own-offer window sampling and cap edges
 
-@available(iOS 26, macOS 26, *)
 extension SessionMigrationTests {
+	@available(iOS 26, macOS 26, *)
 	private func knownSecretOffers(_ n: Int, in bob: TwoMLSSession) throws -> (
 		offers: [MigratedOwnOffer], epoch: UInt64, groupID: Data, leaf: UInt32
 	) {
@@ -2251,10 +2275,11 @@ extension SessionMigrationTests {
 		return (result, meta.0, meta.1, meta.2)
 	}
 
-	private func withBadSecret(_ offer: MigratedOwnOffer) -> MigratedOwnOffer {
+	@available(iOS 26, macOS 26, *)
+	private func withBadSecret(_ offer: MigratedOwnOffer) throws -> MigratedOwnOffer {
 		MigratedOwnOffer(
 			ref: offer.ref, proposal: offer.proposal,
-			leafSecret: try! SessionTestSupport.classicalProvider.hpkeGenerateKeyPair()
+			leafSecret: try SessionTestSupport.classicalProvider.hpkeGenerateKeyPair()
 				.0.data)
 	}
 
@@ -2262,18 +2287,18 @@ extension SessionMigrationTests {
 	/// drawn by the seeded sample — never fewer, and never an unsampled
 	/// offer past the first 64. N = 200, all known-secret (the
 	/// caller-supplied branch, not group-written-back).
-	func testSamplingCoversSeededExtras() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func samplingCoversSeededExtras() throws {
 		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		let g = try knownSecretOffers(200, in: bob)
 		let sorted = try OwnOfferWindow.canonicalOrder(g.offers)
 		let id = OwnOfferWindow.id(
 			epoch: g.epoch, groupID: g.groupID, senderLeafIndex: g.leaf, sorted: sorted)
 		let sample = OwnOfferWindow.sampledOfferIndices(count: 200, idSeed: id)
-		XCTAssertEqual(sample.count, 128)
-		XCTAssertEqual(
-			Array(sample.prefix(64)), Array(0..<64), "the first 64 always sampled")
-		let extra = try XCTUnwrap(sample.dropFirst(64).first)
-		let unsampled = try XCTUnwrap((64..<200).first { !sample.contains($0) })
+		#expect(sample.count == 128)
+		#expect(Array(sample.prefix(64)) == Array(0..<64), "the first 64 always sampled")
+		let extra = try #require(sample.dropFirst(64).first)
+		let unsampled = try #require((64..<200).first { !sample.contains($0) })
 
 		let parts = try migratedParts(bob)
 		func mint(_ offers: [MigratedOwnOffer]) throws -> MintedOwnOfferWindow {
@@ -2284,34 +2309,35 @@ extension SessionMigrationTests {
 				parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider)
 		}
-		XCTAssertEqual(try mint(g.offers).id, id, "control: the genuine window mints")
+		#expect(try mint(g.offers).id == id, "control: the genuine window mints")
 
 		var badExtra = g.offers
-		badExtra[extra] = withBadSecret(badExtra[extra])
-		XCTAssertThrowsError(
-			try mint(badExtra), "a seeded extra (index \(extra)) must be trialed"
-		) {
-			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
-		}
+		badExtra[extra] = try withBadSecret(badExtra[extra])
+		#expect(
+			throws: TwoMLSError.archiveInvalid,
+			"a seeded extra (index \(extra)) must be trialed"
+		) { try mint(badExtra) }
 		var badFirst = g.offers
-		badFirst[10] = withBadSecret(badFirst[10])
-		XCTAssertThrowsError(try mint(badFirst), "an offer in the first 64 must be trialed")
-		{
-			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
-		}
+		badFirst[10] = try withBadSecret(badFirst[10])
+		#expect(
+			throws: TwoMLSError.archiveInvalid,
+			"an offer in the first 64 must be trialed"
+		) { try mint(badFirst) }
 		var badUnsampled = g.offers
-		badUnsampled[unsampled] = withBadSecret(badUnsampled[unsampled])
-		XCTAssertNoThrow(
-			try mint(badUnsampled),
-			"the bounded sample never trials an unsampled offer (index \(unsampled))")
+		badUnsampled[unsampled] = try withBadSecret(badUnsampled[unsampled])
+		#expect(
+			throws: Never.self,
+			"the bounded sample never trials an unsampled offer (index \(unsampled))"
+		) { try mint(badUnsampled) }
 	}
 
 	/// Items 7a/7b: `validate(cap:)`'s edge — the count equal to the cap is
 	/// accepted, one more than the cap is rejected.
-	func testWindowCapEdge() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func windowCapEdge() throws {
 		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		let g = try knownSecretOffers(5, in: bob)
-		let group = try XCTUnwrap(bob.recvGroup).classical
+		let group = try #require(bob.recvGroup).classical
 		func validate(_ n: Int, cap: Int) throws {
 			_ = try OwnOfferWindow.validate(
 				MigratedOwnOfferWindow(
@@ -2320,12 +2346,13 @@ extension SessionMigrationTests {
 				recvClassical: group, myLeafIndex: group.myLeafIndex, cap: cap,
 				provider: SessionTestSupport.classicalProvider)
 		}
-		XCTAssertNoThrow(try validate(4, cap: 4), "count == cap accepted")
-		XCTAssertThrowsError(try validate(5, cap: 4), "count == cap + 1 rejected") {
-			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
+		#expect(throws: Never.self, "count == cap accepted") { try validate(4, cap: 4) }
+		#expect(throws: TwoMLSError.archiveInvalid, "count == cap + 1 rejected") {
+			try validate(5, cap: 4)
 		}
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private func mintedWithWindow() throws -> (bob: TwoMLSSession, archive: SecretArchive) {
 		let (_, bob, _, _) = try deployedShapedEstablishedAndExchanged()
 		let g = try knownSecretOffers(1, in: bob)
@@ -2341,11 +2368,12 @@ extension SessionMigrationTests {
 		return (bob, archive)
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private func restorePatched(
 		_ archive: SecretArchive, _ patch: (inout OwnOfferWindowRecord) -> Void
 	) throws -> TwoMLSSession {
 		var body = try archive.decode(SessionArchive.self)
-		var record = try XCTUnwrap(body.deployedCarry?.ownOfferWindow)
+		var record = try #require(body.deployedCarry?.ownOfferWindow)
 		patch(&record)
 		body.deployedCarry?.ownOfferWindow = record
 		return try TwoMLSSession.restore(
@@ -2358,45 +2386,46 @@ extension SessionMigrationTests {
 	/// match the rebuilt recv-classical group's own epoch exactly (neither
 	/// direction), and the count must be `<= maximumOfferCount`, not
 	/// `< maximumOfferCount` and not `<= maximumOfferCount + 1`.
-	func testRestoreRejectsBadWindowRecord() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreRejectsBadWindowRecord() throws {
 		let m = try mintedWithWindow()
-		XCTAssertNotNil(try restorePatched(m.archive) { _ in }.ownOfferWindow, "control")
-		XCTAssertThrowsError(try restorePatched(m.archive) { $0.epoch += 1 }) {
-			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
+		#expect(try restorePatched(m.archive) { _ in }.ownOfferWindow != nil, "control")
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try restorePatched(m.archive) { $0.epoch += 1 }
 		}
-		XCTAssertThrowsError(try restorePatched(m.archive) { $0.epoch -= 1 }) {
-			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try restorePatched(m.archive) { $0.epoch -= 1 }
 		}
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try restorePatched(m.archive) {
 				$0.count = UInt32(MigratedOwnOfferWindow.maximumOfferCount)
-			})
-		XCTAssertThrowsError(
+			}
+		}
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try restorePatched(m.archive) {
 				$0.count = UInt32(MigratedOwnOfferWindow.maximumOfferCount) + 1
 			}
-		) {
-			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
 		}
 	}
 }
 
 // MARK: - Drop at import
 
-@available(iOS 26, macOS 26, *)
 extension SessionMigrationTests {
+	@available(iOS 26, macOS 26, *)
 	private func rekeyInitiatedBob() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, upd: Data
 	) {
 		var (alice, bob) = try deployedShapedFullyEstablishedTurnOnBob()
 		_ = try bob.pqRekeyBegin()
 		guard case .rekeyInitiated(let upd) = bob.pqInflight else {
-			XCTFail("expected .rekeyInitiated")
+			Issue.record("expected .rekeyInitiated")
 			throw TwoMLSError.sessionNotReady
 		}
 		return (alice, bob, upd)
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private func restoreMinted(_ parts: MigratedSession) throws -> TwoMLSSession {
 		let minted = try SessionMigration.mintArchive(
 			kind: .checkpoint, parts: parts,
@@ -2411,18 +2440,20 @@ extension SessionMigrationTests {
 	/// `pendingSideBand` is asserted here too: a parked
 	/// `Upd′` that DOES verify against the restored recv-PQ group is kept
 	/// whole, `pendingSideBand` intact, and the round still completes.
-	func testValidParkedUpdIsKeptAtImport() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func validParkedUpdIsKeptAtImport() throws {
 		var (alice, bob, upd) = try rekeyInitiatedBob()
 		let parts = try migratedParts(bob, suppliedLeafKeys: true)
 		var restored = try restoreMinted(parts)
 		guard case .rekeyInitiated(let kept) = restored.pqInflight else {
-			return XCTFail("dropped a valid Upd′")
+			Issue.record("dropped a valid Upd′")
+			return
 		}
-		XCTAssertEqual(kept, upd)
-		XCTAssertEqual(restored.pendingSideBand, bob.pendingSideBand)
+		#expect(kept == upd)
+		#expect(restored.pendingSideBand == bob.pendingSideBand)
 		let updFrame = try restored.pqRekeyBegin().frame
 		let commit = try alice.pqRekeyRespond(updFrame).frame
-		XCTAssertNoThrow(try restored.pqRekeyApply(commit))
+		#expect(throws: Never.self) { try restored.pqRekeyApply(commit) }
 		bob = restored
 	}
 
@@ -2431,7 +2462,8 @@ extension SessionMigrationTests {
 	/// dropped — `pqInflight` and `pendingSideBand` both cleared,
 	/// `pqTurnMine` left as supplied — and self-drive then opens a plain
 	/// A.4 rather than silently stalling.
-	func testUnverifiableParkedUpdIsDroppedAtImport() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func unverifiableParkedUpdIsDroppedAtImport() throws {
 		let (_, bob, upd) = try rekeyInitiatedBob()
 		var tampered = upd
 		tampered[tampered.index(before: tampered.endIndex)] ^= 0xFF
@@ -2439,31 +2471,30 @@ extension SessionMigrationTests {
 		parts.pqInflight = .rekeyInitiated(updMessage: tampered)
 		parts.pendingSideBand = Frames.encodePQRekeyUpd(tampered)
 		var restored = try restoreMinted(parts)
-		XCTAssertNil(restored.pqInflight)
-		XCTAssertNil(restored.pendingSideBand)
-		XCTAssertTrue(restored.myPQTurn, "pqTurnMine left as supplied")
+		#expect(restored.pqInflight == nil)
+		#expect(restored.pendingSideBand == nil)
+		#expect(restored.myPQTurn, "pqTurnMine left as supplied")
 
 		_ = try restored.prepareToEncrypt()
 		_ = try restored.encrypt(Data("x".utf8))
-		XCTAssertNotNil(restored.pendingSideBand)
-		XCTAssertEqual(restored.pendingSideBand?.first, Frames.pqEKTag)
+		#expect(restored.pendingSideBand != nil)
+		#expect(restored.pendingSideBand?.first == Frames.pqEKTag)
 
 		// A present but nil sideband is fine; a mismatched one is
 		// `.archiveInvalid` (never silently repaired).
 		var partsNil = parts
 		partsNil.pendingSideBand = nil
-		XCTAssertNil(try restoreMinted(partsNil).pqInflight)
+		#expect(try restoreMinted(partsNil).pqInflight == nil)
 		var partsBad = parts
 		partsBad.pendingSideBand = Frames.encodePQRekeyUpd(upd)
-		XCTAssertThrowsError(try restoreMinted(partsBad)) {
-			XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
-		}
+		#expect(throws: TwoMLSError.archiveInvalid) { try restoreMinted(partsBad) }
 	}
 
 	/// Supplied `leafKeys` still carries the dropped round's
 	/// orphaned recv-PQ `pending` entry — it must be removed too, not just
 	/// `pqInflight`/`pendingSideBand`.
-	func testDroppedRoundPendingEntryIsRemoved() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func droppedRoundPendingEntryIsRemoved() throws {
 		let (_, bob, upd) = try rekeyInitiatedBob()
 		var tampered = upd
 		tampered[tampered.index(before: tampered.endIndex)] ^= 0xFF
@@ -2482,18 +2513,20 @@ extension SessionMigrationTests {
 			])
 		parts.leafKeys = lk
 		let restored = try restoreMinted(parts)
-		XCTAssertNil(restored.leafKeys.recvPQ.pending[bob.identity.clientID])
+		#expect(restored.leafKeys.recvPQ.pending[bob.identity.clientID] == nil)
 	}
 
 	/// The rule-7 exception — a dropped round's target that IS
 	/// `mine.current` of a still-lagging recv-PQ leaf must be KEPT, not
 	/// removed by the same pruning that discards 4d's orphan.
-	func testDroppedRoundKeepsTheRuleSevenKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func droppedRoundKeepsTheRuleSevenKey() throws {
 		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let c = Data("bob-rust-rotated".utf8)
-		var mirror = try XCTUnwrap(bob.recvGroup)
+		var mirror = try #require(bob.recvGroup)
 		let (fsk, fpk) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (message, _) = try mirror.pq!.proposeUpdate(
+		var pq = try #require(mirror.pq)
+		let (message, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),
@@ -2519,8 +2552,8 @@ extension SessionMigrationTests {
 			recvClassical: plus(lk.recvClassical),
 			sendPQ: plus(lk.sendPQ), recvPQ: plus(lk.recvPQ))
 		let restored = try restoreMinted(parts)
-		XCTAssertNil(restored.pqInflight)
-		XCTAssertEqual(restored.leafKeys.recvPQ.pending[c]?.signatureKey, fpk)
+		#expect(restored.pqInflight == nil)
+		#expect(restored.leafKeys.recvPQ.pending[c]?.signatureKey == fpk)
 	}
 
 	// MARK: - Wrong-signer heal (anomaly #5's own field shape)
@@ -2529,12 +2562,13 @@ extension SessionMigrationTests {
 	/// own fold to a plain A.4 under C2 (bob's own A.5 hasn't landed
 	/// anywhere yet), and bob's recv-PQ leaf still presenting his
 	/// pre-rotation id.
+	@available(iOS 26, macOS 26, *)
 	private func bobHoldingTurnAfterDeferredFold() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, bobOldID: Data, bobNewID: Data
 	) {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		_ = try SessionTestSupport.drivePQRound(initiator: &bob, responder: &alice)
-		XCTAssertTrue(alice.myPQTurn)
+		#expect(alice.myPQTurn)
 		let bobOldID = bob.identity.clientID
 		let bobNewID = Data("bob-wrong-signer-heal".utf8)
 
@@ -2546,15 +2580,15 @@ extension SessionMigrationTests {
 		// C2: bob's leaf hasn't moved in either PQ group, so his own A.5
 		// hasn't landed anywhere — alice's fold defers to a plain A.4.
 		let foldPrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(foldPrepared.didCommit)
+		#expect(foldPrepared.didCommit)
 		let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
 		guard case .initiating = alice.pqInflight else {
-			XCTFail("expected alice's fold to defer to a plain A.4 under C2")
+			Issue.record("expected alice's fold to defer to a plain A.4 under C2")
 			throw TwoMLSError.sessionNotReady
 		}
-		let ekFrame = try XCTUnwrap(alice.pqPendingOutbound())
+		let ekFrame = try #require(alice.pqPendingOutbound())
 		_ = try bob.processIncomingDecrypted(foldFrame)
-		XCTAssertEqual(bob.myPrincipalState, .sync(bobNewID))
+		#expect(bob.myPrincipalState == .sync(bobNewID))
 
 		let ctFrame = try bob.pqRatchetRespond(ekFrame).frame
 		_ = try alice.pqRatchetBind(ctFrame)
@@ -2566,13 +2600,13 @@ extension SessionMigrationTests {
 		_ = try alice.processIncomingDecrypted(bobAckFrame)
 
 		let dischargePrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(dischargePrepared.didCommit)
+		#expect(dischargePrepared.didCommit)
 		let boundFrame = try alice.encrypt(Data("discharge".utf8)).frame
 		_ = try bob.processIncomingDecrypted(boundFrame)
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPQTurn)
 
-		let bobRecvPQ = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.recvGroup?.pq))
-		XCTAssertEqual(try basicIdentifier(bobRecvPQ.credential), bobOldID)
+		let bobRecvPQ = try TwoMLSSession.ownLeaf(of: try #require(bob.recvGroup?.pq))
+		#expect(try basicIdentifier(bobRecvPQ.credential) == bobOldID)
 		return (alice, bob, bobOldID, bobNewID)
 	}
 
@@ -2588,11 +2622,12 @@ extension SessionMigrationTests {
 	/// `FramedContent` by hand instead, the same way
 	/// `SessionTestSupport.knownSecretOwnOffer` does for a classical own
 	/// offer.
+	@available(iOS 26, macOS 26, *)
 	private func wrongSignerParkedUpd(
 		forRecvPQOf session: TwoMLSSession, newID: Data
 	) throws -> (updBytes: Data, freshLeafKey: LeafKey) {
 		let provider = SessionTestSupport.pqProvider
-		var group = try XCTUnwrap(session.recvGroup?.pq)
+		var group = try #require(session.recvGroup?.pq)
 		let current = try TwoMLSSession.ownLeaf(of: group)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (wrongSigningKey, _) = try TwoMLSIdentity.mintSignatureKeypair()
@@ -2641,7 +2676,8 @@ extension SessionMigrationTests {
 	/// than minting fresh (swift-mls's self-verify would then throw, and
 	/// nothing would be staged); a drop keyed on decode success alone (the
 	/// byte-flip test already catches that).
-	func testWrongSignerParkedUpdIsDroppedAndReProposedUnderTheStoredKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func wrongSignerParkedUpdIsDroppedAndReProposedUnderTheStoredKey() throws {
 		let (alice, bob, bobOldID, bobNewID) = try bobHoldingTurnAfterDeferredFold()
 		let (wrongUpd, freshLeafKey) = try wrongSignerParkedUpd(
 			forRecvPQOf: bob, newID: bobNewID)
@@ -2673,40 +2709,42 @@ extension SessionMigrationTests {
 		parts.leafKeys = lk
 
 		var restored = try restoreMinted(parts)
-		XCTAssertNil(restored.pqInflight, "dropped at import")
-		XCTAssertNil(restored.pendingSideBand, "dropped at import")
-		XCTAssertTrue(restored.myPQTurn, "pqTurnMine left as supplied")
-		XCTAssertEqual(
-			restored.leafKeys.recvPQ.pending[bobNewID]?.signatureKey,
-			freshLeafKey.signatureKey,
+		#expect(restored.pqInflight == nil, "dropped at import")
+		#expect(restored.pendingSideBand == nil, "dropped at import")
+		#expect(restored.myPQTurn, "pqTurnMine left as supplied")
+		#expect(
+			restored.leafKeys.recvPQ.pending[bobNewID]?.signatureKey
+				== freshLeafKey.signatureKey,
 			"the rule-7 catch-up key survives — the leaf still lags mine.current")
 
 		// The next send re-proposes fresh, signed under the key the leaf
 		// actually presents (bobOldID's), not the wrong one dropped above.
 		_ = try restored.prepareToEncrypt()
 		let selfDriven = try restored.encrypt(Data("heal".utf8))
-		XCTAssertEqual(selfDriven.update.kind, .checkpoint)
+		#expect(selfDriven.update.kind == .checkpoint)
 		guard case .rekeyInitiated(let newUpdBytes) = restored.pqInflight else {
-			return XCTFail("expected the self-drive to re-propose the catch-up")
+			Issue.record("expected the self-drive to re-propose the catch-up")
+			return
 		}
-		XCTAssertNotEqual(newUpdBytes, wrongUpd)
-		let newFreshKey = try XCTUnwrap(restored.leafKeys.recvPQ.pending[bobNewID])
-		XCTAssertNotEqual(newFreshKey.signatureKey, freshLeafKey.signatureKey)
+		#expect(newUpdBytes != wrongUpd)
+		let newFreshKey = try #require(restored.leafKeys.recvPQ.pending[bobNewID])
+		#expect(newFreshKey.signatureKey != freshLeafKey.signatureKey)
 
 		guard
 			case .publicMessage(let newUpdPub) = try MLS.RFC9420.Message(
 				mlsEncoded: newUpdBytes)
 		else {
-			return XCTFail("expected a publicMessage-framed Upd′")
+			Issue.record("expected a publicMessage-framed Upd′")
+			return
 		}
-		XCTAssertEqual(newUpdPub.content.authenticatedData, bobNewID)
+		#expect(newUpdPub.content.authenticatedData == bobNewID)
 
 		// It verifies against alice's send-PQ for real — signed under the
 		// key bob's leaf there actually presents (bobOldID's), which the
 		// dropped wrong-signer round never was.
-		let pending = try XCTUnwrap(restored.pqPendingOutbound())
+		let pending = try #require(restored.pqPendingOutbound())
 		var aliceMutable = alice
-		XCTAssertNoThrow(try aliceMutable.pqRekeyRespond(pending))
+		#expect(throws: Never.self) { try aliceMutable.pqRekeyRespond(pending) }
 		_ = bobOldID
 	}
 
@@ -2717,7 +2755,8 @@ extension SessionMigrationTests {
 	/// group; the own-arm-only trigger; "lags" read as history membership
 	/// rather than a head compare; a re-propose that consumes the held key
 	/// rather than minting fresh.
-	func testDroppedWrongSignerUpdHealsThroughTheSelfDrivenCatchUp() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func droppedWrongSignerUpdHealsThroughTheSelfDrivenCatchUp() throws {
 		let (alice, bob, _, bobNewID) = try bobHoldingTurnAfterDeferredFold()
 		let (wrongUpd, freshLeafKey) = try wrongSignerParkedUpd(
 			forRecvPQOf: bob, newID: bobNewID)
@@ -2749,33 +2788,33 @@ extension SessionMigrationTests {
 		parts.leafKeys = lk
 
 		var restoredBob = try restoreMinted(parts)
-		XCTAssertNil(restoredBob.pqInflight)
+		#expect(restoredBob.pqInflight == nil)
 		var mutableAlice = alice
 
 		// bob's re-proposed A.5 catch-up (0x1B), landing his recv-PQ leaf
 		// on bobNewID.
 		let bobTag = try SessionTestSupport.drivePQRound(
 			initiator: &restoredBob, responder: &mutableAlice)
-		XCTAssertEqual(bobTag, Frames.pqRekeyUpdTag)
-		XCTAssertFalse(restoredBob.pqSideBandWedged)
+		#expect(bobTag == Frames.pqRekeyUpdTag)
+		#expect(!(restoredBob.pqSideBandWedged))
 		let bobRecvPQAfter = try TwoMLSSession.ownLeaf(
-			of: try XCTUnwrap(restoredBob.recvGroup?.pq))
-		XCTAssertEqual(try basicIdentifier(bobRecvPQAfter.credential), bobNewID)
-		XCTAssertTrue(restoredBob.leafKeys.recvPQ.pending.isEmpty)
+			of: try #require(restoredBob.recvGroup?.pq))
+		#expect(try basicIdentifier(bobRecvPQAfter.credential) == bobNewID)
+		#expect(restoredBob.leafKeys.recvPQ.pending.isEmpty)
 
 		// alice's reciprocal (0x1B) — her own leaf in bob's recv-PQ mirror
 		// still lags, and C2 is now satisfied.
 		let aliceTag = try SessionTestSupport.drivePQRound(
 			initiator: &mutableAlice, responder: &restoredBob)
-		XCTAssertEqual(aliceTag, Frames.pqRekeyUpdTag)
-		XCTAssertFalse(restoredBob.pqSideBandWedged)
+		#expect(aliceTag == Frames.pqRekeyUpdTag)
+		#expect(!(restoredBob.pqSideBandWedged))
 
 		// Neither trigger has anything left to fire — the following round
 		// is ordinary A.4.
 		let finalTag = try SessionTestSupport.drivePQRound(
 			initiator: &restoredBob, responder: &mutableAlice)
-		XCTAssertEqual(finalTag, Frames.pqEKTag)
-		XCTAssertFalse(restoredBob.pqSideBandWedged)
+		#expect(finalTag == Frames.pqEKTag)
+		#expect(!(restoredBob.pqSideBandWedged))
 	}
 
 	// MARK: - The one-way lag drop (mint-time admissibility)
@@ -2785,15 +2824,17 @@ extension SessionMigrationTests {
 	/// to any credential no longer in history is refused by the same
 	/// successor rule everywhere else, and a parked target is no
 	/// exception. Kills: a missing admissibility check.
-	func testParkedUpdWhoseTargetLeftOurHistoryIsDroppedAtImport() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func parkedUpdWhoseTargetLeftOurHistoryIsDroppedAtImport() throws {
 		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let target = Data("bob-evicted-target".utf8)
 
 		// A genuinely-signed Upd′ targeting `target`, built off a scratch
 		// copy so `bob`'s own state is untouched.
-		var mirror = try XCTUnwrap(bob.recvGroup)
+		var mirror = try #require(bob.recvGroup)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (message, _) = try mirror.pq!.proposeUpdate(
+		var pq = try #require(mirror.pq)
+		let (message, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),
@@ -2823,10 +2864,10 @@ extension SessionMigrationTests {
 		parts.leafKeys = lk
 
 		let restored = try restoreMinted(parts)
-		XCTAssertNil(restored.pqInflight, "the target has left history — dropped at mint")
-		XCTAssertNil(restored.pendingSideBand)
-		XCTAssertNil(
-			restored.leafKeys.recvPQ.pending[target],
+		#expect(restored.pqInflight == nil, "the target has left history — dropped at mint")
+		#expect(restored.pendingSideBand == nil)
+		#expect(
+			restored.leafKeys.recvPQ.pending[target] == nil,
 			"not the rule-7 key — target isn't mine.current")
 	}
 
@@ -2835,13 +2876,15 @@ extension SessionMigrationTests {
 	/// dropped — the admissibility check must not drop every non-current
 	/// target, only an evicted one. (The same-id refresh case is a
 	/// separate arm — see the pinned/evicted test below.)
-	func testParkedUpdToAHistoryIDIsKeptAtImport() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func parkedUpdToAHistoryIDIsKeptAtImport() throws {
 		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let target = Data("bob-history-target".utf8)
 
-		var mirror = try XCTUnwrap(bob.recvGroup)
+		var mirror = try #require(bob.recvGroup)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (message, _) = try mirror.pq!.proposeUpdate(
+		var pq = try #require(mirror.pq)
+		let (message, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),
@@ -2872,10 +2915,11 @@ extension SessionMigrationTests {
 
 		let restored = try restoreMinted(parts)
 		guard case .rekeyInitiated(let kept) = restored.pqInflight else {
-			return XCTFail("a target still within history must be kept")
+			Issue.record("a target still within history must be kept")
+			return
 		}
-		XCTAssertEqual(kept, updBytes)
-		XCTAssertNotNil(restored.pendingSideBand)
+		#expect(kept == updBytes)
+		#expect(restored.pendingSideBand != nil)
 	}
 
 	/// A parked SAME-ID `Upd′` — a key refresh, not a move: its target
@@ -2886,15 +2930,17 @@ extension SessionMigrationTests {
 	/// valid *successor*, but this Upd′ never claims to be one. Kills:
 	/// `admissible = mine.history.contains(target)` alone (dropping the
 	/// same-id arm), which would wrongly drop this refresh.
-	func testParkedSameIDUpdWhoseTargetIsEvictedAndPinnedIsKeptAtImport() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func parkedSameIDUpdWhoseTargetIsEvictedAndPinnedIsKeptAtImport() throws {
 		let (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let presentedID = bob.identity.clientID
 
 		// A same-id key refresh: the Upd′ credential equals the leaf's own
 		// presented id, not a move to a new one.
-		var mirror = try XCTUnwrap(bob.recvGroup)
+		var mirror = try #require(bob.recvGroup)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (message, _) = try mirror.pq!.proposeUpdate(
+		var pq = try #require(mirror.pq)
+		let (message, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),
@@ -2945,21 +2991,22 @@ extension SessionMigrationTests {
 
 		let restored = try restoreMinted(parts)
 		guard case .rekeyInitiated(let kept) = restored.pqInflight else {
-			return XCTFail(
+			Issue.record(
 				"a same-id refresh must be kept even once its id is evicted and pinned"
 			)
+			return
 		}
-		XCTAssertEqual(kept, updBytes)
-		XCTAssertNotNil(restored.pendingSideBand)
+		#expect(kept == updBytes)
+		#expect(restored.pendingSideBand != nil)
 	}
 }
 
-@available(iOS 26, macOS 26, *)
 extension SessionMigrationTests {
 	/// A rogue initiator whose own classical leaf does not advertise 0xF0A1
 	/// completes `initiate` on its own side; the mint's four-tree capability
 	/// check must still refuse the resulting restored trees.
-	func testMintRefusesARogueOccupiedLeafInARestoredTree() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintRefusesARogueOccupiedLeafInARestoredTree() throws {
 		let clientID = Data("rogue-initiator".utf8)
 		let classicalProvider = SessionTestSupport.classicalProvider
 		let pqProvider = SessionTestSupport.pqProvider
@@ -3016,12 +3063,10 @@ extension SessionMigrationTests {
 			identity: rogueAlice, their: bob.keyPackage,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
 		let parts = try migratedParts(initiated.session)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: classicalProvider, pqProvider: pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 }

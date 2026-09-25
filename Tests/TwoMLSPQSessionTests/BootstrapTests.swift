@@ -3,59 +3,61 @@ import MLSCodec
 import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
 /// §A.3: KP′ exchange + Bob founds Group_B.pq + Alice joins (chunk A), then
 /// the bind — Alice's owed PQ commit discharged against a licensed classical
 /// commit, stapled `0x05`, turn returned to Bob (chunk B).
-@available(iOS 26, macOS 26, *)
-final class BootstrapTests: XCTestCase {
-	func testFullBootstrapRoundReachesFullyEstablished() throws {
+@Suite struct BootstrapTests {
+	@available(iOS 26, macOS 26, *)
+	@Test func fullBootstrapRoundReachesFullyEstablished() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
-		XCTAssertTrue(alice.myPQTurn)
-		XCTAssertFalse(bob.myPQTurn)
-		XCTAssertFalse(alice.isFullyEstablished)
-		XCTAssertFalse(bob.isFullyEstablished)
+		#expect(alice.myPQTurn)
+		#expect(!bob.myPQTurn)
+		#expect(!alice.isFullyEstablished)
+		#expect(!bob.isFullyEstablished)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		XCTAssertTrue(bob.isFullyEstablished)
-		XCTAssertFalse(alice.isFullyEstablished)
+		#expect(bob.isFullyEstablished)
+		#expect(!alice.isFullyEstablished)
 
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
-		XCTAssertTrue(alice.isFullyEstablished)
+		#expect(alice.isFullyEstablished)
 	}
 
 	/// The joined Group_B.pq's mirror `APQInfo` and epoch land as
 	/// expected: `pqEpoch == 1`, `tEpoch` unbound, and both rosters are 2.
-	func testJoinedPQHalfHasMirrorAPQInfoAndEpochOne() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func joinedPQHalfHasMirrorAPQInfoAndEpochOne() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
-		let alicePQ = try XCTUnwrap(alice.recvGroup?.pq)
-		let bobPQ = try XCTUnwrap(bob.sendGroup?.pq)
-		XCTAssertEqual(alicePQ.context.epoch, 1)
-		XCTAssertEqual(bobPQ.context.epoch, 1)
-		XCTAssertEqual(alicePQ.tree.nonBlankLeaves().count, 2)
-		XCTAssertEqual(bobPQ.tree.nonBlankLeaves().count, 2)
+		let alicePQ = try #require(alice.recvGroup?.pq)
+		let bobPQ = try #require(bob.sendGroup?.pq)
+		#expect(alicePQ.context.epoch == 1)
+		#expect(bobPQ.context.epoch == 1)
+		#expect(alicePQ.tree.nonBlankLeaves().count == 2)
+		#expect(bobPQ.tree.nonBlankLeaves().count == 2)
 
-		let info = try XCTUnwrap(
-			try MLS.Combiner.APQInfo.read(
-				fromExtensionsOf: alicePQ.context,
-				type: MLS.Combiner.Codepoints.deployed.apqInfoExtensionType))
-		XCTAssertEqual(info.tEpoch, epochUnbound)
-		XCTAssertEqual(info.pqEpoch, 1)
-		XCTAssertEqual(info.pqSessionGroupID, alicePQ.context.groupID)
+		let infoRaw = try MLS.Combiner.APQInfo.read(
+			fromExtensionsOf: alicePQ.context,
+			type: MLS.Combiner.Codepoints.deployed.apqInfoExtensionType)
+		let info = try #require(infoRaw)
+		#expect(info.tEpoch == epochUnbound)
+		#expect(info.pqEpoch == 1)
+		#expect(info.pqSessionGroupID == alicePQ.context.groupID)
 	}
 
 	// MARK: - Negatives
 
-	func testReceiveRejectsNonThirtyTwoByteCommitment() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func receiveRejectsNonThirtyTwoByteCommitment() throws {
 		let alice = try SessionTestSupport.identity("alice")
 		let bob = try SessionTestSupport.identity("bob")
 		let initiated = try TwoMLSSession.initiate(
@@ -63,19 +65,18 @@ final class BootstrapTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.bootstrapKPMismatch) {
 			try TwoMLSSession.receive(
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
 				bootstrapKPCommitment: Data([1, 2, 3]),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .bootstrapKPMismatch)
 		}
 	}
 
-	func testRespondRejectsWrongCommitment() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func respondRejectsWrongCommitment() throws {
 		let alice = try SessionTestSupport.identity("alice")
 		let bob = try SessionTestSupport.identity("bob")
 		let initiated = try TwoMLSSession.initiate(
@@ -97,15 +98,16 @@ final class BootstrapTests: XCTestCase {
 		_ = try aliceSession.processIncomingDecrypted(frame)
 
 		let kpFrame = try aliceSession.pqBootstrapBegin().frame
-		XCTAssertThrowsError(try bobSession.pqBootstrapRespond(kpFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .bootstrapKPMismatch)
+		#expect(throws: TwoMLSError.bootstrapKPMismatch) {
+			try bobSession.pqBootstrapRespond(kpFrame)
 		}
 	}
 
-	func testBeginRejectsWhenNotMyTurn() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func beginRejectsWhenNotMyTurn() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
-		XCTAssertThrowsError(try bob.pqBootstrapBegin()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		#expect(throws: TwoMLSError.sessionNotReady) {
+			try bob.pqBootstrapBegin()
 		}
 	}
 
@@ -116,69 +118,72 @@ final class BootstrapTests: XCTestCase {
 	/// Bob. Asserts the exact epoch positions: only
 	/// Group_A.pq (ASG-PQ) moves 1 -> 2; Group_B's halves stay where the
 	/// bootstrap left them.
-	func testFullBootstrapRoundBindsAndReturnsTurn() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func fullBootstrapRoundBindsAndReturnsTurn() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		XCTAssertTrue(bob.isFullyEstablished)
+		#expect(bob.isFullyEstablished)
 
 		// The fidelity proof (D1): each side's PQ leaf presents its
 		// OWN independent pq signing pair, distinct from its classical pair
 		// — mirrors the deployed Rust `CombinerClient`'s two independent
 		// per-half signing keys. Bob's Group_B.pq is founded fresh here
 		// (`pqBootstrapRespond`), so this is provable immediately.
-		let bobOwnPQLeaf = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.sendGroup?.pq))
-		XCTAssertEqual(bobOwnPQLeaf.signatureKey, bob.leafKeys.sendPQ.current?.signatureKey)
-		XCTAssertNotEqual(bobOwnPQLeaf.signatureKey, bob.identity.pqSignatureKey)
-		XCTAssertNotEqual(bobOwnPQLeaf.signatureKey, bob.identity.signatureKey)
+		let bobOwnPQLeaf = try TwoMLSSession.ownLeaf(of: try #require(bob.sendGroup?.pq))
+		#expect(bobOwnPQLeaf.signatureKey == bob.leafKeys.sendPQ.current?.signatureKey)
+		#expect(bobOwnPQLeaf.signatureKey != bob.identity.pqSignatureKey)
+		#expect(bobOwnPQLeaf.signatureKey != bob.identity.signatureKey)
 
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
-		XCTAssertTrue(alice.isFullyEstablished)
-		XCTAssertNotNil(alice.owedBind)
+		#expect(alice.isFullyEstablished)
+		#expect(alice.owedBind != nil)
 
 		// Symmetrically, Alice's Group_A.pq own-leaf (present from
 		// construction — Group_A is a full pair from `initiate`).
 		let aliceOwnPQLeaf = try TwoMLSSession.ownLeaf(
-			of: try XCTUnwrap(alice.sendGroup?.pq))
-		XCTAssertEqual(
-			aliceOwnPQLeaf.signatureKey, alice.leafKeys.sendPQ.current?.signatureKey)
-		XCTAssertNotEqual(aliceOwnPQLeaf.signatureKey, alice.identity.pqSignatureKey)
-		XCTAssertNotEqual(aliceOwnPQLeaf.signatureKey, alice.identity.signatureKey)
+			of: try #require(alice.sendGroup?.pq))
+		#expect(
+			aliceOwnPQLeaf.signatureKey == alice.leafKeys.sendPQ.current?.signatureKey)
+		#expect(aliceOwnPQLeaf.signatureKey != alice.identity.pqSignatureKey)
+		#expect(aliceOwnPQLeaf.signatureKey != alice.identity.signatureKey)
 
 		// Bob's establishment-time frame already licensed Alice, so
 		// the very next `prepareToEncrypt` discharges immediately.
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
-		XCTAssertNil(alice.owedBind)
+		#expect(prepared.didCommit)
+		#expect(alice.owedBind == nil)
 		let frame = try alice.encrypt(Data("bound".utf8)).frame
 
 		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
-		XCTAssertEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
+		let stapleFirstByte = try #require(staple.first)
+		#expect(Frames.stapleKind(stapleFirstByte) == .apqPrivateMessage)
 
 		let decrypted = try bob.processIncomingDecrypted(frame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(decrypted.applicationMessage == Data("bound".utf8))
+		#expect(bob.myPQTurn)
 
-		let alicePQEpoch = try XCTUnwrap(alice.sendGroup?.pq?.context.epoch)
-		let bobRecvPQEpoch = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
-		let aliceClassicalEpoch = try XCTUnwrap(alice.sendGroup?.classical.context.epoch)
-		let bobRecvClassicalEpoch = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
-		let bobSendPQEpoch = try XCTUnwrap(bob.sendGroup?.pq?.context.epoch)
-		let aliceRecvPQEpoch = try XCTUnwrap(alice.recvGroup?.pq?.context.epoch)
-		XCTAssertEqual(alicePQEpoch, 2)
-		XCTAssertEqual(bobRecvPQEpoch, 2)
-		XCTAssertEqual(aliceClassicalEpoch, 2)
-		XCTAssertEqual(bobRecvClassicalEpoch, 2)
-		XCTAssertEqual(bobSendPQEpoch, 1)
-		XCTAssertEqual(aliceRecvPQEpoch, 1)
+		let alicePQEpoch = try #require(alice.sendGroup?.pq?.context.epoch)
+		let bobRecvPQEpoch = try #require(bob.recvGroup?.pq?.context.epoch)
+		let aliceClassicalEpoch = try #require(alice.sendGroup?.classical.context.epoch)
+		let bobRecvClassicalEpoch = try #require(bob.recvGroup?.classical.context.epoch)
+		let bobSendPQEpoch = try #require(bob.sendGroup?.pq?.context.epoch)
+		let aliceRecvPQEpoch = try #require(alice.recvGroup?.pq?.context.epoch)
+		#expect(alicePQEpoch == 2)
+		#expect(bobRecvPQEpoch == 2)
+		#expect(aliceClassicalEpoch == 2)
+		#expect(bobRecvClassicalEpoch == 2)
+		#expect(bobSendPQEpoch == 1)
+		#expect(aliceRecvPQEpoch == 1)
 	}
 
 	/// The `0x05` staple re-rides every Alice→Bob frame until her next
 	/// commit. A second frame after the bind must decrypt without re-applying
 	/// (no throw, no double epoch-advance, no re-consuming the spent PSKs).
-	func testSecondFrameAfterBindIsIdempotent() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func secondFrameAfterBindIsIdempotent() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
@@ -189,16 +194,16 @@ final class BootstrapTests: XCTestCase {
 		_ = try bob.processIncomingDecrypted(boundFrame)
 
 		let secondPrepared = try alice.prepareToEncrypt()
-		XCTAssertFalse(secondPrepared.didCommit)
+		#expect(!secondPrepared.didCommit)
 		let secondFrame = try alice.encrypt(Data("again".utf8)).frame
 
 		let decrypted = try bob.processIncomingDecrypted(secondFrame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("again".utf8))
+		#expect(decrypted.applicationMessage == Data("again".utf8))
 
-		let bobRecvPQEpoch = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
-		let bobRecvClassicalEpoch = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
-		XCTAssertEqual(bobRecvPQEpoch, 2)
-		XCTAssertEqual(bobRecvClassicalEpoch, 2)
+		let bobRecvPQEpoch = try #require(bob.recvGroup?.pq?.context.epoch)
+		let bobRecvClassicalEpoch = try #require(bob.recvGroup?.classical.context.epoch)
+		#expect(bobRecvPQEpoch == 2)
+		#expect(bobRecvClassicalEpoch == 2)
 	}
 
 	// MARK: - Chunk B negatives
@@ -206,24 +211,25 @@ final class BootstrapTests: XCTestCase {
 	/// Discharge attempted before the license: `owedBind` stays parked and the
 	/// staple is not re-stapled `0x05` until Bob's inbound Upd has evidenced
 	/// applying Alice's current send epoch.
-	func testDischargeWithoutLicenseDoesNotCommit() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func dischargeWithoutLicenseDoesNotCommit() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
-		XCTAssertNotNil(alice.owedBind)
+		#expect(alice.owedBind != nil)
 
 		// Simulate Bob's licensing Upd never having arrived.
 		alice.peerAppliedSendEpoch = nil
 
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertFalse(prepared.didCommit)
-		XCTAssertNotNil(alice.owedBind)
+		#expect(!prepared.didCommit)
+		#expect(alice.owedBind != nil)
 
 		let frame = try alice.encrypt(Data("still-owed".utf8)).frame
 		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
-		XCTAssertNotEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
+		#expect(Frames.stapleKind(staple.first!) != .apqPrivateMessage)
 	}
 
 	/// `dischargeOwedBindIfLicensed`'s own re-check catches an `owedBind`
@@ -231,7 +237,8 @@ final class BootstrapTests: XCTestCase {
 	/// building a wire commit — the guard `verifyFullCommitAttestation`
 	/// backstops on the receive side (the attestation check is the
 	/// combiner's; this is the discharge-side belt).
-	func testTamperedOwedBindEpochThrowsEpochDesync() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func tamperedOwedBindEpochThrowsEpochDesync() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
@@ -239,8 +246,8 @@ final class BootstrapTests: XCTestCase {
 
 		alice.owedBind?.pqEpoch += 1
 
-		XCTAssertThrowsError(try alice.prepareToEncrypt()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .epochDesync)
+		#expect(throws: TwoMLSError.epochDesync) {
+			try alice.prepareToEncrypt()
 		}
 	}
 
@@ -250,7 +257,8 @@ final class BootstrapTests: XCTestCase {
 	/// pins the rollback (Bob's receive groups are untouched by the
 	/// rejected attempt) and that the genuine frame — and a subsequent
 	/// Bob→Alice post-bind message — still apply cleanly afterward.
-	func testCorruptedBindStapleIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func corruptedBindStapleIsRejected() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
@@ -273,15 +281,17 @@ final class BootstrapTests: XCTestCase {
 		let bobRecvClassicalEpochBefore = bob.recvGroup?.classical.context.epoch
 		let bobRecvPQEpochBefore = bob.recvGroup?.pq?.context.epoch
 
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(corruptedFrame))
+		#expect(throws: (any Error).self) {
+			try bob.processIncomingDecrypted(corruptedFrame)
+		}
 
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobRecvClassicalEpochBefore)
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobRecvPQEpochBefore)
+		#expect(bob.recvGroup?.classical.context.epoch == bobRecvClassicalEpochBefore)
+		#expect(bob.recvGroup?.pq?.context.epoch == bobRecvPQEpochBefore)
 
 		// The genuine frame still applies cleanly after the rejected attempt.
 		let decrypted = try bob.processIncomingDecrypted(frame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(decrypted.applicationMessage == Data("bound".utf8))
+		#expect(bob.myPQTurn)
 
 		// Bob -> Alice post-bind: the license re-stamps (against Alice's now
 		// bind-advanced send epoch), and the `0x01` welcome staple Bob still
@@ -290,7 +300,7 @@ final class BootstrapTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let postBindFrame = try bob.encrypt(Data("post-bind".utf8)).frame
 		let aliceDecrypted = try alice.processIncomingDecrypted(postBindFrame)
-		XCTAssertEqual(aliceDecrypted.applicationMessage, Data("post-bind".utf8))
+		#expect(aliceDecrypted.applicationMessage == Data("post-bind".utf8))
 	}
 
 	// MARK: - FULL bind must name its half's PSK
@@ -301,6 +311,7 @@ final class BootstrapTests: XCTestCase {
 	/// PRE-apply Group_A.pq state (epoch 1) — `owePQBind` applies the genuine
 	/// PQ commit to the session's own copy, so building after the join would
 	/// frame at the post-apply epoch and fail framing, not reach the guard.
+	@available(iOS 26, macOS 26, *)
 	private func bindPQCommitWithoutInjectedS(
 		sendPQ: MLS.RFC9420.Group, signingKey: MLS.SignatureSecretKey,
 		tEpoch: UInt64, pqEpoch: UInt64
@@ -328,11 +339,12 @@ final class BootstrapTests: XCTestCase {
 
 	/// A hand-built classical bind commit carrying the FULL-commit attestation
 	/// but NO `apq_psk` (`0xFF01`) proposal.
+	@available(iOS 26, macOS 26, *)
 	private func bindClassicalCommitWithoutAPQPSK(
 		alice: TwoMLSSession, aliceIdentity: TwoMLSIdentity, owed: OwedBind
 	) throws -> Data {
 		try withDeployedWireConventions {
-			let sendClassical = try XCTUnwrap(alice.sendGroup?.classical)
+			let sendClassical = try #require(alice.sendGroup?.classical)
 			let attestation = MLS.Combiner.ApqInfoUpdate(
 				tEpoch: owed.tEpoch, pqEpoch: owed.pqEpoch)
 			let proposals: [MLS.RFC9420.ProposalOrRef] = [
@@ -357,7 +369,8 @@ final class BootstrapTests: XCTestCase {
 	/// attestation but omits the injected external `S` is refused with
 	/// `.missingBindPSK` after framing/membership verification. Nothing on
 	/// Bob moves, and the genuine bind still applies afterward.
-	func testBindWithoutTheInjectedPQPSKIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bindWithoutTheInjectedPQPSKIsRejected() throws {
 		let established = try SessionTestSupport.established()
 		var alice = established.alice
 		var bob = established.bob
@@ -374,22 +387,22 @@ final class BootstrapTests: XCTestCase {
 		// to the session's own copy — after that, the group frames at epoch 2
 		// and would fail framing instead of reaching the PSK guard.
 		let pqCommit = try bindPQCommitWithoutInjectedS(
-			sendPQ: try XCTUnwrap(alice.sendGroup?.pq),
+			sendPQ: try #require(alice.sendGroup?.pq),
 			signingKey: try alice.sendPQSigningKey(),
 			tEpoch: 2, pqEpoch: 2)
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
-		let owed = try XCTUnwrap(alice.owedBind)
-		XCTAssertEqual(owed.tEpoch, 2)
-		XCTAssertEqual(owed.pqEpoch, 2)
+		let owed = try #require(alice.owedBind)
+		#expect(owed.tEpoch == 2)
+		#expect(owed.pqEpoch == 2)
 
 		let classicalCommit = try bindClassicalCommitWithoutAPQPSK(
 			alice: alice, aliceIdentity: aliceIdentity, owed: owed)
 		let badStaple = Frames.encodeAPQPrivateMessage(t: classicalCommit, pq: pqCommit)
 
-		let bobPQEpochBefore = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
-		let bobClassicalEpochBefore = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
+		let bobPQEpochBefore = try #require(bob.recvGroup?.pq?.context.epoch)
+		let bobClassicalEpochBefore = try #require(bob.recvGroup?.classical.context.epoch)
 		let bobLastSendPQExportedBefore = bob.lastSendPQExported
-		XCTAssertNotNil(bob.pqInflight)
+		#expect(bob.pqInflight != nil)
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
@@ -402,23 +415,23 @@ final class BootstrapTests: XCTestCase {
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .missingBindPSK)
+		#expect(throws: TwoMLSError.missingBindPSK) {
+			try bob.processIncomingDecrypted(badFrame)
 		}
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore)
-		XCTAssertTrue(bob.isFullyEstablished)
-		XCTAssertNotNil(bob.pqInflight)
-		XCTAssertEqual(bob.lastSendPQExported, bobLastSendPQExportedBefore)
+		#expect(bob.recvGroup?.pq?.context.epoch == bobPQEpochBefore)
+		#expect(bob.recvGroup?.classical.context.epoch == bobClassicalEpochBefore)
+		#expect(bob.isFullyEstablished)
+		#expect(bob.pqInflight != nil)
+		#expect(bob.lastSendPQExported == bobLastSendPQExportedBefore)
 
 		// The genuine bind still applies cleanly afterward (rollback proof).
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		let decrypted = try bob.processIncomingDecrypted(boundFrame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore + 1)
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore + 1)
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(bob.recvGroup?.pq?.context.epoch == bobPQEpochBefore + 1)
+		#expect(bob.recvGroup?.classical.context.epoch == bobClassicalEpochBefore + 1)
 	}
 
 	/// The classical-half arm: the GENUINE PQ commit rides along (so the guard
@@ -430,7 +443,8 @@ final class BootstrapTests: XCTestCase {
 	/// port's own (deleted) `.missingBindPSK` guard. Nothing on Bob moves —
 	/// in particular `lastSendPQExported` stays unwritten, which is what the
 	/// deferred-stamp fix buys.
-	func testBindWithoutTheClassicalAPQPSKIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bindWithoutTheClassicalAPQPSKIsRejected() throws {
 		let established = try SessionTestSupport.established()
 		var alice = established.alice
 		var bob = established.bob
@@ -443,17 +457,17 @@ final class BootstrapTests: XCTestCase {
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
-		let owed = try XCTUnwrap(alice.owedBind)
+		let owed = try #require(alice.owedBind)
 
 		let pqCommit = owed.pqCommitMessage
 		let classicalCommit = try bindClassicalCommitWithoutAPQPSK(
 			alice: alice, aliceIdentity: aliceIdentity, owed: owed)
 		let badStaple = Frames.encodeAPQPrivateMessage(t: classicalCommit, pq: pqCommit)
 
-		let bobPQEpochBefore = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
-		let bobClassicalEpochBefore = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
-		XCTAssertNil(bob.lastSendPQExported)
-		XCTAssertNotNil(bob.pqInflight)
+		let bobPQEpochBefore = try #require(bob.recvGroup?.pq?.context.epoch)
+		let bobClassicalEpochBefore = try #require(bob.recvGroup?.classical.context.epoch)
+		#expect(bob.lastSendPQExported == nil)
+		#expect(bob.pqInflight != nil)
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
@@ -466,28 +480,29 @@ final class BootstrapTests: XCTestCase {
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(badFrame)) { error in
-			XCTAssertEqual(error as? MLS.Combiner.Error, .apqPskNotBound)
+		#expect(throws: MLS.Combiner.Error.apqPskNotBound) {
+			try bob.processIncomingDecrypted(badFrame)
 		}
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore)
-		XCTAssertTrue(bob.isFullyEstablished)
-		XCTAssertNotNil(bob.pqInflight)
-		XCTAssertNil(bob.lastSendPQExported)
+		#expect(bob.recvGroup?.pq?.context.epoch == bobPQEpochBefore)
+		#expect(bob.recvGroup?.classical.context.epoch == bobClassicalEpochBefore)
+		#expect(bob.isFullyEstablished)
+		#expect(bob.pqInflight != nil)
+		#expect(bob.lastSendPQExported == nil)
 
 		// The genuine bind still applies cleanly afterward.
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		let decrypted = try bob.processIncomingDecrypted(boundFrame)
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore + 1)
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore + 1)
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(bob.recvGroup?.pq?.context.epoch == bobPQEpochBefore + 1)
+		#expect(bob.recvGroup?.classical.context.epoch == bobClassicalEpochBefore + 1)
 	}
 
 	// MARK: - Attestation presence/duplication (the wrapped FULL-commit attestation)
 
 	/// Drive the pair to Alice owing the bind (the full §A.3 bootstrap round).
+	@available(iOS 26, macOS 26, *)
 	private func bootstrapToOwedBind() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
 		owed: OwedBind
@@ -506,7 +521,7 @@ final class BootstrapTests: XCTestCase {
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		return (
 			alice: alice, bob: bob, aliceIdentity: aliceIdentity,
-			owed: try XCTUnwrap(alice.owedBind)
+			owed: try #require(alice.owedBind)
 		)
 	}
 
@@ -514,13 +529,14 @@ final class BootstrapTests: XCTestCase {
 	/// the given number of wrapped FULL-commit attestation proposals — the
 	/// absent (zero) and duplicate (two) cases the attestation check's nil and
 	/// duplicate arms reject.
+	@available(iOS 26, macOS 26, *)
 	private func bindClassicalCommit(
 		alice: TwoMLSSession, aliceIdentity: TwoMLSIdentity, owed: OwedBind,
 		attestationCount: Int
 	) throws -> Data {
 		try withDeployedWireConventions {
-			let sendClassical = try XCTUnwrap(alice.sendGroup?.classical)
-			var pqForExport = try XCTUnwrap(alice.sendGroup?.pq)
+			let sendClassical = try #require(alice.sendGroup?.classical)
+			var pqForExport = try #require(alice.sendGroup?.pq)
 			let apqPSK = try MLS.Combiner.ExportedPsk.export(
 				from: &pqForExport, SessionTestSupport.pqProvider,
 				componentID: MLS.Combiner.Codepoints.deployed.apqComponentID)
@@ -561,7 +577,8 @@ final class BootstrapTests: XCTestCase {
 	/// shape allow-list (a FULL bind requires its `.appDataUpdate` event) — the
 	/// absent-attestation rejection, thrown before any apply. Nothing on Bob
 	/// moves, and the genuine bind still applies afterward.
-	func testBindRejectsAbsentAttestation() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bindRejectsAbsentAttestation() throws {
 		let (alice, bobFixture, aliceIdentity, owed) = try bootstrapToOwedBind()
 		var bob = bobFixture
 
@@ -570,8 +587,8 @@ final class BootstrapTests: XCTestCase {
 			alice: alice, aliceIdentity: aliceIdentity, owed: owed, attestationCount: 0)
 		let badStaple = Frames.encodeAPQPrivateMessage(t: classicalCommit, pq: pqCommit)
 
-		let bobPQEpochBefore = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
-		let bobClassicalEpochBefore = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
+		let bobPQEpochBefore = try #require(bob.recvGroup?.pq?.context.epoch)
+		let bobClassicalEpochBefore = try #require(bob.recvGroup?.classical.context.epoch)
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
@@ -584,19 +601,20 @@ final class BootstrapTests: XCTestCase {
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(badFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidBindEffects)
+		#expect(throws: TwoMLSError.invalidBindEffects) {
+			try bob.processIncomingDecrypted(badFrame)
 		}
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore)
-		XCTAssertNotNil(bob.pqInflight)
+		#expect(bob.recvGroup?.pq?.context.epoch == bobPQEpochBefore)
+		#expect(bob.recvGroup?.classical.context.epoch == bobClassicalEpochBefore)
+		#expect(bob.pqInflight != nil)
 	}
 
 	/// A classical bind commit carrying TWO identical wrapped attestation
 	/// proposals (the PQ half remains the genuine one) clears the shape
 	/// allow-list and is then rejected by the attestation check's duplicate arm
 	/// (`.attestationMismatch`), again before anything applies.
-	func testBindRejectsDuplicateAttestations() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bindRejectsDuplicateAttestations() throws {
 		let (alice, bobFixture, aliceIdentity, owed) = try bootstrapToOwedBind()
 		var bob = bobFixture
 
@@ -605,8 +623,8 @@ final class BootstrapTests: XCTestCase {
 			alice: alice, aliceIdentity: aliceIdentity, owed: owed, attestationCount: 2)
 		let badStaple = Frames.encodeAPQPrivateMessage(t: classicalCommit, pq: pqCommit)
 
-		let bobPQEpochBefore = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
-		let bobClassicalEpochBefore = try XCTUnwrap(bob.recvGroup?.classical.context.epoch)
+		let bobPQEpochBefore = try #require(bob.recvGroup?.pq?.context.epoch)
+		let bobClassicalEpochBefore = try #require(bob.recvGroup?.classical.context.epoch)
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
@@ -619,12 +637,12 @@ final class BootstrapTests: XCTestCase {
 		let badFrame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(badFrame)) { error in
-			XCTAssertEqual(error as? MLS.Combiner.Error, .attestationMismatch)
+		#expect(throws: MLS.Combiner.Error.attestationMismatch) {
+			try bob.processIncomingDecrypted(badFrame)
 		}
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobPQEpochBefore)
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobClassicalEpochBefore)
-		XCTAssertNotNil(bob.pqInflight)
+		#expect(bob.recvGroup?.pq?.context.epoch == bobPQEpochBefore)
+		#expect(bob.recvGroup?.classical.context.epoch == bobClassicalEpochBefore)
+		#expect(bob.pqInflight != nil)
 	}
 
 	// MARK: - The cross-half attestation check, pinned
@@ -636,7 +654,8 @@ final class BootstrapTests: XCTestCase {
 	/// PQ epoch (`owed.pqEpoch + 1` instead of the real `owed.pqEpoch`),
 	/// staple it alongside the genuine, untouched PQ commit, and confirm
 	/// Bob rejects the pair and rolls back rather than applying one half.
-	func testWrongClassicalAttestationIsRejectedAndRolledBack() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func wrongClassicalAttestationIsRejectedAndRolledBack() throws {
 		let established = try SessionTestSupport.established()
 		var alice = established.alice
 		var bob = established.bob
@@ -650,15 +669,15 @@ final class BootstrapTests: XCTestCase {
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
-		let owed = try XCTUnwrap(alice.owedBind)
-		var send = try XCTUnwrap(alice.sendGroup)
-		var recv = try XCTUnwrap(alice.recvGroup)
+		let owed = try #require(alice.owedBind)
+		var send = try #require(alice.sendGroup)
+		var recv = try #require(alice.recvGroup)
 
-		let bobRecvClassicalEpochBefore = try XCTUnwrap(
+		let bobRecvClassicalEpochBefore = try #require(
 			bob.recvGroup?.classical.context.epoch)
-		let bobRecvPQEpochBefore = try XCTUnwrap(bob.recvGroup?.pq?.context.epoch)
+		let bobRecvPQEpochBefore = try #require(bob.recvGroup?.pq?.context.epoch)
 
-		var pqForExport = try XCTUnwrap(send.pq)
+		var pqForExport = try #require(send.pq)
 		let apqPSK = try MLS.Combiner.ExportedPsk.export(
 			from: &pqForExport, SessionTestSupport.pqProvider,
 			componentID: MLS.Combiner.Codepoints.deployed.apqComponentID)
@@ -735,12 +754,12 @@ final class BootstrapTests: XCTestCase {
 		let frame = Frames.encodeMessageFrame(
 			staple: badStaple, proposal: proposalSection, app: appBytes)
 
-		XCTAssertThrowsError(try bob.processIncomingDecrypted(frame)) { error in
-			XCTAssertEqual(error as? MLS.Combiner.Error, .attestationMismatch)
+		#expect(throws: MLS.Combiner.Error.attestationMismatch) {
+			try bob.processIncomingDecrypted(frame)
 		}
 
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, bobRecvClassicalEpochBefore)
-		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobRecvPQEpochBefore)
+		#expect(bob.recvGroup?.classical.context.epoch == bobRecvClassicalEpochBefore)
+		#expect(bob.recvGroup?.pq?.context.epoch == bobRecvPQEpochBefore)
 	}
 
 	// MARK: - The reverse-direction 0xFF02, pinned
@@ -751,14 +770,15 @@ final class BootstrapTests: XCTestCase {
 	/// reference. Otherwise-unpinned: the cross-party injection
 	/// (`dischargeOwedBindIfLicensed`'s `0xFF02` branch) could silently stop
 	/// firing with every other test still green.
-	func testBindCommitCarriesBothApplicationPSKsAndAttestation() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bindCommitCarriesBothApplicationPSKsAndAttestation() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let frame = try alice.encrypt(Data("bound".utf8)).frame
 
 		// Opened via `bob` (the recipient).
@@ -770,20 +790,21 @@ final class BootstrapTests: XCTestCase {
 				case .publicMessage(let tPub) = try MLS.RFC9420.Message(
 					mlsEncoded: tBytes)
 			else {
-				XCTFail("expected a publicMessage classical commit")
+				Issue.record("expected a publicMessage classical commit")
 				return
 			}
 			guard case .commit(let commit) = tPub.content.content else {
-				XCTFail("expected a commit")
+				Issue.record("expected a commit")
 				return
 			}
-			XCTAssertEqual(commit.proposals.count, 3)
+			#expect(commit.proposals.count == 3)
 
 			var pskComponentIDs: Set<UInt16> = []
 			var appDataUpdateCount = 0
 			for entry in commit.proposals {
 				guard case .proposal(let proposal) = entry else {
-					XCTFail("expected a by-value proposal, got a reference")
+					Issue.record(
+						"expected a by-value proposal, got a reference")
 					continue
 				}
 				switch proposal {
@@ -795,21 +816,23 @@ final class BootstrapTests: XCTestCase {
 					// `.appDataUpdate` arm.
 					appDataUpdateCount += 1
 				default:
-					XCTFail("unexpected proposal type in bind commit")
+					Issue.record("unexpected proposal type in bind commit")
 				}
 			}
-			XCTAssertEqual(pskComponentIDs, [0xFF01, 0xFF02])
-			XCTAssertEqual(appDataUpdateCount, 1)
+			#expect(pskComponentIDs == [0xFF01, 0xFF02])
+			#expect(appDataUpdateCount == 1)
 		}
 
 		// Consumption alternative (also verified): the cross-party PSK's
 		// exporter leaf on Alice's own receive group is spent by the
 		// discharge, so re-exporting it throws.
-		XCTAssertThrowsError(
+		var aliceRecvClassicalForReexport = try #require(alice.recvGroup?.classical)
+		#expect(throws: (any Error).self) {
 			try MLS.Combiner.ExportedPsk.export(
-				from: &alice.recvGroup!.classical,
+				from: &aliceRecvClassicalForReexport,
 				SessionTestSupport.classicalProvider,
-				componentID: TwoMLSSession.crossPartyComponentID))
+				componentID: TwoMLSSession.crossPartyComponentID)
+		}
 
 		_ = try bob.processIncomingDecrypted(frame)
 	}
@@ -819,7 +842,8 @@ final class BootstrapTests: XCTestCase {
 	/// KP′ is `identity.keyPackage.pq` itself, not a separately minted KP —
 	/// survives restore, and once Alice joins Group_B.pq off it at §A.3,
 	/// recv-PQ presents exactly that key.
-	func testKPPrimeIsTheIdentityPQHalf() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func kPPrimeIsTheIdentityPQHalf() throws {
 		let aliceIdentity = try SessionTestSupport.identity("kpprime-alice")
 		let bobIdentity = try SessionTestSupport.identity("kpprime-bob")
 		let initiated = try TwoMLSSession.initiate(
@@ -827,15 +851,15 @@ final class BootstrapTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		let bootstrapKP = try XCTUnwrap(initiated.session.bootstrapKPSecret?.keyPackage)
-		XCTAssertEqual(bootstrapKP, aliceIdentity.keyPackage.pq)
+		let bootstrapKP = try #require(initiated.session.bootstrapKPSecret?.keyPackage)
+		#expect(bootstrapKP == aliceIdentity.keyPackage.pq)
 
 		let checkpoint = try initiated.session.makeSessionArchive(kind: .checkpoint)
 		let restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: checkpoint,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertEqual(restored.bootstrapKPSecret?.keyPackage, aliceIdentity.keyPackage.pq)
+		#expect(restored.bootstrapKPSecret?.keyPackage == aliceIdentity.keyPackage.pq)
 
 		var alice = initiated.session
 		let received = try TwoMLSSession.receive(
@@ -853,11 +877,12 @@ final class BootstrapTests: XCTestCase {
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
-		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.recvGroup?.pq))
-		XCTAssertEqual(
-			recvPQLeaf.signatureKey, aliceIdentity.keyPackage.pq.leafNode.signatureKey)
-		XCTAssertEqual(
-			alice.leafKeys.recvPQ.current?.signatureKey,
-			aliceIdentity.keyPackage.pq.leafNode.signatureKey)
+		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: try #require(alice.recvGroup?.pq))
+		#expect(
+			recvPQLeaf.signatureKey == aliceIdentity.keyPackage.pq.leafNode.signatureKey
+		)
+		#expect(
+			alice.leafKeys.recvPQ.current?.signatureKey
+				== aliceIdentity.keyPackage.pq.leafNode.signatureKey)
 	}
 }

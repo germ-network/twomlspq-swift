@@ -1,16 +1,16 @@
 import Foundation
 import MLSProfileRFC9420
-import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
-@available(iOS 26, macOS 26, *)
-final class ReturnKeyPackageTests: XCTestCase {
+@Suite struct ReturnKeyPackageTests {
 	/// The establishment result's classical KeyPackage: equals the returned
 	/// session's internal identity source, and satisfies the cross-side
 	/// contract it exists for — acceptable as the peer's
 	/// `theirClassicalKeyPackage` in `receive`.
-	func testEstablishResultCarriesTheSessionClassicalKeyPackage() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func establishResultCarriesTheSessionClassicalKeyPackage() throws {
 		let alice = try SessionTestSupport.identity("alice")
 		let bob = try SessionTestSupport.identity("bob")
 		let initiated = try TwoMLSSession.initiate(
@@ -18,9 +18,9 @@ final class ReturnKeyPackageTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		XCTAssertEqual(
-			initiated.returnKeyPackage,
-			initiated.session.identity.keyPackage.classical)
+		#expect(
+			initiated.returnKeyPackage
+				== initiated.session.identity.keyPackage.classical)
 
 		_ = try TwoMLSSession.receive(
 			identity: bob, welcome: initiated.welcome,

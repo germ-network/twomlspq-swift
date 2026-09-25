@@ -1,8 +1,9 @@
+import Foundation
 import MLSCodec
 import MLSCombiner
 import MLSExtensions
 import MLSProfileRFC9420
-import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
@@ -12,15 +13,14 @@ import XCTest
 /// feeding the AppDataUpdate attestation body, and (a) the deployed `opaque<V>`
 /// wrapper around the AppDataUpdate (`0x0008`) proposal — see
 /// `testAppDataUpdateWrapperByteMatchesDeployedRust`.
-@available(iOS 26, macOS 26, *)
-final class RustWireVectorsTests: XCTestCase {
+@Suite struct RustWireVectorsTests {
 
-	private func hexData(_ hex: String) -> Data {
+	private func hexData(_ hex: String) throws -> Data {
 		var out = Data(capacity: hex.count / 2)
 		var index = hex.startIndex
 		while index < hex.endIndex {
 			let next = hex.index(index, offsetBy: 2)
-			out.append(UInt8(hex[index..<next], radix: 16)!)
+			out.append(try #require(UInt8(hex[index..<next], radix: 16)))
 			index = next
 		}
 		return out
@@ -28,42 +28,45 @@ final class RustWireVectorsTests: XCTestCase {
 
 	// MARK: - (b) framing
 
-	func testMessageFrameByteIdenticalBothDirections() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func messageFrameByteIdenticalBothDirections() throws {
 		let staple = Data(repeating: 0xAA, count: 3)
 		let proposal = Data(repeating: 0xBB, count: 5)
 		let app = Data(repeating: 0xCC, count: 7)
-		let golden = hexData(RustWireVectors.messageFrame)
+		let golden = try hexData(RustWireVectors.messageFrame)
 
-		XCTAssertEqual(
-			Frames.encodeMessageFrame(staple: staple, proposal: proposal, app: app),
-			golden)
+		#expect(
+			Frames.encodeMessageFrame(staple: staple, proposal: proposal, app: app)
+				== golden)
 
 		let decoded = try Frames.decodeMessageFrame(golden)
-		XCTAssertEqual(decoded.staple, staple)
-		XCTAssertEqual(decoded.proposal, proposal)
-		XCTAssertEqual(decoded.app, app)
+		#expect(decoded.staple == staple)
+		#expect(decoded.proposal == proposal)
+		#expect(decoded.app == app)
 	}
 
-	func testProposalSectionByteIdenticalBothDirections() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func proposalSectionByteIdenticalBothDirections() throws {
 		let proposing = Data(repeating: 0x11, count: 4)
 		let message = Data(repeating: 0x22, count: 6)
-		let golden = hexData(RustWireVectors.proposalSection)
+		let golden = try hexData(RustWireVectors.proposalSection)
 
-		XCTAssertEqual(
-			Frames.encodeProposalSection(proposing: proposing, message: message),
-			golden)
+		#expect(
+			Frames.encodeProposalSection(proposing: proposing, message: message)
+				== golden)
 
 		let decoded = try Frames.decodeProposalSection(golden)
-		XCTAssertEqual(decoded.proposing, proposing)
-		XCTAssertEqual(decoded.message, message)
+		#expect(decoded.proposing == proposing)
+		#expect(decoded.message == message)
 	}
 
 	/// The shared length-prefix primitive both frames above are built from, pinned on
 	/// its own fixed input.
-	func testPushSectionByteIdentical() {
+	@available(iOS 26, macOS 26, *)
+	@Test func pushSectionByteIdentical() throws {
 		var buffer = Data()
 		Frames.pushSection(Data(repeating: 0x33, count: 9), into: &buffer)
-		XCTAssertEqual(buffer, hexData(RustWireVectors.pushSection))
+		#expect(buffer == (try hexData(RustWireVectors.pushSection)))
 	}
 
 	// MARK: - (c) uint32 component-id width
@@ -76,21 +79,22 @@ final class RustWireVectorsTests: XCTestCase {
 	/// swift-mls's `.uint16` default (draft-09). Then round-trips as the wrapped
 	/// `.custom` proposal the port actually emits (see (a) below) under the same
 	/// `withDeployedWireConventions` scope the receive path requires.
-	func testAppDataUpdateBodyMatchesDeployedUint32Width() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func appDataUpdateBodyMatchesDeployedUint32Width() throws {
 		let attestation = MLS.Combiner.ApqInfoUpdate(tEpoch: 2, pqEpoch: 1)
 		let componentID = MLS.Combiner.Codepoints.deployed.apqComponentID
 
 		let body = try withDeployedWireConventions {
 			try attestation.appDataUpdate(componentID: componentID).mlsEncoded()
 		}
-		XCTAssertEqual(body, hexData(RustWireVectors.appDataUpdateBody))
+		#expect(body == (try hexData(RustWireVectors.appDataUpdateBody)))
 
 		let proposal = MLS.RFC9420.Proposal.custom(type: .init(.appDataUpdate), body: body)
 		let fullEncoded = try withDeployedWireConventions { try proposal.mlsEncoded() }
 		let decoded = try withDeployedWireConventions {
 			try MLS.RFC9420.Proposal(mlsEncoded: fullEncoded)
 		}
-		XCTAssertEqual(decoded, proposal)
+		#expect(decoded == proposal)
 	}
 
 	// MARK: - (a) the deployed `opaque<V>` wrapper
@@ -102,7 +106,8 @@ final class RustWireVectorsTests: XCTestCase {
 	/// byte-for-byte via `Proposal.custom(type:body:)`
 	/// (`TwoMLSSession+ClassicalCommit.swift` / `+Bootstrap.swift`), so the FULL
 	/// commit-carried proposal bytes byte-match deployed Rust — not just the body.
-	func testAppDataUpdateWrapperByteMatchesDeployedRust() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func appDataUpdateWrapperByteMatchesDeployedRust() throws {
 		let attestation = MLS.Combiner.ApqInfoUpdate(tEpoch: 2, pqEpoch: 1)
 		let componentID = MLS.Combiner.Codepoints.deployed.apqComponentID
 
@@ -114,25 +119,26 @@ final class RustWireVectorsTests: XCTestCase {
 			).mlsEncoded()
 		}
 
-		XCTAssertEqual(fullEncoded, hexData(RustWireVectors.appDataUpdateFullWrapped))
+		#expect(fullEncoded == (try hexData(RustWireVectors.appDataUpdateFullWrapped)))
 	}
 
 	/// The accept direction of the same wrapper: the deployed-Rust golden wire
 	/// decodes, under the `customProposalTypes` ambient, as a `.custom` proposal
 	/// naming the `appDataUpdate` type and carrying the same BODY (c) pins.
-	func testAppDataUpdateWrapperAcceptsDeployedRustWireUnderAmbient() throws {
-		let golden = hexData(RustWireVectors.appDataUpdateFullWrapped)
+	@available(iOS 26, macOS 26, *)
+	@Test func appDataUpdateWrapperAcceptsDeployedRustWireUnderAmbient() throws {
+		let golden = try hexData(RustWireVectors.appDataUpdateFullWrapped)
 
 		let decoded = try withDeployedWireConventions {
 			try MLS.RFC9420.Proposal(mlsEncoded: golden)
 		}
 
 		guard case .custom(let type, let body) = decoded else {
-			XCTFail("expected a wrapped .custom proposal, got \(decoded)")
+			Issue.record("expected a wrapped .custom proposal, got \(decoded)")
 			return
 		}
-		XCTAssertEqual(type, .init(.appDataUpdate))
-		XCTAssertEqual(body, hexData(RustWireVectors.appDataUpdateBody))
+		#expect(type == MLS.RFC9420.ProposalType(.appDataUpdate))
+		#expect(body == (try hexData(RustWireVectors.appDataUpdateBody)))
 	}
 
 	// MARK: - (d) a real fold-only commit staple
@@ -143,23 +149,27 @@ final class RustWireVectorsTests: XCTestCase {
 	/// decodes as an MLS `.publicMessage` commit — pinning that the port's "the staple
 	/// IS the message, `0x00` is not a wrapper tag" model matches what Rust actually
 	/// staples.
-	func testFoldOnlyStapleAcceptsRealRustCommit() throws {
-		let staple = hexData(RustWireVectors.foldOnlyStaple)
+	@available(iOS 26, macOS 26, *)
+	@Test func foldOnlyStapleAcceptsRealRustCommit() throws {
+		let staple = try hexData(RustWireVectors.foldOnlyStaple)
 
-		XCTAssertEqual(Frames.stapleKind(staple.first!), .mlsMessage)
+		let stapleFirstByte = try #require(staple.first)
+		#expect(Frames.stapleKind(stapleFirstByte) == .mlsMessage)
 
 		let decoded = try Frames.decodeMlsMessageStaple(staple)
-		XCTAssertEqual(decoded, staple)
+		#expect(decoded == staple)
 
 		try withDeployedWireConventions {
 			guard
 				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(
 					mlsEncoded: decoded)
 			else {
-				return XCTFail("expected a publicMessage commit staple")
+				Issue.record("expected a publicMessage commit staple")
+				return
 			}
 			guard case .commit = commitPub.content.content else {
-				return XCTFail("expected the staple to decode as a commit")
+				Issue.record("expected the staple to decode as a commit")
+				return
 			}
 		}
 	}

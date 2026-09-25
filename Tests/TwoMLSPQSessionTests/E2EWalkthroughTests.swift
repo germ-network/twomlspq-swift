@@ -2,7 +2,7 @@ import Foundation
 import MLSCodec
 import MLSCombiner
 import MLSProfileRFC9420
-import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
@@ -20,9 +20,9 @@ import XCTest
 /// side-band steps (those are `RatchetTests`/`RekeyTests`' own territory,
 /// always starting from the `establishedAndExchanged` fixture) — so none
 /// are added here.
-@available(iOS 26, macOS 26, *)
-final class E2EWalkthroughTests: XCTestCase {
-	func testFullSessionWalkthroughFromColdIdentitiesThroughCredentialRotation() throws {
+@Suite struct E2EWalkthroughTests {
+	@available(iOS 26, macOS 26, *)
+	@Test func fullSessionWalkthroughFromColdIdentitiesThroughCredentialRotation() throws {
 		// [1] Cold principals.
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8),
@@ -40,16 +40,16 @@ final class E2EWalkthroughTests: XCTestCase {
 		// Alice's PQ KP travels later, in §A.3, hash-bound to the bootstrap
 		// commitment) is minted fresh by `initiate(principal:)` itself.
 		var (bobInvitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
-		let bobCombinerKP = try XCTUnwrap(bobInvitation.combinerKeyPackage)
+		let bobCombinerKP = try #require(bobInvitation.combinerKeyPackage)
 
 		// [3] Rust's `parse_mls_key_package` step has no session-layer
 		// equivalent — swift key packages are already typed
 		// `MLS.RFC9420.KeyPackage` values, never opaque bytes to parse — so
 		// this asserts directly on the typed halves instead: both of Bob's
 		// halves share one clientId.
-		XCTAssertEqual(
-			try basicIdentifier(bobCombinerKP.classical.leafNode.credential),
-			try basicIdentifier(bobCombinerKP.pq.leafNode.credential))
+		#expect(
+			try basicIdentifier(bobCombinerKP.classical.leafNode.credential)
+				== (try basicIdentifier(bobCombinerKP.pq.leafNode.credential)))
 
 		// [4] Establishment (`0x01` APQWelcome both directions). Alice
 		// initiates; Bob's invitation receives and is established
@@ -73,15 +73,17 @@ final class E2EWalkthroughTests: XCTestCase {
 			spawnToken: spawnToken)
 		var bob = received.session
 		let welcomeB = bob.currentStaple
-		XCTAssertTrue(bob.isEstablished)
-		XCTAssertFalse(alice.isEstablished)
+		#expect(bob.isEstablished)
+		#expect(!alice.isEstablished)
 
 		// The forward table now resolves this spawn token to Bob's recv-side
 		// classical group id, and the session acknowledges it.
-		XCTAssertEqual(
-			bobInvitation.forwardGroupID(spawnToken: spawnToken),
-			bob.recvGroup?.classical.context.groupID)
-		XCTAssertNoThrow(try bob.forwarded(spawnToken: spawnToken))
+		#expect(
+			bobInvitation.forwardGroupID(spawnToken: spawnToken)
+				== bob.recvGroup?.classical.context.groupID)
+		#expect(throws: Never.self) {
+			try bob.forwarded(spawnToken: spawnToken)
+		}
 
 		_ = try bob.prepareToEncrypt()
 		let bobFirstFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
@@ -90,24 +92,24 @@ final class E2EWalkthroughTests: XCTestCase {
 		// establishment round-trip the book's walkthrough describes.
 		let (bobFirstStaple, _, _) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(bobFirstFrame))
-		XCTAssertEqual(
-			bobFirstStaple, welcomeB,
+		#expect(
+			bobFirstStaple == welcomeB,
 			"Bob's first frame staples EstablishResult.welcome, not the PQ side-band")
 		_ = try alice.processIncomingDecrypted(bobFirstFrame)
-		XCTAssertTrue(alice.isEstablished)
-		XCTAssertTrue(bob.isEstablished)
+		#expect(alice.isEstablished)
+		#expect(bob.isEstablished)
 
 		// [5] Routine round: Alice -> Bob, no commit.
 		_ = try alice.prepareToEncrypt()
 		let helloFrame = try alice.encrypt(Data("hello bob".utf8)).frame
 		let helloDecrypted = try bob.processIncomingDecrypted(helloFrame)
-		XCTAssertEqual(helloDecrypted.applicationMessage, Data("hello bob".utf8))
-		XCTAssertFalse(helloDecrypted.didApplyRemoteCommit)
+		#expect(helloDecrypted.applicationMessage == Data("hello bob".utf8))
+		#expect(!helloDecrypted.didApplyRemoteCommit)
 
 		// [6] Folding commit: Bob proposes (rides his own `0x03` frame),
 		// Alice queues + commits — a queued remote proposal always forces a
 		// fold — refreshing both leaves and the cross-party PSK.
-		let aliceSendEpochBeforeFold = try XCTUnwrap(
+		let aliceSendEpochBeforeFold = try #require(
 			alice.sendGroup?.classical.context.epoch)
 		_ = try bob.prepareToEncrypt()
 		let bobProposalFrame = try bob.encrypt(Data("bob update".utf8)).frame
@@ -115,22 +117,22 @@ final class E2EWalkthroughTests: XCTestCase {
 		_ = try alice.queueProposal(digest: proposalDecrypted.queuedProposal.digest)
 
 		let foldPrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(
+		#expect(
 			foldPrepared.didCommit, "a queued remote proposal forces a folding commit")
-		XCTAssertEqual(
-			alice.sendGroup?.classical.context.epoch, aliceSendEpochBeforeFold + 1)
+		#expect(
+			alice.sendGroup?.classical.context.epoch == aliceSendEpochBeforeFold + 1)
 
 		let committedFrame = try alice.encrypt(Data("committed".utf8)).frame
 		let committedDecrypted = try bob.processIncomingDecrypted(committedFrame)
-		XCTAssertTrue(committedDecrypted.didApplyRemoteCommit)
-		XCTAssertEqual(committedDecrypted.applicationMessage, Data("committed".utf8))
-		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, aliceSendEpochBeforeFold + 1)
+		#expect(committedDecrypted.didApplyRemoteCommit)
+		#expect(committedDecrypted.applicationMessage == Data("committed".utf8))
+		#expect(bob.recvGroup?.classical.context.epoch == aliceSendEpochBeforeFold + 1)
 
 		// [7] Continued bidirectional messaging post-refresh: Bob -> Alice.
 		_ = try bob.prepareToEncrypt()
 		let replyFrame = try bob.encrypt(Data("reply".utf8)).frame
 		let replyDecrypted = try alice.processIncomingDecrypted(replyFrame)
-		XCTAssertEqual(replyDecrypted.applicationMessage, Data("reply".utf8))
+		#expect(replyDecrypted.applicationMessage == Data("reply".utf8))
 
 		// [8] Principal credential rotation: Alice proposes a successor on
 		// her next frame (`prepareToEncrypt(rotating:)` folds Rust's
@@ -143,22 +145,22 @@ final class E2EWalkthroughTests: XCTestCase {
 		// (a Bool) plus `myPrincipalState`.
 		let newAliceID = try SessionTestSupport.identity("alice2").clientID
 		_ = try alice.prepareToEncrypt(rotating: newAliceID)
-		XCTAssertEqual(
-			alice.myPrincipalState,
-			.pending(old: alice.identity.clientID, new: newAliceID))
+		#expect(
+			alice.myPrincipalState
+				== .pending(old: alice.identity.clientID, new: newAliceID))
 
 		let rotatingFrame = try alice.encrypt(Data("rotating".utf8)).frame
 		let rotatingDecrypted = try bob.processIncomingDecrypted(rotatingFrame)
-		XCTAssertEqual(rotatingDecrypted.queuedProposal.proposing, newAliceID)
+		#expect(rotatingDecrypted.queuedProposal.proposing == newAliceID)
 		_ = try bob.queueProposal(digest: rotatingDecrypted.queuedProposal.digest)
 
 		let rotationPrepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(rotationPrepared.didCommit)
-		XCTAssertEqual(rotationPrepared.committedRemoteClientID, newAliceID)
+		#expect(rotationPrepared.didCommit)
+		#expect(rotationPrepared.committedRemoteClientID == newAliceID)
 
 		let canonicalizeFrame = try bob.encrypt(Data("canonicalize".utf8)).frame
 		let canonicalizeDecrypted = try alice.processIncomingDecrypted(canonicalizeFrame)
-		XCTAssertTrue(canonicalizeDecrypted.ownCredentialCanonicalized)
-		XCTAssertEqual(alice.myPrincipalState, .sync(newAliceID))
+		#expect(canonicalizeDecrypted.ownCredentialCanonicalized)
+		#expect(alice.myPrincipalState == .sync(newAliceID))
 	}
 }

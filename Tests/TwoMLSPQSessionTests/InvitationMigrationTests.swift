@@ -2,8 +2,7 @@ import Foundation
 import MLSCodec
 import MLSProfileRFC9420
 import SecretBytes
-import TwoMLSPQCrypto
-import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
@@ -12,8 +11,8 @@ import XCTest
 /// `makeInvitationArchive` would have produced — the cross-module migrator
 /// calls this with raw parts read from a legacy Rust invitation, so it must
 /// work without a live `Invitation`/`TwoMLSIdentity` or any provider.
-@available(iOS 26, macOS 26, *)
-final class InvitationMigrationTests: XCTestCase {
+@Suite struct InvitationMigrationTests {
+	@available(iOS 26, macOS 26, *)
 	private func makePrincipal(_ name: String) throws -> Principal {
 		try Principal.generate(
 			clientID: Data(name.utf8),
@@ -24,10 +23,11 @@ final class InvitationMigrationTests: XCTestCase {
 	/// Decomposes a live invitation into the exact raw parts a migrator would
 	/// read off a legacy Rust invitation (same byte representations the
 	/// native identity holds).
+	@available(iOS 26, macOS 26, *)
 	private func migratedParts(
 		_ invitation: Invitation
 	) throws -> (clientID: Data, stateSeq: UInt64, identity: MigratedIdentity) {
-		let identity = try XCTUnwrap(invitation.identity)
+		let identity = try #require(invitation.identity)
 		return (
 			clientID: invitation.clientID,
 			stateSeq: invitation.stateSeq,
@@ -38,11 +38,11 @@ final class InvitationMigrationTests: XCTestCase {
 				pqSigningKey: identity.pqSigningKey.data,
 				pqSignatureKey: identity.pqSignatureKey.data,
 				classicalLeafSecretKey: identity.classicalLeafSecretKey.data,
-				classicalInitSecretKey: try XCTUnwrap(
+				classicalInitSecretKey: try #require(
 					identity.classicalInitSecretKey
 				).data,
 				pqLeafSecretKey: identity.pqLeafSecretKey.data,
-				pqInitSecretKey: try XCTUnwrap(identity.pqInitSecretKey).data,
+				pqInitSecretKey: try #require(identity.pqInitSecretKey).data,
 				classicalKeyPackage: try identity.keyPackage.classical.mlsEncoded(),
 				pqKeyPackage: try identity.keyPackage.pq.mlsEncoded())
 		)
@@ -57,7 +57,8 @@ final class InvitationMigrationTests: XCTestCase {
 	/// raw-byte equality is unobservable by design; the decoded bodies are
 	/// the strongest expressible comparison. Table arrays are sorted by the
 	/// minter for reproducibility, which restore is insensitive to.)
-	func testMintedArchiveDecodesToTheNativeBody() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedArchiveDecodesToTheNativeBody() throws {
 		// last-resort so the identity survives `receive` (a single-use
 		// invitation nils it on consume).
 		var (invitation, nativeArchive) = try makePrincipal("bob").generateInvitation(
@@ -65,7 +66,7 @@ final class InvitationMigrationTests: XCTestCase {
 		let other = try makePrincipal("alice")
 		let round = try TwoMLSSession.initiate(
 			principal: other,
-			their: try XCTUnwrap(invitation.combinerKeyPackage))
+			their: try #require(invitation.combinerKeyPackage))
 		_ = try invitation.receive(
 			welcome: round.welcome,
 			theirClassicalKeyPackage: round.session.identity.keyPackage.classical,
@@ -85,13 +86,13 @@ final class InvitationMigrationTests: XCTestCase {
 
 		let nativeBody = try nativeArchive.decode(InvitationArchive.self)
 		let mintedBody = try minted.decode(InvitationArchive.self)
-		XCTAssertEqual(mintedBody.version, nativeBody.version)
-		XCTAssertEqual(mintedBody.classicalSuite, nativeBody.classicalSuite)
-		XCTAssertEqual(mintedBody.pqSuite, nativeBody.pqSuite)
-		XCTAssertEqual(mintedBody.stateSeq, nativeBody.stateSeq)
-		XCTAssertEqual(mintedBody.lastResort, nativeBody.lastResort)
-		XCTAssertEqual(mintedBody.clientID, nativeBody.clientID)
-		XCTAssertEqual(mintedBody.consumedRemotes, nativeBody.consumedRemotes)
+		#expect(mintedBody.version == nativeBody.version)
+		#expect(mintedBody.classicalSuite == nativeBody.classicalSuite)
+		#expect(mintedBody.pqSuite == nativeBody.pqSuite)
+		#expect(mintedBody.stateSeq == nativeBody.stateSeq)
+		#expect(mintedBody.lastResort == nativeBody.lastResort)
+		#expect(mintedBody.clientID == nativeBody.clientID)
+		#expect(mintedBody.consumedRemotes == nativeBody.consumedRemotes)
 		for table in [
 			(minted: mintedBody.forwardTable, native: nativeBody.forwardTable),
 			(
@@ -100,38 +101,43 @@ final class InvitationMigrationTests: XCTestCase {
 			),
 			(minted: mintedBody.bootstrapRouting, native: nativeBody.bootstrapRouting),
 		] {
-			XCTAssertEqual(
+			#expect(
 				Dictionary(
 					uniqueKeysWithValues: table.minted.map {
 						($0.key, $0.classicalGroupID)
-					}),
-				Dictionary(
-					uniqueKeysWithValues: table.native.map {
-						($0.key, $0.classicalGroupID)
-					}))
+					})
+					== Dictionary(
+						uniqueKeysWithValues: table.native.map {
+							($0.key, $0.classicalGroupID)
+						}))
 		}
 		guard let mintedIdentity = mintedBody.identity,
 			let nativeIdentity = nativeBody.identity
-		else { return XCTFail("expected both identities present") }
-		XCTAssertEqual(mintedIdentity.clientID, nativeIdentity.clientID)
-		XCTAssertEqual(mintedIdentity.signatureKey, nativeIdentity.signatureKey)
-		XCTAssertEqual(mintedIdentity.pqSignatureKey, nativeIdentity.pqSignatureKey)
-		XCTAssertEqual(
-			mintedIdentity.classicalKeyPackage, nativeIdentity.classicalKeyPackage)
-		XCTAssertEqual(mintedIdentity.pqKeyPackage, nativeIdentity.pqKeyPackage)
-		XCTAssertEqual(mintedIdentity.signingKey, nativeIdentity.signingKey)
-		XCTAssertEqual(mintedIdentity.pqSigningKey, nativeIdentity.pqSigningKey)
-		XCTAssertEqual(
-			mintedIdentity.classicalLeafSecretKey, nativeIdentity.classicalLeafSecretKey
+		else {
+			Issue.record("expected both identities present")
+			return
+		}
+		#expect(mintedIdentity.clientID == nativeIdentity.clientID)
+		#expect(mintedIdentity.signatureKey == nativeIdentity.signatureKey)
+		#expect(mintedIdentity.pqSignatureKey == nativeIdentity.pqSignatureKey)
+		#expect(
+			mintedIdentity.classicalKeyPackage == nativeIdentity.classicalKeyPackage)
+		#expect(mintedIdentity.pqKeyPackage == nativeIdentity.pqKeyPackage)
+		#expect(mintedIdentity.signingKey == nativeIdentity.signingKey)
+		#expect(mintedIdentity.pqSigningKey == nativeIdentity.pqSigningKey)
+		#expect(
+			mintedIdentity.classicalLeafSecretKey
+				== nativeIdentity.classicalLeafSecretKey
 		)
-		XCTAssertEqual(
-			mintedIdentity.classicalInitSecretKey, nativeIdentity.classicalInitSecretKey
+		#expect(
+			mintedIdentity.classicalInitSecretKey
+				== nativeIdentity.classicalInitSecretKey
 		)
-		XCTAssertEqual(mintedIdentity.pqLeafSecretKey, nativeIdentity.pqLeafSecretKey)
-		XCTAssertEqual(mintedIdentity.pqInitSecretKey, nativeIdentity.pqInitSecretKey)
+		#expect(mintedIdentity.pqLeafSecretKey == nativeIdentity.pqLeafSecretKey)
+		#expect(mintedIdentity.pqInitSecretKey == nativeIdentity.pqInitSecretKey)
 		// Post-PR-#40: the two halves carry DISTINCT signing keys, and both
 		// survive the mint.
-		XCTAssertNotEqual(mintedIdentity.signingKey, mintedIdentity.pqSigningKey)
+		#expect(mintedIdentity.signingKey != mintedIdentity.pqSigningKey)
 	}
 
 	// MARK: - AC 2: restore + use (the migrated KEM/HPKE keys are live)
@@ -139,7 +145,8 @@ final class InvitationMigrationTests: XCTestCase {
 	/// A minted archive restores to an invitation that opens a §A.1 envelope
 	/// sealed to its published KP — the migrated PQ init secret actually
 	/// decapsulates — and then receives the welcome that envelope carried.
-	func testMintedArchiveRestoresAndOpenInitialsARealEnvelope() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintedArchiveRestoresAndOpenInitialsARealEnvelope() throws {
 		let bobPrincipal = try makePrincipal("bob")
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let parts = try migratedParts(invitation)
@@ -156,18 +163,19 @@ final class InvitationMigrationTests: XCTestCase {
 		let alicePrincipal = try makePrincipal("alice")
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal,
-			their: try XCTUnwrap(invitation.combinerKeyPackage))
+			their: try #require(invitation.combinerKeyPackage))
 		let envelope = try initiated.session.pendingOutbound()
 		guard case .establishment(let frame) = try restored.openInitial(envelope) else {
-			return XCTFail("expected .establishment")
+			Issue.record("expected .establishment")
+			return
 		}
 		let returnKP = try EstablishmentMessages.decodeKeyPackage(
-			try XCTUnwrap(frame.returnKeyPackage))
+			try #require(frame.returnKeyPackage))
 		let received = try restored.receive(
-			welcome: try XCTUnwrap(frame.welcome), theirClassicalKeyPackage: returnKP,
+			welcome: try #require(frame.welcome), theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
 			spawnToken: SessionTestSupport.classicalProvider.randomBytes(16))
-		XCTAssertTrue(received.session.isEstablished)
+		#expect(received.session.isEstablished)
 	}
 
 	// MARK: - AC 3: spent single-use
@@ -175,7 +183,8 @@ final class InvitationMigrationTests: XCTestCase {
 	/// `identity: nil` mints a spent single-use invitation's archive, which
 	/// restores (identity nil, still routable) and `openInitial` fails
 	/// cleanly with `.invitationSpent`.
-	func testSpentSingleUseMintRestoresAndFailsOpenInitialCleanly() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func spentSingleUseMintRestoresAndFailsOpenInitialCleanly() throws {
 		let minted = try InvitationMigration.mintArchive(
 			clientID: Data("bob".utf8), lastResort: false, stateSeq: 7, identity: nil,
 			forwardTable: [Data("tok".utf8): Data("gid".utf8)], processedWelcomes: [:],
@@ -184,15 +193,13 @@ final class InvitationMigrationTests: XCTestCase {
 			archive: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertNil(restored.identity)
-		XCTAssertNil(restored.combinerKeyPackage)
-		XCTAssertEqual(restored.stateSeq, 7)
-		XCTAssertEqual(
-			restored.forwardGroupID(spawnToken: Data("tok".utf8)), Data("gid".utf8))
-		XCTAssertThrowsError(
+		#expect(restored.identity == nil)
+		#expect(restored.combinerKeyPackage == nil)
+		#expect(restored.stateSeq == 7)
+		#expect(
+			restored.forwardGroupID(spawnToken: Data("tok".utf8)) == Data("gid".utf8))
+		#expect(throws: TwoMLSError.invitationSpent) {
 			try restored.openInitial(Data("x".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invitationSpent)
 		}
 	}
 
@@ -201,20 +208,19 @@ final class InvitationMigrationTests: XCTestCase {
 	/// Corrupting ONE migrated secret (the PQ leaf secret) must fail — at
 	/// mint time (here inside the 96-B integrity check), proving the mint
 	/// detects a bad part rather than just a decode.
-	func testCorruptedPqLeafSecretIsRejectedAtMint() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func corruptedPqLeafSecretIsRejectedAtMint() throws {
 		let (invitation, _) = try makePrincipal("bob").generateInvitation(lastResort: true)
-		var parts = try XCTUnwrap(try migratedParts(invitation).identity)
+		var parts = try #require(try migratedParts(invitation).identity)
 		var corrupted = [UInt8](repeating: 0, count: 96)
 		for (i, byte) in corrupted.enumerated() { corrupted[i] = byte &+ UInt8(i) }
 		parts.pqLeafSecretKey = try SecretBytes(bytes: Data(corrupted))
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try InvitationMigration.mintArchive(
 				clientID: invitation.clientID, lastResort: true,
 				stateSeq: invitation.stateSeq, identity: parts, forwardTable: [:],
 				processedWelcomes: [:], bootstrapRouting: [:], consumedRemotes: [])
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -222,74 +228,70 @@ final class InvitationMigrationTests: XCTestCase {
 	/// integrity check — is rejected by the derived-public vs KeyPackage
 	/// comparison, which is the check that actually catches a mis-mapped
 	/// (not merely corrupted) key.
-	func testValidButWrongPqLeafSecretIsRejectedAtMint() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func validButWrongPqLeafSecretIsRejectedAtMint() throws {
 		let (invitation, _) = try makePrincipal("bob").generateInvitation(lastResort: true)
-		var parts = try XCTUnwrap(try migratedParts(invitation).identity)
+		var parts = try #require(try migratedParts(invitation).identity)
 		let (wrongSecret, _) = try SessionTestSupport.pqProvider.hpkeGenerateKeyPair()
 		parts.pqLeafSecretKey = wrongSecret.data
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try InvitationMigration.mintArchive(
 				clientID: invitation.clientID, lastResort: true,
 				stateSeq: invitation.stateSeq, identity: parts, forwardTable: [:],
 				processedWelcomes: [:], bootstrapRouting: [:], consumedRemotes: [])
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// Swapping the classical leaf and init secrets (two VALID X25519 keys,
 	/// so no integrity check fires) is rejected — exactly the half-swap
 	/// mis-mapping this minter exists to catch.
-	func testSwappedClassicalLeafAndInitSecretsAreRejectedAtMint() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func swappedClassicalLeafAndInitSecretsAreRejectedAtMint() throws {
 		let (invitation, _) = try makePrincipal("bob").generateInvitation(lastResort: true)
-		var parts = try XCTUnwrap(try migratedParts(invitation).identity)
+		var parts = try #require(try migratedParts(invitation).identity)
 		let leaf = parts.classicalLeafSecretKey
 		parts.classicalLeafSecretKey = parts.classicalInitSecretKey
 		parts.classicalInitSecretKey = leaf
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try InvitationMigration.mintArchive(
 				clientID: invitation.clientID, lastResort: true,
 				stateSeq: invitation.stateSeq, identity: parts, forwardTable: [:],
 				processedWelcomes: [:], bootstrapRouting: [:], consumedRemotes: [])
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// Corrupting the classical signing key fails the same way.
-	func testCorruptedClassicalSigningKeyIsRejectedAtMint() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func corruptedClassicalSigningKeyIsRejectedAtMint() throws {
 		let (invitation, _) = try makePrincipal("bob").generateInvitation(lastResort: true)
-		var parts = try XCTUnwrap(try migratedParts(invitation).identity)
+		var parts = try #require(try migratedParts(invitation).identity)
 		parts.signingKey = try SecretBytes(
 			bytes: Data(repeating: 0x42, count: 32))
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try InvitationMigration.mintArchive(
 				clientID: invitation.clientID, lastResort: true,
 				stateSeq: invitation.stateSeq, identity: parts, forwardTable: [:],
 				processedWelcomes: [:], bootstrapRouting: [:], consumedRemotes: [])
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// A wrong `clientID` (not matching the KP credential) is rejected at
 	/// mint — otherwise `openInitial` would fail downstream with nothing to
 	/// explain why.
-	func testMismatchedClientIDIsRejectedAtMint() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mismatchedClientIDIsRejectedAtMint() throws {
 		let (invitation, _) = try makePrincipal("bob").generateInvitation(lastResort: true)
 		let parts = try migratedParts(invitation)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try InvitationMigration.mintArchive(
 				clientID: Data("mallory".utf8), lastResort: true,
 				stateSeq: invitation.stateSeq, identity: parts.identity,
 				forwardTable: [:], processedWelcomes: [:], bootstrapRouting: [:],
 				consumedRemotes: [])
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 }

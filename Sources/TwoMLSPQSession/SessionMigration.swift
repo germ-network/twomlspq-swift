@@ -816,7 +816,9 @@ public enum SessionMigration {
 		// so it never records a profile either — a migrated session always
 		// mints deployed-compatible.
 		for group in [sendClassical, sendPQ, recvClassical, recvPQ].compactMap({ $0 }) {
-			guard (try? SessionProfile.recorded(in: group.context)) == .deployedCompatible
+			guard
+				(try? SessionProfile.recorded(in: group.context))
+					== .deployedCompatible
 			else { throw TwoMLSError.archiveInvalid }
 		}
 

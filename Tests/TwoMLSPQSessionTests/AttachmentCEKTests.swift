@@ -4,8 +4,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -16,8 +16,7 @@ import XCTest
 /// `0xFF02` cross-party PSK ledger (`sendCrossPSKLedger`). Both exports are
 /// PURE READS, so every session in these tests can stay a `let` unless a
 /// test itself needs to drive a commit (`advanceEpochByFold`).
-@available(iOS 26, macOS 26, *)
-final class AttachmentCEKTests: XCTestCase {
+@Suite struct AttachmentCEKTests {
 	private let sealKey = SecretBytes(randomByteCount: 32)
 	private let sealAAD = Data("attachment-cek-tests".utf8)
 
@@ -33,6 +32,7 @@ final class AttachmentCEKTests: XCTestCase {
 	/// `approver` approves and folds it (advancing ITS OWN send-group
 	/// epoch), and `proposer` applies the resulting staple (advancing ITS
 	/// OWN recv-group epoch to match).
+	@available(iOS 26, macOS 26, *)
 	private func advanceEpochByFold(
 		proposer: inout TwoMLSSession, approver: inout TwoMLSSession
 	) throws {
@@ -51,24 +51,25 @@ final class AttachmentCEKTests: XCTestCase {
 	/// `initiate`/`receive`'s own construction, both at epoch 1 — so this
 	/// needs no fold round: `established()` alone already leaves both
 	/// ledgers populated at epoch 1.
-	func testSendRecvCEKsMatchAcrossPeersAndAreDeterministicPerKeyId() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func sendRecvCEKsMatchAcrossPeersAndAreDeterministicPerKeyId() throws {
 		let (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		let keyId = Data(repeating: 0x01, count: 32)
 
 		let aliceCEK = try alice.exportAttachmentCEKSend(keyId: keyId)
 		let bobCEK = try bob.exportAttachmentCEKRecv(keyId: keyId, epoch: 1)
-		XCTAssertEqual(aliceCEK, bobCEK)
-		XCTAssertEqual(aliceCEK.count, 32)
+		#expect(aliceCEK == bobCEK)
+		#expect(aliceCEK.count == 32)
 
 		// A pure read: repeating either direction is stable.
-		XCTAssertEqual(try alice.exportAttachmentCEKSend(keyId: keyId), aliceCEK)
-		XCTAssertEqual(
-			try bob.exportAttachmentCEKRecv(keyId: keyId, epoch: 1), bobCEK)
+		#expect(try alice.exportAttachmentCEKSend(keyId: keyId) == aliceCEK)
+		#expect(
+			try bob.exportAttachmentCEKRecv(keyId: keyId, epoch: 1) == bobCEK)
 
 		// A different keyId over the SAME epoch's component derives an
 		// unrelated CEK.
 		let otherKeyId = Data(repeating: 0x02, count: 32)
-		XCTAssertNotEqual(try alice.exportAttachmentCEKSend(keyId: otherKeyId), aliceCEK)
+		#expect(try alice.exportAttachmentCEKSend(keyId: otherKeyId) != aliceCEK)
 	}
 
 	// MARK: - Recv at a past epoch (the reason recv is epoch-keyed)
@@ -78,26 +79,30 @@ final class AttachmentCEKTests: XCTestCase {
 	/// Group_B past that epoch on both sides. Alice's `exportAttachmentCEKRecv`
 	/// at the now-past epoch 1 must still resolve — the ledger hit
 	/// `recvAttachmentLedger` exists for.
-	func testRecvAtPastEpochStillResolvesAfterRecvGroupAdvances() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func recvAtPastEpochStillResolvesAfterRecvGroupAdvances() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let keyId = Data(repeating: 0x03, count: 32)
 
-		XCTAssertEqual(bob.sendGroup!.classical.context.epoch, 1)
+		let bobSendClassicalAtStart = try #require(bob.sendGroup?.classical)
+		#expect(bobSendClassicalAtStart.context.epoch == 1)
 		let bobCEKAtEpoch1 = try bob.exportAttachmentCEKSend(keyId: keyId)
 
 		try advanceEpochByFold(proposer: &alice, approver: &bob)
-		XCTAssertGreaterThan(bob.sendGroup!.classical.context.epoch, 1)
-		XCTAssertGreaterThan(alice.recvGroup!.classical.context.epoch, 1)
+		let bobSendClassicalAfterFold = try #require(bob.sendGroup?.classical)
+		#expect(bobSendClassicalAfterFold.context.epoch > 1)
+		let aliceRecvClassicalAfterFold = try #require(alice.recvGroup?.classical)
+		#expect(aliceRecvClassicalAfterFold.context.epoch > 1)
 
 		let recvAtPastEpoch = try alice.exportAttachmentCEKRecv(keyId: keyId, epoch: 1)
-		XCTAssertEqual(recvAtPastEpoch, bobCEKAtEpoch1)
+		#expect(recvAtPastEpoch == bobCEKAtEpoch1)
 
 		// The CURRENT epoch's own component is also ledgered (capture-on-
 		// entry), and derives a DIFFERENT CEK than epoch 1's.
-		let currentEpoch = alice.recvGroup!.classical.context.epoch
+		let currentEpoch = aliceRecvClassicalAfterFold.context.epoch
 		let recvAtCurrentEpoch = try alice.exportAttachmentCEKRecv(
 			keyId: keyId, epoch: currentEpoch)
-		XCTAssertNotEqual(recvAtCurrentEpoch, recvAtPastEpoch)
+		#expect(recvAtCurrentEpoch != recvAtPastEpoch)
 	}
 
 	// MARK: - Unavailable component
@@ -105,13 +110,12 @@ final class AttachmentCEKTests: XCTestCase {
 	/// An epoch this session's recv ledger never captured (never lived, in
 	/// this pairing) throws `.attachmentComponentUnavailable` rather than
 	/// deriving nonsense from an absent component.
-	func testRecvAtNeverCapturedEpochThrowsAttachmentComponentUnavailable() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func recvAtNeverCapturedEpochThrowsAttachmentComponentUnavailable() throws {
 		let (_, bob, _, _, _, _) = try SessionTestSupport.established()
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.attachmentComponentUnavailable) {
 			try bob.exportAttachmentCEKRecv(
 				keyId: Data(repeating: 0x04, count: 32), epoch: 999)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .attachmentComponentUnavailable)
 		}
 	}
 
@@ -122,7 +126,8 @@ final class AttachmentCEKTests: XCTestCase {
 	/// app-seal boundary (mirrors `SessionArchiveTests`), restore, and
 	/// confirm `exportAttachmentCEKRecv` at the pre-restore epoch 1 still
 	/// resolves to the SAME bytes the live session saw before archiving.
-	func testRestoreSurvivesPastEpochRecvExport() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreSurvivesPastEpochRecvExport() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let keyId = Data(repeating: 0x05, count: 32)
 		let bobCEKAtEpoch1 = try bob.exportAttachmentCEKSend(keyId: keyId)
@@ -130,7 +135,7 @@ final class AttachmentCEKTests: XCTestCase {
 		try advanceEpochByFold(proposer: &alice, approver: &bob)
 		let aliceRecvCEKAtEpoch1BeforeArchive = try alice.exportAttachmentCEKRecv(
 			keyId: keyId, epoch: 1)
-		XCTAssertEqual(aliceRecvCEKAtEpoch1BeforeArchive, bobCEKAtEpoch1)
+		#expect(aliceRecvCEKAtEpoch1BeforeArchive == bobCEKAtEpoch1)
 
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		let opened = try sealAndOpen(archive)
@@ -141,7 +146,7 @@ final class AttachmentCEKTests: XCTestCase {
 
 		let restoredRecvCEKAtEpoch1 = try restored.exportAttachmentCEKRecv(
 			keyId: keyId, epoch: 1)
-		XCTAssertEqual(restoredRecvCEKAtEpoch1, bobCEKAtEpoch1)
+		#expect(restoredRecvCEKAtEpoch1 == bobCEKAtEpoch1)
 	}
 
 	// MARK: - Known-answer: independent recomputation (iOS byte-compat)
@@ -168,13 +173,14 @@ final class AttachmentCEKTests: XCTestCase {
 	/// rather than reimplementing HKDF/varint bit-twiddling by hand — what
 	/// this test keeps independent is the LABEL/LENGTH/FIELD-ORDER choice,
 	/// not the codec's own byte-packing.
-	func testAttachmentCEKMatchesIndependentlyRecomputedKDFLabel() throws {
-		XCTAssertEqual(TwoMLSSession.attachmentComponentID.rawValue, 0xFF03)
+	@available(iOS 26, macOS 26, *)
+	@Test func attachmentCEKMatchesIndependentlyRecomputedKDFLabel() throws {
+		#expect(TwoMLSSession.attachmentComponentID.rawValue == 0xFF03)
 
 		let alice = try SessionTestSupport.established().alice
 		let keyId = Data(repeating: 0x06, count: 32)
-		let epoch = alice.sendGroup!.classical.context.epoch
-		let component = try XCTUnwrap(alice.sendAttachmentLedger[epoch])
+		let epoch = try #require(alice.sendGroup?.classical.context.epoch)
+		let component = try #require(alice.sendAttachmentLedger[epoch])
 
 		// RFC 9420 §8 KDFLabel: struct { uint16 length; opaque label<V>;
 		// opaque context<V>; } with label = "MLS 1.0 " + Label. Every literal
@@ -187,7 +193,7 @@ final class AttachmentCEKTests: XCTestCase {
 
 		let expected = try SessionTestSupport.classicalProvider.kdfExpand(
 			prk: component, info: info, length: 32)
-		XCTAssertEqual(try alice.exportAttachmentCEKSend(keyId: keyId), expected)
+		#expect(try alice.exportAttachmentCEKSend(keyId: keyId) == expected)
 	}
 
 	// MARK: - Window eviction (optional, cheap)
@@ -197,25 +203,27 @@ final class AttachmentCEKTests: XCTestCase {
 	/// loop, is evicted once a 9th distinct epoch has been ledgered, and a
 	/// later fetch at epoch 1 throws `.attachmentComponentUnavailable`. The
 	/// current epoch's own component stays available throughout.
-	func testRecvLedgerEvictsOldestEpochBeyondWindow() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func recvLedgerEvictsOldestEpochBeyondWindow() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let keyId = Data(repeating: 0x07, count: 32)
 
-		XCTAssertNoThrow(try alice.exportAttachmentCEKRecv(keyId: keyId, epoch: 1))
+		#expect(throws: Never.self) {
+			try alice.exportAttachmentCEKRecv(keyId: keyId, epoch: 1)
+		}
 
 		for _ in 0..<8 {
 			try advanceEpochByFold(proposer: &alice, approver: &bob)
 		}
-		let currentEpoch = alice.recvGroup!.classical.context.epoch
-		XCTAssertEqual(currentEpoch, 9)
+		let currentEpoch = try #require(alice.recvGroup?.classical.context.epoch)
+		#expect(currentEpoch == 9)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.attachmentComponentUnavailable) {
 			try alice.exportAttachmentCEKRecv(keyId: keyId, epoch: 1)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .attachmentComponentUnavailable)
 		}
-		XCTAssertNoThrow(
-			try alice.exportAttachmentCEKRecv(keyId: keyId, epoch: currentEpoch))
+		#expect(throws: Never.self) {
+			try alice.exportAttachmentCEKRecv(keyId: keyId, epoch: currentEpoch)
+		}
 	}
 
 	// MARK: - Restore fail-closed on an inconsistent stripped ledger
@@ -236,7 +244,8 @@ final class AttachmentCEKTests: XCTestCase {
 	// reject (an archived ledger claiming "never captured" for an epoch the
 	// group itself already shows as spent). This test confirms that
 	// fail-closed path instead, since it is otherwise uncovered.
-	func testStrippedSendAttachmentLedgerOnAlreadyCapturedSessionFailsClosed() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func strippedSendAttachmentLedgerOnAlreadyCapturedSessionFailsClosed() throws {
 		let alice = try SessionTestSupport.established().alice
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
@@ -244,13 +253,11 @@ final class AttachmentCEKTests: XCTestCase {
 		body.sendAttachmentLedger = nil
 		body.recvAttachmentLedger = nil
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
 				core: nil, checkpoint: try SecretArchive(encoding: body),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 }

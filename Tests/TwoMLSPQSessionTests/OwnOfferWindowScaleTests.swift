@@ -3,8 +3,8 @@ import MLSCodec
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -50,11 +50,11 @@ import XCTest
 /// blob ≈ 22.4 MB) — back to roughly linear. `mintBudgetSeconds` below is
 /// set to just over 2x that observed number — a DEBUG regression gate, not
 /// a release-equivalent claim.
-@available(iOS 26, macOS 26, *)
-final class OwnOfferWindowScaleTests: XCTestCase {
-	func testMintLoadAndApplyAtScale() throws {
+@Suite struct OwnOfferWindowScaleTests {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintLoadAndApplyAtScale() throws {
 		guard ProcessInfo.processInfo.environment["TWOMLSPQ_SCALE_TEST"] == "1" else {
-			throw XCTSkip("set TWOMLSPQ_SCALE_TEST=1 to run the scale gate")
+			try Test.cancel("set TWOMLSPQ_SCALE_TEST=1 to run the scale gate")
 		}
 		let n =
 			ProcessInfo.processInfo.environment["TWOMLSPQ_SCALE_TEST_N"].flatMap(
@@ -68,11 +68,13 @@ final class OwnOfferWindowScaleTests: XCTestCase {
 	/// exercised even when the full scale gate doesn't run. No timing
 	/// budget: N=200 is too small and noisy for a stable regression
 	/// signal — only the gated full-N run above asserts one.
-	func testMintSuppliedSecretPathAtProductionShapedSmallScale() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func mintSuppliedSecretPathAtProductionShapedSmallScale() throws {
 		try Self.runProductionShapedMint(
 			n: 200, mintBudgetSeconds: nil, printTimings: false)
 	}
 
+	@available(iOS 26, macOS 26, *)
 	@discardableResult
 	private static func runProductionShapedMint(
 		n: Int, mintBudgetSeconds: Double?, printTimings: Bool
@@ -137,16 +139,17 @@ final class OwnOfferWindowScaleTests: XCTestCase {
 		}
 
 		if let mintBudgetSeconds {
-			XCTAssertLessThanOrEqual(
-				mintSeconds, mintBudgetSeconds, "mint call exceeded its budget")
+			#expect(mintSeconds <= mintBudgetSeconds, "mint call exceeded its budget")
 		}
-		XCTAssertLessThanOrEqual(
-			approximateBlobSize, 40 * 1024 * 1024, "blob size exceeded its budget")
+		#expect(
+			approximateBlobSize <= 40 * 1024 * 1024, "blob size exceeded its budget")
 		return minted
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private static func migratedParts(_ session: TwoMLSSession) throws -> MigratedSession {
-		let send = try XCTUnwrap(session.sendGroup)
+		let raw = session.sendGroup
+		let send = try #require(raw)
 		return try MigratedSession(
 			stateSeq: session.stateSeq, initiated: session.initiated,
 			identity: MigratedSessionIdentity(

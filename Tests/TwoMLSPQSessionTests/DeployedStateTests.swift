@@ -4,8 +4,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -17,8 +17,7 @@ import XCTest
 /// migrated session's restored state presents to this same runtime code
 /// (`pqWedge`/`noCustody`/`ownOfferWindow` are ordinary session fields,
 /// however they got there).
-@available(iOS 26, macOS 26, *)
-final class DeployedStateTests: XCTestCase {
+@Suite struct DeployedStateTests {
 
 	// MARK: - Own-offer window: detection, load, drain
 
@@ -28,11 +27,12 @@ final class DeployedStateTests: XCTestCase {
 	/// identity — WITHOUT appending it to `session.stagedUpdates`,
 	/// simulating a migrated session whose framed store doesn't carry this
 	/// offer (only its own-offer window does).
+	@available(iOS 26, macOS 26, *)
 	private func handBuiltUnframedOwnOffer(in session: inout TwoMLSSession) throws -> (
 		framedMessage: Data, ref: Data, bareProposal: Data, epoch: UInt64, groupID: Data,
 		senderLeafIndex: UInt32
 	) {
-		var mirror = try XCTUnwrap(session.recvGroup)
+		var mirror = try #require(session.recvGroup)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (message, _) = try mirror.classical.proposeUpdate(
 			SessionTestSupport.classicalProvider,
@@ -57,7 +57,7 @@ final class DeployedStateTests: XCTestCase {
 		session.leafKeys.recvClassical.pending[session.identity.clientID] =
 			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey)
 		guard case .publicMessage(let updatePub) = message else {
-			XCTFail("expected a publicMessage-framed Update")
+			Issue.record("expected a publicMessage-framed Update")
 			throw TwoMLSError.malformedSideBandMessage
 		}
 		var scratchStore = MLS.RFC9420.ProposalStore()
@@ -65,7 +65,7 @@ final class DeployedStateTests: XCTestCase {
 			SessionTestSupport.classicalProvider, proposal: updatePub)
 		let ref = try scratchStore.insert(verified, SessionTestSupport.classicalProvider)
 		guard case .proposal(let bareProposal) = updatePub.content.content else {
-			XCTFail("expected a proposal-carrying PublicMessage")
+			Issue.record("expected a proposal-carrying PublicMessage")
 			throw TwoMLSError.malformedSideBandMessage
 		}
 		return (
@@ -80,6 +80,7 @@ final class DeployedStateTests: XCTestCase {
 	/// Bob offers (unframed, per above); Alice approves and folds it BY
 	/// REFERENCE into a real `0x00` commit — exactly the shape a migrated
 	/// Bob would receive back naming a ref his own framed store never held.
+	@available(iOS 26, macOS 26, *)
 	private func foldedButUnframedOwnOfferRound(
 		proposer: inout TwoMLSSession, approver: inout TwoMLSSession
 	) throws -> (
@@ -104,6 +105,7 @@ final class DeployedStateTests: XCTestCase {
 		)
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private func windowFixture(
 		ref: Data, bareProposal: Data, epoch: UInt64, groupID: Data, senderLeafIndex: UInt32
 	) throws -> (record: OwnOfferWindowRecord, blob: SecretArchive) {
@@ -127,7 +129,8 @@ final class DeployedStateTests: XCTestCase {
 	/// The core own-offer window round trip: a missing ref with no window supplied is
 	/// retryable and burns no state; supplying the window resolves it,
 	/// applies the fold, and drains the record.
-	func testMissingOwnOfferRefRequiresThenResolvesFromTheWindowAndDrains() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func missingOwnOfferRefRequiresThenResolvesFromTheWindowAndDrains() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
@@ -140,12 +143,12 @@ final class DeployedStateTests: XCTestCase {
 		var bobNoWindow = bob
 		bobNoWindow.ownOfferWindow = fixture.record
 		let stateSeqBefore = bobNoWindow.stateSeq
-		XCTAssertThrowsError(try bobNoWindow.processIncoming(round.foldFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .ownOfferWindowRequired)
+		#expect(throws: TwoMLSError.ownOfferWindowRequired) {
+			try bobNoWindow.processIncoming(round.foldFrame)
 		}
-		XCTAssertEqual(bobNoWindow.stateSeq, stateSeqBefore, "retryable: nothing changed")
-		XCTAssertEqual(
-			bobNoWindow.ownOfferWindow?.id, fixture.record.id,
+		#expect(bobNoWindow.stateSeq == stateSeqBefore, "retryable: nothing changed")
+		#expect(
+			bobNoWindow.ownOfferWindow?.id == fixture.record.id,
 			"the record itself is untouched")
 
 		var bobWithWindow = bob
@@ -153,12 +156,13 @@ final class DeployedStateTests: XCTestCase {
 		let result = try bobWithWindow.processIncoming(
 			round.foldFrame, ownOfferWindow: fixture.blob)
 		guard case .decrypted(let decrypted) = result else {
-			XCTFail("expected the fold to apply and decrypt")
+			Issue.record("expected the fold to apply and decrypt")
 			return
 		}
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertNil(
-			bobWithWindow.ownOfferWindow, "drained once recvGroup.classical advanced")
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(
+			bobWithWindow.ownOfferWindow == nil,
+			"drained once recvGroup.classical advanced")
 	}
 
 	/// `OwnOfferWindow.canonicalOrder`'s sort is what makes runtime
@@ -170,7 +174,8 @@ final class DeployedStateTests: XCTestCase {
 	/// (`canonicalOrder`) and the load side (`OwnOfferWindowArchive.
 	/// sortedOffers`'s ascending check) agree on the sorted order, never
 	/// the caller's own array order.
-	func testAMultiOfferWindowResolvesARefThatIsNotFirstInInputOrder() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func aMultiOfferWindowResolvesARefThatIsNotFirstInInputOrder() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
@@ -196,9 +201,10 @@ final class DeployedStateTests: XCTestCase {
 			targetRef.lexicographicallyPrecedes(decoy.ref)
 			? [decoyOffer, targetOffer]
 			: [targetOffer, decoyOffer]
-		XCTAssertNotEqual(
-			offers.map(\.ref),
-			offers.map(\.ref).sorted(by: { $0.lexicographicallyPrecedes($1) }),
+		#expect(
+			offers.map(\.ref)
+				!= offers.map(\.ref).sorted(by: { $0.lexicographicallyPrecedes($1) }
+				),
 			"input order must deliberately not already be ascending by ref")
 		let sorted = try OwnOfferWindow.canonicalOrder(offers)
 		let id = OwnOfferWindow.id(
@@ -217,12 +223,13 @@ final class DeployedStateTests: XCTestCase {
 		let result = try bobWithWindow.processIncoming(
 			round.foldFrame, ownOfferWindow: blob)
 		guard case .decrypted(let decrypted) = result else {
-			XCTFail("expected the fold to apply and decrypt")
+			Issue.record("expected the fold to apply and decrypt")
 			return
 		}
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertNil(
-			bobWithWindow.ownOfferWindow, "drained once recvGroup.classical advanced")
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(
+			bobWithWindow.ownOfferWindow == nil,
+			"drained once recvGroup.classical advanced")
 	}
 
 	/// The own-offer window record is drained at exactly the two sites
@@ -236,7 +243,8 @@ final class DeployedStateTests: XCTestCase {
 	/// fold/discharge/catch up returns before ever getting there), confirms
 	/// the record is still there, then resolves a later peer fold naming
 	/// the missing ref from the (still-present) window.
-	func testCommittingRoundsSendSideWriteBackNeverDrainsTheWindow() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func committingRoundsSendSideWriteBackNeverDrainsTheWindow() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
@@ -258,10 +266,10 @@ final class DeployedStateTests: XCTestCase {
 		let bobSawRotation = try bob.processIncomingDecrypted(rotateOfferFrame)
 		try bob.queueProposal(digest: bobSawRotation.queuedProposal.digest)
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit, "bob folded alice's rotation into a real commit")
+		#expect(prepared.didCommit, "bob folded alice's rotation into a real commit")
 		_ = try bob.encrypt(Data("bob-send-round".utf8))
-		XCTAssertEqual(
-			bob.ownOfferWindow, fixture.record,
+		#expect(
+			bob.ownOfferWindow == fixture.record,
 			"a send-side round must never drain the recv-side window record")
 
 		// Now deliver the actual offer and let alice fold it by reference.
@@ -279,17 +287,19 @@ final class DeployedStateTests: XCTestCase {
 		let result = try bobWithWindow.processIncoming(
 			foldFrame, ownOfferWindow: fixture.blob)
 		guard case .decrypted(let decrypted) = result else {
-			XCTFail("expected the fold to apply and decrypt")
+			Issue.record("expected the fold to apply and decrypt")
 			return
 		}
-		XCTAssertTrue(decrypted.didApplyRemoteCommit)
-		XCTAssertNil(
-			bobWithWindow.ownOfferWindow, "drained once recvGroup.classical advanced")
+		#expect(decrypted.didApplyRemoteCommit)
+		#expect(
+			bobWithWindow.ownOfferWindow == nil,
+			"drained once recvGroup.classical advanced")
 	}
 
 	/// A window that doesn't name the missing ref is terminal
 	/// (`.ownOfferUnavailable`), not retryable.
-	func testWindowLackingTheNamedRefIsTerminal() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func windowLackingTheNamedRefIsTerminal() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
@@ -302,17 +312,16 @@ final class DeployedStateTests: XCTestCase {
 			ref: wrongRef, bareProposal: round.bareProposal, epoch: round.epoch,
 			groupID: round.groupID, senderLeafIndex: round.senderLeafIndex)
 		bob.ownOfferWindow = fixture.record
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.ownOfferUnavailable) {
 			try bob.processIncoming(round.foldFrame, ownOfferWindow: fixture.blob)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .ownOfferUnavailable)
 		}
 	}
 
 	/// A commit whose framing signature/membership tag fails to
 	/// verify must never reach `.ownOfferWindowRequired`/
 	/// `.ownOfferUnavailable` — authentication runs first, always.
-	func testForgedCommitSignatureNeverDemandsTheWindow() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func forgedCommitSignatureNeverDemandsTheWindow() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
@@ -334,15 +343,19 @@ final class DeployedStateTests: XCTestCase {
 			ref: round.ref, bareProposal: round.bareProposal, epoch: round.epoch,
 			groupID: round.groupID, senderLeafIndex: round.senderLeafIndex)
 		bobTampered.ownOfferWindow = fixture.record
-		XCTAssertThrowsError(try bobTampered.processIncoming(tamperedFrame)) { error in
-			XCTAssertNotEqual(error as? TwoMLSError, .ownOfferWindowRequired)
-			XCTAssertNotEqual(error as? TwoMLSError, .ownOfferUnavailable)
+		do {
+			_ = try bobTampered.processIncoming(tamperedFrame)
+			Issue.record("expected processIncoming to throw")
+		} catch {
+			#expect(error as? TwoMLSError != .ownOfferWindowRequired)
+			#expect(error as? TwoMLSError != .ownOfferUnavailable)
 		}
 	}
 
 	/// A tampered window blob (its recomputed id no longer matches the
 	/// session's own record) is `.archiveInvalid` — not silently accepted.
-	func testTamperedWindowBlobFailsTheIDCheck() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func tamperedWindowBlobFailsTheIDCheck() throws {
 		// The hand-built offer stages a fresh key directly into
 		// `leafKeys.recvClassical.pending` (bypassing `prepareToEncrypt`),
 		// which the oracle's pre-existing resolvers can never explain.
@@ -365,11 +378,8 @@ final class DeployedStateTests: XCTestCase {
 		let otherBlob = try SecretArchive(encoding: otherBody)
 
 		bob.ownOfferWindow = fixture.record
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try bob.processIncoming(round.foldFrame, ownOfferWindow: otherBlob)
-		) {
-			error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -381,50 +391,55 @@ final class DeployedStateTests: XCTestCase {
 	/// with the identical `guard pqWedge == nil else { throw
 	/// .pqSideBandWedged }` placed right after their own decode, so
 	/// the same proof generalizes.
-	func testWedgedSessionRejectsPQRekeyApplyWithNoStateChange() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func wedgedSessionRejectsPQRekeyApplyWithNoStateChange() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let updFrame = try bob.pqRekeyBegin().frame
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
 
 		bob.pqWedge = .rekey
 		let stateSeqBefore = bob.stateSeq
-		XCTAssertThrowsError(try bob.pqRekeyApply(commitFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .pqSideBandWedged)
+		#expect(throws: TwoMLSError.pqSideBandWedged) {
+			try bob.pqRekeyApply(commitFrame)
 		}
-		XCTAssertEqual(bob.stateSeq, stateSeqBefore)
-		XCTAssertNil(bob.owedBind)
+		#expect(bob.stateSeq == stateSeqBefore)
+		#expect(bob.owedBind == nil)
 		guard case .rekeyInitiated = bob.pqInflight else {
-			XCTFail("pqInflight must be untouched by the wedged attempt")
+			Issue.record("pqInflight must be untouched by the wedged attempt")
 			return
 		}
 	}
 
 	/// The wedge never blocks an owed-bind discharge or ordinary classical
 	/// messaging — only the three PQ doors above.
-	func testWedgeNeverBlocksTheOwedBindDischargeOrClassicalMessaging() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func wedgeNeverBlocksTheOwedBindDischargeOrClassicalMessaging() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let updFrame = try bob.pqRekeyBegin().frame
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
 		_ = try bob.pqRekeyApply(commitFrame)
-		XCTAssertNotNil(bob.owedBind)
+		#expect(bob.owedBind != nil)
 
 		bob.pqWedge = .rekey
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(
+		#expect(
 			prepared.didCommit, "the owed-bind discharge is never gated on the wedge")
-		XCTAssertNoThrow(try bob.encrypt(Data("still-works".utf8)))
+		#expect(throws: Never.self) { try bob.encrypt(Data("still-works".utf8)) }
 	}
 
 	/// Self-drive (`maybeStageNextRound`, run from `encrypt`) stays idle
 	/// while wedged — never opens a round it cannot complete.
-	func testWedgeSkipsSelfDriveWithNoChange() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func wedgeSkipsSelfDriveWithNoChange() throws {
 		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPQTurn)
 		_ = try bob.prepareToEncrypt()
 		bob.pqWedge = .ratchet
-		XCTAssertNoThrow(try bob.encrypt(Data("msg".utf8)))
-		XCTAssertNil(bob.pendingSideBand, "self-drive must not stage a round while wedged")
-		XCTAssertNil(bob.pqInflight)
+		#expect(throws: Never.self) { try bob.encrypt(Data("msg".utf8)) }
+		#expect(
+			bob.pendingSideBand == nil, "self-drive must not stage a round while wedged"
+		)
+		#expect(bob.pqInflight == nil)
 	}
 
 	/// A pair where `bob` holds the PQ turn and his own recv-PQ leaf
@@ -433,11 +448,12 @@ final class DeployedStateTests: XCTestCase {
 	/// view of him — already presents the new id) — the ordinary trigger
 	/// fixture the tests below need, built with a real classical rotation
 	/// and fold rather than hand-set bookkeeping.
+	@available(iOS 26, macOS 26, *)
 	private func establishedWithBobsRecvPQLagging() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession
 	) {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPQTurn)
 		let bobNewID = Data("bob-lagging-recv-pq".utf8)
 		_ = try bob.prepareToEncrypt(rotating: bobNewID)
 		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
@@ -451,42 +467,46 @@ final class DeployedStateTests: XCTestCase {
 		let offerDecrypted = try alice.processIncomingDecrypted(offerFrame)
 		try alice.queueProposal(digest: offerDecrypted.queuedProposal.digest)
 		let foldPrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(foldPrepared.didCommit)
+		#expect(foldPrepared.didCommit)
 		let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
 		_ = try bob.processIncomingDecrypted(foldFrame)
-		XCTAssertEqual(bob.myPrincipalState, .sync(bobNewID))
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPrincipalState == .sync(bobNewID))
+		#expect(bob.myPQTurn)
 		return (alice, bob)
 	}
 
 	/// The A.5-arm twin of `testWedgeSkipsSelfDriveWithNoChange`: a genuinely
 	/// lagging recv-PQ leaf, wedged, must still self-drive nothing. Kills a
 	/// wedge guard moved into the A.4 arm only, or checked after the A.5 arm.
-	func testWedgeSkipsTheSelfDrivenCatchUp() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func wedgeSkipsTheSelfDrivenCatchUp() throws {
 		var (_, bob) = try establishedWithBobsRecvPQLagging()
 		_ = try bob.prepareToEncrypt()
 		bob.pqWedge = .rekey
 		let pendingBefore = bob.leafKeys.recvPQ.pending
-		XCTAssertNoThrow(try bob.encrypt(Data("msg".utf8)))
-		XCTAssertNil(bob.pendingSideBand, "self-drive must not stage a round while wedged")
-		XCTAssertNil(bob.pqInflight)
-		XCTAssertEqual(bob.leafKeys.recvPQ.pending.count, pendingBefore.count)
+		#expect(throws: Never.self) { try bob.encrypt(Data("msg".utf8)) }
+		#expect(
+			bob.pendingSideBand == nil, "self-drive must not stage a round while wedged"
+		)
+		#expect(bob.pqInflight == nil)
+		#expect(bob.leafKeys.recvPQ.pending.count == pendingBefore.count)
 	}
 
 	/// With no recv-PQ key, the trigger falls through to a plain A.4 even
 	/// while the recv-PQ leaf genuinely lags — `stageRekey` would throw (it
 	/// signs there), and the auto-driver must never even attempt an A.5 it
 	/// cannot complete, or every future turn would silently stall.
-	func testRecvPQWithoutCustodyKeepsRatchetingWhileItsLeafLags() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func recvPQWithoutCustodyKeepsRatchetingWhileItsLeafLags() throws {
 		var (_, bob) = try establishedWithBobsRecvPQLagging()
 		_ = try bob.prepareToEncrypt()
 		bob.noCustody = [.recvPQ]
-		XCTAssertNoThrow(try bob.encrypt(Data("msg".utf8)))
+		#expect(throws: Never.self) { try bob.encrypt(Data("msg".utf8)) }
 		guard case .initiating = bob.pqInflight else {
-			XCTFail("expected a plain A.4 ratchet, not a stall")
+			Issue.record("expected a plain A.4 ratchet, not a stall")
 			return
 		}
-		XCTAssertEqual(bob.pendingSideBand?.first, Frames.pqEKTag)
+		#expect(bob.pendingSideBand?.first == Frames.pqEKTag)
 	}
 
 	// MARK: - No-custody guards
@@ -496,34 +516,36 @@ final class DeployedStateTests: XCTestCase {
 	/// to the original `.credentialUnknown` (an unexpected/corrupt
 	/// state). Exercised for `sendClassicalSigningKey`; the other three
 	/// accessors follow the identical pattern.
-	func testSigningKeyAccessorDistinguishesNoCustodyFromCredentialUnknown() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func signingKeyAccessorDistinguishesNoCustodyFromCredentialUnknown() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		bob.leafKeys.sendClassical.current = nil
 
-		XCTAssertThrowsError(try bob.sendClassicalSigningKey()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .credentialUnknown)
+		#expect(throws: TwoMLSError.credentialUnknown) {
+			try bob.sendClassicalSigningKey()
 		}
 
 		bob.noCustody = [.sendClassical]
-		XCTAssertThrowsError(try bob.sendClassicalSigningKey()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
+		#expect(throws: TwoMLSError.leafCustodyUnavailable) {
+			try bob.sendClassicalSigningKey()
 		}
 	}
 
 	/// `prepareToEncrypt`'s own pre-check: refuses BEFORE `committingRound`
 	/// ever runs (it writes `recvGroup` even for a bare catch-up-only
 	/// round), independent of what `leafKeys` itself holds.
-	func testPrepareToEncryptRefusesWhenEitherClassicalRoleHasNoCustody() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func prepareToEncryptRefusesWhenEitherClassicalRoleHasNoCustody() throws {
 		var (_, bobSend) = try SessionTestSupport.establishedAndExchanged()
 		bobSend.noCustody = [.sendClassical]
-		XCTAssertThrowsError(try bobSend.prepareToEncrypt()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
+		#expect(throws: TwoMLSError.leafCustodyUnavailable) {
+			try bobSend.prepareToEncrypt()
 		}
 
 		var (_, bobRecv) = try SessionTestSupport.establishedAndExchanged()
 		bobRecv.noCustody = [.recvClassical]
-		XCTAssertThrowsError(try bobRecv.prepareToEncrypt()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
+		#expect(throws: TwoMLSError.leafCustodyUnavailable) {
+			try bobRecv.prepareToEncrypt()
 		}
 	}
 
@@ -532,71 +554,76 @@ final class DeployedStateTests: XCTestCase {
 	/// (send-PQ) all refuse before consuming anything. Exercised for
 	/// `pqRekeyBegin`/`pqRekeyRespond`; the others follow the identical
 	/// `guard !noCustody.contains(...)` placement.
-	func testPQDoorsRefuseWhenTheirGroupHasNoCustody() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func pqDoorsRefuseWhenTheirGroupHasNoCustody() throws {
 		var (_, bobBegin) = try RatchetTests.fullyEstablishedTurnOnBob()
 		bobBegin.noCustody = [.recvPQ]
-		XCTAssertThrowsError(try bobBegin.pqRekeyBegin()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
+		#expect(throws: TwoMLSError.leafCustodyUnavailable) {
+			try bobBegin.pqRekeyBegin()
 		}
 
 		var (aliceRespond, bobRespond) = try RatchetTests.fullyEstablishedTurnOnBob()
 		let updFrame = try bobRespond.pqRekeyBegin().frame
 		aliceRespond.noCustody = [.sendPQ]
-		XCTAssertThrowsError(try aliceRespond.pqRekeyRespond(updFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .leafCustodyUnavailable)
+		#expect(throws: TwoMLSError.leafCustodyUnavailable) {
+			try aliceRespond.pqRekeyRespond(updFrame)
 		}
 	}
 
 	/// Self-drive also skips while either send role has no custody
 	/// (`stageRatchet` would fail on `sendClassical` anyway, but the guard
 	/// is explicit so the auto-driver never even attempts it).
-	func testSelfDriveSkipsWhenASendRoleHasNoCustody() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func selfDriveSkipsWhenASendRoleHasNoCustody() throws {
 		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		_ = try bob.prepareToEncrypt()
 		bob.noCustody = [.sendPQ]
-		XCTAssertNoThrow(try bob.encrypt(Data("msg".utf8)))
-		XCTAssertNil(bob.pendingSideBand)
+		#expect(throws: Never.self) { try bob.encrypt(Data("msg".utf8)) }
+		#expect(bob.pendingSideBand == nil)
 	}
 
 	/// The choke point's monotone drain: once a group's own leaf key set
 	/// genuinely has a `current` again, the NEXT `stateUpdate`-driven check
 	/// (`assertLeafKeysPresented`) drops it from `noCustody` — without
 	/// touching every promotion call site individually.
-	func testNoCustodyDrainsOnceTheGroupGenuinelyHasACurrentKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func noCustodyDrainsOnceTheGroupGenuinelyHasACurrentKey() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
 		let realCurrent = bob.leafKeys.sendClassical.current
 		bob.leafKeys.sendClassical.current = nil
 		bob.noCustody = [.sendClassical]
-		XCTAssertThrowsError(try bob.prepareToEncrypt())
+		#expect(throws: (any Error).self) { try bob.prepareToEncrypt() }
 
 		bob.leafKeys.sendClassical.current = realCurrent
 		try bob.assertLeafKeysPresented()
-		XCTAssertFalse(
-			bob.noCustody.contains(.sendClassical),
+		#expect(
+			!bob.noCustody.contains(.sendClassical),
 			"drained once current is genuinely present")
 	}
 
 	// MARK: - Read-only queries
 
-	func testCanSendReflectsBothClassicalRolesAndEstablishment() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func canSendReflectsBothClassicalRolesAndEstablishment() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
-		XCTAssertTrue(bob.canSend)
+		#expect(bob.canSend)
 		bob.noCustody = [.recvClassical]
-		XCTAssertFalse(bob.canSend)
+		#expect(!bob.canSend)
 	}
 
-	func testPQSideBandWedgedReflectsTheStoredWedge() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func pqSideBandWedgedReflectsTheStoredWedge() throws {
 		var (_, bob) = try SessionTestSupport.establishedAndExchanged()
-		XCTAssertFalse(bob.pqSideBandWedged)
+		#expect(!bob.pqSideBandWedged)
 		bob.pqWedge = .bootstrap
-		XCTAssertTrue(bob.pqSideBandWedged)
+		#expect(bob.pqSideBandWedged)
 	}
 }
 
 // MARK: - Own-offer window mutation coverage
 
-@available(iOS 26, macOS 26, *)
 extension DeployedStateTests {
+	@available(iOS 26, macOS 26, *)
 	private func knownSecretWindowFixture(
 		_ offer: (ref: Data, bareProposal: Data, leafSecret: SecretBytes), epoch: UInt64,
 		groupID: Data, senderLeafIndex: UInt32
@@ -619,7 +646,8 @@ extension DeployedStateTests {
 	/// The caller-supplied `leafSecret` branch resolves end to end
 	/// when no group-held pair exists for the offer at all
 	/// (`knownSecretOwnOffer` never writes back to the group).
-	func testSuppliedSecretResolvesAtRuntime() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func suppliedSecretResolvesAtRuntime() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let built = try SessionTestSupport.knownSecretOwnOffer(in: bob)
 		let digest = try SessionTestSupport.classicalProvider.hash(built.framedMessage)
@@ -639,16 +667,18 @@ extension DeployedStateTests {
 			case .decrypted(let d) = try bob.processIncoming(
 				fold, ownOfferWindow: fixture.blob)
 		else {
-			return XCTFail("expected decrypted")
+			Issue.record("expected decrypted")
+			return
 		}
-		XCTAssertTrue(d.didApplyRemoteCommit)
-		XCTAssertNil(bob.ownOfferWindow)
+		#expect(d.didApplyRemoteCommit)
+		#expect(bob.ownOfferWindow == nil)
 	}
 
 	/// A supplied `leafSecret` that doesn't match the offer's own
 	/// HPKE public key is unusable — the caller-supplied branch actually
 	/// runs, it isn't skipped.
-	func testWrongSuppliedSecretIsUnavailable() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func wrongSuppliedSecretIsUnavailable() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let built = try SessionTestSupport.knownSecretOwnOffer(in: bob)
 		let digest = try SessionTestSupport.classicalProvider.hash(built.framedMessage)
@@ -666,8 +696,8 @@ extension DeployedStateTests {
 			(built.ref, built.bareProposal, wrongSecret), epoch: built.epoch,
 			groupID: built.groupID, senderLeafIndex: built.senderLeafIndex)
 		bob.ownOfferWindow = fixture.record
-		XCTAssertThrowsError(try bob.processIncoming(fold, ownOfferWindow: fixture.blob)) {
-			XCTAssertEqual($0 as? TwoMLSError, .ownOfferUnavailable)
+		#expect(throws: TwoMLSError.ownOfferUnavailable) {
+			try bob.processIncoming(fold, ownOfferWindow: fixture.blob)
 		}
 	}
 
@@ -675,12 +705,13 @@ extension DeployedStateTests {
 	/// window entry naming the SAME ref with a different (but validly
 	/// shaped) proposal/secret — the framed store is never overwritten by
 	/// the window's copy.
-	func testFramedCopyWinsOverWindow() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func framedCopyWinsOverWindow() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try alice.prepareToEncrypt()
 		_ = try bob.processIncomingDecrypted(try alice.encrypt(Data("a".utf8)).frame)
 		_ = try bob.prepareToEncrypt()
-		let framed = try XCTUnwrap(bob.stagedUpdates.last)
+		let framed = try #require(bob.stagedUpdates.last)
 		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(offerFrame)
 		try alice.queueProposal(digest: decrypted.queuedProposal.digest)
@@ -690,10 +721,14 @@ extension DeployedStateTests {
 		guard
 			case .publicMessage(let framedPub) = try MLS.RFC9420.Message(
 				mlsEncoded: framed.message)
-		else { return XCTFail() }
+		else {
+			Issue.record("expected a publicMessage-framed Update")
+			return
+		}
 		var scratch = MLS.RFC9420.ProposalStore()
+		let recvGroup = try #require(bob.recvGroup)
 		let framedRef = try scratch.insert(
-			try XCTUnwrap(bob.recvGroup).classical.verifying(
+			try recvGroup.classical.verifying(
 				SessionTestSupport.classicalProvider, proposal: framedPub),
 			SessionTestSupport.classicalProvider)
 		// A different, but independently valid, own-offer under the SAME
@@ -708,18 +743,22 @@ extension DeployedStateTests {
 		var noBlob = bob
 		noBlob.ownOfferWindow = fixture.record
 		guard case .decrypted(let d1) = try noBlob.processIncoming(fold) else {
-			return XCTFail()
+			Issue.record("expected decrypted")
+			return
 		}
-		XCTAssertTrue(d1.didApplyRemoteCommit)
-		XCTAssertNil(noBlob.ownOfferWindow, "framed fold drains the record")
+		#expect(d1.didApplyRemoteCommit)
+		#expect(noBlob.ownOfferWindow == nil, "framed fold drains the record")
 
 		var withBlob = bob
 		withBlob.ownOfferWindow = fixture.record
 		guard
 			case .decrypted(let d2) = try withBlob.processIncoming(
 				fold, ownOfferWindow: fixture.blob)
-		else { return XCTFail() }
-		XCTAssertTrue(d2.didApplyRemoteCommit)
+		else {
+			Issue.record("expected decrypted")
+			return
+		}
+		#expect(d2.didApplyRemoteCommit)
 	}
 
 	/// Items 3a/3d: on the `0x05` bind path, own-Update detection runs
@@ -727,12 +766,13 @@ extension DeployedStateTests {
 	/// with an otherwise-untampered classical half still demands/consumes
 	/// the window first — a window-missing failure never gets masked by,
 	/// or reordered after, the PQ half's own failure.
-	func testBindDetectionPrecedesPQHalf() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bindDetectionPrecedesPQHalf() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
-		XCTAssertNotNil(alice.owedBind)
+		#expect(alice.owedBind != nil)
 		let round = try foldedButUnframedOwnOfferRound(proposer: &bob, approver: &alice)
 		let fixture = try knownSecretWindowFixture(
 			(round.ref, round.bareProposal, SecretBytes(randomByteCount: 32)),
@@ -740,20 +780,23 @@ extension DeployedStateTests {
 			senderLeafIndex: round.senderLeafIndex)
 		let opened = bob.openOrRaw(round.foldFrame)
 		let (staple, proposalSection, appSection) = try Frames.decodeMessageFrame(opened)
-		XCTAssertEqual(staple.first, Frames.apqPrivateMessageTag)
+		#expect(staple.first == Frames.apqPrivateMessageTag)
 
 		// (a) untampered: demand, then resolve through applyBind.
 		var b0 = bob
 		b0.ownOfferWindow = fixture.record
-		XCTAssertThrowsError(try b0.processIncoming(round.foldFrame)) {
-			XCTAssertEqual($0 as? TwoMLSError, .ownOfferWindowRequired)
+		#expect(throws: TwoMLSError.ownOfferWindowRequired) {
+			try b0.processIncoming(round.foldFrame)
 		}
 		guard
 			case .decrypted(let d) = try b0.processIncoming(
 				round.foldFrame, ownOfferWindow: fixture.blob)
-		else { return XCTFail() }
-		XCTAssertTrue(d.didApplyRemoteCommit)
-		XCTAssertNil(b0.ownOfferWindow)
+		else {
+			Issue.record("expected decrypted")
+			return
+		}
+		#expect(d.didApplyRemoteCommit)
+		#expect(b0.ownOfferWindow == nil)
 
 		// (b) PQ half tampered, classical half intact: still demands the
 		// window rather than surfacing a PQ failure.
@@ -767,19 +810,21 @@ extension DeployedStateTests {
 		var b1 = bob
 		b1.ownOfferWindow = fixture.record
 		let seq = b1.stateSeq
-		XCTAssertThrowsError(try b1.processIncoming(tampered)) {
-			XCTAssertEqual($0 as? TwoMLSError, .ownOfferWindowRequired, "\($0)")
+		#expect(throws: TwoMLSError.ownOfferWindowRequired) {
+			try b1.processIncoming(tampered)
 		}
-		XCTAssertEqual(b1.stateSeq, seq)
+		#expect(b1.stateSeq == seq)
 		// (c) with the window supplied, the PQ failure surfaces (proving
 		// detection is not just a happy-path early return) and nothing
 		// moved.
-		XCTAssertThrowsError(try b1.processIncoming(tampered, ownOfferWindow: fixture.blob))
-		{
-			XCTAssertNotEqual($0 as? TwoMLSError, .ownOfferWindowRequired)
+		do {
+			_ = try b1.processIncoming(tampered, ownOfferWindow: fixture.blob)
+			Issue.record("expected processIncoming to throw")
+		} catch {
+			#expect(error as? TwoMLSError != .ownOfferWindowRequired)
 		}
-		XCTAssertEqual(b1.ownOfferWindow, fixture.record)
-		XCTAssertEqual(b1.stateSeq, seq)
+		#expect(b1.ownOfferWindow == fixture.record)
+		#expect(b1.stateSeq == seq)
 	}
 
 	/// On the fold-only `0x00` path, own-Update detection
@@ -790,7 +835,8 @@ extension DeployedStateTests {
 	/// whatever error the allow-list would have thrown — proving detection
 	/// isn't reachable only on the happy path where the rest of the commit
 	/// is otherwise valid.
-	func testFoldDetectionPrecedesInlineProposalValidation() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func foldDetectionPrecedesInlineProposalValidation() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let built = try handBuiltUnframedOwnOffer(in: &bob)
 		let digest = try SessionTestSupport.classicalProvider.hash(built.framedMessage)
@@ -813,12 +859,13 @@ extension DeployedStateTests {
 		// approved-but-unframed Update folded by reference, PLUS an inline
 		// external PSK proposal the fold-only allow-list never permits
 		// (`expectedExternalPSKIDs: []`).
-		let sendGroupA = try XCTUnwrap(alice.sendGroup)
+		let sendGroupA = try #require(alice.sendGroup)
 		guard
 			case .publicMessage(let updatePub) = try MLS.RFC9420.Message(
 				mlsEncoded: built.framedMessage)
 		else {
-			return XCTFail("expected a publicMessage-framed Update")
+			Issue.record("expected a publicMessage-framed Update")
+			return
 		}
 		let verified = try sendGroupA.classical.verifying(
 			SessionTestSupport.classicalProvider, proposal: updatePub)
@@ -860,9 +907,9 @@ extension DeployedStateTests {
 		// (`handBuiltUnframedOwnOffer`'s whole point) — with no window
 		// supplied, detection must win the race against the smuggled PSK.
 		let seq = bob.stateSeq
-		XCTAssertThrowsError(try bob.processIncoming(badFrame)) {
-			XCTAssertEqual($0 as? TwoMLSError, .ownOfferWindowRequired)
+		#expect(throws: TwoMLSError.ownOfferWindowRequired) {
+			try bob.processIncoming(badFrame)
 		}
-		XCTAssertEqual(bob.stateSeq, seq, "retryable: nothing changed")
+		#expect(bob.stateSeq == seq, "retryable: nothing changed")
 	}
 }

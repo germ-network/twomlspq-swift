@@ -5,21 +5,21 @@ import MLSCrypto
 import MLSExtensions
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
-@available(iOS 26, macOS 26, *)
-final class EstablishmentTests: XCTestCase {
-	func testBobEstablishedImmediatelyAliceOnlyAfterFirstFrame() throws {
+@Suite struct EstablishmentTests {
+	@available(iOS 26, macOS 26, *)
+	@Test func bobEstablishedImmediatelyAliceOnlyAfterFirstFrame() throws {
 		let (alice, bob, _, _, _, _) = try SessionTestSupport.established()
-		XCTAssertFalse(alice.isEstablished)
-		XCTAssertTrue(bob.isEstablished)
+		#expect(!alice.isEstablished)
+		#expect(bob.isEstablished)
 
 		let (aliceAfter, bobAfter) = try SessionTestSupport.establishedAndExchanged()
-		XCTAssertTrue(aliceAfter.isEstablished)
-		XCTAssertTrue(bobAfter.isEstablished)
+		#expect(aliceAfter.isEstablished)
+		#expect(bobAfter.isEstablished)
 	}
 
 	/// Both init secrets are join-only: the responder's are spent joining
@@ -30,20 +30,21 @@ final class EstablishmentTests: XCTestCase {
 	/// point it too is cleared. An ESTABLISHED session archive never carries
 	/// them; only a pre-establishment initiator archive carries its still-
 	/// live classical one (this test restores only established bob).
-	func testInitSecretsAreClearedOnceSpentAndNeverSurviveRestore() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func initSecretsAreClearedOnceSpentAndNeverSurviveRestore() throws {
 		let (alice, bob, _, _, _, _) = try SessionTestSupport.established()
-		XCTAssertNil(bob.identity.classicalInitSecretKey)
-		XCTAssertNil(bob.identity.pqInitSecretKey)
-		XCTAssertNil(alice.identity.pqInitSecretKey)
-		XCTAssertNotNil(
-			alice.identity.classicalInitSecretKey,
+		#expect(bob.identity.classicalInitSecretKey == nil)
+		#expect(bob.identity.pqInitSecretKey == nil)
+		#expect(alice.identity.pqInitSecretKey == nil)
+		#expect(
+			alice.identity.classicalInitSecretKey != nil,
 			"the initiator still needs it to join Group_B")
 
 		let (aliceAfter, bobAfter) = try SessionTestSupport.establishedAndExchanged()
-		XCTAssertNil(aliceAfter.identity.classicalInitSecretKey)
-		XCTAssertNil(aliceAfter.identity.pqInitSecretKey)
-		XCTAssertNil(bobAfter.identity.classicalInitSecretKey)
-		XCTAssertNil(bobAfter.identity.pqInitSecretKey)
+		#expect(aliceAfter.identity.classicalInitSecretKey == nil)
+		#expect(aliceAfter.identity.pqInitSecretKey == nil)
+		#expect(bobAfter.identity.classicalInitSecretKey == nil)
+		#expect(bobAfter.identity.pqInitSecretKey == nil)
 
 		var bobAfterMutable = bobAfter
 		let checkpoint = try bobAfterMutable.stateUpdate(kind: .checkpoint).archive
@@ -51,68 +52,71 @@ final class EstablishmentTests: XCTestCase {
 			core: nil, checkpoint: checkpoint,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertNil(restored.identity.classicalInitSecretKey)
-		XCTAssertNil(restored.identity.pqInitSecretKey)
+		#expect(restored.identity.classicalInitSecretKey == nil)
+		#expect(restored.identity.pqInitSecretKey == nil)
 	}
 
 	/// Group_A is a full pair: both halves carry a consistent `APQInfo`
 	/// (the identity fields the combiner's own `verifyPair` compares, checked
 	/// here via the public `APQInfo` fields directly — `verifyPair` itself
 	/// already ran, and threw nothing, inside `joinFull`/`CombinerGroup.join`).
-	func testGroupAFullPairAPQInfoIsConsistent() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func groupAFullPairAPQInfoIsConsistent() throws {
 		let (_, bob, _, _, _, _) = try SessionTestSupport.established()
-		let groupA = try XCTUnwrap(bob.recvGroup)
-		let pq = try XCTUnwrap(groupA.pq)
+		let groupA = try #require(bob.recvGroup)
+		let pq = try #require(groupA.pq)
 
-		let classicalInfo = try XCTUnwrap(
+		let classicalInfo = try #require(
 			try MLS.Combiner.APQInfo.read(
 				fromExtensionsOf: groupA.classical.context,
 				type: MLS.Combiner.Codepoints.deployed.apqInfoExtensionType))
-		let pqInfo = try XCTUnwrap(
+		let pqInfo = try #require(
 			try MLS.Combiner.APQInfo.read(
 				fromExtensionsOf: pq.context,
 				type: MLS.Combiner.Codepoints.deployed.apqInfoExtensionType))
 
-		XCTAssertEqual(classicalInfo.tSessionGroupID, pqInfo.tSessionGroupID)
-		XCTAssertEqual(classicalInfo.pqSessionGroupID, pqInfo.pqSessionGroupID)
-		XCTAssertEqual(classicalInfo.mode, pqInfo.mode)
-		XCTAssertEqual(classicalInfo.tCipherSuite, pqInfo.tCipherSuite)
-		XCTAssertEqual(classicalInfo.pqCipherSuite, pqInfo.pqCipherSuite)
-		XCTAssertEqual(classicalInfo.tSessionGroupID, groupA.classical.context.groupID)
-		XCTAssertEqual(classicalInfo.pqSessionGroupID, pq.context.groupID)
-		XCTAssertEqual(classicalInfo.tEpoch, groupA.classical.context.epoch)
-		XCTAssertEqual(pqInfo.pqEpoch, pq.context.epoch)
+		#expect(classicalInfo.tSessionGroupID == pqInfo.tSessionGroupID)
+		#expect(classicalInfo.pqSessionGroupID == pqInfo.pqSessionGroupID)
+		#expect(classicalInfo.mode == pqInfo.mode)
+		#expect(classicalInfo.tCipherSuite == pqInfo.tCipherSuite)
+		#expect(classicalInfo.pqCipherSuite == pqInfo.pqCipherSuite)
+		#expect(classicalInfo.tSessionGroupID == groupA.classical.context.groupID)
+		#expect(classicalInfo.pqSessionGroupID == pq.context.groupID)
+		#expect(classicalInfo.tEpoch == groupA.classical.context.epoch)
+		#expect(pqInfo.pqEpoch == pq.context.epoch)
 
-		XCTAssertEqual(groupA.classical.tree.nonBlankLeaves().count, 2)
-		XCTAssertEqual(pq.tree.nonBlankLeaves().count, 2)
+		#expect(groupA.classical.tree.nonBlankLeaves().count == 2)
+		#expect(pq.tree.nonBlankLeaves().count == 2)
 	}
 
 	/// Group_B is classical-only: `pq == nil` on both the founder's (Bob) send
 	/// group and the joiner's (Alice) receive group, and both rosters are 2.
-	func testGroupBIsClassicalOnlyOnBothSides() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func groupBIsClassicalOnlyOnBothSides() throws {
 		let (alice, bob) = try SessionTestSupport.establishedAndExchanged()
-		let bobGroupB = try XCTUnwrap(bob.sendGroup)
-		let aliceGroupB = try XCTUnwrap(alice.recvGroup)
+		let bobGroupB = try #require(bob.sendGroup)
+		let aliceGroupB = try #require(alice.recvGroup)
 
-		XCTAssertNil(bobGroupB.pq)
-		XCTAssertNil(aliceGroupB.pq)
-		XCTAssertEqual(bobGroupB.classical.tree.nonBlankLeaves().count, 2)
-		XCTAssertEqual(aliceGroupB.classical.tree.nonBlankLeaves().count, 2)
+		#expect(bobGroupB.pq == nil)
+		#expect(aliceGroupB.pq == nil)
+		#expect(bobGroupB.classical.tree.nonBlankLeaves().count == 2)
+		#expect(aliceGroupB.classical.tree.nonBlankLeaves().count == 2)
 	}
 
 	/// Epochs converge on both directional pairs: Bob's copy of Group_A
 	/// matches Alice's, and (once Alice has joined it) Alice's copy of Group_B
 	/// matches Bob's.
-	func testEpochsConverge() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func epochsConverge() throws {
 		let (alice, bob) = try SessionTestSupport.establishedAndExchanged()
-		let aliceGroupA = try XCTUnwrap(alice.sendGroup)
-		let bobGroupA = try XCTUnwrap(bob.recvGroup)
-		XCTAssertEqual(aliceGroupA.classical.context, bobGroupA.classical.context)
-		XCTAssertEqual(aliceGroupA.pq?.context, bobGroupA.pq?.context)
+		let aliceGroupA = try #require(alice.sendGroup)
+		let bobGroupA = try #require(bob.recvGroup)
+		#expect(aliceGroupA.classical.context == bobGroupA.classical.context)
+		#expect(aliceGroupA.pq?.context == bobGroupA.pq?.context)
 
-		let bobGroupB = try XCTUnwrap(bob.sendGroup)
-		let aliceGroupB = try XCTUnwrap(alice.recvGroup)
-		XCTAssertEqual(bobGroupB.classical.context, aliceGroupB.classical.context)
+		let bobGroupB = try #require(bob.sendGroup)
+		let aliceGroupB = try #require(alice.recvGroup)
+		#expect(bobGroupB.classical.context == aliceGroupB.classical.context)
 	}
 
 	/// The load-bearing cross-party binding proof: join Group_B's classical
@@ -123,10 +127,11 @@ final class EstablishmentTests: XCTestCase {
 	/// Run inside `.uint32` component-id width so the `PreSharedKeyID` decodes
 	/// at the deployed width — otherwise the join fails earlier, on a wire/parse
 	/// error, not the asserted `unresolvedPreSharedKey`.
-	func testGroupBWelcomeBindsCrossPartyPSK() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func groupBWelcomeBindsCrossPartyPSK() throws {
 		let (_, _, aliceIdentity, _, _, welcomeB) = try SessionTestSupport.established()
 		let (classicalWelcomeBytes, pqWelcomeBytes) = try Frames.decodeAPQWelcome(welcomeB)
-		XCTAssertEqual(pqWelcomeBytes, Data())
+		#expect(pqWelcomeBytes == Data())
 		let welcome = try EstablishmentMessages.decodeWelcome(classicalWelcomeBytes)
 
 		// `PendingJoin` is `~Copyable`, so `XCTAssertThrowsError`'s `Copyable`-bound
@@ -137,15 +142,15 @@ final class EstablishmentTests: XCTestCase {
 					SessionTestSupport.classicalProvider, welcome: welcome,
 					credentials: aliceIdentity.classicalJoinCredentials,
 					psk: { _ in nil })
-				XCTFail("expected unresolvedPreSharedKey")
+				Issue.record("expected unresolvedPreSharedKey")
 			} catch let error as MLS.RFC9420.GroupError {
-				XCTAssertEqual(error, .unresolvedPreSharedKey)
+				#expect(error == .unresolvedPreSharedKey)
 			}
 		}
 
 		// minor-3: pin the session layer's own cross-party PSK component id —
 		// distinct from the combiner's `apq_psk` component (`0xFF01`).
-		XCTAssertEqual(TwoMLSSession.crossPartyComponentID.rawValue, 0xFF02)
+		#expect(TwoMLSSession.crossPartyComponentID.rawValue == 0xFF02)
 	}
 
 	/// Once Alice has joined Group_B, a frame carrying a DIFFERENT
@@ -153,7 +158,8 @@ final class EstablishmentTests: XCTestCase {
 	/// rejected outright, not silently re-joined. The idempotent early-return
 	/// in `joinGroupBIfNeeded` only covers a byte-identical restaple of the
 	/// SAME welcome.
-	func testProcessIncomingRejectsADifferentWelcomeOnceEstablished() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func processIncomingRejectsADifferentWelcomeOnceEstablished() throws {
 		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
 
 		let (otherAlice, otherBobSession, _, _, _, _) =
@@ -169,7 +175,9 @@ final class EstablishmentTests: XCTestCase {
 		// bytes straight through, so the sealed path fails at the frame
 		// decode (a near-uniform random leading byte) rather than the
 		// welcome-digest check this test originally pinned.
-		XCTAssertThrowsError(try alice.processIncomingDecrypted(intruderFrame))
+		#expect(throws: (any Error).self) {
+			try alice.processIncomingDecrypted(intruderFrame)
+		}
 
 		// Restore the deterministic check via the documented `openOrRaw`
 		// pass-through: `otherAlice` (the intruder pair's own recipient) can
@@ -181,9 +189,9 @@ final class EstablishmentTests: XCTestCase {
 		// bytes decode as a genuine frame, so processing reaches
 		// `joinGroupBIfNeeded` and rejects the foreign welcome digest
 		// deterministically.
-		let raw = try XCTUnwrap(otherAlice.tryOpen(intruderFrame))
-		XCTAssertThrowsError(try alice.processIncomingDecrypted(raw)) {
-			XCTAssertEqual($0 as? TwoMLSError, .unexpectedWelcome)
+		let raw = try #require(otherAlice.tryOpen(intruderFrame))
+		#expect(throws: TwoMLSError.unexpectedWelcome) {
+			try alice.processIncomingDecrypted(raw)
 		}
 	}
 
@@ -193,7 +201,8 @@ final class EstablishmentTests: XCTestCase {
 	/// point joins those. The app section is a real sealed `privateMessage`
 	/// (borrowed from an actual frame) so the check under test is actually
 	/// reached, past the earlier `Message` decode.
-	func testProcessIncomingRejectsFullWelcomeStaple() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func processIncomingRejectsFullWelcomeStaple() throws {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let realFrame = try bob.encrypt(Data("payload".utf8)).frame
@@ -207,8 +216,8 @@ final class EstablishmentTests: XCTestCase {
 		let forgedFrame = Frames.encodeMessageFrame(
 			staple: fullWelcomeStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try alice.processIncomingDecrypted(forgedFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .fullEstablishmentStapleUnsupported)
+		#expect(throws: TwoMLSError.fullEstablishmentStapleUnsupported) {
+			try alice.processIncomingDecrypted(forgedFrame)
 		}
 	}
 
@@ -218,7 +227,8 @@ final class EstablishmentTests: XCTestCase {
 	/// `Invitation.receive`) and the Group_B staple join: each rejection
 	/// consumes no state, so re-feeding the genuine frame afterward still
 	/// joins.
-	func testBareWelcomeHalvesAreRefused() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bareWelcomeHalvesAreRefused() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -229,7 +239,8 @@ final class EstablishmentTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		guard let theirCombinerKP = invitation.combinerKeyPackage else {
-			return XCTFail("expected a combiner key package")
+			Issue.record("expected a combiner key package")
+			return
 		}
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirCombinerKP)
@@ -240,7 +251,7 @@ final class EstablishmentTests: XCTestCase {
 			pq: try EstablishmentMessages.decodeWelcome(pqBytes).mlsEncoded())
 
 		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.malformedEstablishmentMessage) {
 			try invitation.receive(
 				welcome: bareWelcomeA,
 				theirClassicalKeyPackage: initiated.session.identity.keyPackage
@@ -248,8 +259,6 @@ final class EstablishmentTests: XCTestCase {
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
 				spawnToken: spawnToken)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .malformedEstablishmentMessage)
 		}
 
 		let received = try invitation.receive(
@@ -257,7 +266,7 @@ final class EstablishmentTests: XCTestCase {
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
 			spawnToken: spawnToken)
-		XCTAssertTrue(received.session.isEstablished)
+		#expect(received.session.isEstablished)
 
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
@@ -275,20 +284,21 @@ final class EstablishmentTests: XCTestCase {
 		let forgedFrame = Frames.encodeMessageFrame(
 			staple: bareStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try alice.processIncomingDecrypted(forgedFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .malformedEstablishmentMessage)
+		#expect(throws: TwoMLSError.malformedEstablishmentMessage) {
+			try alice.processIncomingDecrypted(forgedFrame)
 		}
-		XCTAssertFalse(alice.isEstablished)
-		XCTAssertNil(alice.recvGroup)
+		#expect(!alice.isEstablished)
+		#expect(alice.recvGroup == nil)
 
 		_ = try alice.processIncomingDecrypted(genuineFrame)
-		XCTAssertTrue(alice.isEstablished)
+		#expect(alice.isEstablished)
 	}
 
 	/// A well-formed `MLSMessage` of the wrong case (a `KeyPackage`) in a
 	/// welcome slot is refused with the same precise error as a bare struct —
 	/// at both `receive()` (Group_A) and the Group_B staple join.
-	func testWelcomeSlotRejectsANonWelcomeMessage() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func welcomeSlotRejectsANonWelcomeMessage() throws {
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
@@ -299,7 +309,8 @@ final class EstablishmentTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		guard let theirCombinerKP = invitation.combinerKeyPackage else {
-			return XCTFail("expected a combiner key package")
+			Issue.record("expected a combiner key package")
+			return
 		}
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: theirCombinerKP)
@@ -311,7 +322,7 @@ final class EstablishmentTests: XCTestCase {
 			t: keyPackageInWelcomeSlot, pq: pqBytes)
 
 		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.malformedEstablishmentMessage) {
 			try invitation.receive(
 				welcome: wrongCaseWelcomeA,
 				theirClassicalKeyPackage: initiated.session.identity.keyPackage
@@ -319,8 +330,6 @@ final class EstablishmentTests: XCTestCase {
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
 				spawnToken: spawnToken)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .malformedEstablishmentMessage)
 		}
 
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
@@ -336,8 +345,8 @@ final class EstablishmentTests: XCTestCase {
 		let forgedFrame = Frames.encodeMessageFrame(
 			staple: wrongCaseStaple, proposal: proposalSection, app: appSection)
 
-		XCTAssertThrowsError(try alice.processIncomingDecrypted(forgedFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .malformedEstablishmentMessage)
+		#expect(throws: TwoMLSError.malformedEstablishmentMessage) {
+			try alice.processIncomingDecrypted(forgedFrame)
 		}
 	}
 
@@ -349,6 +358,7 @@ final class EstablishmentTests: XCTestCase {
 	/// which is the point), deferred-shape `APQInfo`, `Add(joinerKP)` — and,
 	/// unless `crossPSK` is supplied, NO cross-party PSK. Hand-rolled rather
 	/// than `APQGroup.establishClassicalOnly`, which always binds the PSK.
+	@available(iOS 26, macOS 26, *)
 	private func forgedGroupBWelcome(
 		creatorName: String,
 		adding joinerKP: MLS.RFC9420.KeyPackage,
@@ -414,7 +424,8 @@ final class EstablishmentTests: XCTestCase {
 	/// expects (an impersonation that pre-fix joined and returned the
 	/// attacker's plaintext) — is rejected with `.missingCrossPartyPSK`, and
 	/// Alice stays unestablished.
-	func testGroupBJoinRejectsAWelcomeWithoutTheCrossPartyPSK() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func groupBJoinRejectsAWelcomeWithoutTheCrossPartyPSK() throws {
 		var (alice, bob, aliceIdentity, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
@@ -426,12 +437,12 @@ final class EstablishmentTests: XCTestCase {
 			creatorName: "bob", adding: aliceIdentity.keyPackage.classical)
 		let forgedFrame = forgedWelcomeFrame(staple: forgedStaple, app: appSection)
 
-		XCTAssertThrowsError(try alice.processIncomingDecrypted(forgedFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .missingCrossPartyPSK)
+		#expect(throws: TwoMLSError.missingCrossPartyPSK) {
+			try alice.processIncomingDecrypted(forgedFrame)
 		}
-		XCTAssertFalse(alice.isEstablished)
-		XCTAssertNil(alice.recvGroup)
-		XCTAssertNil(alice.joinedWelcomeDigest)
+		#expect(!alice.isEstablished)
+		#expect(alice.recvGroup == nil)
+		#expect(alice.joinedWelcomeDigest == nil)
 	}
 
 	/// The creator-identity half: a forged Group_B welcome carrying a VALID
@@ -444,7 +455,8 @@ final class EstablishmentTests: XCTestCase {
 	/// `.remoteIdentityMismatch` (which stays reserved for `receive`'s own
 	/// KP≡creator binding check). This is the only route to the creator
 	/// gate: a foreign welcome without the PSK never gets here.
-	func testGroupBJoinRejectsAWelcomeFromAnUnexpectedCreator() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func groupBJoinRejectsAWelcomeFromAnUnexpectedCreator() throws {
 		var (alice, bob, aliceIdentity, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
@@ -452,7 +464,7 @@ final class EstablishmentTests: XCTestCase {
 		let (_, _, appSection) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(genuineFrame))
 
-		var groupACopy = try XCTUnwrap(alice.sendGroup)
+		var groupACopy = try #require(alice.sendGroup)
 		let crossPSK = try MLS.Combiner.ExportedPsk.export(
 			from: &groupACopy.classical, SessionTestSupport.classicalProvider,
 			componentID: TwoMLSSession.crossPartyComponentID)
@@ -461,12 +473,12 @@ final class EstablishmentTests: XCTestCase {
 			crossPSK: crossPSK)
 		let forgedFrame = forgedWelcomeFrame(staple: forgedStaple, app: appSection)
 
-		XCTAssertThrowsError(try alice.processIncomingDecrypted(forgedFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .establishmentEnvelopeRequired)
+		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
+			try alice.processIncomingDecrypted(forgedFrame)
 		}
-		XCTAssertFalse(alice.isEstablished)
-		XCTAssertNil(alice.recvGroup)
-		XCTAssertNil(alice.joinedWelcomeDigest)
+		#expect(!alice.isEstablished)
+		#expect(alice.recvGroup == nil)
+		#expect(alice.joinedWelcomeDigest == nil)
 	}
 
 	/// One malformed — or well-formed-but-foreign — welcome staple must not
@@ -474,7 +486,8 @@ final class EstablishmentTests: XCTestCase {
 	/// consumed only after the Welcome parses, all writes land on locals, and
 	/// a failed join writes nothing back — so Bob's genuine first frame still
 	/// joins afterward.
-	func testMalformedWelcomeStapleLeavesTheGenuineOneJoinable() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func malformedWelcomeStapleLeavesTheGenuineOneJoinable() throws {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
 		_ = try bob.prepareToEncrypt()
 		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
@@ -486,11 +499,12 @@ final class EstablishmentTests: XCTestCase {
 		// Welcome fails to parse, before any exporter leaf is consumed.
 		let garbageStaple = Frames.encodeAPQWelcome(
 			t: Data("not-a-welcome".utf8), pq: Data())
-		XCTAssertThrowsError(
+		#expect(throws: (any Error).self) {
 			try alice.processIncomingDecrypted(
-				forgedWelcomeFrame(staple: garbageStaple, app: appSection)))
-		XCTAssertTrue(alice.sendCrossPSKLedger.isEmpty)
-		XCTAssertFalse(alice.isEstablished)
+				forgedWelcomeFrame(staple: garbageStaple, app: appSection))
+		}
+		#expect(alice.sendCrossPSKLedger.isEmpty)
+		#expect(!alice.isEstablished)
 
 		// (b) A well-formed but FOREIGN welcome — another pair's real Group_B
 		// welcome. It dies inside `Welcome.decryptGroupSecrets` (a
@@ -504,28 +518,27 @@ final class EstablishmentTests: XCTestCase {
 		// Opened via `otherAlice` (the recipient in that OTHER pair).
 		let (_, _, otherAppSection) = try Frames.decodeMessageFrame(
 			otherAlice.openOrRaw(otherGenuineFrame))
-		XCTAssertThrowsError(
+		#expect(throws: MLS.RFC9420.GroupError.noMatchingWelcomeSecret) {
 			try alice.processIncomingDecrypted(
 				forgedWelcomeFrame(staple: otherWelcomeB, app: otherAppSection))
-		) { error in
-			XCTAssertEqual(error as? MLS.RFC9420.GroupError, .noMatchingWelcomeSecret)
 		}
-		XCTAssertTrue(alice.sendCrossPSKLedger.isEmpty)
-		XCTAssertFalse(alice.isEstablished)
+		#expect(alice.sendCrossPSKLedger.isEmpty)
+		#expect(!alice.isEstablished)
 
 		// Bob's genuine first frame now joins cleanly — no wedge.
 		_ = try bob.prepareToEncrypt()
 		let realFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(realFrame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bob-hello".utf8))
-		XCTAssertTrue(alice.isEstablished)
+		#expect(decrypted.applicationMessage == Data("bob-hello".utf8))
+		#expect(alice.isEstablished)
 	}
 
 	// MARK: - AS establishment identity binding
 
 	/// `receive` must reject a caller-supplied `theirClassicalKeyPackage` that
 	/// names a third party rather than the creator the Welcome actually joined.
-	func testReceiveRejectsWrongPeerKeyPackage() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func receiveRejectsWrongPeerKeyPackage() throws {
 		let alice = try SessionTestSupport.identity("as-alice")
 		let bob = try SessionTestSupport.identity("as-bob")
 		let carol = try SessionTestSupport.identity("as-carol")
@@ -533,7 +546,7 @@ final class EstablishmentTests: XCTestCase {
 			identity: alice, their: bob.keyPackage,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
 			try TwoMLSSession.receive(
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: carol.keyPackage.classical,
@@ -541,22 +554,21 @@ final class EstablishmentTests: XCTestCase {
 					.bootstrapKPCommitment(),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .remoteIdentityMismatch)
 		}
 	}
 
 	/// The self-id case: Bob's OWN KeyPackage passed as the peer's must be
 	/// rejected — the check is equality with the joined creator, not mere
 	/// membership (Bob's own id is "known" via `mine`, but is not the creator).
-	func testReceiveRejectsSelfIdentityKeyPackage() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func receiveRejectsSelfIdentityKeyPackage() throws {
 		let alice = try SessionTestSupport.identity("as-alice-2")
 		let bob = try SessionTestSupport.identity("as-bob-2")
 		let initiated = try TwoMLSSession.initiate(
 			identity: alice, their: bob.keyPackage,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
 			try TwoMLSSession.receive(
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: bob.keyPackage.classical,
@@ -564,26 +576,23 @@ final class EstablishmentTests: XCTestCase {
 					.bootstrapKPCommitment(),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .remoteIdentityMismatch)
 		}
 	}
 
 	/// `initiate` must reject a peer whose classical and PQ `KeyPackage` halves
 	/// present different identities.
-	func testInitiateRejectsMismatchedPeerHalves() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func initiateRejectsMismatchedPeerHalves() throws {
 		let alice = try SessionTestSupport.identity("as-alice-3")
 		let bob = try SessionTestSupport.identity("as-bob-3")
 		let carol = try SessionTestSupport.identity("as-carol-3")
 		let mismatched = CombinerKeyPackage(
 			classical: bob.keyPackage.classical, pq: carol.keyPackage.pq)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
 			try TwoMLSSession.initiate(
 				identity: alice, their: mismatched,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .remoteIdentityMismatch)
 		}
 	}
 }

@@ -1,17 +1,18 @@
 import Foundation
 import MLSCodec
 import MLSProfileRFC9420
-import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
 /// §A.3 parallel pre-delivery (book protocol-flows.md §A.1 "Envelope
 /// framing & parallel KP′ delivery", §A.3 "Parallel pre-delivery") and the
 /// acceptor's re-serve rule.
-@available(iOS 26, macOS 26, *)
-final class ParallelBootstrapTests: XCTestCase {
+@Suite struct ParallelBootstrapTests {
+	@available(iOS 26, macOS 26, *)
 	private typealias Support = SessionTestSupport
 
+	@available(iOS 26, macOS 26, *)
 	private func initiateAgainstInvitation(lastResort: Bool = false) throws -> (
 		initiated: EstablishResult, invitation: Invitation
 	) {
@@ -24,10 +25,11 @@ final class ParallelBootstrapTests: XCTestCase {
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: lastResort)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal,
-			their: try XCTUnwrap(invitation.combinerKeyPackage))
+			their: try #require(invitation.combinerKeyPackage))
 		return (initiated, invitation)
 	}
 
+	@available(iOS 26, macOS 26, *)
 	private func receive(
 		_ initiated: EstablishResult, into invitation: inout Invitation
 	) throws -> TwoMLSSession {
@@ -39,182 +41,207 @@ final class ParallelBootstrapTests: XCTestCase {
 		).session
 	}
 
-	func testInitiateRegistersTheRoundAroundTheCommittedKP() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func initiateRegistersTheRoundAroundTheCommittedKP() throws {
 		let (initiated, invitation) = try initiateAgainstInvitation()
 		let alice = initiated.session
 		guard case .bootstrapInitiated = alice.pqInflight else {
-			return XCTFail("expected .bootstrapInitiated at initiate")
+			Issue.record("expected .bootstrapInitiated at initiate")
+			return
 		}
-		let kp = try XCTUnwrap(alice.bootstrapKPBytes())
-		XCTAssertEqual(alice.pendingSideBand, Frames.encodePQBootstrapKP(kp))
-		XCTAssertEqual(
-			try Support.classicalProvider.hash(kp), try alice.bootstrapKPCommitment())
+		let rawKP = try alice.bootstrapKPBytes()
+		let kp = try #require(rawKP)
+		#expect(alice.pendingSideBand == Frames.encodePQBootstrapKP(kp))
+		#expect(
+			try Support.classicalProvider.hash(kp)
+				== (try alice.bootstrapKPCommitment())
+		)
 
 		guard
 			case .bootstrapKP(let beforeRestartFrame) = try invitation.openInitial(
-				try XCTUnwrap(alice.pqBootstrapEnvelope()))
-		else { return XCTFail("expected .bootstrapKP") }
+				try #require(alice.pqBootstrapEnvelope()))
+		else {
+			Issue.record("expected .bootstrapKP")
+			return
+		}
 
 		let restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: initiated.baseline.archive,
 			classicalProvider: Support.classicalProvider, pqProvider: Support.pqProvider
 		)
 		guard case .bootstrapInitiated = restored.pqInflight else {
-			return XCTFail("expected the registered round to ride the baseline")
+			Issue.record("expected the registered round to ride the baseline")
+			return
 		}
-		XCTAssertEqual(restored.pendingSideBand, alice.pendingSideBand)
+		#expect(restored.pendingSideBand == alice.pendingSideBand)
 
 		// The restored pre-join initiator can still ship the parked KP′ —
 		// it opens (with the acceptor's own invitation opener) to the same
 		// `[0x13][KP′]` frame it produced before the restart.
 		guard
 			case .bootstrapKP(let afterRestoreFrame) = try invitation.openInitial(
-				try XCTUnwrap(restored.pqBootstrapEnvelope()))
-		else { return XCTFail("expected .bootstrapKP") }
-		XCTAssertEqual(afterRestoreFrame, beforeRestartFrame)
+				try #require(restored.pqBootstrapEnvelope()))
+		else {
+			Issue.record("expected .bootstrapKP")
+			return
+		}
+		#expect(afterRestoreFrame == beforeRestartFrame)
 	}
 
-	func testEnvelopeIsAPureFreshlySealedReadOfTheRetainedFrame() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func envelopeIsAPureFreshlySealedReadOfTheRetainedFrame() throws {
 		var (initiated, invitation) = try initiateAgainstInvitation()
 		let alice = initiated.session
 		let seqBefore = alice.stateSeq
-		let first = try XCTUnwrap(alice.pqBootstrapEnvelope())
-		let second = try XCTUnwrap(alice.pqBootstrapEnvelope())
-		XCTAssertNotEqual(first, second)
-		XCTAssertEqual(alice.stateSeq, seqBefore)
+		let first = try #require(alice.pqBootstrapEnvelope())
+		let second = try #require(alice.pqBootstrapEnvelope())
+		#expect(first != second)
+		#expect(alice.stateSeq == seqBefore)
 		for blob in [first, second] {
 			guard case .bootstrapKP(let frame) = try invitation.openInitial(blob) else {
-				return XCTFail("expected .bootstrapKP")
+				Issue.record("expected .bootstrapKP")
+				return
 			}
-			XCTAssertEqual(frame, alice.pendingSideBand)
+			#expect(frame == alice.pendingSideBand)
 		}
 		// The reply and the KP′ share one outer shape; only the inner tag
 		// tells them apart.
 		guard case .establishment = try invitation.openInitial(try alice.pendingOutbound())
-		else { return XCTFail("expected .establishment") }
+		else {
+			Issue.record("expected .establishment")
+			return
+		}
 
 		var bob = try receive(initiated, into: &invitation)
-		XCTAssertNil(bob.pqBootstrapEnvelope())
+		#expect(bob.pqBootstrapEnvelope() == nil)
 		_ = try bob.prepareToEncrypt()
 		_ = bob
 	}
 
-	func testEnvelopeStopsAtTheCutoverAndTheSideBandTakesOver() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func envelopeStopsAtTheCutoverAndTheSideBandTakesOver() throws {
 		var (initiated, invitation) = try initiateAgainstInvitation()
 		var alice = initiated.session
 		var bob = try receive(initiated, into: &invitation)
-		XCTAssertNil(alice.pqPendingOutbound())
+		#expect(alice.pqPendingOutbound() == nil)
 		_ = try bob.prepareToEncrypt()
 		_ = try alice.processIncomingDecrypted(try bob.encrypt(Data("b1".utf8)).frame)
 
-		XCTAssertNil(alice.pqBootstrapEnvelope())
-		let steady = try XCTUnwrap(alice.pqPendingOutbound())
-		XCTAssertEqual(bob.openOrRaw(steady), alice.pendingSideBand)
+		#expect(alice.pqBootstrapEnvelope() == nil)
+		let steady = try #require(alice.pqPendingOutbound())
+		#expect(bob.openOrRaw(steady) == alice.pendingSideBand)
 		let begun = try alice.pqBootstrapBegin()
-		XCTAssertEqual(bob.openOrRaw(begun.frame), alice.pendingSideBand)
-		XCTAssertEqual(begun.update.kind, .core)
+		#expect(bob.openOrRaw(begun.frame) == alice.pendingSideBand)
+		#expect(begun.update.kind == .core)
 	}
 
-	func testEarlyWelcomeIsRetriableUntilTheGroupBJoin() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func earlyWelcomeIsRetriableUntilTheGroupBJoin() throws {
 		var (initiated, invitation) = try initiateAgainstInvitation()
 		var alice = initiated.session
 		guard
 			case .bootstrapKP(let held) = try invitation.openInitial(
-				try XCTUnwrap(alice.pqBootstrapEnvelope()))
-		else { return XCTFail("expected .bootstrapKP") }
+				try #require(alice.pqBootstrapEnvelope()))
+		else {
+			Issue.record("expected .bootstrapKP")
+			return
+		}
 		var bob = try receive(initiated, into: &invitation)
-		XCTAssertEqual(
-			invitation.bootstrapKPGroupID(kpFrame: held),
-			bob.recvGroup?.classical.context.groupID)
+		#expect(
+			invitation.bootstrapKPGroupID(kpFrame: held)
+				== bob.recvGroup?.classical.context.groupID)
 
 		let welcome = try bob.pqBootstrapRespond(held)
-		XCTAssertEqual(welcome.update.kind, .checkpoint)
+		#expect(welcome.update.kind == .checkpoint)
 
 		// Opens under alice's own Group_A.pq window, but there is nothing to
 		// join into yet.
-		let opened = try XCTUnwrap(alice.openIncoming(welcome.frame))
-		XCTAssertEqual(opened.kind, .pqSideBand(.bootstrapWelcome))
+		let rawOpened = try alice.openIncoming(welcome.frame)
+		let opened = try #require(rawOpened)
+		#expect(opened.kind == .pqSideBand(.bootstrapWelcome))
 		let seqBefore = alice.stateSeq
-		XCTAssertThrowsError(try alice.pqBootstrapJoin(opened.frame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .sessionNotReady)
+		#expect(throws: TwoMLSError.sessionNotReady) {
+			try alice.pqBootstrapJoin(opened.frame)
 		}
-		XCTAssertEqual(alice.stateSeq, seqBefore)
-		XCTAssertNotNil(alice.bootstrapKPSecret)
+		#expect(alice.stateSeq == seqBefore)
+		#expect(alice.bootstrapKPSecret != nil)
 
 		_ = try bob.prepareToEncrypt()
 		_ = try alice.processIncomingDecrypted(try bob.encrypt(Data("b1".utf8)).frame)
 		_ = try alice.pqBootstrapJoin(opened.frame)
-		XCTAssertTrue(alice.isFullyEstablished)
-		XCTAssertTrue(bob.isFullyEstablished)
+		#expect(alice.isFullyEstablished)
+		#expect(bob.isFullyEstablished)
 
 		_ = try alice.prepareToEncrypt()
 		let bound = try alice.encrypt(Data("a1".utf8))
-		XCTAssertNil(alice.owedBind)
+		#expect(alice.owedBind == nil)
 		let applied = try bob.processIncomingDecrypted(bound.frame)
-		XCTAssertTrue(applied.didApplyRemoteCommit)
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(applied.didApplyRemoteCommit)
+		#expect(bob.myPQTurn)
 	}
 
-	func testRespondReServesOnlyWhileItsRoundIsOpen() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func respondReServesOnlyWhileItsRoundIsOpen() throws {
 		var (alice, bob) = try Support.establishedAndExchanged()
 		let kp = try alice.pqBootstrapBegin().frame
 		let first = try bob.pqBootstrapRespond(kp)
 
 		// Round open: the SAME Welcome′ again.
 		let again = try bob.pqBootstrapRespond(kp)
-		XCTAssertEqual(alice.openOrRaw(first.frame), alice.openOrRaw(again.frame))
-		XCTAssertEqual(first.update.kind, .checkpoint)
-		XCTAssertEqual(again.update.kind, .core)
+		#expect(alice.openOrRaw(first.frame) == alice.openOrRaw(again.frame))
+		#expect(first.update.kind == .checkpoint)
+		#expect(again.update.kind == .core)
 
 		// Garbage or a wrong KP′ never earns a re-serve.
 		let seq = bob.stateSeq
-		XCTAssertThrowsError(try bob.pqBootstrapRespond(Data([0x42, 0x01])))
-		XCTAssertThrowsError(
-			try bob.pqBootstrapRespond(Frames.encodePQBootstrapKP(Data("other".utf8)))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .bootstrapKPMismatch)
+		#expect(throws: (any Error).self) {
+			try bob.pqBootstrapRespond(Data([0x42, 0x01]))
 		}
-		XCTAssertEqual(bob.stateSeq, seq)
+		#expect(throws: TwoMLSError.bootstrapKPMismatch) {
+			try bob.pqBootstrapRespond(Frames.encodePQBootstrapKP(Data("other".utf8)))
+		}
+		#expect(bob.stateSeq == seq)
 
 		_ = try alice.pqBootstrapJoin(first.frame)
 		_ = try alice.prepareToEncrypt()
 		_ = try bob.processIncomingDecrypted(try alice.encrypt(Data("bind".utf8)).frame)
-		XCTAssertNil(bob.pqInflight)
+		#expect(bob.pqInflight == nil)
 
 		// Round closed: refused, with nothing moved.
 		let closedSeq = bob.stateSeq
-		XCTAssertThrowsError(try bob.pqBootstrapRespond(kp)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .duplicateSideBand)
+		#expect(throws: TwoMLSError.duplicateSideBand) {
+			try bob.pqBootstrapRespond(kp)
 		}
-		XCTAssertEqual(bob.stateSeq, closedSeq)
+		#expect(bob.stateSeq == closedSeq)
 
 		// The next round opened on bob's send: still refused, and the parked
 		// leg is not handed out as if it answered the KP′.
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("b2".utf8))
-		let parked = try XCTUnwrap(bob.pendingSideBand)
-		XCTAssertThrowsError(try bob.pqBootstrapRespond(kp)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .duplicateSideBand)
+		let parked = try #require(bob.pendingSideBand)
+		#expect(throws: TwoMLSError.duplicateSideBand) {
+			try bob.pqBootstrapRespond(kp)
 		}
-		XCTAssertEqual(bob.pendingSideBand, parked)
+		#expect(bob.pendingSideBand == parked)
 	}
 
 	/// An initiator handed her own reflected KP′ (her founded send-PQ half
 	/// used to route this into the re-serve branch, handing back her own
 	/// `0x13`) — she is never a responder, so the commitment check always
 	/// fails closed instead.
-	func testInitiatorRefusesItsOwnReflectedKP() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func initiatorRefusesItsOwnReflectedKP() throws {
 		var (alice, bob) = try Support.establishedAndExchanged()
 		_ = try alice.pqBootstrapBegin()
-		let ownFrame = try XCTUnwrap(alice.pendingSideBand)
+		let ownFrame = try #require(alice.pendingSideBand)
 		let pendingBefore = alice.pendingSideBand
 		let seqBefore = alice.stateSeq
 
-		XCTAssertThrowsError(try alice.pqBootstrapRespond(ownFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .bootstrapKPMismatch)
+		#expect(throws: TwoMLSError.bootstrapKPMismatch) {
+			try alice.pqBootstrapRespond(ownFrame)
 		}
-		XCTAssertEqual(alice.pendingSideBand, pendingBefore)
-		XCTAssertEqual(alice.stateSeq, seqBefore)
+		#expect(alice.pendingSideBand == pendingBefore)
+		#expect(alice.stateSeq == seqBefore)
 		_ = bob
 	}
 }

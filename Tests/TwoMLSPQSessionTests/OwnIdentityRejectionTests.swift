@@ -4,27 +4,25 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
 /// Germ AS policy (two distinct principals, not RFC 9420- or book-mandated):
 /// the peer this session establishes against, or later rotates to, can never
 /// legitimately be this device's own identity.
-@available(iOS 26, macOS 26, *)
-final class OwnIdentityRejectionTests: XCTestCase {
+@Suite struct OwnIdentityRejectionTests {
 	/// `initiate`'s "their" naming the initiator's own id — rejected before
 	/// any group is built.
-	func testInitiateRejectsAnOwnIDPeer() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func initiateRejectsAnOwnIDPeer() throws {
 		let identity = try SessionTestSupport.identity("own-id-initiate")
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
 			try TwoMLSSession.initiate(
 				identity: identity, their: identity.keyPackage,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .remoteIdentityMismatch)
 		}
 	}
 
@@ -32,7 +30,8 @@ final class OwnIdentityRejectionTests: XCTestCase {
 	/// creator's own `clientID` (but its own keys/key packages) reaches the
 	/// guard on the joined tree directly, without going through
 	/// `initiate`'s own-id guard first.
-	func testReceiveRejectsAJoinedCreatorNamingOwnID() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func receiveRejectsAJoinedCreatorNamingOwnID() throws {
 		let alice = try SessionTestSupport.identity("own-id-receive-alice")
 		let bob = try SessionTestSupport.identity("own-id-receive-bob")
 		let initiated = try TwoMLSSession.initiate(
@@ -47,7 +46,7 @@ final class OwnIdentityRejectionTests: XCTestCase {
 			classicalInitSecretKey: bob.classicalInitSecretKey,
 			pqLeafSecretKey: bob.pqLeafSecretKey, pqInitSecretKey: bob.pqInitSecretKey,
 			keyPackage: bob.keyPackage)
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
 			try TwoMLSSession.receive(
 				identity: mallory, welcome: initiated.welcome,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
@@ -55,31 +54,30 @@ final class OwnIdentityRejectionTests: XCTestCase {
 					.bootstrapKPCommitment(),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .remoteIdentityMismatch)
 		}
 	}
 
 	/// `prepareToEncrypt(rotating:)` naming one of the PEER's own known
 	/// ids — rejected before any candidate is minted or authorized.
-	func testPrepareToEncryptRejectsRotatingToAPeerID() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func prepareToEncryptRejectsRotatingToAPeerID() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged(
 			alice: "own-id-rotate-alice", bob: "own-id-rotate-bob")
 		let peerID = bob.identity.clientID
-		XCTAssertTrue(alice.auth.theirs.knownIDs.contains(peerID))
+		#expect(alice.auth.theirs.knownIDs.contains(peerID))
 
 		let candidateBefore = alice.rotationCandidate
 		let authorizedBefore = alice.auth.mine.authorizedNext
 
-		XCTAssertThrowsError(try alice.prepareToEncrypt(rotating: peerID)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidSuccession)
+		#expect(throws: TwoMLSError.invalidSuccession) {
+			try alice.prepareToEncrypt(rotating: peerID)
 		}
-		XCTAssertNil(alice.rotationCandidate)
-		XCTAssertEqual(
-			alice.rotationCandidate?.clientID, candidateBefore?.clientID,
+		#expect(alice.rotationCandidate == nil)
+		#expect(
+			alice.rotationCandidate?.clientID == candidateBefore?.clientID,
 			"no candidate was minted")
-		XCTAssertEqual(
-			alice.auth.mine.authorizedNext, authorizedBefore,
+		#expect(
+			alice.auth.mine.authorizedNext == authorizedBefore,
 			"no authorization was added")
 	}
 }

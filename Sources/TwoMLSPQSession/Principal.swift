@@ -38,7 +38,9 @@ public struct Principal: Sendable {
 
 	/// The session profiles every key package this principal mints
 	/// advertises.
-	var advertising: [SessionProfile] { advertisesCorrectProfile ? SessionProfile.recognized : [] }
+	var advertising: [SessionProfile] {
+		advertisesCorrectProfile ? SessionProfile.recognized : []
+	}
 
 	/// Validates the provider config for `clientID` — no key material is
 	/// minted here; each `TwoMLSIdentity` this principal later produces

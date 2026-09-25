@@ -4,8 +4,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -15,8 +15,7 @@ import XCTest
 /// **Bob-initiated**, ratcheting Group_B.pq (`bob.sendGroup.pq` /
 /// `alice.recvGroup.pq`) 1 -> 2 — not Group_A.pq, which the A.3 bind already
 /// moved.
-@available(iOS 26, macOS 26, *)
-final class RatchetTests: XCTestCase {
+@Suite struct RatchetTests {
 	private func rawBytes(_ secret: SecretBytes) -> Data { secret.withUnsafeBytes { Data($0) } }
 
 	/// `SessionTestSupport.establishedAndExchanged()` plus the full §A.3
@@ -24,6 +23,7 @@ final class RatchetTests: XCTestCase {
 	/// landing on a fully-established pair with the turn on Bob. `static` and
 	/// non-`private` so `RekeyTests` can reuse it as its own §A.5 starting
 	/// fixture.
+	@available(iOS 26, macOS 26, *)
 	static func fullyEstablishedTurnOnBob(
 		profile: SessionProfile = .deployedCompatible
 	) throws -> (
@@ -38,8 +38,8 @@ final class RatchetTests: XCTestCase {
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		_ = try bob.processIncomingDecrypted(boundFrame)
 
-		XCTAssertTrue(bob.myPQTurn)
-		XCTAssertFalse(alice.myPQTurn)
+		#expect(bob.myPQTurn)
+		#expect(!alice.myPQTurn)
 		return (alice, bob)
 	}
 
@@ -50,22 +50,23 @@ final class RatchetTests: XCTestCase {
 	/// discharges (licensed by Alice's earlier inbound frame), and Alice
 	/// applies the bind — landing Group_B.pq at epoch 2 on both sides and
 	/// passing the turn back to Alice.
-	func testBobInitiatedRatchetRoundAdvancesGroupBPQAndReturnsTurn() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func bobInitiatedRatchetRoundAdvancesGroupBPQAndReturnsTurn() throws {
 		var (alice, bob) = try Self.fullyEstablishedTurnOnBob()
 
-		XCTAssertEqual(bob.sendGroup?.pq?.context.epoch, 1)
-		XCTAssertEqual(alice.recvGroup?.pq?.context.epoch, 1)
+		#expect(bob.sendGroup?.pq?.context.epoch == 1)
+		#expect(alice.recvGroup?.pq?.context.epoch == 1)
 
 		// 1: Bob self-stages an EK.
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ekFrame = try #require(bob.pqPendingOutbound())
 		// Opened via `alice` (the recipient — A.4 legs seal under the
 		// classical family, so the same "other peer" rule applies).
 		let (ekTag, _) = try Frames.decodePQLeg(alice.openOrRaw(ekFrame))
-		XCTAssertEqual(ekTag, Frames.pqEKTag)
+		#expect(ekTag == Frames.pqEKTag)
 		guard case .initiating = bob.pqInflight else {
-			XCTFail("expected bob to hold `.initiating` after self-staging")
+			Issue.record("expected bob to hold `.initiating` after self-staging")
 			return
 		}
 
@@ -73,39 +74,40 @@ final class RatchetTests: XCTestCase {
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 		// Opened via `bob` (the recipient).
 		let (ctTag, _) = try Frames.decodePQLeg(bob.openOrRaw(ctFrame))
-		XCTAssertEqual(ctTag, Frames.pqCTTag)
+		#expect(ctTag == Frames.pqCTTag)
 		// `pqPendingOutbound()` re-seals under a fresh nonce every call, so
 		// compare the OPENED plaintexts, not the sealed bytes.
-		XCTAssertEqual(bob.openOrRaw(alice.pqPendingOutbound()!), bob.openOrRaw(ctFrame))
+		let alicePendingOutbound = try #require(alice.pqPendingOutbound())
+		#expect(bob.openOrRaw(alicePendingOutbound) == bob.openOrRaw(ctFrame))
 		guard case .responding = alice.pqInflight else {
-			XCTFail("expected alice to hold `.responding` after sealing")
+			Issue.record("expected alice to hold `.responding` after sealing")
 			return
 		}
 
 		// 3: Bob binds — owes the PQ commit into Group_B.pq, immediately
 		// applied to his own local copy.
 		_ = try bob.pqRatchetBind(ctFrame)
-		XCTAssertNotNil(bob.owedBind)
-		XCTAssertNil(bob.pqPendingOutbound())
-		XCTAssertEqual(bob.sendGroup?.pq?.context.epoch, 2)
+		#expect(bob.owedBind != nil)
+		#expect(bob.pqPendingOutbound() == nil)
+		#expect(bob.sendGroup?.pq?.context.epoch == 2)
 
 		// 4: Bob discharges (already licensed by Alice's earlier "bound"
 		// frame) and Alice applies the `0x05` staple.
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 
 		let decrypted = try alice.processIncomingDecrypted(boundFrame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
+		#expect(decrypted.applicationMessage == Data("bound".utf8))
 
-		XCTAssertTrue(alice.myPQTurn)
-		XCTAssertEqual(bob.sendGroup?.pq?.context.epoch, 2)
-		XCTAssertEqual(alice.recvGroup?.pq?.context.epoch, 2)
+		#expect(alice.myPQTurn)
+		#expect(bob.sendGroup?.pq?.context.epoch == 2)
+		#expect(alice.recvGroup?.pq?.context.epoch == 2)
 		// Group_B.classical starts at epoch 1 (its founding create-commit) and
 		// the discharge is its first commit since — 1 -> 2, mirroring the A.3
 		// bind's own epoch step on Group_A.classical.
-		XCTAssertEqual(bob.sendGroup?.classical.context.epoch, 2)
-		XCTAssertEqual(alice.recvGroup?.classical.context.epoch, 2)
+		#expect(bob.sendGroup?.classical.context.epoch == 2)
+		#expect(alice.recvGroup?.classical.context.epoch == 2)
 	}
 
 	// MARK: - Side-band retention
@@ -118,27 +120,28 @@ final class RatchetTests: XCTestCase {
 	/// `pqRatchetRespond`) is cleared only once she applies Bob's bind
 	/// staple — a site the full-round test above never asserts on Alice's
 	/// side.
-	func testSideBandFallsSilentOnBothSidesAfterRatchetRoundCompletes() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func sideBandFallsSilentOnBothSidesAfterRatchetRoundCompletes() throws {
 		var (alice, bob) = try Self.fullyEstablishedTurnOnBob()
 
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ekFrame = try #require(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
-		XCTAssertNotNil(alice.pqPendingOutbound())
+		#expect(alice.pqPendingOutbound() != nil)
 
 		_ = try bob.pqRatchetBind(ctFrame)
-		XCTAssertNil(bob.pqPendingOutbound())
+		#expect(bob.pqPendingOutbound() == nil)
 
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 		_ = try alice.processIncomingDecrypted(boundFrame)
 
-		XCTAssertNil(alice.pqPendingOutbound())
-		XCTAssertNil(bob.pqPendingOutbound())
-		XCTAssertNil(alice.pqInflight)
-		XCTAssertNil(bob.pqInflight)
+		#expect(alice.pqPendingOutbound() == nil)
+		#expect(bob.pqPendingOutbound() == nil)
+		#expect(alice.pqInflight == nil)
+		#expect(bob.pqInflight == nil)
 	}
 
 	// MARK: - Mutation-verify
@@ -146,16 +149,17 @@ final class RatchetTests: XCTestCase {
 	/// The exporter both sides derive off Group_B.pq's shared epoch state
 	/// (Bob's own copy, Alice's mirror) must agree — the whole seal/open
 	/// exchange depends on it.
-	func testCrossPartyCtSealPSKMatchesOnGroupBPQMirror() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func crossPartyCtSealPSKMatchesOnGroupBPQMirror() throws {
 		let (alice, bob) = try Self.fullyEstablishedTurnOnBob()
 
 		let bobPSK = try CTSeal.ctSealPSK(
-			group: try XCTUnwrap(bob.sendGroup?.pq),
+			group: try #require(bob.sendGroup?.pq),
 			pqProvider: SessionTestSupport.pqProvider)
 		let alicePSK = try CTSeal.ctSealPSK(
-			group: try XCTUnwrap(alice.recvGroup?.pq),
+			group: try #require(alice.recvGroup?.pq),
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertEqual(rawBytes(bobPSK), rawBytes(alicePSK))
+		#expect(rawBytes(bobPSK) == rawBytes(alicePSK))
 	}
 
 	/// A wire-tampered CT leg is rejected as the non-fatal `.decryptionFailed`
@@ -165,12 +169,13 @@ final class RatchetTests: XCTestCase {
 	/// `.decryptionFailed`) before it can reach `CTSeal.open` — the CT-seal's
 	/// OWN explicit reject, for a mis-sealed / wrong-`ctSealPSK` CT that only a
 	/// validly-framing responder could produce, is pinned in `CTSealTests`.
-	func testWireTamperedCTIsRejectedAndDoesNotBurnState() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func wireTamperedCTIsRejectedAndDoesNotBurnState() throws {
 		var (alice, bob) = try Self.fullyEstablishedTurnOnBob()
 
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ekFrame = try #require(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 
 		// Tamper the OPENED inner leg (its last byte is part of the
@@ -184,70 +189,73 @@ final class RatchetTests: XCTestCase {
 		var tampered = bob.openOrRaw(ctFrame)
 		tampered[tampered.index(before: tampered.endIndex)] ^= 0xFF
 
-		XCTAssertThrowsError(try bob.pqRatchetBind(tampered)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .decryptionFailed)
+		#expect(throws: TwoMLSError.decryptionFailed) {
+			try bob.pqRatchetBind(tampered)
 		}
-		XCTAssertNil(bob.owedBind)
-		XCTAssertEqual(bob.sendGroup?.pq?.context.epoch, 1)
+		#expect(bob.owedBind == nil)
+		#expect(bob.sendGroup?.pq?.context.epoch == 1)
 		guard case .initiating = bob.pqInflight else {
-			XCTFail("expected bob to still hold `.initiating` after a rejected bind")
+			Issue.record(
+				"expected bob to still hold `.initiating` after a rejected bind")
 			return
 		}
 
 		// The genuine CT still binds cleanly afterward.
 		_ = try bob.pqRatchetBind(ctFrame)
-		XCTAssertNotNil(bob.owedBind)
-		XCTAssertEqual(bob.sendGroup?.pq?.context.epoch, 2)
+		#expect(bob.owedBind != nil)
+		#expect(bob.sendGroup?.pq?.context.epoch == 2)
 	}
 
 	/// An EK leg framed at an epoch strictly below the responder's live
 	/// classical epoch is rejected by the floor, not processed — a replay
 	/// of Bob's ROUND-1 EK after the round's own bind has advanced Group_B's
 	/// classical epoch.
-	func testReplayedEKBelowEpochFloorThrowsStaleFrame() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func replayedEKBelowEpochFloorThrowsStaleFrame() throws {
 		var (alice, bob) = try Self.fullyEstablishedTurnOnBob()
 
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let staleEKFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let staleEKFrame = try #require(bob.pqPendingOutbound())
 
 		let ctFrame = try alice.pqRatchetRespond(staleEKFrame).frame
 		_ = try bob.pqRatchetBind(ctFrame)
 		let prepared = try bob.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit)
+		#expect(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 		_ = try alice.processIncomingDecrypted(boundFrame)
 
 		// Group_B's classical epoch (alice's mirror) has now advanced past
 		// the epoch `staleEKFrame` was framed at.
-		XCTAssertThrowsError(try alice.pqRatchetRespond(staleEKFrame)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .staleFrame)
+		#expect(throws: TwoMLSError.staleFrame) {
+			try alice.pqRatchetRespond(staleEKFrame)
 		}
 	}
 
 	/// The self-drive gate: `encrypt` stages no new EK when it isn't my
 	/// turn, and does not overwrite an already-parked side-band leg when it
 	/// is.
-	func testSelfDriveGateSkipsWhenNotMyTurnOrSideBandBusy() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func selfDriveGateSkipsWhenNotMyTurnOrSideBandBusy() throws {
 		var (alice, bob) = try Self.fullyEstablishedTurnOnBob()
 
 		// Not alice's turn: her own send path must not self-stage an EK.
 		_ = try alice.prepareToEncrypt()
 		_ = try alice.encrypt(Data("alice-not-turn".utf8))
-		XCTAssertNil(alice.pqPendingOutbound())
+		#expect(alice.pqPendingOutbound() == nil)
 
 		// Bob's turn, but a side-band leg is already parked: a further
 		// `encrypt` must not stage a second round on top of it.
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let firstEK = try XCTUnwrap(bob.pqPendingOutbound())
+		let firstEK = try #require(bob.pqPendingOutbound())
 
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m2".utf8))
 		// `pqPendingOutbound()` re-seals under a fresh nonce every call, so
 		// compare the OPENED plaintexts (via `alice`, the recipient), not
 		// the sealed bytes.
-		XCTAssertEqual(
-			alice.openOrRaw(bob.pqPendingOutbound()!), alice.openOrRaw(firstEK))
+		let secondEK = try #require(bob.pqPendingOutbound())
+		#expect(alice.openOrRaw(secondEK) == alice.openOrRaw(firstEK))
 	}
 }
