@@ -107,25 +107,25 @@ final class LeafKeysTests: XCTestCase {
 	// MARK: - Session-level: a replacement keeps recv-classical's dead entry
 
 	/// A replacement keeps recv-classical's outgoing entry around. The wedge
-	/// relaxation replaces an uncanonicalized, epoch-stale candidate (C1)
-	/// with a fresh one (C2) — `prepareToEncrypt(rotating:)` never prunes
-	/// C1's own `pending` entry when it does; only the NEXT epoch advance's
-	/// retention rule (which no longer treats C1 as live) eventually does.
+	/// relaxation replaces an uncanonicalized, epoch-stale candidate (c1)
+	/// with a fresh one (c2) — `prepareToEncrypt(rotating:)` never prunes
+	/// c1's own `pending` entry when it does; only the NEXT epoch advance's
+	/// retention rule (which no longer treats c1 as live) eventually does.
 	/// Mutation-tested: a version of `prepareToEncrypt` that explicitly
-	/// pruned `pending[C1]` at the replacement moment passed every other
+	/// pruned `pending[c1]` at the replacement moment passed every other
 	/// test in the suite — this is the one that catches it.
 	func testReplacementKeepsRecvClassicalsDeadEntry() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let c1 = Data("alice-c1".utf8)
 		let c2 = Data("alice-c2".utf8)
 
-		// Stage C1 (epoch E0), leave it unapproved.
+		// Stage c1 (epoch E0), leave it unapproved.
 		_ = try alice.prepareToEncrypt(rotating: c1)
 		let c1Frame = try alice.encrypt(Data("c1-offer".utf8)).frame
 		_ = try bob.processIncomingDecrypted(c1Frame)
 
 		// Advance Group_B's epoch via an UNRELATED routine (non-rotating)
-		// offer/fold — never touches alice's credential, so C1 stays
+		// offer/fold — never touches alice's credential, so c1 stays
 		// uncanonicalized while the epoch moves past its stage point.
 		_ = try alice.prepareToEncrypt()
 		let refreshFrame = try alice.encrypt(Data("refresh-offer".utf8)).frame
@@ -137,14 +137,14 @@ final class LeafKeysTests: XCTestCase {
 		XCTAssertTrue(foldDecrypted.didApplyRemoteCommit)
 		XCTAssertFalse(foldDecrypted.ownCredentialCanonicalized)
 
-		// C1 survived the advance (still the live candidate).
+		// c1 survived the advance (still the live candidate).
 		XCTAssertNotNil(alice.leafKeys.recvClassical.pending[c1])
 
-		// The wedge relaxation now lets C2 replace C1 (epoch moved past
-		// C1's stage point, and C1 never canonicalized).
+		// The wedge relaxation now lets c2 replace c1 (epoch moved past
+		// c1's stage point, and c1 never canonicalized).
 		_ = try alice.prepareToEncrypt(rotating: c2)
 
-		// C1's own pending entry is a dead leftover — still present right
+		// c1's own pending entry is a dead leftover — still present right
 		// after the replacement (the accepted parity gap), pruned only at
 		// the NEXT epoch advance.
 		XCTAssertNotNil(
@@ -155,26 +155,26 @@ final class LeafKeysTests: XCTestCase {
 
 	// MARK: - An idempotent re-stage refreshes the wedge epoch
 
-	/// Rotate to C1, let the epoch move past C1's stage
-	/// point via an unrelated fold, THEN re-stage C1 (idempotent, same id)
+	/// Rotate to c1, let the epoch move past c1's stage
+	/// point via an unrelated fold, THEN re-stage c1 (idempotent, same id)
 	/// — the re-stage must refresh `proposedAtRecvEpoch` to the CURRENT
-	/// epoch, so an immediately-following rotation to a DIFFERENT id (C2)
-	/// still throws `.rotationInFlight` (C1's freshly re-staged offer is
+	/// epoch, so an immediately-following rotation to a DIFFERENT id (c2)
+	/// still throws `.rotationInFlight` (c1's freshly re-staged offer is
 	/// still live) rather than wrongly passing the wedge relaxation and
-	/// bricking C1. Finally, the peer folds the re-staged Upd(C1) and the
+	/// bricking c1. Finally, the peer folds the re-staged Upd(c1) and the
 	/// rotation converges normally.
 	func testRestagingTheSameCandidateRefreshesItsEpochThenConverges() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let c1 = Data("alice-c1".utf8)
 		let c2 = Data("alice-c2".utf8)
 
-		// 1: stage C1 at epoch E0, leave it unapproved.
+		// 1: stage c1 at epoch E0, leave it unapproved.
 		_ = try alice.prepareToEncrypt(rotating: c1)
 		let c1OfferE0 = try alice.encrypt(Data("c1-offer-e0".utf8)).frame
 		_ = try bob.processIncomingDecrypted(c1OfferE0)
 
 		// 2: advance Group_B's epoch (E0 -> E1) via an unrelated routine
-		// fold, exactly like the replacement test above — C1 stays the
+		// fold, exactly like the replacement test above — c1 stays the
 		// live (uncanonicalized) candidate across it.
 		_ = try alice.prepareToEncrypt()
 		let refreshFrame = try alice.encrypt(Data("refresh-offer".utf8)).frame
@@ -184,22 +184,22 @@ final class LeafKeysTests: XCTestCase {
 		let foldFrame = try bob.encrypt(Data("fold-refresh".utf8)).frame
 		_ = try alice.processIncomingDecrypted(foldFrame)
 
-		// 3: idempotent re-stage — SAME id C1, now at the NEW epoch E1.
+		// 3: idempotent re-stage — SAME id c1, now at the NEW epoch E1.
 		// This must rebuild the candidate record with E1, not leave it
 		// stuck at E0.
 		_ = try alice.prepareToEncrypt(rotating: c1)
 
-		// 4: a rotation to a DIFFERENT id must still wedge — C1's
+		// 4: a rotation to a DIFFERENT id must still wedge — c1's
 		// freshly-restaged offer is live at the CURRENT epoch (E1), so
 		// `recv.classical.context.epoch > existing.proposedAtRecvEpoch`
 		// must be false. If the re-stage above had left `proposedAtRecvEpoch`
-		// stuck at E0, this would wrongly succeed, dropping C1's key out
+		// stuck at E0, this would wrongly succeed, dropping c1's key out
 		// from under its still-live offer.
 		XCTAssertThrowsError(try alice.prepareToEncrypt(rotating: c2)) { error in
 			XCTAssertEqual(error as? TwoMLSError, .rotationInFlight)
 		}
 
-		// 5: send the re-staged C1 offer and let it converge normally.
+		// 5: send the re-staged c1 offer and let it converge normally.
 		let c1OfferE1 = try alice.encrypt(Data("c1-offer-e1".utf8)).frame
 		let c1Decrypted = try bob.processIncomingDecrypted(c1OfferE1)
 		XCTAssertEqual(c1Decrypted.queuedProposal.proposing, c1)
@@ -210,7 +210,7 @@ final class LeafKeysTests: XCTestCase {
 		XCTAssertTrue(c1FoldDecrypted.ownCredentialCanonicalized)
 		XCTAssertEqual(alice.myPrincipalState, .sync(c1))
 
-		// Signing keeps working, now under C1, end to end.
+		// Signing keeps working, now under c1, end to end.
 		_ = try alice.prepareToEncrypt()
 		let aliceMsg = try alice.encrypt(Data("post-restage".utf8)).frame
 		let fromAlice = try bob.processIncomingDecrypted(aliceMsg)
