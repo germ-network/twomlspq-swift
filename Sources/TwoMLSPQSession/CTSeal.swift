@@ -107,7 +107,7 @@ enum CTSeal {
 		// The AEAD open is the explicit reject (ML-KEM decapsulation never
 		// errors on a stale/misdirected `enc`); a failure here is a non-fatal
 		// leg reject, surfaced as `.decryptionFailed` rather than a raw `MLS.*`
-		// crypto error, so a caller can distinguish it from a fault (§12).
+		// crypto error, so a caller can distinguish it from a fault.
 		let opened: Data
 		do {
 			opened = try aead.aeadOpen(

@@ -10,7 +10,7 @@ import XCTest
 @testable import TwoMLSPQSession
 
 /// §A.4: the lightweight ML-KEM EK/CT ratchet, self-driven off `pqTurnMine`
-/// and reusing slice 2's bind. After the §A.3 bootstrap completes, the turn
+/// and reusing the A.3 bootstrap's bind (`owePQBind`). After the §A.3 bootstrap completes, the turn
 /// is Bob's (`BootstrapTests` asserts `bob.myPQTurn`), so round 1 here is
 /// **Bob-initiated**, ratcheting Group_B.pq (`bob.sendGroup.pq` /
 /// `alice.recvGroup.pq`) 1 -> 2 — not Group_A.pq, which the A.3 bind already
@@ -24,10 +24,12 @@ final class RatchetTests: XCTestCase {
 	/// landing on a fully-established pair with the turn on Bob. `static` and
 	/// non-`private` so `RekeyTests` can reuse it as its own §A.5 starting
 	/// fixture.
-	static func fullyEstablishedTurnOnBob() throws -> (
+	static func fullyEstablishedTurnOnBob(
+		profile: SessionProfile = .deployedCompatible
+	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession
 	) {
-		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged(profile: profile)
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
@@ -58,7 +60,7 @@ final class RatchetTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
-		// PR2: opened via `alice` (the recipient — A.4 legs seal under the
+		// Opened via `alice` (the recipient — A.4 legs seal under the
 		// classical family, so the same "other peer" rule applies).
 		let (ekTag, _) = try Frames.decodePQLeg(alice.openOrRaw(ekFrame))
 		XCTAssertEqual(ekTag, Frames.pqEKTag)
@@ -69,7 +71,7 @@ final class RatchetTests: XCTestCase {
 
 		// 2: Alice responds with a CT, holding `S`.
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
-		// PR2: opened via `bob` (the recipient).
+		// Opened via `bob` (the recipient).
 		let (ctTag, _) = try Frames.decodePQLeg(bob.openOrRaw(ctFrame))
 		XCTAssertEqual(ctTag, Frames.pqCTTag)
 		// `pqPendingOutbound()` re-seals under a fresh nonce every call, so
@@ -88,7 +90,7 @@ final class RatchetTests: XCTestCase {
 		XCTAssertEqual(bob.sendGroup?.pq?.context.epoch, 2)
 
 		// 4: Bob discharges (already licensed by Alice's earlier "bound"
-		// frame, per §11 #8) and Alice applies the `0x05` staple.
+		// frame) and Alice applies the `0x05` staple.
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
@@ -101,7 +103,7 @@ final class RatchetTests: XCTestCase {
 		XCTAssertEqual(alice.recvGroup?.pq?.context.epoch, 2)
 		// Group_B.classical starts at epoch 1 (its founding create-commit) and
 		// the discharge is its first commit since — 1 -> 2, mirroring the A.3
-		// bind's own epoch step on Group_A.classical (§11 #10).
+		// bind's own epoch step on Group_A.classical.
 		XCTAssertEqual(bob.sendGroup?.classical.context.epoch, 2)
 		XCTAssertEqual(alice.recvGroup?.classical.context.epoch, 2)
 	}
@@ -171,7 +173,7 @@ final class RatchetTests: XCTestCase {
 		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
 
-		// PR2: tamper the OPENED inner leg (its last byte is part of the
+		// Tamper the OPENED inner leg (its last byte is part of the
 		// INNER MLS `PrivateMessage`'s own AEAD tag, `unprotect`'s
 		// tamper-detection — the property this test is actually pinning),
 		// not the outer header seal's bytes — flipping a byte there would

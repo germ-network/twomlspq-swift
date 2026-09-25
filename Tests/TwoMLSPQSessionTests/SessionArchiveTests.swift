@@ -9,7 +9,7 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// Slice 8a (PR1): the session archive type + encode/decode +
+/// The session archive type + encode/decode +
 /// restore/reconcile + decode invariants. Every test drives a live session
 /// to some state, archives it, round-trips the archive through a test-owned
 /// key (`SecretArchive.seal`/`.open` — the app-seal boundary this library
@@ -101,7 +101,7 @@ final class SessionArchiveTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		// PR3c: a SESSION archive carries KP′ init secrets only
+		// A SESSION archive carries KP′ init secrets only
 		// pre-establishment (an in-flight initiator) — an ESTABLISHED session
 		// still omits both, since they're already spent by then. This
 		// round-trip only re-confirms that `nil`; the load-bearing carry
@@ -122,9 +122,9 @@ final class SessionArchiveTests: XCTestCase {
 	}
 
 	/// The load-bearing carry check for `includeInitSecrets: recvGroup ==
-	/// nil` (PR3c): an in-flight initiator (post-`initiate`, before joining
+	/// nil` (mid-establishment restore): an in-flight initiator (post-`initiate`, before joining
 	/// its receive group) still holds a LIVE classical init secret, and the
-	/// session archive must now CARRY it — omitting it (the pre-PR3c
+	/// session archive must now CARRY it — omitting it (the earlier
 	/// behavior) left a restored in-flight initiator permanently unable to
 	/// join Group_B (`.sessionNotReady`). The established round-trip above
 	/// confirms the mirror case still holds: an ESTABLISHED session still
@@ -177,14 +177,14 @@ final class SessionArchiveTests: XCTestCase {
 		XCTAssertNil(body.identity.pqInitSecretKey)
 	}
 
-	/// `initialTheirKP` (slice 9, PR3b) DOES survive a session archive
+	/// `initialTheirKP` DOES survive a session archive
 	/// round-trip — unlike the init secrets above, it carries no secret
 	/// material (the PEER's own published KP), and it's exactly what a
 	/// restored in-flight initiator needs to keep re-sealing
 	/// `pendingOutbound()`. Stops at `pendingOutbound()` deliberately, to
 	/// isolate this one field's round-trip from the rest of the
 	/// establishment flow; the full restore-then-join-Group_B completion
-	/// (needing PR3c's carried classical init secret too) is
+	/// (needing the archived KP′ init secrets too) is
 	/// `testRestoredInFlightInitiatorCompletesEstablishmentAndExchangesAfterRestore`
 	/// below.
 	func testInFlightInitiatorArchiveCarriesInitialTheirKPForPendingOutbound() throws {
@@ -218,17 +218,17 @@ final class SessionArchiveTests: XCTestCase {
 				initiated.session.identity.keyPackage.classical))
 	}
 
-	/// The headline PR3c proof: a session archived mid-establishment — an
+	/// The headline mid-establishment restore proof: a session archived mid-establishment — an
 	/// in-flight INITIATOR, post-`initiate`, before joining Group_B —
 	/// restores and goes on to COMPLETE establishment exactly like the live
-	/// session would have. Combines PR3b's `initialTheirKP` (re-seal the
+	/// session would have. Combines `initialTheirKP` (re-seal the
 	/// envelope) with this PR's carried classical init secret (join Group_B
 	/// off the peer's first frame): `initiate` -> archive -> restore ->
 	/// restored `pendingOutbound()` -> `Invitation.openInitial` recovers
 	/// `welcome`/`returnKeyPackage` -> `receive` (spawns Bob's session) ->
 	/// Bob's first frame -> the RESTORED initiator `processIncoming`s it and
 	/// joins Group_B (`isEstablished` true) -> app messages flow both ways.
-	/// Without PR3c's archive change this throws
+	/// Without the archived init secrets this throws
 	/// `TwoMLSError.sessionNotReady` at the `processIncoming` step (joining
 	/// Group_B needs `identity.classicalJoinCredentials`, which needs the
 	/// now-nil classical init secret) — verified by temporarily reverting
@@ -274,7 +274,7 @@ final class SessionArchiveTests: XCTestCase {
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
 
 		// The restored initiator joins Group_B off Bob's first frame here —
-		// exactly the step that throws `.sessionNotReady` without PR3c's
+		// exactly the step that throws `.sessionNotReady` without the archived
 		// carried classical init secret.
 		let decrypted = try restored.processIncomingDecrypted(bobFrame)
 		XCTAssertTrue(restored.isEstablished)
@@ -302,7 +302,7 @@ final class SessionArchiveTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
 		_ = try alice.processIncomingDecrypted(offerFrame)
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(offerFrame))
 		let (_, offerMessage) = try Frames.decodeProposalSection(offerProposalSection)
@@ -694,7 +694,7 @@ final class SessionArchiveTests: XCTestCase {
 		}
 	}
 
-	// MARK: - Blocker (diff review): the initiator's normal mid-A.3 restore
+	// MARK: - The initiator's normal mid-A.3 restore
 
 	/// Alice's baseline Checkpoint is minted at `initiate` with `recvGroup ==
 	/// nil` (so `recvClassicalGroupID == nil`); her very next Core, taken
@@ -765,7 +765,7 @@ final class SessionArchiveTests: XCTestCase {
 		}
 	}
 
-	/// NIT9/§7: the PQ half's signature key is compared too, symmetric with
+	/// The PQ half's signature key is compared too, symmetric with
 	/// the classical `signatureKey` check above (D1 — the two per-half keys
 	/// are independent, so a mispair on either must be caught).
 	func testValidateIdentityAgreementRejectsMismatchedPQSignatureKey() throws {
@@ -798,7 +798,7 @@ final class SessionArchiveTests: XCTestCase {
 		}
 	}
 
-	/// The exact blocker shape, isolated to just this one check: a
+	/// The exact failing shape, isolated to just this one check: a
 	/// Checkpoint minted before the recv group exists (`nil`) paired with an
 	/// older-or-equal-stateSeq... no — a NEWER Core that has since joined it
 	/// (`Some`) must be allowed, since `nil` names the OLDER blob.
@@ -851,7 +851,7 @@ final class SessionArchiveTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
 		_ = try alice.processIncomingDecrypted(offerFrame)
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (_, offerProposalSection, _) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(offerFrame))
 		let (_, offerMessage) = try Frames.decodeProposalSection(offerProposalSection)

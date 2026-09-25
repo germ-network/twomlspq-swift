@@ -7,7 +7,7 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// Slice 8b: `Principal`/`Invitation`, the four tables, single-use vs
+/// `Principal`/`Invitation`, the four tables, single-use vs
 /// last-resort, and `Session.forwarded(spawnToken:)` — the app-facing
 /// 3-object model layered over the existing identity-based establishment
 /// (book concepts.md, session-lifecycle.md's "Invitations & replayed
@@ -283,7 +283,7 @@ final class InvitationTests: XCTestCase {
 		}
 	}
 
-	// MARK: - Init-secret persistence (PR3a)
+	// MARK: - Init-secret persistence
 	//
 	// A published `Invitation` is a durable receiving capability: its KP′
 	// init secrets must survive restore, or a restored (never-yet-consumed)
@@ -411,7 +411,7 @@ final class InvitationTests: XCTestCase {
 		XCTAssertTrue(bob.isFullyEstablished)
 	}
 
-	// MARK: - open_initial (slice 9, PR3b)
+	// MARK: - open_initial
 	//
 	// The round-trip, AAD-downgrade, and codec tests live in
 	// `EnvelopeTests.swift`; these cover `Invitation.openInitial`'s own
@@ -467,7 +467,7 @@ final class InvitationTests: XCTestCase {
 		}
 	}
 
-	/// PR3a made this hold: a restored last-resort invitation's PQ init
+	/// This holds because invitation archives persist init secrets: a restored last-resort invitation's PQ init
 	/// secret survives, so a restored (never-yet-consumed) invitation can
 	/// both `openInitial` a fresh envelope AND `receive` off it.
 	func testRestoredLastResortInvitationCanOpenInitialAndReceive() throws {

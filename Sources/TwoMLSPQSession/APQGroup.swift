@@ -49,8 +49,11 @@ extension APQGroup {
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
 		appBinding: Data? = nil,
+		profile: SessionProfile = .deployedCompatible,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> (group: APQGroup, welcome: MLS.Combiner.APQWelcome) {
+		try profile.ensureAdvertised(by: classical.leafNode)
+		try profile.ensureAdvertised(by: classical.peerKeyPackage.leafNode)
 		if let appBinding {
 			guard !appBinding.isEmpty else { throw TwoMLSError.appBindingMismatch }
 			try ensureAppBindingLeafAdvert(
@@ -60,9 +63,9 @@ extension APQGroup {
 		let (combinerGroup, welcome) = try MLS.Combiner.CombinerGroup.establish(
 			classical: classical, pq: pq, mode: mode,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
-			classicalExtraExtensions: try appBinding.map {
+			classicalExtraExtensions: (try appBinding.map {
 				[try AppBinding(data: $0).asExtension()]
-			} ?? [],
+			} ?? []) + profile.recordExtensions,
 			codepoints: codepoints)
 		try combinerGroup.verifyPair()
 		let group = APQGroup(
@@ -123,8 +126,11 @@ extension APQGroup {
 		nonce: Data,
 		provider: any MLS.CipherSuiteProvider,
 		appBinding: Data? = nil,
+		profile: SessionProfile = .deployedCompatible,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> (group: APQGroup, welcome: MLS.RFC9420.Welcome) {
+		try profile.ensureAdvertised(by: founder.leafNode)
+		try profile.ensureAdvertised(by: founder.peerKeyPackage.leafNode)
 		if let appBinding {
 			guard !appBinding.isEmpty else { throw TwoMLSError.appBindingMismatch }
 			try ensureAppBindingLeafAdvert(
@@ -147,6 +153,7 @@ extension APQGroup {
 				classicalExtensions.append(
 					try AppBinding(data: appBinding).asExtension())
 			}
+			classicalExtensions += profile.recordExtensions
 
 			var pskStore = MLS.Combiner.PSKStore()
 			pskStore.register(crossPSK)
@@ -178,11 +185,11 @@ extension APQGroup {
 		}
 	}
 
-	/// Slice 11 (protocol-flows.md:407-432): the creator-pin mode a Group_B join is expected under
-	/// — `.bare` for a plain (un-enveloped) welcome, pinned to the
+	/// The creator-pin mode a Group_B join is expected under
+	/// (protocol-flows.md:407-432) — `.bare` for a plain (un-enveloped) welcome, pinned to the
 	/// invitation identity (protocol-flows.md:428: a mismatch here means the
 	/// welcome names a DIFFERENT creator than the one this session's
-	/// invitation-based topology can trust WITHOUT the signed contract-26
+	/// invitation-based topology can trust WITHOUT the signed
 	/// handoff, so it is not yet distinguishable from a born-dedicated
 	/// welcome pre-approval — `.establishmentEnvelopeRequired`, not a bare
 	/// identity mismatch); `.approved` for a welcome whose PAIRED handoff

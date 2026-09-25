@@ -1,7 +1,7 @@
 import Foundation
 import SecretBytes
 
-// MARK: - Return-cadence plumbing (slice 8a)
+// MARK: - Return-cadence plumbing
 //
 // Return-based, sealing external: every state-advancing method bumps
 // `stateSeq` and returns its own `StateUpdate` (`archive` from the session

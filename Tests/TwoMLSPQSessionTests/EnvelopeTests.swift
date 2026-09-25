@@ -8,7 +8,7 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// Slice 9, PR3b: the §A.1 HPKE establishment envelope codec
+/// The §A.1 HPKE establishment envelope codec
 /// (`EstablishmentEnvelope`) and `TwoMLSSession.pendingOutbound()`. The
 /// invitation-side counterpart (`Invitation.openInitial`'s no-consume /
 /// spent-invitation / restored-invitation behavior) lives in

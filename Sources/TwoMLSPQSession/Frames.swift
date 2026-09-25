@@ -13,7 +13,7 @@ enum Frames {
 	static let pqCTTag: UInt8 = 0x19
 	static let pqRekeyUpdTag: UInt8 = 0x1B
 	static let pqRekeyCommitTag: UInt8 = 0x1D
-	/// Slice 11 (contract-26): the born-dedicated establishment handoff —
+	/// The born-dedicated establishment handoff —
 	/// `[0x0B][u32 envelope][u32 welcome]`, wire-format.md:17. Wraps the
 	/// acceptor's own `0x01` birth welcome (the structural reading of the
 	/// book's `APQWelcome_A` label — a book-internal naming slip; see
@@ -133,8 +133,8 @@ enum Frames {
 	// MARK: - Proposal sub-section
 
 	/// `[u32 proposing][message]` — `proposing` is the sender's current
-	/// `ClientId` and is non-empty on every routine round; a future slice's
-	/// rotation *candidate* `ClientId` rides the same field, but it too is
+	/// `ClientId` and is non-empty on every routine round; a rotation
+	/// *candidate* `ClientId` rides the same field, but it too is
 	/// never empty. `message` is the remaining bytes and must be non-empty.
 	static func encodeProposalSection(proposing: Data, message: Data) -> Data {
 		var buffer = Data()
@@ -164,7 +164,7 @@ enum Frames {
 	/// `stapleKind` dispatches on the message's own first byte and the message
 	/// is consumed whole, exactly as the deployed Rust reference sets
 	/// `current_staple` to the bare MLSMessage and decodes the whole slot as
-	/// one (`two-mls-pq` `session/messaging.rs`). Slice 5's fold-only staple: a
+	/// one (`two-mls-pq` `session/messaging.rs`). The fold-only staple: a
 	/// classical commit that folds a peer Update but carries no bind (a bind
 	/// riding the same commit staples `0x05` instead, `encodeAPQPrivateMessage`).
 	static func encodeMlsMessageStaple(_ message: Data) -> Data {
@@ -207,7 +207,7 @@ enum Frames {
 	// MARK: - `0x13`/`0x15` PQ bootstrap side-band frames
 
 	/// `[0x13][KP′ bytes]` — bare remainder, no inner length prefix.
-	/// `messageBytes` is an MLSMessage-wrapped `KeyPackage` (§11 #7).
+	/// `messageBytes` is an MLSMessage-wrapped `KeyPackage`.
 	static func encodePQBootstrapKP(_ messageBytes: Data) -> Data {
 		Data([pqBootstrapKPTag]) + messageBytes
 	}
@@ -219,7 +219,7 @@ enum Frames {
 	}
 
 	/// `[0x15][Welcome′ bytes]` — bare remainder, no inner length prefix.
-	/// `messageBytes` is an MLSMessage-wrapped `Welcome` (§11 #7).
+	/// `messageBytes` is an MLSMessage-wrapped `Welcome`.
 	static func encodePQBootstrapWelcome(_ messageBytes: Data) -> Data {
 		Data([pqBootstrapWelcomeTag]) + messageBytes
 	}
@@ -315,7 +315,7 @@ enum Frames {
 		return (sections[0], sections[1])
 	}
 
-	// MARK: - `0x0B` contract-26 establishment handoff (slice 11)
+	// MARK: - `0x0B` signed establishment handoff
 
 	/// `[0x0B][u32 envelope][u32 welcome]` — `welcome` is the full, unmodified
 	/// `0x01` APQ welcome bytes (wire-format.md:17, "unmodified welcome").

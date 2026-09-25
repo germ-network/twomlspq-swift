@@ -7,7 +7,7 @@ import MLSExtensions
 import MLSProfileRFC9420
 import SecretBytes
 
-// MARK: - Session archive (slice 8a, PR1: type + encode only)
+// MARK: - Session archive
 //
 // The wire format is a single Codable body (no separate cleartext header —
 // version/suite/kind ride as the body's own leading fields, validated by
@@ -188,8 +188,8 @@ extension IdentityArchive {
 			pqKeyPackage: try identity.keyPackage.pq.mlsEncoded())
 	}
 
-	/// Two independent derive-checks (classical, then PQ — NIT8 additionally
-	/// checks each half's archived `KeyPackage` leaf actually presents the
+	/// Two independent derive-checks (classical, then PQ — each also
+	/// checks that its half's archived `KeyPackage` leaf actually presents the
 	/// derived key, so a corrupt-but-authenticated archive fails here at
 	/// restore rather than surfacing later as `.credentialUnknown`).
 	func restore() throws -> TwoMLSIdentity {
@@ -299,7 +299,7 @@ extension BootstrapKPSecretArchive {
 	}
 }
 
-/// `initialTheirKP`'s archived form (slice 9, PR3b) — the peer's published
+/// `initialTheirKP`'s archived form — the peer's published
 /// combiner key package, wire-encoded per half. No secret material (it's
 /// the PEER's own published KP), so no `@SecretField`.
 struct CombinerKeyPackageArchive: Codable, Sendable, Equatable {
@@ -789,18 +789,18 @@ struct SessionArchive: Codable, Sendable {
 	var sendCrossPSKLedger: ArchiveIntegerKeyedMap<ExportedPskArchive>
 	var rotationCandidate: RotationCandidateArchive?
 	var spawnToken: Data?
-	/// `listenRendezvous`, added slice 9 PR1 — Optional so a pre-existing
+	/// `listenRendezvous` — Optional so a pre-existing
 	/// v1 archive (encoded before this field existed) still decodes: it
 	/// decodes to an empty map, and `restore` re-captures the current
 	/// epoch's address at once (restore is itself a capture site).
 	var listenRendezvous: ArchiveIntegerKeyedMap<Data>?
-	/// `recvHeaderKeys`/`recvHeaderKeysPQ`, added slice 9 PR2 — same
+	/// `recvHeaderKeys`/`recvHeaderKeysPQ` — same
 	/// optional-with-empty-default shape as `listenRendezvous`: absent on a
 	/// pre-existing archive, in which case `restore` re-captures the
 	/// current epoch's key(s) at once.
 	var recvHeaderKeys: ArchiveIntegerKeyedMap<Data>?
 	var recvHeaderKeysPQ: ArchiveIntegerKeyedMap<Data>?
-	/// `initialTheirKP`, added slice 9 PR3b — Optional so a pre-existing
+	/// `initialTheirKP` — Optional so a pre-existing
 	/// archive still decodes; `nil` for every session except a live
 	/// pre-Group_B-join initiator (the only state `pendingOutbound()`
 	/// applies to).
@@ -815,7 +815,7 @@ struct SessionArchive: Codable, Sendable {
 	/// unlike a ledgered `ExportedPsk` — carries no other archived metadata.
 	var sendAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
 	var recvAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
-	/// Slice 11, §E — Optional so a pre-existing archive still decodes
+	/// Optional so a pre-existing archive still decodes
 	/// (absent means `false`, matching the live field's own default): the
 	/// non-emittable gate's live state, so a RESTORED owed-but-not-installed
 	/// Bob still owes.

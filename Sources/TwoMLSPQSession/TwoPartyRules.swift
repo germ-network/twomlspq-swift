@@ -8,11 +8,10 @@ import MLSProfileRFC9420
 /// this is (a) construction discipline over the proposal lists this module
 /// builds and (b) ingest validation on joins. The fold-side clauses (≤1 peer
 /// Update, custom-only-AppDataUpdate, epoch discipline) apply only once the
-/// peer's routine staged proposal can be folded, which is a slice ≥3
-/// concern.
+/// peer's routine staged proposal can be folded, which the fold path enforces.
 enum TwoPartyRules {
 	/// Every non-blank leaf count must be exactly two — run after every join
-	/// (both halves) and, from slice 2, after every applied commit.
+	/// (both halves) and after every applied commit.
 	static func ensureTwoParty(_ group: MLS.RFC9420.Group) throws {
 		let count = group.tree.nonBlankLeaves().count
 		guard count == 2 else { throw TwoMLSError.notTwoParty(count: count) }
@@ -126,7 +125,7 @@ enum TwoPartyRules {
 	/// `CommitEffects` must be exactly `[epochAdvanced, appDataUpdate]` — no
 	/// membership or credential change, and no path-leaf refresh (pathless).
 	/// PSK proposals leave no `CommitEffect`, so this is silent on the
-	/// injected external PSK; the resumption-ban §12.2 clause is unenforceable
+	/// injected external PSK; the resumption-ban clause is unenforceable
 	/// from this seam (resumption ids never reach `CommitEffects`). STAYS
 	/// strict — unlike `validateRekeyCommitEffects` below — because a bind is
 	/// pathless: no leaf ever moves in a pathless commit, so any
@@ -151,13 +150,13 @@ enum TwoPartyRules {
 		}
 	}
 
-	/// The general two-party update-commit shape (§11 MF2; reshaped for
-	/// slice 6's classical principal rotation): exactly `foldedPeerUpdate ? 2
+	/// The general two-party update-commit shape (reshaped for
+	/// classical principal rotation): exactly `foldedPeerUpdate ? 2
 	/// : 1` DISTINCT MOVED leaves — `moved = leaves(.updated) ∪
 	/// leaves(.credentialReplaced)` — one of them the committer's own
 	/// path-refresh (`epochAdvanced`'s `committer`), plus `.appDataUpdate`
 	/// present iff `allowAppDataUpdate` — and never an Add/Remove/
-	/// `membershipRemoved`. Before slice 6 every leaf move was an `.updated`
+	/// `membershipRemoved`. Before classical principal rotation existed, every leaf move was an `.updated`
 	/// (a rotation never rode this shape); now a moved leaf is `.updated`
 	/// XOR `.credentialReplaced` — the committer's own leaf reports the
 	/// latter when `committingRound`'s own-leaf catch-up threads a
@@ -213,7 +212,7 @@ enum TwoPartyRules {
 	/// carrying the `apq_psk`/attestation chain) applied `CommitEffects` must
 	/// be exactly `[epochAdvanced, updated(committer), appDataUpdate]` when no
 	/// fold rides alongside it, or the same plus a second `updated(proposer)`
-	/// when one does (§11 MF1/MF2 — a fold+bind `0x05` folds the peer's Upd by
+	/// when one does (a fold+bind `0x05` folds the peer's Upd by
 	/// reference on the SAME commit that discharges the bind). Either way the
 	/// committer's own path-leaf refresh is expected (`includePath: true`),
 	/// but no membership or credential change. Same resumption-ban caveat as
@@ -244,7 +243,7 @@ enum TwoPartyRules {
 	/// arms still run no `AuthCore.adjudicate` (the AS lives on the classical
 	/// half), so `validatePQLeafMove` is its PQ-side counterpart rather than a
 	/// blanket refusal. Mirrors `validateBindPQEffects`/
-	/// `validateBindClassicalEffects` — and, per §11 MF2, is the exact same
+	/// `validateBindClassicalEffects` — and is the exact same
 	/// shape the classical fold-only commit validates, just over the PQ
 	/// group. A thin `validateTwoPartyUpdateCommit` wrapper preserving this
 	/// call site's own error identity.

@@ -122,7 +122,17 @@ public struct TwoMLSIdentity: Sendable {
 	/// leaves"). Advertising a superset is always valid against the profile's
 	/// `validatePolicy`.
 	static var leafCapabilities: MLS.RFC9420.Capabilities {
-		MLS.RFC9420.Capabilities(
+		leafCapabilities(advertising: [])
+	}
+
+	/// `leafCapabilities` plus the extension type of each profile in
+	/// `profiles` — a classical leaf's capabilities (book group-rules.md
+	/// rule 9: the classical key package's leaf carries the profile
+	/// signal; PQ leaves stay on the base `leafCapabilities`).
+	static func leafCapabilities(
+		advertising profiles: [SessionProfile]
+	) -> MLS.RFC9420.Capabilities {
+		var capabilities = MLS.RFC9420.Capabilities(
 			versions: [.mls10],
 			cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
 			extensions: [
@@ -131,6 +141,8 @@ public struct TwoMLSIdentity: Sendable {
 			],
 			proposals: [MLS.RFC9420.ProposalType(.appDataUpdate)],
 			credentials: [MLS.RFC9420.CredentialType(.basic)])
+		capabilities.extensions += profiles.compactMap(\.extensionType)
+		return capabilities
 	}
 
 	/// Sign one half's `LeafNode` under `signingKey` — the shared core of a
@@ -142,12 +154,13 @@ public struct TwoMLSIdentity: Sendable {
 		clientID: Data,
 		signingKey: MLS.SignatureSecretKey,
 		signatureKey: MLS.SignaturePublicKey,
-		leafPublicKey: MLS.HpkePublicKey
+		leafPublicKey: MLS.HpkePublicKey,
+		capabilities: MLS.RFC9420.Capabilities = leafCapabilities
 	) throws -> MLS.RFC9420.LeafNode {
 		var leaf = MLS.RFC9420.LeafNode(
 			encryptionKey: leafPublicKey, signatureKey: signatureKey,
 			credential: .basic(identity: clientID),
-			capabilities: leafCapabilities,
+			capabilities: capabilities,
 			source: .keyPackage(.init(notBefore: 0, notAfter: .max)),
 			extensions: [], signature: Data())
 		leaf.signature = try MLS.signWithLabel(
@@ -165,11 +178,13 @@ public struct TwoMLSIdentity: Sendable {
 		signingKey: MLS.SignatureSecretKey,
 		signatureKey: MLS.SignaturePublicKey,
 		leafPublicKey: MLS.HpkePublicKey,
-		initPublicKey: MLS.HpkePublicKey
+		initPublicKey: MLS.HpkePublicKey,
+		capabilities: MLS.RFC9420.Capabilities = leafCapabilities
 	) throws -> MLS.RFC9420.KeyPackage {
 		let leaf = try signedLeaf(
 			provider: provider, clientID: clientID, signingKey: signingKey,
-			signatureKey: signatureKey, leafPublicKey: leafPublicKey)
+			signatureKey: signatureKey, leafPublicKey: leafPublicKey,
+			capabilities: capabilities)
 		var keyPackage = MLS.RFC9420.KeyPackage(
 			version: .mls10, cipherSuite: cipherSuite, initKey: initPublicKey,
 			leafNode: leaf, extensions: [], signature: Data())
@@ -187,13 +202,15 @@ public struct TwoMLSIdentity: Sendable {
 	/// Added anywhere.
 	static func mintFoundingLeaf(
 		clientID: Data,
-		provider: any MLS.CipherSuiteProvider
+		provider: any MLS.CipherSuiteProvider,
+		capabilities: MLS.RFC9420.Capabilities = leafCapabilities
 	) throws -> FoundingLeaf {
 		let (signingKey, signatureKey) = try mintSignatureKeypair()
 		let (leafSecretKey, leafPublicKey) = try provider.hpkeGenerateKeyPair()
 		let leaf = try signedLeaf(
 			provider: provider, clientID: clientID, signingKey: signingKey,
-			signatureKey: signatureKey, leafPublicKey: leafPublicKey)
+			signatureKey: signatureKey, leafPublicKey: leafPublicKey,
+			capabilities: capabilities)
 		return (
 			leaf, leafSecretKey,
 			LeafKey(signingKey: signingKey, signatureKey: signatureKey)
@@ -201,7 +218,7 @@ public struct TwoMLSIdentity: Sendable {
 	}
 
 	/// Mint a fresh Ed25519 signing keypair — exactly `generate`'s signing
-	/// half, factored out for a classical principal rotation (slice 6): a
+	/// half, factored out for a classical principal rotation: a
 	/// signature-key rotation needs only this, never a full `TwoMLSIdentity`
 	/// (no `KeyPackage`, no HPKE leaf/init keys — swift-mls mints the rotated
 	/// leaf's own encryption key inside `proposeUpdate`/`committing`).
@@ -228,7 +245,8 @@ public struct TwoMLSIdentity: Sendable {
 		pqSigningKey: MLS.SignatureSecretKey,
 		pqSignatureKey: MLS.SignaturePublicKey,
 		classicalProvider: any MLS.CipherSuiteProvider,
-		pqProvider: any MLS.CipherSuiteProvider
+		pqProvider: any MLS.CipherSuiteProvider,
+		advertising profiles: [SessionProfile]
 	) throws -> TwoMLSIdentity {
 		guard classicalProvider.cipherSuite == TwoMLSSuite.classical,
 			pqProvider.cipherSuite == TwoMLSSuite.pq
@@ -244,7 +262,8 @@ public struct TwoMLSIdentity: Sendable {
 		let classicalKeyPackage = try signedKeyPackage(
 			cipherSuite: TwoMLSSuite.classical, provider: classicalProvider,
 			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
-			leafPublicKey: classicalLeafPublicKey, initPublicKey: classicalInitPublicKey
+			leafPublicKey: classicalLeafPublicKey, initPublicKey: classicalInitPublicKey,
+			capabilities: leafCapabilities(advertising: profiles)
 		)
 		let pqKeyPackage = try signedKeyPackage(
 			cipherSuite: MLS.CipherSuite(id: MLKEM768CipherSuiteProvider.cipherSuiteID),
@@ -273,11 +292,26 @@ public struct TwoMLSIdentity: Sendable {
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider
 	) throws -> TwoMLSIdentity {
+		try generate(
+			clientID: clientID, classicalProvider: classicalProvider,
+			pqProvider: pqProvider, advertising: [])
+	}
+
+	/// `generate` with the profiles its classical key package advertises
+	/// named explicitly — the seam `Principal`'s public opt-in and the test
+	/// support thread through.
+	static func generate(
+		clientID: Data,
+		classicalProvider: any MLS.CipherSuiteProvider,
+		pqProvider: any MLS.CipherSuiteProvider,
+		advertising profiles: [SessionProfile]
+	) throws -> TwoMLSIdentity {
 		let (signingKey, signatureKey) = try mintSignatureKeypair()
 		let (pqSigningKey, pqSignatureKey) = try mintSignatureKeypair()
 		return try generate(
 			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
 			pqSigningKey: pqSigningKey, pqSignatureKey: pqSignatureKey,
-			classicalProvider: classicalProvider, pqProvider: pqProvider)
+			classicalProvider: classicalProvider, pqProvider: pqProvider,
+			advertising: profiles)
 	}
 }

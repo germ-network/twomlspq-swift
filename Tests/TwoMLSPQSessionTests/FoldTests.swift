@@ -10,14 +10,14 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// Slice 5: the classical FOLD path (no credential rotation). A routine fold
+/// The classical FOLD path (no credential rotation). A routine fold
 /// round is offer → approve → commit → staple apply: the proposer's
 /// `prepareToEncrypt` stages an `Upd(self)` into its receive group (the
 /// approver's send group); the approver surfaces it (`processIncoming`'s
 /// `DecryptResult.queuedProposal`), approves it (`queueProposal(digest:)`),
 /// and its own next `prepareToEncrypt` folds it into an `includePath: true`
 /// commit — refreshing both leaves — stapled bare `0x00` (fold-only) or
-/// paired with an owed bind as `0x05` (MF6). Mirrors the proven PQ fold
+/// paired with an owed bind as `0x05`. Mirrors the proven PQ fold
 /// mechanism (`pqRekeyRespond`/`pqRekeyApply`) ported onto the classical
 /// group.
 @available(iOS 26, macOS 26, *)
@@ -36,7 +36,7 @@ final class FoldTests: XCTestCase {
 		_ = try proposer.prepareToEncrypt(rotating: rotating)
 		let frame = try proposer.encrypt(app).frame
 		_ = try approver.processIncomingDecrypted(frame)
-		// PR2: `frame` is header-sealed on exit; `approver` is the one whose
+		// `frame` is header-sealed on exit; `approver` is the one whose
 		// receive window opens it (its sendGroup mirrors `proposer`'s recv
 		// group).
 		let (_, proposalSection, _) = try Frames.decodeMessageFrame(
@@ -67,7 +67,7 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(alice.sendGroup?.classical.context.epoch, groupAEpochBefore + 1)
 
 		let frame = try alice.encrypt(Data("alice-fold".utf8)).frame
-		// PR2: `frame` is header-sealed on exit; `bob` (the intended
+		// `frame` is header-sealed on exit; `bob` (the intended
 		// recipient) is the one whose receive window opens it.
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
 		// The fold-only staple IS the bare MLSMessage: `0x00` is the message's
@@ -110,7 +110,7 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(fromBob.applicationMessage, Data("post-fold-bob".utf8))
 	}
 
-	// MARK: - Fold + bind on one `0x05` commit (MF1/MF6)
+	// MARK: - Fold + bind on one `0x05` commit
 
 	/// An owed PQ bind rides the SAME commit that folds an approved peer
 	/// Update: Bob owes a bind (via the §A.4 ratchet), Alice offers Bob an
@@ -137,7 +137,7 @@ final class FoldTests: XCTestCase {
 		XCTAssertNil(bob.owedBind)
 
 		let frame = try bob.encrypt(Data("fold-and-bind".utf8)).frame
-		// PR2: opened via `alice` (the intended recipient).
+		// Opened via `alice` (the intended recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(alice.openOrRaw(frame))
 		XCTAssertEqual(staple.first, Frames.apqPrivateMessageTag)
 
@@ -152,7 +152,7 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(fromAlice.applicationMessage, Data("post-fold-bind".utf8))
 	}
 
-	// MARK: - The send-side `0xFF02` ledger (MF4)
+	// MARK: - The send-side `0xFF02` ledger
 
 	/// Two fold commits land at ONE own-send epoch of the party applying
 	/// them (Bob never commits his own send group between the two) — without
@@ -236,7 +236,7 @@ final class FoldTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let frame = try alice.encrypt(Data("fold".utf8)).frame
 
-		// PR2: open via `bob` (the recipient) to reach the plaintext frame to
+		// Open via `bob` (the recipient) to reach the plaintext frame to
 		// tamper; the reconstructed (now-raw) `tamperedFrame` passes straight
 		// through `processIncoming`'s `openOrRaw` (an unsealable blob is
 		// returned as-is, the documented receiver convenience).
@@ -278,7 +278,7 @@ final class FoldTests: XCTestCase {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 
 		let garbage = Data("not-an-mls-message".utf8)
@@ -313,7 +313,7 @@ final class FoldTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: Data("alice".utf8), message: ownUpdateBytes)
@@ -331,13 +331,13 @@ final class FoldTests: XCTestCase {
 
 	/// A genuine peer Update whose frame-carried (unauthenticated) `proposing`
 	/// claim does not match the verified leaf's own `.basic` identity is
-	/// `.proposalRejected` (§11 MF5) — `proposing` rides outside the AAD, so
+	/// `.proposalRejected` — `proposing` rides outside the AAD, so
 	/// the wire claim alone proves nothing.
 	func testQueueProposalRejectsProposingMismatch() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (staple, proposal, app) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(bobFrame))
 		let (_, bobUpdateMessage) = try Frames.decodeProposalSection(proposal)
@@ -403,7 +403,7 @@ final class FoldTests: XCTestCase {
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		// PR2: opened via `alice` (the recipient) — only the staple is real
+		// Opened via `alice` (the recipient) — only the staple is real
 		// here; the app section is a throwaway filler `handleStaple` rejects
 		// before it is ever decrypted (below), so which peer's window opens
 		// it doesn't otherwise matter.
@@ -485,7 +485,7 @@ final class FoldTests: XCTestCase {
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		// PR2: opened via `alice` (the recipient) — see the sibling test
+		// Opened via `alice` (the recipient) — see the sibling test
 		// above for why the app section's own opener doesn't matter here.
 		let (_, proposal, app) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(carrierFrame))
@@ -499,7 +499,7 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore)
 	}
 
-	// MARK: - Credential rotation now accepted (the fold/rekey boundary, slice 6)
+	// MARK: - Credential rotation now accepted (the fold/rekey boundary)
 
 	/// Author a credential-ROTATING `Upd(self)` for bob's own leaf: a fresh
 	/// Ed25519 keypair minted exactly like `TwoMLSIdentity.generate`
@@ -507,7 +507,7 @@ final class FoldTests: XCTestCase {
 	/// API (`NewSigningIdentity`/`signingClosure(_:current:new:)`) with the
 	/// SAME `.basic` clientID — a signature-key-only rotation, still
 	/// `.credentialReplaced` per swift-mls's own effect classification
-	/// (`CredentialRotationAuthoringTests`'s M1 case is the credential-only
+	/// (swift-mls's `CredentialRotationAuthoringTests` has the credential-only
 	/// mirror image). Genuinely signed via the rotation ring, not forged, so
 	/// only the fold-only credential/sigkey-unchanged boundary — never a
 	/// signature failure — is what has to catch it. Proposes directly on
@@ -544,14 +544,14 @@ final class FoldTests: XCTestCase {
 		return try message.mlsEncoded()
 	}
 
-	/// §15/slice 6 boundary, layer (a): a genuinely-signed credential
+	/// The fold/rekey boundary, layer (a): a genuinely-signed credential
 	/// rotation offered as bob's `Upd(self)` — same clientID, fresh signature
-	/// key — is now ACCEPTED at `queueProposal`: slice 6 widens
+	/// key — is now ACCEPTED at `queueProposal`: rotation support widens
 	/// `validateOfferedUpdate` to admit a `.credentialReplaced` shape,
 	/// consulting the Authentication Service
 	/// (`auth.theirs.validSuccessorOfCurrent`, trivially true here since the
 	/// id is unchanged) rather than rejecting any credential/signature-key
-	/// change outright the way slice 5 did.
+	/// change outright the way the fold path did before rotation support.
 	func testQueueProposalAcceptsSameIDCredentialRotation() throws {
 		// `authorBobCredentialRotation` hand-builds a SAME-id, fresh-key
 		// rotation directly on bob's recv-classical leaf, bypassing
@@ -564,7 +564,7 @@ final class FoldTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: Data("bob".utf8), message: rotatingMessage)
@@ -576,7 +576,7 @@ final class FoldTests: XCTestCase {
 			try alice.queueProposal(digest: decrypted.queuedProposal.digest))
 	}
 
-	/// §15/slice 6 boundary, layer (b): the apply-side counterpart. A
+	/// The fold/rekey boundary, layer (b): the apply-side counterpart. A
 	/// hand-built commit that FOLDS bob's credential-rotating Upd BY
 	/// REFERENCE (mirroring `testFoldEffectsWithAnAddThrowsUnexpectedProposal`'s
 	/// construction, swapping the extra Add for the rotating proposal itself)
@@ -586,7 +586,7 @@ final class FoldTests: XCTestCase {
 	/// `AuthCore.adjudicate` accepts a same-id rotation (`pred == succ`
 	/// trivially). Contrast `testFoldEffectsWithAnAddThrowsUnexpectedProposal`,
 	/// which still rejects a genuine roster change riding the identical
-	/// commit shape — slice 6 widens exactly the credential axis, not the
+	/// commit shape — rotation support widens exactly the credential axis, not the
 	/// membership one. The rotating message is seeded directly into bob's
 	/// `stagedUpdates` (`@testable` internal accessor) standing in for what
 	/// `prepareToEncrypt(rotating:)` would have appended.
@@ -662,7 +662,7 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, recvEpochBefore + 1)
 	}
 
-	// MARK: - Epoch classification (MF7, shared by `0x00` and `0x05`)
+	// MARK: - Epoch classification (shared by `0x00` and `0x05`)
 
 	/// A `0x00` commit framed strictly ahead of the receive group's live
 	/// epoch is `.epochDesync`, not processed — hand-built via two successive
@@ -699,7 +699,7 @@ final class FoldTests: XCTestCase {
 		let aheadStaple = Frames.encodeMlsMessageStaple(aheadCommitBytes)
 		_ = try fixtureBob.prepareToEncrypt()
 		let carrierFrame = try fixtureBob.encrypt(Data("carrier".utf8)).frame
-		// PR2: opened via `alice` (the recipient) — the app section is a
+		// Opened via `alice` (the recipient) — the app section is a
 		// throwaway filler, same reasoning as the sibling tests above.
 		let (_, proposal, app) = try Frames.decodeMessageFrame(
 			alice.openOrRaw(carrierFrame))
@@ -738,11 +738,11 @@ final class FoldTests: XCTestCase {
 		XCTAssertEqual(bob.recvGroup?.classical.context.epoch, epochAfter)
 	}
 
-	// MARK: - §11 MF8: single-occupancy, latest-wins
+	// MARK: - Single-occupancy, latest-wins
 
 	/// A second, DIFFERENT-target offer, surfaced before the first is
 	/// approved, replaces it outright: `processIncoming` unconditionally
-	/// overwrites `offeredProposal` on every inbound frame (§11 MF8), so the
+	/// overwrites `offeredProposal` on every inbound frame, so the
 	/// earlier digest is no longer approvable — only the latest one is. A
 	/// same-target repeat would be a reuse, not a genuinely later offer, so
 	/// the second leg here is a rotation.

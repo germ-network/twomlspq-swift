@@ -369,15 +369,29 @@ final class LifecycleE2ETests: XCTestCase {
 	// MARK: - The lifecycle
 
 	func testBookLifecycleFromCold() throws {
+		try bookLifecycleFromCold(profile: .deployedCompatible)
+	}
+
+	/// The same book lifecycle, under the correct profile: both principals
+	/// opt in (`SessionProfile`'s public opt-in), so C1 sends no announce and
+	/// C2 opens the reciprocal A.5 at once instead of deferring to a plain
+	/// A.4 — sites [10]/[11]/[12] below.
+	func testBookLifecycleFromColdCorrectProfile() throws {
+		try bookLifecycleFromCold(profile: .correct)
+	}
+
+	private func bookLifecycleFromCold(profile: SessionProfile) throws {
 		// [1] Cold principals.
 		let alicePrincipal = try Principal.generate(
 			clientID: Data("alice".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
-			pqProvider: SessionTestSupport.pqProvider)
+			pqProvider: SessionTestSupport.pqProvider,
+			advertisesCorrectProfile: profile == .correct)
 		let bobPrincipal = try Principal.generate(
 			clientID: Data("bob".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
-			pqProvider: SessionTestSupport.pqProvider)
+			pqProvider: SessionTestSupport.pqProvider,
+			advertisesCorrectProfile: profile == .correct)
 
 		// [2] §A.1 invitation-driven, born-dedicated establishment.
 		var (bobInvitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
@@ -773,33 +787,60 @@ final class LifecycleE2ETests: XCTestCase {
 		let b10 = try bob.send(Data("b10".utf8), to: &alice)
 		XCTAssertTrue(b10.prepared.didCommit)
 		XCTAssertEqual(b10.prepared.committedRemoteClientID, alice2ID)
-		XCTAssertEqual(bob.outbox.map(\.expectedKind), [.message, .pqSideBand(.ratchetEK)])
+		// Deployed: C2 defers, so bob's fold-send opens a plain A.4. Correct:
+		// C2 has no deferral (book session-lifecycle.md "the correct profile
+		// opens the reciprocal as soon as the peer's leaf lags"), so the same
+		// fold-send opens the reciprocal A.5 at once instead.
+		XCTAssertEqual(
+			bob.outbox.map(\.expectedKind),
+			profile == .correct
+				? [.message, .pqSideBand(.rekeyUpd)] : [.message, .pqSideBand(.ratchetEK)])
 
 		let b10Decrypted = try alice.deliverDecrypted(bob.nextBlob())
 		XCTAssertTrue(b10Decrypted.didApplyRemoteCommit)
 		XCTAssertTrue(b10Decrypted.ownCredentialCanonicalized)
 		XCTAssertEqual(alice.session.myPrincipalState, .sync(alice2ID))
 
-		let groupBPQEpochBeforeStep10 = try XCTUnwrap(
-			bob.session.sendGroup?.pq?.context.epoch)
-		_ = try alice.deliver(bob.nextBlob())  // alice responds w/ CT
-		XCTAssertEqual(alice.outbox.map(\.expectedKind), [.pqSideBand(.ratchetCT)])
-		_ = try bob.deliver(alice.nextBlob())  // bob binds — unlicensed
-		XCTAssertNotNil(bob.session.owedBind)
-		XCTAssertEqual(
-			bob.session.sendGroup?.pq?.context.epoch, groupBPQEpochBeforeStep10 + 1)
+		// Deployed: the self-driven A.4 ratchets bob's own send-PQ group
+		// (Group_B.pq). Correct: the reciprocal A.5's self-Update proposes
+		// into bob's RECV-PQ group (Group_A.pq, alice's send-PQ mirror) —
+		// `pqRekeyBegin`'s own doc: "propose a self-Update into
+		// `recvGroup.pq`".
+		let rekeyedGroupEpochBefore = try XCTUnwrap(
+			profile == .correct
+				? bob.session.recvGroup?.pq?.context.epoch
+				: bob.session.sendGroup?.pq?.context.epoch)
+		if profile == .correct {
+			// Alice answers with her own Commit′ (`rekeyCommit`), and bob
+			// applies it directly — same classical-bind discharge mechanic
+			// as A.4's CT (`owePQBind`), just under the A.5 shape.
+			_ = try alice.deliver(bob.nextBlob())  // alice's pqRekeyRespond
+			XCTAssertEqual(alice.outbox.map(\.expectedKind), [.pqSideBand(.rekeyCommit)])
+			_ = try bob.deliver(alice.nextBlob())  // bob applies — unlicensed
+			XCTAssertNotNil(bob.session.owedBind)
+			XCTAssertEqual(
+				bob.session.recvGroup?.pq?.context.epoch, rekeyedGroupEpochBefore + 1)
+		} else {
+			_ = try alice.deliver(bob.nextBlob())  // alice responds w/ CT
+			XCTAssertEqual(alice.outbox.map(\.expectedKind), [.pqSideBand(.ratchetCT)])
+			_ = try bob.deliver(alice.nextBlob())  // bob binds — unlicensed
+			XCTAssertNotNil(bob.session.owedBind)
+			XCTAssertEqual(
+				bob.session.sendGroup?.pq?.context.epoch, rekeyedGroupEpochBefore + 1)
+		}
 
-		// Alice queues Bob's b10 offer — a12 both folds it AND catches up
-		// her own send-leaf (Group_A), already licensed by that same b10.
+		// Alice queues Bob's b10 offer — a12 folds it AND catches up her own
+		// send-leaf (Group_A), already licensed by that same b10; bob's own
+		// still-parked discharge (the classical bind either shape owes) is
+		// stale relative to a12's own fold — re-minted and re-rides.
 		alice.persist(
 			try alice.session.queueProposal(digest: b10Decrypted.queuedProposal.digest))
 		let a12 = try alice.send(Data("a12".utf8), to: &bob)
 		XCTAssertTrue(a12.prepared.didCommit)
-		// Alice's still-parked CT (unresolved from her side until Bob's
-		// discharge lands) is stale relative to a12's own fold — re-minted
-		// and re-rides.
 		XCTAssertEqual(
-			alice.outbox.map(\.expectedKind), [.message, .pqSideBand(.ratchetCT)])
+			alice.outbox.map(\.expectedKind),
+			profile == .correct
+				? [.message, .pqSideBand(.rekeyCommit)] : [.message, .pqSideBand(.ratchetCT)])
 
 		let a12Decrypted = try bob.deliverDecrypted(alice.nextBlob())
 		XCTAssertTrue(a12Decrypted.didApplyRemoteCommit)
@@ -815,38 +856,51 @@ final class LifecycleE2ETests: XCTestCase {
 		XCTAssertTrue(alice.session.myPQTurn)
 		XCTAssertFalse(bob.session.myPQTurn)
 		XCTAssertEqual(
-			alice.session.recvGroup?.pq?.context.epoch, groupBPQEpochBeforeStep10 + 1)
+			profile == .correct
+				? alice.session.sendGroup?.pq?.context.epoch
+				: alice.session.recvGroup?.pq?.context.epoch,
+			rekeyedGroupEpochBefore + 1)
 
-		// [11] Post-rotation credential catch-up. Right after the rotation
-		// lands, alice's send-PQ leaf still presents her pre-rotation
-		// credential — a round she opens moves only her RECV-PQ leaf; her
-		// send-PQ leaf moves only when she responds to a peer-opened A.5
-		// (protocol-flows.md:56, :696-708 — TwoMLSPQ `69a9f0e`), so it
-		// stays on `aliceOldID` through this whole step.
+		// [11] Post-rotation credential catch-up. Deployed: right after the
+		// rotation lands, alice's send-PQ leaf still presents her
+		// pre-rotation credential — a round she opens moves only her
+		// RECV-PQ leaf; her send-PQ leaf moves only when she responds to a
+		// peer-opened A.5 (protocol-flows.md:56, :696-708 — TwoMLSPQ
+		// `69a9f0e`), so it stays on `aliceOldID` through this whole step.
+		// Correct: her send-PQ leaf already moved to `alice2ID` at [10]'s
+		// reciprocal (her own `pqRekeyRespond` there folded her own catch-up
+		// into the Commit′ that answered bob's peer-opened round).
 		XCTAssertNil(alice.session.pqInflight)
 		XCTAssertNil(alice.session.owedBind)
 		XCTAssertTrue(alice.session.myPQTurn)
+		let aliceSendPQIDThroughStep11 = profile == .correct ? alice2ID : aliceOldID
 		let aliceSendPQLeafBeforeCatchup = try TwoMLSSession.ownLeaf(
 			of: try XCTUnwrap(alice.session.sendGroup?.pq))
 		XCTAssertEqual(
-			try basicIdentifier(aliceSendPQLeafBeforeCatchup.credential), aliceOldID)
+			try basicIdentifier(aliceSendPQLeafBeforeCatchup.credential),
+			aliceSendPQIDThroughStep11)
 		let aliceRecvPQKeyBeforeCatchup = try TwoMLSSession.ownLeaf(
 			of: try XCTUnwrap(alice.session.recvGroup?.pq)
 		).signatureKey
 
 		// Book: the SESSION self-drives §A.5 — alice's own next PQ round
 		// opens as a re-key, carrying the new credential onto her recv-PQ
-		// leaf, with no host call.
+		// leaf, with no host call. Her recv-PQ leaf's own lag is
+		// profile-independent (the own-arm gate runs unconditionally, book
+		// session-lifecycle.md's own-arm sentence), so this still opens
+		// `.rekeyUpd` under both profiles.
 		let openKind = try alice.drivePQRoundToCompletion(responder: &bob)
-		XCTAssertEqual(openKind, .rekeyUpd)
+		XCTAssertEqual(openKind, .rekeyUpd, "\(profile)")
 
 		// This round's own outcome (protocol-flows.md:696-708): unaffected
 		// by whatever round actually opened above, alice's send-PQ own
-		// leaf still presents her PRE-rotation credential.
+		// leaf still presents the same id it did through [10]/before this
+		// round.
 		let aliceSendPQLeafAfterRound = try TwoMLSSession.ownLeaf(
 			of: try XCTUnwrap(alice.session.sendGroup?.pq))
 		XCTAssertEqual(
-			try basicIdentifier(aliceSendPQLeafAfterRound.credential), aliceOldID)
+			try basicIdentifier(aliceSendPQLeafAfterRound.credential),
+			aliceSendPQIDThroughStep11)
 
 		let aliceRecvPQLeaf = try TwoMLSSession.ownLeaf(
 			of: try XCTUnwrap(alice.session.recvGroup?.pq))
@@ -899,9 +953,14 @@ final class LifecycleE2ETests: XCTestCase {
 		let finalFromBobDecrypted = try alice.deliverDecrypted(bob.nextBlob())
 		XCTAssertEqual(
 			finalFromBobDecrypted.applicationMessage, Data("final-from-bob".utf8))
-		// C2 is now satisfied — alice's own A.5 landed at [11] — so bob's
-		// own next turn self-drives the reciprocal, not a plain A.4.
-		XCTAssertEqual(bob.outbox.last?.expectedKind, .pqSideBand(.rekeyUpd))
+		// Deployed: C2 is now satisfied — alice's own A.5 landed at [11] —
+		// so bob's own next turn self-drives the (deferred) reciprocal,
+		// not a plain A.4. Correct: no deferral in this profile, and both
+		// leaves already caught up (bob's at [10], alice's at [11]), so
+		// bob's turn is an ordinary refresh.
+		XCTAssertEqual(
+			bob.outbox.last?.expectedKind,
+			.pqSideBand(profile == .correct ? .ratchetEK : .rekeyUpd), "\(profile)")
 		// Discard the self-staged reciprocal open; this round need not complete.
 		bob.outbox.removeAll()
 

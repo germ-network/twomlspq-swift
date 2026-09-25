@@ -34,7 +34,7 @@ final class MessageRoundTripTests: XCTestCase {
 		XCTAssertEqual(result.applicationMessage, plaintext)
 	}
 
-	/// M1, the carried-hash property: the app message's own carried
+	/// The carried-hash property: the app message's own carried
 	/// `authenticated_data` round-trips as `sha256` of the proposal bytes the
 	/// sender framed alongside it — a VALUE, not a decrypt-time cross-check.
 	/// `unprotect` never compares it against the frame's separate proposal

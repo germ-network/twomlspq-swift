@@ -19,10 +19,24 @@ enum SessionTestSupport {
 	}()
 	static let pqProvider = MLKEM768CipherSuiteProvider()
 
-	static func identity(_ name: String) throws -> TwoMLSIdentity {
+	static func identity(
+		_ name: String, profile: SessionProfile = .deployedCompatible
+	) throws -> TwoMLSIdentity {
 		try TwoMLSIdentity.generate(
 			clientID: Data(name.utf8), classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
+			pqProvider: pqProvider,
+			advertising: profile == .correct ? SessionProfile.recognized : [])
+	}
+
+	/// A principal minting either the frozen deployed-compatible profile
+	/// (the suite default, matching the engine's own default) or, opted
+	/// in, the correct profile.
+	static func principal(
+		_ name: String, profile: SessionProfile = .deployedCompatible
+	) throws -> Principal {
+		try Principal.generate(
+			clientID: Data(name.utf8), classicalProvider: classicalProvider,
+			pqProvider: pqProvider, advertisesCorrectProfile: profile == .correct)
 	}
 
 	/// Alice initiates to Bob's freshly-minted invitation, Bob receives. Bob
@@ -32,18 +46,17 @@ enum SessionTestSupport {
 	/// peer's own join credentials (e.g. the cross-party PSK binding proof);
 	/// each is the fresh leaf bundle `Principal`/`Invitation` minted for
 	/// this session (`session.identity`), not the principal itself.
-	static func established(alice aliceName: String = "alice", bob bobName: String = "bob")
+	static func established(
+		alice aliceName: String = "alice", bob bobName: String = "bob",
+		profile: SessionProfile = .deployedCompatible
+	)
 		throws -> (
 			alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
 			bobIdentity: TwoMLSIdentity, welcomeA: Data, welcomeB: Data
 		)
 	{
-		let alicePrincipal = try Principal.generate(
-			clientID: Data(aliceName.utf8), classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
-		let bobPrincipal = try Principal.generate(
-			clientID: Data(bobName.utf8), classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
+		let alicePrincipal = try principal(aliceName, profile: profile)
+		let bobPrincipal = try principal(bobName, profile: profile)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		guard let theirCombinerKP = invitation.combinerKeyPackage else {
 			throw TwoMLSError.invitationSpent
@@ -70,27 +83,24 @@ enum SessionTestSupport {
 	/// to Alice, so both sides are `isEstablished` — matching the reference's
 	/// "initiator established only once it has received the acceptor's first
 	/// frame" ordering.
-	/// Slice 11: `established()`'s born-dedicated analogue — Bob receives
+	/// `established()`'s born-dedicated analogue — Bob receives
 	/// under a fresh `newClientID`, so his session founds Group_B under a
 	/// dedicated principal D distinct from the invitation identity, and owes
-	/// the contract-26 handoff envelope. `invitationClientID` is Bob's
+	/// the signed handoff envelope. `invitationClientID` is Bob's
 	/// invitation identity's own clientID (== `bobName`, `TwoMLSIdentity.
 	/// generate`'s `clientID` param passed straight through by
 	/// `Principal.generateInvitation`) — the id `bob.leafKeys.recvClassical`
 	/// still presents as `current` until the recv-leaf catch-up.
 	static func establishedDedicated(
 		alice aliceName: String = "alice", bob bobName: String = "bob",
-		dedicatedClientID: Data = Data("bob-dedicated".utf8)
+		dedicatedClientID: Data = Data("bob-dedicated".utf8),
+		profile: SessionProfile = .deployedCompatible
 	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
 		invitationClientID: Data, dedicatedClientID: Data
 	) {
-		let alicePrincipal = try Principal.generate(
-			clientID: Data(aliceName.utf8), classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
-		let bobPrincipal = try Principal.generate(
-			clientID: Data(bobName.utf8), classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
+		let alicePrincipal = try principal(aliceName, profile: profile)
+		let bobPrincipal = try principal(bobName, profile: profile)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		guard let theirCombinerKP = invitation.combinerKeyPackage else {
 			throw TwoMLSError.invitationSpent
@@ -119,13 +129,14 @@ enum SessionTestSupport {
 	/// `BornDedicatedTests` and any other suite needing a born-dedicated
 	/// starting point.
 	static func establishedDedicatedAndApproved(
-		dedicatedClientID: Data = Data("bob-dedicated".utf8)
+		dedicatedClientID: Data = Data("bob-dedicated".utf8),
+		profile: SessionProfile = .deployedCompatible
 	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, invitationClientID: Data,
 		dedicatedClientID: Data, envelope: Data
 	) {
 		var (alice, bob, _, invitationClientID, resolvedDedicatedClientID) =
-			try establishedDedicated(dedicatedClientID: dedicatedClientID)
+			try establishedDedicated(dedicatedClientID: dedicatedClientID, profile: profile)
 		let envelope = Data("fake-signed-handoff".utf8)
 		_ = try bob.installEstablishmentEnvelope(envelope)
 		let standalone = try XCTUnwrap(try bob.standaloneWelcome())
@@ -153,9 +164,11 @@ enum SessionTestSupport {
 	}
 
 	static func establishedAndExchanged(
-		alice aliceName: String = "alice", bob bobName: String = "bob"
+		alice aliceName: String = "alice", bob bobName: String = "bob",
+		profile: SessionProfile = .deployedCompatible
 	) throws -> (alice: TwoMLSSession, bob: TwoMLSSession) {
-		var (alice, bob, _, _, _, _) = try established(alice: aliceName, bob: bobName)
+		var (alice, bob, _, _, _, _) = try established(
+			alice: aliceName, bob: bobName, profile: profile)
 		_ = try bob.prepareToEncrypt()
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncomingDecrypted(frame)
@@ -269,7 +282,7 @@ enum SessionTestSupport {
 	}
 }
 
-/// Slice 11: `processIncoming` now returns the 4-case `IncomingResult`
+/// `processIncoming` now returns the 4-case `IncomingResult`
 /// instead of a bare `DecryptResult` — this mechanically migrates the
 /// hundreds of pre-existing call sites that only ever cared about the
 /// everyday `0x03` app-frame path. Fails the test (via `XCTFail`, not a

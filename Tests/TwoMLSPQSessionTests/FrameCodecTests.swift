@@ -208,7 +208,7 @@ final class FrameCodecTests: XCTestCase {
 		}
 	}
 
-	// MARK: - `0x0B` contract-26 establishment handoff
+	// MARK: - `0x0B` signed establishment handoff
 
 	func testEstablishmentHandoffRoundTrips() throws {
 		let envelope = Data("signed-handoff-blob".utf8)

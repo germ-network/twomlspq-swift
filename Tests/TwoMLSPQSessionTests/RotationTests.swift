@@ -9,8 +9,8 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// Slice 6: classical principal credential/signature-key rotation, layered on
-/// the slice-5 fold path and the real Authentication Service
+/// Classical principal credential/signature-key rotation, layered on
+/// the classical fold path and the real Authentication Service
 /// (`CredentialAuthentication.swift`). A rotation round is author → approve →
 /// fold → apply: the rotator's `prepareToEncrypt(rotating:)` mints a fresh
 /// signature keypair and stages a rotating `Upd(self)` (via the swift-mls
@@ -19,7 +19,7 @@ import XCTest
 /// via `AuthCore.theirs.validSuccessorOfCurrent`), and its own next
 /// `prepareToEncrypt`/`committingRound` folds it — canonicalizing the
 /// rotator's RECV-leaf first; the rotator's SEND-leaf lags until its own next
-/// `committingRound` performs the own-leaf catch-up (§3c), threading the same
+/// `committingRound` performs the own-leaf catch-up, threading the same
 /// ring through a `newIdentity`-carrying commit on its own group.
 @available(iOS 26, macOS 26, *)
 final class RotationTests: XCTestCase {
@@ -74,7 +74,7 @@ final class RotationTests: XCTestCase {
 	/// only succeeds if the leg was genuinely signed under whatever key
 	/// `bob`'s tree currently shows for the sender's leaf.
 	private func verifyEKLegOpensCleanly(_ frame: Data, against bob: TwoMLSSession) throws {
-		// PR2: `frame` is header-sealed on exit; `bob` (the recipient) is the
+		// `frame` is header-sealed on exit; `bob` (the recipient) is the
 		// one whose receive window opens it.
 		let (tag, messageBytes) = try Frames.decodePQLeg(bob.openOrRaw(frame))
 		XCTAssertEqual(tag, Frames.pqEKTag)
@@ -177,9 +177,9 @@ final class RotationTests: XCTestCase {
 		XCTAssertEqual(fromBob.applicationMessage, Data("post-rotation-bob".utf8))
 	}
 
-	// MARK: - D4/NIT6: classical receive tolerates a same-credential key-only rotation
+	// MARK: - Classical receive tolerates a same-credential key-only rotation
 
-	/// D4: on the CLASSICAL path, a peer that rotates only its LEAF SIGNING
+	/// On the CLASSICAL path, a peer that rotates only its LEAF SIGNING
 	/// KEY while keeping the SAME `clientID` is already accepted today — no
 	/// code change (`.credentialReplaced` fires on a signature-key-only
 	/// change too, `CredentialPresentation` being `Equatable` over both
@@ -231,7 +231,7 @@ final class RotationTests: XCTestCase {
 		send.classical = advanced.group
 
 		// A routine `Upd(self)`, staged for the NEXT round and already
-		// re-signed under the just-rotated key (§11 MF3's every-round shape).
+		// re-signed under the just-rotated key (the every-round shape).
 		let (nextProposal, _) = try send.classical.proposeUpdate(
 			SessionTestSupport.classicalProvider, signingKey: freshSigningKey,
 			framing: .publicMessage)
@@ -304,7 +304,7 @@ final class RotationTests: XCTestCase {
 			try basicIdentifier(peerLeafCredential(of: bob.recvGroup!.classical)),
 			aliceNewID)
 
-		// Refresh Alice's discharge license (§5): her catch-up commit above
+		// Refresh Alice's discharge license: her catch-up commit above
 		// advanced `sendGroup.classical` past the epoch Bob's last inbound
 		// frame evidenced, and the upcoming PQ bind needs current evidence
 		// to discharge on Alice's very next `prepareToEncrypt`.
@@ -313,7 +313,7 @@ final class RotationTests: XCTestCase {
 		_ = try alice.processIncomingDecrypted(refreshFrame)
 
 		// §A.3 bootstrap — PQ founding stays on the founding identity
-		// throughout slice 6, unaffected by the classical rotation above.
+		// throughout, unaffected by the classical rotation above.
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
@@ -331,7 +331,7 @@ final class RotationTests: XCTestCase {
 		XCTAssertNoThrow(try bob.pqRatchetBind(ctFrame))
 
 		// Discharge Bob's owed bind — flips the PQ turn to Alice (the
-		// rotator), who becomes the turn-holder for the two MF4 custody
+		// rotator), who becomes the turn-holder for the two custody
 		// pins below.
 		XCTAssertNotNil(bob.owedBind)
 		let dischargePrepared = try bob.prepareToEncrypt()
@@ -346,7 +346,7 @@ final class RotationTests: XCTestCase {
 		// moves her leaf in Group_B.pq (bob's send-PQ), which is exactly
 		// what C2 was waiting on: bob's own next turn now opens the
 		// reciprocal on Group_A.pq (his recv-PQ), catching her OTHER leaf
-		// up too, so the MF4 assertions below see alice holding the turn
+		// up too, so the assertions below see alice holding the turn
 		// with nothing left lagging.
 		let catchUpTag = try SessionTestSupport.drivePQRound(
 			initiator: &alice, responder: &bob)
@@ -356,7 +356,7 @@ final class RotationTests: XCTestCase {
 		XCTAssertEqual(reciprocalTag, Frames.pqRekeyUpdTag)
 		XCTAssertTrue(alice.myPQTurn)
 
-		// MF4 (a): Alice — the rotator, now turn-holder — self-stages a
+		// Alice — the rotator, now turn-holder — self-stages a
 		// fresh EK. `stageRatchet` (`+Ratchet.swift:49`) must sign it under
 		// her NEW rotated key: `protect` never self-verifies, so a
 		// wrong-key mistake there would surface only when Bob opens it.
@@ -369,7 +369,7 @@ final class RotationTests: XCTestCase {
 		}
 		try verifyEKLegOpensCleanly(originalEKFrame, against: bob)
 
-		// MF4 (b): Bob offers Alice a routine (non-rotating) Upd; Alice's
+		// Bob offers Alice a routine (non-rotating) Upd; Alice's
 		// own next `prepareToEncrypt` folds it, committing PAST the epoch
 		// her parked EK was staged at — `rewrapSideBand`
 		// (`+Ratchet.swift:182`) must re-mint that stale leg, again under
@@ -386,7 +386,7 @@ final class RotationTests: XCTestCase {
 		let aliceFoldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 
 		let rewrappedEKFrame = try XCTUnwrap(alice.pqPendingOutbound())
-		// PR2: `pqPendingOutbound()` re-seals under a fresh nonce on every
+		// `pqPendingOutbound()` re-seals under a fresh nonce on every
 		// call, so the SEALED bytes always differ even for an unchanged
 		// plaintext — compare the OPENED plaintexts instead (the outer
 		// header epoch — alice's recv group, Group_B — hasn't moved here,
@@ -488,7 +488,7 @@ final class RotationTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: bob.identity.clientID, message: rotatingMessage)
@@ -500,10 +500,10 @@ final class RotationTests: XCTestCase {
 		XCTAssertTrue(alice.auth.theirs.authorizedNext.isEmpty)
 	}
 
-	// MARK: - Mutation-verify: F2 one-generation cap
+	// MARK: - Mutation-verify: one-generation cap
 
 	/// A second `prepareToEncrypt(rotating:)` naming a DIFFERENT id while a
-	/// candidate is still outstanding is `.rotationInFlight` — F2's
+	/// candidate is still outstanding is `.rotationInFlight` — the
 	/// single-in-flight cap. Naming the SAME candidate again is idempotent.
 	func testSecondRotationWithDifferentIDWhileOutstandingIsRotationInFlight() throws {
 		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
@@ -528,8 +528,8 @@ final class RotationTests: XCTestCase {
 	///
 	/// The rollback offer is hand-authored directly on `bob.recvGroup`
 	/// (mirroring `FoldTests.authorBobCredentialRotation`) rather than via a
-	/// second `prepareToEncrypt(rotating:)` call: F2's single-slot keyring
-	/// (§7) cannot represent a THIRD live credential, so first letting bob's
+	/// second `prepareToEncrypt(rotating:)` call: the single-slot keyring
+	/// cannot represent a THIRD live credential, so first letting bob's
 	/// own rotation fully converge (both leaves on `bobV2`, `rotationCandidate`
 	/// still `bobV2`) before hand-crafting the rollback keeps this test to
 	/// the TWO credentials the minimal cut supports.
@@ -580,7 +580,7 @@ final class RotationTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(carrierFrame))
 		let rollbackProposal = Frames.encodeProposalSection(
 			proposing: bobOriginalID, message: rollbackBytes)
@@ -595,7 +595,7 @@ final class RotationTests: XCTestCase {
 		}
 	}
 
-	// MARK: - MF2: the self-id guard (`+ClassicalCommit.swift:98-100`)
+	// MARK: - The self-id guard (`+ClassicalCommit.swift:98-100`)
 
 	/// A peer's rotating offer naming MY OWN FOUNDING id as its new
 	/// credential is `.invalidSuccession` — `theirs.validSuccessor` alone
@@ -610,7 +610,7 @@ final class RotationTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: alice.identity.clientID, message: rotatingMessage)
@@ -640,7 +640,7 @@ final class RotationTests: XCTestCase {
 			proposer: &bob, newID: aliceCandidateID)
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: aliceCandidateID, message: rotatingMessage)
@@ -655,9 +655,9 @@ final class RotationTests: XCTestCase {
 		}
 	}
 
-	// MARK: - M5: value semantics for `theirs` on a rejected offer
+	// MARK: - Value semantics for `theirs` on a rejected offer
 
-	/// A rejected peer offer (`queueProposal` throwing, here via the MF2
+	/// A rejected peer offer (`queueProposal` throwing, here via the
 	/// self-id guard) must leave `auth.theirs` — its `authorizedNext` in
 	/// particular — completely unchanged, not just `mine`.
 	/// `validateOfferedUpdate` computes `authCopy.theirs.authorize(...)` on
@@ -672,7 +672,7 @@ final class RotationTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-app".utf8)).frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let (staple, _, app) = try Frames.decodeMessageFrame(alice.openOrRaw(bobFrame))
 		let craftedProposal = Frames.encodeProposalSection(
 			proposing: alice.identity.clientID, message: rotatingMessage)
@@ -752,7 +752,7 @@ final class RotationTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 
-		// PR2: opened via `alice` (the recipient); the reconstructed
+		// Opened via `alice` (the recipient); the reconstructed
 		// `tamperedFrame` below passes straight through `processIncoming`'s
 		// `openOrRaw` (an unsealable blob is returned as-is).
 		let (staple, proposal, app) = try Frames.decodeMessageFrame(
@@ -780,7 +780,7 @@ final class RotationTests: XCTestCase {
 	// MARK: - Mutation-verify: the effects reshape still rejects a roster change
 
 	/// A commit that folds Alice's genuinely-rotating Upd BY REFERENCE
-	/// alongside an extra `Add` is still `.invalidFoldEffects` — slice 6
+	/// alongside an extra `Add` is still `.invalidFoldEffects` — rotation
 	/// widens the union/count validator to accept `.credentialReplaced` as an
 	/// equivalent leaf-move to `.updated`, but never touches the
 	/// Add/Remove/`membershipRemoved` allow-list. Mirrors
@@ -831,7 +831,7 @@ final class RotationTests: XCTestCase {
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try alice.prepareToEncrypt()
 		let carrierFrame = try alice.encrypt(Data("carrier".utf8)).frame
-		// PR2: opened via `bob` (the recipient) — the app section is a
+		// Opened via `bob` (the recipient) — the app section is a
 		// throwaway filler `alice.processIncoming` never reaches (the fold
 		// staple is rejected first).
 		let (_, proposal, app) = try Frames.decodeMessageFrame(bob.openOrRaw(carrierFrame))
@@ -850,7 +850,7 @@ final class RotationTests: XCTestCase {
 		XCTAssertEqual(alice.recvGroup?.classical.context.epoch, recvEpochBefore)
 	}
 
-	// MARK: - MF3: recv-side `adjudicate` (`applyFoldCommit`/`applyBind`)
+	// MARK: - Recv-side `adjudicate` (`applyFoldCommit`/`applyBind`)
 
 	/// A commit hand-built directly on the PEER's (Bob's) send group,
 	/// threading a `newIdentity` naming a NEVER-OFFERED id through the
@@ -891,7 +891,7 @@ final class RotationTests: XCTestCase {
 		let badStaple = Frames.encodeMlsMessageStaple(badCommitBytes)
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		// PR2: opened via `alice` (the recipient) — the app section is a
+		// Opened via `alice` (the recipient) — the app section is a
 		// throwaway filler `alice.processIncoming` never reaches (the fold
 		// staple is rejected first).
 		let (_, proposal, app) = try Frames.decodeMessageFrame(
@@ -1034,7 +1034,7 @@ final class RotationTests: XCTestCase {
 
 	// MARK: - Evidence-gating: an unlicensed own-leaf catch-up must not commit
 
-	/// B1 — the §A.3-bootstrap wedge: with a lagging send-leaf
+	/// The §A.3-bootstrap wedge: with a lagging send-leaf
 	/// (`rotationCandidate` live), an owed bind parked, and Bob's licensing Upd
 	/// NOT yet applied (`peerAppliedSendEpoch == nil`), an unlicensed
 	/// `prepareToEncrypt` must NOT commit. Pre-fix the catch-up fired
@@ -1100,7 +1100,7 @@ final class RotationTests: XCTestCase {
 		XCTAssertTrue(prepared2.didCommit)
 		XCTAssertNil(alice.owedBind)
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
-		// PR2: opened via `bob` (the recipient).
+		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(boundFrame))
 		XCTAssertEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
 
@@ -1113,7 +1113,7 @@ final class RotationTests: XCTestCase {
 			aliceNewID, "the send-classical leaf has now caught up")
 	}
 
-	/// B3 — no PQ at all: an unlicensed own-leaf catch-up must not produce a
+	/// No PQ at all: an unlicensed own-leaf catch-up must not produce a
 	/// staple nothing bridges. Same lagging send-leaf, no bootstrap, Bob's
 	/// license withheld: `didCommit == false` and the send epoch is unchanged.
 	/// Re-license and the deferred catch-up commits; Bob applies it
@@ -1150,7 +1150,7 @@ final class RotationTests: XCTestCase {
 		let prepared2 = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared2.didCommit)
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
-		// PR2: opened via `bob` (the recipient).
+		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(catchUpFrame))
 		XCTAssertEqual(Frames.stapleKind(staple.first!), .mlsMessage)
 		let decrypted = try bob.processIncomingDecrypted(catchUpFrame)

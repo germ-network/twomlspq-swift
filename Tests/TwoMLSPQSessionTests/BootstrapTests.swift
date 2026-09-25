@@ -29,8 +29,8 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertTrue(alice.isFullyEstablished)
 	}
 
-	/// The joined Group_B.pq's mirror `APQInfo` and epoch land where §3
-	/// specifies: `pqEpoch == 1`, `tEpoch` unbound, and both rosters are 2.
+	/// The joined Group_B.pq's mirror `APQInfo` and epoch land as
+	/// expected: `pqEpoch == 1`, `tEpoch` unbound, and both rosters are 2.
 	func testJoinedPQHalfHasMirrorAPQInfoAndEpochOne() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
@@ -112,8 +112,8 @@ final class BootstrapTests: XCTestCase {
 	// MARK: - Chunk B: the bind
 
 	/// The full A.3 round: KP′ exchange, the bind's discharge (licensed by
-	/// Bob's establishment-time frame, per §11 #8), and the turn returning to
-	/// Bob. Asserts the exact epoch positions §11 #10 calls out: only
+	/// Bob's establishment-time frame), and the turn returning to
+	/// Bob. Asserts the exact epoch positions: only
 	/// Group_A.pq (ASG-PQ) moves 1 -> 2; Group_B's halves stay where the
 	/// bootstrap left them.
 	func testFullBootstrapRoundBindsAndReturnsTurn() throws {
@@ -123,7 +123,7 @@ final class BootstrapTests: XCTestCase {
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
 		XCTAssertTrue(bob.isFullyEstablished)
 
-		// NIT5 — THE fidelity proof (D1): each side's PQ leaf presents its
+		// The fidelity proof (D1): each side's PQ leaf presents its
 		// OWN independent pq signing pair, distinct from its classical pair
 		// — mirrors the deployed Rust `CombinerClient`'s two independent
 		// per-half signing keys. Bob's Group_B.pq is founded fresh here
@@ -146,14 +146,14 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertNotEqual(aliceOwnPQLeaf.signatureKey, alice.identity.pqSignatureKey)
 		XCTAssertNotEqual(aliceOwnPQLeaf.signatureKey, alice.identity.signatureKey)
 
-		// Bob's establishment-time frame already licensed Alice (§11 #8), so
+		// Bob's establishment-time frame already licensed Alice, so
 		// the very next `prepareToEncrypt` discharges immediately.
 		let prepared = try alice.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		XCTAssertNil(alice.owedBind)
 		let frame = try alice.encrypt(Data("bound".utf8)).frame
 
-		// PR2: opened via `bob` (the recipient).
+		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
 		XCTAssertEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
 
@@ -175,7 +175,7 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertEqual(aliceRecvPQEpoch, 1)
 	}
 
-	/// §11 #2: the `0x05` staple re-rides every Alice→Bob frame until her next
+	/// The `0x05` staple re-rides every Alice→Bob frame until her next
 	/// commit. A second frame after the bind must decrypt without re-applying
 	/// (no throw, no double epoch-advance, no re-consuming the spent PSKs).
 	func testSecondFrameAfterBindIsIdempotent() throws {
@@ -221,7 +221,7 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertNotNil(alice.owedBind)
 
 		let frame = try alice.encrypt(Data("still-owed".utf8)).frame
-		// PR2: opened via `bob` (the recipient).
+		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
 		XCTAssertNotEqual(Frames.stapleKind(staple.first!), .apqPrivateMessage)
 	}
@@ -229,7 +229,7 @@ final class BootstrapTests: XCTestCase {
 	/// `dischargeOwedBindIfLicensed`'s own re-check catches an `owedBind`
 	/// whose parked epochs no longer match the live send groups, before ever
 	/// building a wire commit — the guard `verifyFullCommitAttestation`
-	/// backstops on the receive side (§11 #9's attestation check is the
+	/// backstops on the receive side (the attestation check is the
 	/// combiner's; this is the discharge-side belt).
 	func testTamperedOwedBindEpochThrowsEpochDesync() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -258,7 +258,7 @@ final class BootstrapTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let frame = try alice.encrypt(Data("bound".utf8)).frame
 
-		// PR2: opened via `bob` (the recipient); the reconstructed
+		// Opened via `bob` (the recipient); the reconstructed
 		// `corruptedFrame` below is fed to `bob.processIncoming` raw and
 		// passes straight through its `openOrRaw` (an unsealable blob is
 		// returned as-is).
@@ -393,7 +393,7 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		// PR2: opened via `alice` (the recipient) — the app section is a
+		// Opened via `alice` (the recipient) — the app section is a
 		// throwaway filler `bob.processIncoming` never reaches (the bind
 		// staple is rejected first), so which peer's window opens it
 		// doesn't otherwise matter.
@@ -457,7 +457,7 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		// PR2: opened via `alice` (the recipient) — the app section is a
+		// Opened via `alice` (the recipient) — the app section is a
 		// throwaway filler `bob.processIncoming` never reaches (the bind
 		// staple is rejected first), so which peer's window opens it
 		// doesn't otherwise matter.
@@ -575,7 +575,7 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		// PR2: opened via `alice` (the recipient) — the app section is a
+		// Opened via `alice` (the recipient) — the app section is a
 		// throwaway filler `bob.processIncoming` never reaches (the bind
 		// staple is rejected first), so which peer's window opens it
 		// doesn't otherwise matter.
@@ -610,7 +610,7 @@ final class BootstrapTests: XCTestCase {
 
 		_ = try bob.prepareToEncrypt()
 		let carrierFrame = try bob.encrypt(Data("carrier".utf8)).frame
-		// PR2: opened via `alice` (the recipient) — the app section is a
+		// Opened via `alice` (the recipient) — the app section is a
 		// throwaway filler `bob.processIncoming` never reaches (the bind
 		// staple is rejected first), so which peer's window opens it
 		// doesn't otherwise matter.
@@ -627,10 +627,10 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertNotNil(bob.pqInflight)
 	}
 
-	// MARK: - MAJOR-3: the cross-half attestation check, pinned
+	// MARK: - The cross-half attestation check, pinned
 
-	/// The receive-side cross-half attestation check (§11 #9,
-	/// `MLS.Combiner.verifyFullCommitAttestation`) is otherwise unpinned by
+	/// The receive-side cross-half attestation check
+	/// (`MLS.Combiner.verifyFullCommitAttestation`) is otherwise unpinned by
 	/// this suite: deleting it still passes every other test. Hand-build a
 	/// classical bind commit whose attestation lies about the post-commit
 	/// PQ epoch (`owed.pqEpoch + 1` instead of the real `owed.pqEpoch`),
@@ -743,7 +743,7 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertEqual(bob.recvGroup?.pq?.context.epoch, bobRecvPQEpochBefore)
 	}
 
-	// MARK: - MAJOR-4: the reverse-direction 0xFF02, pinned
+	// MARK: - The reverse-direction 0xFF02, pinned
 
 	/// The bind's classical commit must carry both application PSKs
 	/// (`apq_psk` `0xFF01` and the cross-party `0xFF02`) plus exactly one
@@ -761,7 +761,7 @@ final class BootstrapTests: XCTestCase {
 		XCTAssertTrue(prepared.didCommit)
 		let frame = try alice.encrypt(Data("bound".utf8)).frame
 
-		// PR2: opened via `bob` (the recipient).
+		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
 		let (tBytes, _) = try Frames.decodeAPQPrivateMessage(staple)
 
@@ -814,7 +814,7 @@ final class BootstrapTests: XCTestCase {
 		_ = try bob.processIncomingDecrypted(frame)
 	}
 
-	// MARK: - D1: KP′ is the identity's own PQ half
+	// MARK: - KP′ is the identity's own PQ half
 
 	/// KP′ is `identity.keyPackage.pq` itself, not a separately minted KP —
 	/// survives restore, and once Alice joins Group_B.pq off it at §A.3,

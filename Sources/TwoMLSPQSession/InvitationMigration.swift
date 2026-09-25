@@ -5,7 +5,7 @@ import MLSProfileRFC9420
 import SecretBytes
 import TwoMLSPQCrypto
 
-// MARK: - Invitation migration minter (GER-2372 R1)
+// MARK: - Invitation migration minter
 //
 // The cross-module invitation migrator's parts-to-archive entry: mint the
 // Swift-native v1 `InvitationArchive` body directly from raw parts a legacy
@@ -16,7 +16,7 @@ import TwoMLSPQCrypto
 // one.
 
 /// Raw migrated identity parts, mirroring `IdentityArchive`'s field types
-/// exactly, plus the one field the plan-review's caller could have dropped:
+/// exactly, plus the one field a caller could otherwise drop:
 /// the identity's own `clientID`, which must equal both `KeyPackage`s' Basic
 /// credential identities (and the invitation-level `clientID` — `mintArchive`
 /// checks) or `openInitial`/`receive` fail downstream with nothing to explain

@@ -40,8 +40,8 @@ final class RekeyTests: XCTestCase {
 
 	/// The full round: Bob proposes Upd′ into his recv mirror, Alice folds
 	/// it into a Commit′ on her own send-PQ (the group actually re-keyed),
-	/// Bob applies it and owes the bind, Bob discharges (already licensed
-	/// per §11 #8), and Alice applies the ack — landing the re-keyed group
+	/// Bob applies it and owes the bind, Bob discharges (already
+	/// licensed), and Alice applies the ack — landing the re-keyed group
 	/// at the same new epoch on both sides and passing the turn back to
 	/// Alice. Also proves the round-trip: an app message still works each
 	/// direction afterward.
@@ -55,7 +55,7 @@ final class RekeyTests: XCTestCase {
 
 		// 1: Bob (initiator) proposes Upd′ into his recv mirror.
 		let updFrame = try bob.pqRekeyBegin().frame
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		XCTAssertEqual(alice.openOrRaw(updFrame).first, Frames.pqRekeyUpdTag)
 		guard case .rekeyInitiated = bob.pqInflight else {
 			XCTFail("expected bob to hold .rekeyInitiated after pqRekeyBegin")
@@ -68,7 +68,7 @@ final class RekeyTests: XCTestCase {
 		// 2: Alice (committer) folds it into a Commit′ on her own send-PQ —
 		// the group actually being re-keyed.
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
-		// PR2: opened via `bob` (the recipient).
+		// Opened via `bob` (the recipient).
 		XCTAssertEqual(bob.openOrRaw(commitFrame).first, Frames.pqRekeyCommitTag)
 		guard case .rekeyResponded = alice.pqInflight else {
 			XCTFail("expected alice to hold .rekeyResponded after pqRekeyRespond")
@@ -91,9 +91,9 @@ final class RekeyTests: XCTestCase {
 		}
 
 		// 4: Bob discharges (already licensed by Alice's earlier "bound"
-		// frame from the A.3 fixture, per §11 #8) and Alice applies the
+		// frame from the A.3 fixture) and Alice applies the
 		// `0x05` ack — re-exporting `S` off her OWN rekeyed send-PQ (the
-		// `.rekeyResponded` re-export arm, §3d).
+		// `.rekeyResponded` re-export arm).
 		let prepared = try bob.prepareToEncrypt()
 		XCTAssertTrue(prepared.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
@@ -137,7 +137,7 @@ final class RekeyTests: XCTestCase {
 	/// INJECT half — the watermark correctly firing a fresh export instead
 	/// of skipping — is covered separately by
 	/// `testInjectRoundCompletesWithLockstepWatermarks` and
-	/// `testInjectConfigTamperedApplyThenGenuineRetrySucceeds` (§13 A1/F3).
+	/// `testInjectConfigTamperedApplyThenGenuineRetrySucceeds`.
 	func testSecondRoundWithSwappedRolesSkipsAlreadyConsumedCrossInjection() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 
@@ -214,7 +214,7 @@ final class RekeyTests: XCTestCase {
 		let updFrame = try bob.pqRekeyBegin().frame
 		let commitFrame = try alice.pqRekeyRespond(updFrame).frame
 
-		// PR2: tamper the OPENED inner Commit′ (its own MLS framing
+		// Tamper the OPENED inner Commit′ (its own MLS framing
 		// signature is what this test pins breaking, `decryptionFailed`'s
 		// `validating` catch) — not the outer header seal's bytes. The
 		// reconstructed (now-raw) frame passes straight through
@@ -239,8 +239,8 @@ final class RekeyTests: XCTestCase {
 
 	/// A `0x1B` carrying a commit behind the tag (rather than a proposal) is
 	/// rejected before any `committing` — `verifying(proposal:)` itself
-	/// refuses non-proposal content, remapped to `.decryptionFailed` (§13
-	/// M5) — and the committer's own send-PQ epoch is untouched.
+	/// refuses non-proposal content, remapped to `.decryptionFailed`
+	/// — and the committer's own send-PQ epoch is untouched.
 	func testRekeyRespondRejectsCommitBehindTheTag() throws {
 		let (fixtureAlice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		var alice = fixtureAlice
@@ -276,7 +276,7 @@ final class RekeyTests: XCTestCase {
 		let updFrame = try bob.pqRekeyBegin().frame
 
 		let mallory = try SessionTestSupport.identity("mallory-rekey")
-		// PR2: opened via `alice` (the recipient).
+		// Opened via `alice` (the recipient).
 		let updBytes = try Frames.decodePQRekeyUpd(alice.openOrRaw(updFrame))
 		guard
 			case .publicMessage(let updPub) = try MLS.RFC9420.Message(
@@ -316,7 +316,7 @@ final class RekeyTests: XCTestCase {
 	/// A `0x1B` Upd′ that replaces the proposer's PQ-leaf credential with an id
 	/// NEITHER party has ever offered is refused by the committer's
 	/// `pqRekeyRespond` — `.rekeyProposalRejected` — before any commit is
-	/// spent: id-based catch-up is accepted (§1/§3/D6, `+Rekey.swift` doc), but
+	/// spent: id-based catch-up is accepted (protocol doc §1/§3/D6, `+Rekey.swift` doc), but
 	/// only onto a credential already canonical in `auth.theirs`
 	/// (`validatePQLeafMove`, `CredentialAuthentication.swift`); the PQ arms
 	/// still run no persisted `AuthCore.adjudicate` of their own, so an id this
@@ -443,8 +443,8 @@ final class RekeyTests: XCTestCase {
 	}
 
 	/// `commitFrame`'s proposal count, decoded at the deployed wire width (its
-	/// injected PSK, when present, carries a `ComponentID`, §11 #6).
-	/// PR2: `commitFrame` is header-sealed on exit; `opener` (the recipient)
+	/// injected PSK, when present, carries a `ComponentID`).
+	/// `commitFrame` is header-sealed on exit; `opener` (the recipient)
 	/// is the one whose receive window opens it.
 	private func rekeyCommitProposalCount(_ commitFrame: Data, opener: TwoMLSSession) throws
 		-> Int
@@ -516,7 +516,7 @@ final class RekeyTests: XCTestCase {
 		XCTAssertNil(alice.lastSendPQExported)
 		let sendGroupAEpochBefore = try XCTUnwrap(alice.sendGroup?.pq?.context.epoch)
 
-		// PR2: tamper the OPENED inner Commit′ (its own MLS framing
+		// Tamper the OPENED inner Commit′ (its own MLS framing
 		// signature, `decryptionFailed`'s `validating` catch), not the outer
 		// header seal's bytes. The reconstructed (now-raw) frame passes
 		// straight through `pqRekeyApply`'s `openOrRaw`.

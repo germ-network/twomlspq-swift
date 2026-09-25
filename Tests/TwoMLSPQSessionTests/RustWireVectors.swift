@@ -1,4 +1,4 @@
-// Differential wire-compat vectors against the deployed Rust reference: the §7 Germ
+// Differential wire-compat vectors against the deployed Rust reference: the Germ
 // message-frame/proposal-section framing, the deployed uint32 (big-endian) ComponentID
 // width the AppDataUpdate attestation proposal's body carries, and (d) a real fold-only
 // commit staple.
@@ -10,7 +10,7 @@
 //
 // Regeneration recipe — two temporary, uncommitted Rust tests:
 //
-// 1. §7 framing: a `#[cfg(test)] mod wire_vector_emitter` added to two-mls-pq's
+// 1. Framing: a `#[cfg(test)] mod wire_vector_emitter` added to two-mls-pq's
 //    `src/session/frames.rs` (the encoders are `pub(crate)`, so this must be an in-crate
 //    test), containing:
 //
@@ -89,14 +89,14 @@
 // swift-format-ignore-file
 
 enum RustWireVectors {
-	// MARK: - (b) §7 framing — `encode_message_frame(&[0xAA;3], vec![0xBB;5], vec![0xCC;7])`
+	// MARK: - (b) framing — `encode_message_frame(&[0xAA;3], vec![0xBB;5], vec![0xCC;7])`
 
 	static let messageFrame = "0303000000aaaaaa05000000bbbbbbbbbb07000000cccccccccccccc"
 
-	// (b) §7 framing — `encode_proposal_section(&[0x11;4], &[0x22;6])`
+	// (b) framing — `encode_proposal_section(&[0x11;4], &[0x22;6])`
 	static let proposalSection = "0400000011111111222222222222"
 
-	// (b) §7 framing — a bare `push_section(&mut out, &[0x33;9])`
+	// (b) framing — a bare `push_section(&mut out, &[0x33;9])`
 	static let pushSection = "09000000333333333333333333"
 
 	// MARK: - (c)+(a) AppDataUpdate — `ApqInfoUpdate { t_epoch: 2, pq_epoch: 1 }`,

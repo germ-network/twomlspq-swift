@@ -83,16 +83,22 @@ func verifyAppBinding(_ group: MLS.RFC9420.Group, expected: Data?) throws {
 	}
 }
 
-/// Assert a PQ half carries NO `AppBinding`: the binding lives on the
-/// classical (message) halves only — a PQ half inherits coverage through the
-/// `APQInfo` half-binding, and this module never reads a binding off one.
-/// `nil` (a deferred, not-yet-founded PQ half) is vacuously fine — there is
-/// nothing to check yet (mirrors Rust `verify_pq_half_unbound`, called only
-/// where a PQ half already exists).
+/// Assert a PQ half carries NO `AppBinding` and no session profile record:
+/// the binding lives on the classical (message) halves only — a PQ half
+/// inherits coverage through the `APQInfo` half-binding, and this module
+/// never reads a binding off one; the session profile is likewise a
+/// classical-half-only signal (book group-rules.md rule 9: "PQ halves carry
+/// none"). `nil` (a deferred, not-yet-founded PQ half) is vacuously fine —
+/// there is nothing to check yet. Folds both checks into one function
+/// (mirrors Rust `verify_pq_half_unbound`, which checks only the binding —
+/// Rust never records a profile) since every call site already needs both.
 func verifyPQHalfUnbound(_ pq: MLS.RFC9420.Group?) throws {
 	guard let pq else { return }
 	guard try AppBinding.read(fromExtensionsOf: pq.context) == nil else {
 		throw TwoMLSError.appBindingMismatch
+	}
+	guard try SessionProfile.recorded(in: pq.context) == .deployedCompatible else {
+		throw TwoMLSError.sessionProfileMismatch
 	}
 }
 

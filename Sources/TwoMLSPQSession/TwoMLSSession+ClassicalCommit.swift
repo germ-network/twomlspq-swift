@@ -10,11 +10,11 @@ import SecretBytes
 
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
-	/// §3a: approve the peer's currently-offered `Upd(self)` (identified by its
+	/// Approve the peer's currently-offered `Upd(self)` (identified by its
 	/// digest), for `committingRound` to fold into the next commit. Matches
 	/// only the LAST offer `processIncoming` surfaced — a digest that does not
 	/// match (including "nothing offered") is `.proposalRejected`, never a
-	/// silent no-op (§11, matching the Rust reference). Validated against
+	/// silent no-op (matching the Rust reference). Validated against
 	/// `sendGroup.classical` — the group `committingRound` will actually fold
 	/// it into — without disturbing that group otherwise: a rejected approval
 	/// leaves `offeredProposal` intact (restored) so a later, different digest
@@ -32,7 +32,7 @@ extension TwoMLSSession {
 		}
 		queuedProposal = offered
 
-		// Return cadence (slice 8a): classical-only mutation → `.core`.
+		// Return cadence: classical-only mutation → `.core`.
 		advanceStateSeq()
 		return try stateUpdate(kind: .core)
 	}
@@ -42,20 +42,20 @@ extension TwoMLSSession {
 	/// leaf shape, not this function's `proposing` match or the AS successor
 	/// check — a path unreachable via the public API (`queuedProposal` is set
 	/// only by `queueProposal`), kept there defensively. Neither mutates any
-	/// group except (slice 6) the AS's own bookkeeping: `send.classical.
+	/// group except the AS's own bookkeeping: `send.classical.
 	/// verifying(proposal:)` (non-consuming for a `PublicMessage`)
 	/// authenticates the framing; the verified proposal must be a peer
 	/// `.update` (`.member` sender, not this session's own leaf); its verified
 	/// `.basic` identity must match the frame's unauthenticated `proposing`
-	/// claim (§11 MF5 — `proposing` rides outside the AAD, so the wire claim
-	/// alone proves nothing); and — slice 6 — when its leaf's credential/
+	/// claim (`proposing` rides outside the AAD, so the wire claim
+	/// alone proves nothing); and when its leaf's credential/
 	/// signature key differs from the current occupant's (a
 	/// `.credentialReplaced` shape), the peer's OWN rotation must be a valid
 	/// successor of the peer's canonical head. Reject a peer
 	/// naming one of MY OWN known ids outright (never a legitimate successor
 	/// of THEIRS) before ever authorizing it — `theirs.validSuccessor` alone
 	/// cannot see `mine`'s sequence, so this closes that gap explicitly. AS
-	/// consult point 1 (slice 6): `auth.theirs.authorize` records the offer
+	/// consult point 1: `auth.theirs.authorize` records the offer
 	/// BEFORE `validSuccessorOfCurrent` gates it — `PartySequence.
 	/// validSuccessor`'s own rollback check (an authorized-but-retired id
 	/// falls through to the ordering check and is rejected) is what actually
@@ -139,6 +139,10 @@ extension TwoMLSSession {
 			if try AppBinding.read(fromExtensionsOf: send.classical.context) != nil {
 				try ensureAppBindingCreatorLeafAdvert(leafNode)
 			}
+			// Book group-rules.md rule 9's tail, same gate: a profile-carrying
+			// group's replacement leaf must keep advertising the recorded type.
+			try SessionProfile.recorded(in: send.classical.context)
+				.ensureAdvertised(by: leafNode)
 			guard case .basic(let offeredID) = leafNode.credential,
 				offeredID == offered.proposing
 			else {
@@ -168,7 +172,7 @@ extension TwoMLSSession {
 		}
 	}
 
-	/// Shared by the `0x00` fold-only arm and the `0x05` bind arm (§11 MF7 —
+	/// Shared by the `0x00` fold-only arm and the `0x05` bind arm (mirrors
 	/// Rust's own `staple_epoch_action`, factored out so the two arms cannot
 	/// drift): behind the receive group's live epoch is an idempotent re-ride
 	/// (the staple rides every frame until the sender's next commit) and a
@@ -183,9 +187,9 @@ extension TwoMLSSession {
 		return .apply
 	}
 
-	/// §11 MF3: re-`verifying`+`insert` every `Upd(self)` staged into
+	/// Re-`verifying`+`insert` every `Upd(self)` staged into
 	/// `recvGroup.classical` at its current epoch into a FRESH `ProposalStore`
-	/// — swift-mls keeps no cross-call proposal cache (§13 M1), so
+	/// — swift-mls keeps no cross-call proposal cache, so
 	/// `validating` can only resolve a commit's by-reference fold from a store
 	/// THIS call supplies. A stale/foreign/tampered entry simply fails to
 	/// verify and is skipped — `verifying` itself epoch-checks, so dropping it
@@ -275,7 +279,7 @@ extension TwoMLSSession {
 		return (augmented, !lacked.isEmpty)
 	}
 
-	/// §11 MF4: export+ledger `classical`'s CURRENT-epoch `0xFF02` cross-party
+	/// Export+ledger `classical`'s CURRENT-epoch `0xFF02` cross-party
 	/// PSK into `ledger`, unless that epoch is already there — mirrors the
 	/// Rust `remember_send_psk`. Pure with respect to `self`: both parameters
 	/// are `inout` local copies the caller owns, so a caller can discard both
@@ -303,7 +307,7 @@ extension TwoMLSSession {
 		}
 	}
 
-	/// The own-leaf catch-up (§3c; generalized catch-up): does
+	/// The own-leaf catch-up (generalized catch-up): does
 	/// `send`'s own classical leaf "lag" — present an id other than
 	/// `mineCurrent` (`auth.mine.current`)? No candidate is needed to answer
 	/// that: `mine.current` only ever moves once SOME leaf has already
@@ -327,11 +331,11 @@ extension TwoMLSSession {
 		return mineCurrent
 	}
 
-	/// §3b/§11 MF6: a committing round on `sendGroup.classical` — folds the
+	/// A committing round on `sendGroup.classical` — folds the
 	/// approved peer Update (`queuedProposal`, when present: a fold needs no
 	/// license, since `queueProposal` already verified it against the live
 	/// send group, and holding it IS the evidence), discharges an owed PQ
-	/// bind (when `owedBind != nil` AND licensed), and/or — slice 6 — catches
+	/// bind (when `owedBind != nil` AND licensed), and/or catches
 	/// up my own send-leaf's presentation to my canonical principal
 	/// (`ownLeafCatchUpTarget`, when it lags). Any of the three alone is
 	/// enough to trigger a commit (the catch-up-only trigger is new: a plain
@@ -340,15 +344,15 @@ extension TwoMLSSession {
 	/// send-leaf). Evidence-gating (`protocol-flows.md` §Evidence-gating): the
 	/// catch-up fires only on a LICENSED round, so every committing round is
 	/// either a fold (holding the peer's proposal is evidence) or licensed —
-	/// which is exactly why an owed bind rides every round that commits (MF6):
+	/// which is exactly why an owed bind rides every round that commits:
 	/// every such round already carries evidence, and one that committed past
 	/// an unapplied bind would keep the bind's reserved epoch forever
 	/// `.epochDesync` (`protocol-flows.md` §Evidence-gating). An unlicensed
 	/// catch-up is deferred, never dropped — `rotationCandidate` persists and
 	/// the peer's next inbound frame re-stamps the license. Staple selection
-	/// keys off `owed != nil` (→ `0x05`), not `didCommit` (MF6). Reports
+	/// keys off `owed != nil` (→ `0x05`), not `didCommit`. Reports
 	/// whether a commit happened, and — fold only — the folded peer leaf's
-	/// verified identity (MF5, never the unauthenticated wire `proposing`).
+	/// verified identity (never the unauthenticated wire `proposing`).
 	// internal: used by Messaging.prepareToEncrypt
 	internal mutating func committingRound() throws -> (
 		didCommit: Bool, committedRemoteClientID: Data?
@@ -388,7 +392,7 @@ extension TwoMLSSession {
 		// It stays so a fold can never strand an owed bind by advancing the
 		// epoch without discharging it, should that invariant ever change.
 		let willDischargeBind = owed != nil && (folded != nil || licensed)
-		// The catch-up (§3c), now evidence-gated (`protocol-flows.md` §Evidence-gating):
+		// The catch-up, now evidence-gated (`protocol-flows.md` §Evidence-gating):
 		// the catch-up fires only on a LICENSED round, so every committing
 		// round is either a fold (holding the peer's proposal IS the evidence)
 		// or licensed — an unlicensed commit could otherwise produce a staple
@@ -426,7 +430,7 @@ extension TwoMLSSession {
 			var store = MLS.Combiner.PSKStore()
 			var committedRemoteClientID: Data?
 			var pqCommitMessageForStaple: Data?
-			// Slice 6, value semantics: `theirs.commit` can throw
+			// Value semantics: `theirs.commit` can throw
 			// (`.credentialRollback`), so it lands on a local copy, written
 			// back only alongside `sendGroup`/etc. at this round's own
 			// success point below.
@@ -464,10 +468,13 @@ extension TwoMLSSession {
 				{
 					try ensureAppBindingCreatorLeafAdvert(leafNode)
 				}
+				// Book group-rules.md rule 9's tail, same re-check at fold.
+				try SessionProfile.recorded(in: send.classical.context)
+					.ensureAdvertised(by: leafNode)
 				let ref = try proposalStore.insert(verified, classicalProvider)
 				proposals.append(.reference(ref))
 				committedRemoteClientID = remoteIdentity
-				// AS consult point 2 (slice 6): canonicalize the peer's
+				// AS consult point 2: canonicalize the peer's
 				// identity in OUR ledger BEFORE this commit is built —
 				// idempotent (a no-op) for a routine, non-rotating fold,
 				// since `remoteIdentity == theirs.current` already.
@@ -529,7 +536,7 @@ extension TwoMLSSession {
 								classicalProvider.hashSize))))
 			}
 
-			// §11 MF4: remember the departing send epoch's own `0xFF02` export
+			// Remember the departing send epoch's own `0xFF02` export
 			// BEFORE committing past it — an unlicensed fold needs no
 			// evidence of the peer's progress, so a peer frame referencing
 			// this exact epoch may still be in flight.
@@ -540,7 +547,7 @@ extension TwoMLSSession {
 			try rememberSendAttachmentComponent(
 				classical: &send.classical, ledger: &attachmentLedger)
 
-			// §3c: the own-leaf catch-up threads the rotation ring +
+			// The own-leaf catch-up threads the rotation ring +
 			// `newIdentity` through this SAME commit machinery — the ring's
 			// `.framedContent` stays on the CURRENT (still-OLD) send key, so
 			// the enclosing commit envelope verifies against the pre-commit
@@ -578,7 +585,7 @@ extension TwoMLSSession {
 
 				let advanced = try pending.apply(onto: adopted)
 				send.classical = advanced.group
-				// Should-fix (slice 6 review): symmetry with every apply arm's
+				// Symmetry with every apply arm's
 				// own `ensureTwoParty(recv.classical)` — cheap and catches a
 				// construction bug on the send side just as fast.
 				try TwoPartyRules.ensureTwoParty(send.classical)
@@ -591,7 +598,7 @@ extension TwoMLSSession {
 				var updatedLeafKeys = leafKeys
 				updatedLeafKeys.sendClassical = GroupKeySet(current: freshKey)
 
-				// MF4: also remember the newly-landed epoch, so a crossed peer
+				// Also remember the newly-landed epoch, so a crossed peer
 				// commit referencing it still resolves even if this session
 				// commits again before that peer commit arrives.
 				try rememberSendCrossPSK(
@@ -649,7 +656,7 @@ extension TwoMLSSession {
 				// (if any) is consumed — `queuedProposal` is already nil,
 				// taken at `committingRound`'s own entry — and any still-
 				// unapproved offer is bound to the epoch this commit just
-				// left behind (§11 MF8's "the peer re-proposes at the new
+				// left behind ("the peer re-proposes at the new
 				// epoch once it sees this commit's staple").
 				offeredProposal = nil
 				return (true, committedRemoteClientID)
@@ -657,12 +664,12 @@ extension TwoMLSSession {
 		}
 	}
 
-	/// §3c/checkpoint 3: the `0x00` fold-only commit staple apply arm.
+	/// The `0x00` fold-only commit staple apply arm.
 	/// Classifies the commit's epoch against `recvGroup.classical`'s live
-	/// epoch (the shared classifier, MF7) before consuming anything;
-	/// re-inserts every staged `Upd(self)` (MF3) so the commit's by-reference
+	/// epoch (the shared classifier) before consuming anything;
+	/// re-inserts every staged `Upd(self)` so the commit's by-reference
 	/// fold resolves regardless of which staged Upd the peer approved;
-	/// live-injects the send-group `0xFF02` ledger (MF4); validates the
+	/// live-injects the send-group `0xFF02` ledger; validates the
 	/// fold-only effects shape; applies; `ensureTwoParty`. Value semantics:
 	/// only local `recv`/`send`/`ledger` copies are touched, written back to
 	/// `self` on success — any throw above that point burns no state.
@@ -671,8 +678,8 @@ extension TwoMLSSession {
 		_ commitBytes: Data, ownOfferWindow: SecretArchive? = nil
 	) throws -> StapleApplyResult {
 		// The commit's injected `0xFF02` PSK is `ComponentID`-bearing, like
-		// the `0x05` bind's — decode and construct at the deployed width
-		// (§11 #6/MF7), so the whole body lives in one scope.
+		// the `0x05` bind's — decode and construct at the deployed wire
+		// width, so the whole body lives in one scope.
 		try withDeployedWireConventions {
 			guard
 				case .publicMessage(let commitPub) = try MLS.RFC9420.Message(
@@ -690,9 +697,9 @@ extension TwoMLSSession {
 			case .apply: break
 			}
 
-			// Slice 6: a `0x00` staple may now be EITHER a folded peer
+			// A `0x00` staple may now be EITHER a folded peer
 			// Update/rotation OR a solo own-leaf catch-up (`committingRound`'s
-			// third trigger, §3c) — purely structural, mirroring `applyBind`'s
+			// third trigger) — purely structural, mirroring `applyBind`'s
 			// own `foldedPeerUpdate` detection, never a trusted claim.
 			guard case .commit(let commitValue) = commitPub.content.content else {
 				throw TwoMLSError.malformedSideBandMessage
@@ -750,7 +757,7 @@ extension TwoMLSSession {
 				effects, foldedPeerUpdate: foldedPeerUpdate,
 				allowAppDataUpdate: false,
 				orThrow: .invalidFoldEffects)
-			// AS consult point 3 (slice 6): every `.credentialReplaced` effect
+			// AS consult point 3: every `.credentialReplaced` effect
 			// this commit carries — my own leaf catching up, and/or the
 			// peer's own-leaf catch-up — validated BEFORE the group advances,
 			// each against ITS OWN party (`adjudicate`'s `myLeaf`).
@@ -768,7 +775,7 @@ extension TwoMLSSession {
 			try rememberRecvAttachmentComponent(
 				classical: &recv.classical, ledger: &recvAttachmentLedgerLocal)
 
-			// Value semantics extend to `auth` (§11's discipline, slice 6):
+			// Value semantics extend to `auth`:
 			// `canonicalize` is pure and can throw (a rollback `commit`
 			// would), so it is computed into a local copy and written back
 			// only alongside `recv`/`send` below — a throw above burns none
@@ -824,7 +831,7 @@ extension TwoMLSSession {
 		return (byLeaf, credentialTypes)
 	}
 
-	/// Slice 6: fold every `.credentialReplaced` effect an already-adjudicated
+	/// Fold every `.credentialReplaced` effect an already-adjudicated
 	/// commit carried into a NEW `AuthCore` — pure (throws before returning,
 	/// never mutates `auth` in place), so `applyFoldCommit`/`applyBind` can
 	/// hold the result in a local copy and write it back only alongside
@@ -925,10 +932,10 @@ extension TwoMLSSession {
 		return updated
 	}
 
-	/// §4c/§11 #2/#5, Bob: apply Alice's `0x05` bind staple (a fold may ride
+	/// Bob: apply Alice's `0x05` bind staple (a fold may ride
 	/// it too — the SAME commit that discharges the bind can fold an approved
-	/// peer Update by reference, §11 MF1). Classifies the classical commit's
-	/// epoch with the shared classifier (MF7) before consuming anything.
+	/// peer Update by reference). Classifies the classical commit's
+	/// epoch with the shared classifier before consuming anything.
 	/// Gated on `pqInflight` being `.bootstrapResponded`/`.responding`/
 	/// `.rekeyResponded` so a bind cannot land outside a founded-and-not-yet-
 	/// bound state. Applies the PQ half before
@@ -938,7 +945,7 @@ extension TwoMLSSession {
 	/// invokes it only after that commit's framing signature and membership
 	/// tag verify); the classical half's `apq_psk` is exported eagerly, ahead
 	/// of its own `validating` call, and the cross-party `0xFF02` is resolved
-	/// via the send-group ledger (MF4) rather than an unconditional fresh
+	/// via the send-group ledger rather than an unconditional fresh
 	/// export — a fold-then-bind+fold at one peer epoch makes a second bare
 	/// export here reachable (`componentSecretConsumed`), and a crossed
 	/// concurrent commit may reference an epoch this session has already
@@ -959,7 +966,7 @@ extension TwoMLSSession {
 		// The commit messages decoded below carry `ComponentID`-bearing
 		// proposals (the injected external PSK and both `AppDataUpdate`s) —
 		// their decode, not just their construction, must run at the
-		// deployed wire width (§11 #6), so the whole body lives in one scope.
+		// deployed wire width, so the whole body lives in one scope.
 		try withDeployedWireConventions {
 			let (tBytes, pqBytes) = try Frames.decodeAPQPrivateMessage(staple)
 			guard
@@ -995,7 +1002,7 @@ extension TwoMLSSession {
 				throw TwoMLSError.sessionNotReady
 			}
 
-			// §11 MF1: does this commit ALSO fold a peer Update by reference
+			// Does this commit ALSO fold a peer Update by reference
 			// (a fold+bind `0x05`), or is it a bare bind? Purely structural —
 			// `committingRound` only ever emits a `.reference` entry when a
 			// fold rode — so this determines the exact `.updated`-count the
@@ -1020,8 +1027,7 @@ extension TwoMLSSession {
 			// Mirrors the id `owePQBind` builds on Alice's side (LE64(epoch) ‖
 			// groupID ‖ [0x52]) against `recv.pq!`'s PRE-apply epoch/group id —
 			// the same `(group, epoch)` Alice's `sendPQ` named there — so the
-			// resolver matches the exact injected id, not any `.external` PSK
-			// (§11 #5).
+			// resolver matches the exact injected id, not any `.external` PSK.
 			let recvPQ = try recv.pq.tryUnwrap(TwoMLSError.notEstablished)
 			let expectedInjectedID =
 				withUnsafeBytes(of: recvPQ.context.epoch.littleEndian) {
@@ -1139,7 +1145,7 @@ extension TwoMLSSession {
 			let classicalEffects = tPending.effects
 			try TwoPartyRules.validateBindClassicalEffects(
 				classicalEffects, foldedPeerUpdate: foldedPeerUpdate)
-			// AS consult point 3 (slice 6): the PQ half never carries a
+			// AS consult point 3: the PQ half never carries a
 			// `.credentialReplaced` (`validateBindPQEffects` stays strict),
 			// so only the classical half's effects need adjudicating, each
 			// against ITS OWN party (`adjudicate`'s `myLeaf`).
@@ -1154,10 +1160,10 @@ extension TwoMLSSession {
 			try rememberRecvAttachmentComponent(
 				classical: &recv.classical, ledger: &recvAttachmentLedgerLocal)
 
-			// Bundles the §6.1 attestation check (both halves attest the
-			// same, actual post-commit epoch pair) AND §6.2 (the classical
+			// Bundles the attestation check (both halves attest the same,
+			// actual post-commit epoch pair) AND the check that the classical
 			// half's `validating` actually resolved the current PQ epoch's
-			// `apq_psk`) — the library's de-conflated FULL-commit check.
+			// `apq_psk` — the library's de-conflated FULL-commit check.
 			_ = try MLS.Combiner.verifyFullCommit(
 				classicalEffects: classicalEffects, pqEffects: pqEffects,
 				classicalEpoch: recv.classical.context.epoch,

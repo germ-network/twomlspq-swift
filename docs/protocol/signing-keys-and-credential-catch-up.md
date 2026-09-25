@@ -306,13 +306,18 @@ The behavior above comes in two profiles:
   acceptor receives the initiator's. A session runs the correct profile only if both advertise it. Both sides compute
   the same answer from signed KeyPackages, so no extra negotiation message is needed.
 - The chosen profile is recorded in the group, the same way the book records the AppBinding extension
-  (`group-rules.md:58-78`).
-  - It is a GroupContext extension written at creation into both classical halves of the initiator's group.
+  (group-rules.md, rule 8).
+  - It is a GroupContext extension written at creation into the classical half of the initiator's send group and
+    riding the Welcome.
   - The acceptor checks it against its own result from the two KeyPackages, and mirrors it onto its return group. The
-    initiator requires the return welcome to carry it back unchanged.
-  - PQ halves carry none. It is never rewritten: the book's GroupContextExtensions ban makes it immutable.
+    initiator requires the return welcome to carry it back unchanged. A record with contents, more than one record, a
+    disagreeing acceptor check, or a changed return welcome are all `TwoMLSError.sessionProfileMismatch`, raised on
+    the invitation path before any invitation state is claimed.
+  - PQ halves carry none — a PQ-half record is rejected at every PQ join. It is never rewritten: the book's
+    GroupContextExtensions ban makes it immutable.
   - Because the group carries it, every leaf must keep advertising it, as for AppBinding: "a binding-carrying group can
-    only ever contain capability-bearing leaves" (`group-rules.md:77-78`).
+    only ever contain capability-bearing leaves" (group-rules.md, rule 8's tail; a violation is
+    `TwoMLSError.leafCapabilityUnadvertised`).
 - The profile is fixed for the session's life. It is not a runtime switch, and it never changes when a peer upgrades.
   Sessions migrated from the deployed engine, and every session created before profiles exist, are deployed-compatible.
 - The deployed engine never advertises the correct profile, so any session with it stays deployed-compatible. Sessions
@@ -324,7 +329,11 @@ The behavior above comes in two profiles:
 - Once shipped, a profile is frozen too. A later wire-visible change to the correct behavior ships as a *new* profile
   with its own capability entry, and a session uses the newest profile both KeyPackages advertise. The book allocates
   the codepoints.
-- Before shipping, confirm that the deployed engine accepts a KeyPackage whose leaf capabilities list an extension type
-  it does not know. If it doesn't, the signal needs a different carrier.
+- Confirmed (cross-engine probe against a deployed Rust build, patching a native leaf's capabilities): the deployed
+  engine accepts a KeyPackage whose leaf capabilities list an extension type it does not know — it validates leaf
+  *extensions* and non-default GroupContext extensions against the leaf's own capabilities, but does not reject an
+  unrecognized capability entry itself. twomlspq-swift ships the correct profile's
+  implementation but does not advertise it by default; a host opts in per `Principal` (see its
+  `advertisesCorrectProfile` doc comment) once it is ready to run it.
 
 Downgrade protection is out of scope for now.

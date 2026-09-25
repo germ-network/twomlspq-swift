@@ -71,7 +71,7 @@ public struct MLKEM768CipherSuiteProvider: MLS.CipherSuiteProvider {
 	public var aeadNonceSize: Int { symmetric.aeadNonceSize }
 
 	/// `Nsk` for ML-KEM-768: the 96-byte CryptoKit `integrityCheckedRepresentation`
-	/// (FIPS 203 seed‖hash container: d‖z 64 + SHA3-256(ek) 32). spec/snapshot.md §3.1.
+	/// (FIPS 203 seed‖hash container: d‖z 64 + SHA3-256(ek) 32).
 	public var hpkeSecretKeySize: Int? { 96 }
 
 	public func randomBytes(_ count: Int) -> Data { symmetric.randomBytes(count) }

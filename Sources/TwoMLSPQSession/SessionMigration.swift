@@ -6,7 +6,7 @@ import MLSProfileRFC9420
 import SecretBytes
 import TwoMLSPQCrypto
 
-// MARK: - Session migration minter (GER-2433 slice B)
+// MARK: - Session migration minter
 //
 // The cross-module session migrator's parts-to-archive entry: mint the
 // Swift-native v1 `SessionArchive` body directly from raw parts a legacy Rust
@@ -812,6 +812,14 @@ public enum SessionMigration {
 			throw TwoMLSError.archiveInvalid
 		}
 
+		// Book group-rules.md rule 9: the deployed engine never advertises,
+		// so it never records a profile either — a migrated session always
+		// mints deployed-compatible.
+		for group in [sendClassical, sendPQ, recvClassical, recvPQ].compactMap({ $0 }) {
+			guard (try? SessionProfile.recorded(in: group.context)) == .deployedCompatible
+			else { throw TwoMLSError.archiveInvalid }
+		}
+
 		// Rule 1 (precedence): a supplied `parts.leafKeys` is authoritative;
 		// `nil` falls back to the temporary one-time conversion from
 		// today's owner-keyed parts — replaces `checkClassicalCustody`/
@@ -1389,7 +1397,7 @@ public enum SessionMigration {
 		} else if let bootstrapKPSecret {
 			// The pre-A.3 initiator's reservation: KP′'s leaf key, looked up
 			// in the PQ slots (it is signed under the founder identity's
-			// own PQ key, D1's per-half-but-shared-within-a-half model).
+			// own PQ key).
 			let kpLeaf = try MLS.RFC9420.KeyPackage(
 				mlsEncoded: bootstrapKPSecret.keyPackage
 			)

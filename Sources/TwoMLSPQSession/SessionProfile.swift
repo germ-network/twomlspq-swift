@@ -1,24 +1,95 @@
 import Foundation
+import MLSCodec
+import MLSProfileRFC9420
 
-/// Which of the two behavior profiles a session runs (protocol doc §5):
-/// `.correct` is the book plus D1–D6, with nothing kept only for the
-/// deployed engine; `.deployedCompatible` adds C1 (this file) and C2. Every
-/// session is deployed-compatible until sessions carry a real profile
-/// (recorded in the group at creation, per KeyPackage capability
-/// negotiation) — `TwoMLSSession.profile` fixes it here as the seam that
-/// stored value replaces.
+/// Which of the two behavior profiles a session runs (protocol doc §5; book
+/// group-rules.md rule 9): `.correct` is the book plus D1–D6, with nothing
+/// kept only for the deployed engine; `.deployedCompatible` adds C1 (this
+/// file) and C2. Chosen once per session from the two classical key
+/// packages and recorded in both classical halves; the default records
+/// nothing. `TwoMLSSession.profile` reads the recorded value off the send
+/// group.
 enum SessionProfile: Sendable, Equatable {
 	case correct
 	case deployedCompatible
+
+	/// Every non-default profile this engine recognizes, newest first. Also
+	/// the total order `negotiate` intersects against, so a future profile
+	/// added here keeps the intersection rule stable.
+	static let recognized: [SessionProfile] = [.correct]
+
+	/// `CorrectProfile` (`0xF0A3`, book wire-format.md): the leaf capability
+	/// entry and the GroupContext extension that records the profile. The
+	/// default profile has none.
+	var extensionType: MLS.RFC9420.ExtensionType? {
+		switch self {
+		case .correct: MLS.RFC9420.ExtensionType(rawValue: 0xF0A3)
+		case .deployedCompatible: nil
+		}
+	}
+
+	/// The profiles a leaf advertises, in `recognized` order.
+	static func advertised(by leaf: MLS.RFC9420.LeafNode) -> [SessionProfile] {
+		recognized.filter { profile in
+			profile.extensionType.map { leaf.capabilities.extensions.contains($0) } ?? false
+		}
+	}
+
+	/// The newest profile both classical key-package leaves advertise, else
+	/// the default (book group-rules.md rule 9).
+	static func negotiate(
+		own: MLS.RFC9420.LeafNode, their: MLS.RFC9420.LeafNode
+	) -> SessionProfile {
+		let theirs = advertised(by: their)
+		return advertised(by: own).first { theirs.contains($0) } ?? .deployedCompatible
+	}
+
+	/// The classical half's creation-time GroupContext extensions that
+	/// record this profile: one empty extension of its type, or none.
+	var recordExtensions: [MLS.RFC9420.Extension] {
+		extensionType.map { [MLS.RFC9420.Extension(type: $0, data: Data())] } ?? []
+	}
+
+	/// The profile a GroupContext records — `.deployedCompatible` when none
+	/// is. Throws `.sessionProfileMismatch` when more than one profile type
+	/// is present, or one is present with non-empty contents.
+	static func recorded(in context: MLS.RFC9420.GroupContext) throws -> SessionProfile {
+		let matches = recognized.flatMap { profile in
+			context.extensions.filter { $0.type == profile.extensionType }.map { (profile, $0) }
+		}
+		guard let (profile, ext) = matches.first else { return .deployedCompatible }
+		guard matches.count == 1, ext.data.isEmpty else {
+			throw TwoMLSError.sessionProfileMismatch
+		}
+		return profile
+	}
+
+	/// A leaf in a profile-carrying group must keep advertising the recorded
+	/// type (book group-rules.md rule 9's tail, mirrors the AppBinding leaf
+	/// gate).
+	func ensureAdvertised(by leaf: MLS.RFC9420.LeafNode) throws {
+		guard let type = extensionType else { return }
+		guard leaf.capabilities.extensions.contains(type) else {
+			throw TwoMLSError.leafCapabilityUnadvertised
+		}
+	}
 }
 
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
-	/// Every session is deployed-compatible until profiles exist (protocol
-	/// doc §5: "every session created before profiles exist" is this
-	/// profile) — a future change replaces this computed constant with the
-	/// value recorded in the group.
-	var profile: SessionProfile { .deployedCompatible }
+	/// The profile recorded in this session's send group's classical half —
+	/// re-derived on every read rather than stored (no archive key).
+	/// Swallows a malformed record to `.deployedCompatible`: unreachable
+	/// today (archives are sealed, the migration mint refuses any record,
+	/// and establishment validates the record before it is ever claimed —
+	/// restore re-derives from the already-validated send group and adds no
+	/// separate check of its own).
+	var profile: SessionProfile {
+		guard let context = sendGroup?.classical.context,
+			let recorded = try? SessionProfile.recorded(in: context)
+		else { return .deployedCompatible }
+		return recorded
+	}
 
 	/// C1 (protocol doc §4): the §A.5 `Upd′`'s authenticated data. Empty
 	/// under `.correct`, and empty for a key-only move under either

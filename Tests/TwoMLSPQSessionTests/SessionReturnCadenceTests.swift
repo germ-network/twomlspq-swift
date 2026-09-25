@@ -9,7 +9,7 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// Slice 8a: the **live** return cadence — `StateUpdate`/`stateSeq`/
+/// The **live** return cadence — `StateUpdate`/`stateSeq`/
 /// `dependsOnSeq` driven off the actual public methods, never a
 /// directly-constructed archive (that's `SessionArchiveTests`'s own fixed
 /// stand-ins). Every save below is a `StateUpdate` a real call returned,
@@ -225,7 +225,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 	func testIdempotentResendsStillReturnAStateUpdateOfTheSameKind() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
-		// PR2: each re-serve re-seals under a fresh nonce, so the SEALED
+		// Each re-serve re-seals under a fresh nonce, so the SEALED
 		// bytes always differ even though the plaintext is idempotent —
 		// compare the OPENED plaintexts (via the recipient's window)
 		// instead.
@@ -525,7 +525,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// (so `applyBind` still applies and moves Bob's `recvGroup.pq`), one
 		// flipped byte in the APP section (so `unprotect` throws AFTER that
 		// move).
-		// PR2: opened via `bob` (the recipient); the reconstructed
+		// Opened via `bob` (the recipient); the reconstructed
 		// `tamperedFrame` below passes straight through `processIncoming`'s
 		// `openOrRaw`.
 		let (staple, proposal, app) = try Frames.decodeMessageFrame(
@@ -566,7 +566,7 @@ final class SessionReturnCadenceTests: XCTestCase {
 		// `.core` (bypassing `stateUpdate`'s upgrade) — its manifest already
 		// reflects the moved tree, newer (by `stateSeq`) than the last real
 		// Checkpoint above, which is still pre-bind. Pairing them is exactly
-		// the un-reconcilable state the blocker described.
+		// the un-reconcilable state described above.
 		let coreWithoutStickyFix = try bob.makeSessionArchive(kind: .core)
 		XCTAssertThrowsError(
 			try TwoMLSSession.restore(

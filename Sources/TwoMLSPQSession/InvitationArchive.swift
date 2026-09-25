@@ -5,7 +5,7 @@ import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
 
-// MARK: - Invitation archive (slice 8b)
+// MARK: - Invitation archive
 //
 // Swift-native v1, monolithic — an invitation carries no ML-KEM trees, so
 // it only ever pushes one kind of blob (book concepts.md). Same

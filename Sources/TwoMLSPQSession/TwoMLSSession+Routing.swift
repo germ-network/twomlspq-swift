@@ -4,7 +4,7 @@ import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
 
-// MARK: - Rendezvous routing (slice 9, PR1)
+// MARK: - Rendezvous routing
 //
 // Both ends of a directional pair independently derive the SAME rendezvous
 // address off a classical group's exporter secret (book
@@ -12,7 +12,7 @@ import SecretBytes
 // receive group (the peer's send group) at its current epoch;
 // `should_listen_on()` reports one address per retained epoch of MY OWN send
 // group, since the peer may still be posting at a recently-prior epoch's
-// address. This slice is classical-only — the PQ side-band carries no
+// address. Routing is classical-only — the PQ side-band carries no
 // routing addresses of its own.
 
 /// A 32-byte rendezvous address — one classical group's `exportSecret(label:
@@ -91,7 +91,7 @@ extension TwoMLSSession {
 	/// `sendGroup.classical`'s epoch advances or the group is first created —
 	/// never from `shouldListenOn` (see `listenRendezvous`'s doc).
 	///
-	/// PR2 (header encryption): also captures the classical `HeaderKey` into
+	/// Also captures the classical `HeaderKey` into
 	/// `recvHeaderKeys`, in lockstep — same sites, same idempotency, same
 	/// retention floor — so "routable ⟺ openable": the classical header
 	/// window is exactly the rendezvous listen window (book
