@@ -1,6 +1,5 @@
 import Foundation
 import SecretBytes
-import XCTest
 import Testing
 
 @testable import TwoMLSPQSession
@@ -15,14 +14,14 @@ import Testing
 /// those suites don't otherwise pin: no plaintext framing, fail-closed
 /// tampering, window retention/eviction, side-band classification, the
 /// pre-A.3 classical fallback, and the archive round-trip of both windows.
-@available(iOS 26, macOS 26, *)
-final class HeaderEncryptionTests: XCTestCase {
+@Suite struct HeaderEncryptionTests {
 	// MARK: - Helpers
 
 	/// One full offer→approve→commit round, mirroring `RoutingTests`' own
 	/// helper: `proposer` stages+sends an `Upd(self)`, `approver` approves
 	/// and folds it — advancing `approver.sendGroup.classical`'s epoch by
 	/// exactly one.
+	@available(iOS 26, macOS 26, *)
 	private func fullFoldRound(
 		proposer: inout TwoMLSSession, approver: inout TwoMLSSession, round: Int = 0
 	) throws {
@@ -49,39 +48,43 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// the plaintext application payload appears nowhere in its bytes — the
 	/// blob is opaque. `openIncoming` recovers the plaintext frame and
 	/// classifies it `.message`.
-	func testSealedFrameCarriesNoPlaintextFramingAndOpensAsMessage() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func sealedFrameCarriesNoPlaintextFramingAndOpensAsMessage() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try alice.prepareToEncrypt()
 		let plaintext = Data("the-quick-brown-fox-0xDEADBEEF".utf8)
 		let frame = try alice.encrypt(plaintext).frame
 
-		XCTAssertNotEqual(frame.first, Frames.messageFrameTag)
-		XCTAssertNil(frame.range(of: plaintext))
+		#expect(frame.first != Frames.messageFrameTag)
+		#expect(frame.range(of: plaintext) == nil)
 
-		let opened = try XCTUnwrap(bob.openIncoming(frame))
-		XCTAssertEqual(opened.kind, .message)
-		XCTAssertEqual(opened.frame.first, Frames.messageFrameTag)
+		let openedRaw = try bob.openIncoming(frame)
+		let opened = try #require(openedRaw)
+		#expect(opened.kind == .message)
+		#expect(opened.frame.first == Frames.messageFrameTag)
 	}
 
 	// MARK: - 2. Fail-closed tampering
 
 	/// A bit flipped in the leading nonce bytes fails every window key —
 	/// `tryOpen` returns `nil`, not a decode of garbage.
-	func testTamperedNonceFailsToOpen() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func tamperedNonceFailsToOpen() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try alice.prepareToEncrypt()
 		var frame = try alice.encrypt(Data("hello".utf8)).frame
 		frame[frame.startIndex] ^= 0xFF
-		XCTAssertNil(bob.tryOpen(frame))
+		#expect(bob.tryOpen(frame) == nil)
 	}
 
 	/// A bit flipped in the trailing AEAD tag bytes fails every window key.
-	func testTamperedCiphertextFailsToOpen() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func tamperedCiphertextFailsToOpen() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try alice.prepareToEncrypt()
 		var frame = try alice.encrypt(Data("hello".utf8)).frame
 		frame[frame.index(before: frame.endIndex)] ^= 0xFF
-		XCTAssertNil(bob.tryOpen(frame))
+		#expect(bob.tryOpen(frame) == nil)
 	}
 
 	// MARK: - 3. Cross-commit-in-flight
@@ -90,7 +93,8 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// N entry after the sender's peer advances the group to N+1 — the same
 	/// reasoning as `sendCrossPSKLedger`, and the reason the window must be
 	/// ≥ 2 even in the happy path (book, "Receive rule").
-	func testCrossCommitInFlightOpensViaOlderWindowEntry() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func crossCommitInFlightOpensViaOlderWindowEntry() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try bob.prepareToEncrypt()
 		let staleFrame = try bob.encrypt(Data("stale".utf8)).frame
@@ -99,8 +103,8 @@ final class HeaderEncryptionTests: XCTestCase {
 		// sealed against) by exactly one epoch.
 		try fullFoldRound(proposer: &bob, approver: &alice)
 
-		let opened = try XCTUnwrap(alice.tryOpen(staleFrame))
-		XCTAssertEqual(opened.first, Frames.messageFrameTag)
+		let opened = try #require(alice.tryOpen(staleFrame))
+		#expect(opened.first == Frames.messageFrameTag)
 	}
 
 	// MARK: - 4. Wrong-epoch-outside-window
@@ -108,9 +112,10 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// Once a frame's sealing epoch has aged out of the retention window
 	/// (`resumptionPskDepth` behind the current epoch), it no longer opens —
 	/// indistinguishable from garbage, by construction.
-	func testWrongEpochOutsideWindowReturnsNil() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func wrongEpochOutsideWindowReturnsNil() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
-		let depth = try XCTUnwrap(alice.sendGroup?.classical.retention.resumptionPskDepth)
+		let depth = try #require(alice.sendGroup?.classical.retention.resumptionPskDepth)
 
 		_ = try bob.prepareToEncrypt()
 		let staleFrame = try bob.encrypt(Data("stale".utf8)).frame
@@ -119,7 +124,7 @@ final class HeaderEncryptionTests: XCTestCase {
 			try fullFoldRound(proposer: &bob, approver: &alice, round: round)
 		}
 
-		XCTAssertNil(alice.tryOpen(staleFrame))
+		#expect(alice.tryOpen(staleFrame) == nil)
 	}
 
 	// MARK: - 5. Side-band classification, full A.3/A.4/A.5 through sealed frames
@@ -129,7 +134,8 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// output (seal/open are wired into the production entry points, not
 	/// opt-in) — and pins `openIncoming`'s classification of each of the six
 	/// `PqFrameKind`s in turn.
-	func testOpenIncomingClassifiesEachSideBandKindAcrossA3A4A5() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func openIncomingClassifiesEachSideBandKindAcrossA3A4A5() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		// §A.3: `0x13` (classical fallback — alice's recv-PQ, Group_B.pq,
@@ -139,48 +145,54 @@ final class HeaderEncryptionTests: XCTestCase {
 		// Alice's later join" — so the welcome reply seals under
 		// `HeaderKeyPQ`, not the classical fallback).
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let openedKP = try XCTUnwrap(bob.openIncoming(kpFrame))
-		XCTAssertEqual(openedKP.kind, .pqSideBand(.bootstrapKP))
+		let openedKPRaw = try bob.openIncoming(kpFrame)
+		let openedKP = try #require(openedKPRaw)
+		#expect(openedKP.kind == .pqSideBand(.bootstrapKP))
 
 		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		let openedWelcome = try XCTUnwrap(alice.openIncoming(welcomeFrame))
-		XCTAssertEqual(openedWelcome.kind, .pqSideBand(.bootstrapWelcome))
+		let openedWelcomeRaw = try alice.openIncoming(welcomeFrame)
+		let openedWelcome = try #require(openedWelcomeRaw)
+		#expect(openedWelcome.kind == .pqSideBand(.bootstrapWelcome))
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let bindPrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(bindPrepared.didCommit)
+		#expect(bindPrepared.didCommit)
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		_ = try bob.processIncomingDecrypted(boundFrame)
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPQTurn)
 
 		// §A.4: bob (turn-holder) self-stages an EK (`0x17`); alice responds
 		// with the CT (`0x19`).
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
-		let openedEK = try XCTUnwrap(alice.openIncoming(ekFrame))
-		XCTAssertEqual(openedEK.kind, .pqSideBand(.ratchetEK))
+		let ekFrame = try #require(bob.pqPendingOutbound())
+		let openedEKRaw = try alice.openIncoming(ekFrame)
+		let openedEK = try #require(openedEKRaw)
+		#expect(openedEK.kind == .pqSideBand(.ratchetEK))
 
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
-		let openedCT = try XCTUnwrap(bob.openIncoming(ctFrame))
-		XCTAssertEqual(openedCT.kind, .pqSideBand(.ratchetCT))
+		let openedCTRaw = try bob.openIncoming(ctFrame)
+		let openedCT = try #require(openedCTRaw)
+		#expect(openedCT.kind == .pqSideBand(.ratchetCT))
 		_ = try bob.pqRatchetBind(ctFrame)
 
 		let ratchetDischarge = try bob.prepareToEncrypt()
-		XCTAssertTrue(ratchetDischarge.didCommit)
+		#expect(ratchetDischarge.didCommit)
 		let ratchetBoundFrame = try bob.encrypt(Data("ratchet-bound".utf8)).frame
 		_ = try alice.processIncomingDecrypted(ratchetBoundFrame)
-		XCTAssertTrue(alice.myPQTurn)
+		#expect(alice.myPQTurn)
 
 		// §A.5: alice (turn-holder) proposes Upd′ (`0x1B`); bob commits
 		// (`0x1D`).
 		let updFrame = try alice.pqRekeyBegin().frame
-		let openedUpd = try XCTUnwrap(bob.openIncoming(updFrame))
-		XCTAssertEqual(openedUpd.kind, .pqSideBand(.rekeyUpd))
+		let openedUpdRaw = try bob.openIncoming(updFrame)
+		let openedUpd = try #require(openedUpdRaw)
+		#expect(openedUpd.kind == .pqSideBand(.rekeyUpd))
 
 		let commitFrame = try bob.pqRekeyRespond(updFrame).frame
-		let openedCommit = try XCTUnwrap(alice.openIncoming(commitFrame))
-		XCTAssertEqual(openedCommit.kind, .pqSideBand(.rekeyCommit))
+		let openedCommitRaw = try alice.openIncoming(commitFrame)
+		let openedCommit = try #require(openedCommitRaw)
+		#expect(openedCommit.kind == .pqSideBand(.rekeyCommit))
 		_ = try alice.pqRekeyApply(commitFrame)
 	}
 
@@ -191,15 +203,16 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// empty at this point (his send-PQ half doesn't exist until his own
 	/// `pqBootstrapRespond`), so a successful open here could only have come
 	/// from the classical fallback.
-	func testPreA3BootstrapKPOpensViaClassicalFallbackWindow() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func preA3BootstrapKPOpensViaClassicalFallbackWindow() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
-		XCTAssertNil(alice.recvGroup?.pq)
+		#expect(alice.recvGroup?.pq == nil)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		XCTAssertTrue(bob.recvHeaderKeysPQ.isEmpty)
+		#expect(bob.recvHeaderKeysPQ.isEmpty)
 
-		let opened = try XCTUnwrap(bob.tryOpen(kpFrame))
-		XCTAssertEqual(opened.first, Frames.pqBootstrapKPTag)
+		let opened = try #require(bob.tryOpen(kpFrame))
+		#expect(opened.first == Frames.pqBootstrapKPTag)
 	}
 
 	// MARK: - 7. Restore carries both windows
@@ -209,7 +222,8 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// sealed after the archived snapshot but under windows the snapshot
 	/// already carries — restore is itself a construction site for both
 	/// windows (`recordListenRendezvous`/`recordPQHeaderKey`).
-	func testRestoreCarriesBothHeaderKeyWindowsAndOpensInFlightFrames() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreCarriesBothHeaderKeyWindowsAndOpensInFlightFrames() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
@@ -230,10 +244,11 @@ final class HeaderEncryptionTests: XCTestCase {
 			pqProvider: SessionTestSupport.pqProvider)
 
 		let decrypted = try restored.processIncomingDecrypted(messageFrame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("in-flight".utf8))
+		#expect(decrypted.applicationMessage == Data("in-flight".utf8))
 
-		let openedSideBand = try XCTUnwrap(restored.openIncoming(updFrame))
-		XCTAssertEqual(openedSideBand.kind, .pqSideBand(.rekeyUpd))
+		let openedSideBandRaw = try restored.openIncoming(updFrame)
+		let openedSideBand = try #require(openedSideBandRaw)
+		#expect(openedSideBand.kind == .pqSideBand(.rekeyUpd))
 	}
 
 	// MARK: - 8. Establishment round-trip
@@ -241,23 +256,27 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// The acceptor's real first frame — a sealed `0x03` with `APQWelcome_B`
 	/// in the staple slot — opens via the initiator's window, captured at
 	/// `initiate` before any inbound frame ever arrives.
-	func testEstablishmentRoundTripAcceptorsSealedFirstFrameOpensViaInitiatorsWindow() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func establishmentRoundTripAcceptorsSealedFirstFrameOpensViaInitiatorsWindow()
+		throws
+	{
 		var (alice, bob, _, _, _, welcomeB) = try SessionTestSupport.established()
-		XCTAssertFalse(alice.isEstablished)
-		XCTAssertTrue(bob.isEstablished)
+		#expect(!alice.isEstablished)
+		#expect(bob.isEstablished)
 
 		_ = try bob.prepareToEncrypt()
 		let firstFrame = try bob.encrypt(Data("bob-first".utf8)).frame
-		XCTAssertNil(firstFrame.range(of: welcomeB))
+		#expect(firstFrame.range(of: welcomeB) == nil)
 
-		let opened = try XCTUnwrap(alice.openIncoming(firstFrame))
-		XCTAssertEqual(opened.kind, .message)
+		let openedRaw = try alice.openIncoming(firstFrame)
+		let opened = try #require(openedRaw)
+		#expect(opened.kind == .message)
 		let (staple, _, _) = try Frames.decodeMessageFrame(opened.frame)
-		XCTAssertEqual(staple, welcomeB)
+		#expect(staple == welcomeB)
 
 		let decrypted = try alice.processIncomingDecrypted(firstFrame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bob-first".utf8))
-		XCTAssertTrue(alice.isEstablished)
+		#expect(decrypted.applicationMessage == Data("bob-first".utf8))
+		#expect(alice.isEstablished)
 	}
 
 	// MARK: - 9. Key-family isolation
@@ -269,9 +288,10 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// `tryOpen`/`openIncoming` trial BOTH windows, so a mis-routed seal
 	/// (the wrong family entirely) still passes every existing test — this
 	/// is the only place that actually isolates which window did the work.
+	@available(iOS 26, macOS 26, *)
 	private func assertOpensOnlyUnderExpectedFamily(
 		_ frame: Data, isPQFamily: Bool, receiver: TwoMLSSession,
-		file: StaticString = #filePath, line: UInt = #line
+		sourceLocation: SourceLocation = #_sourceLocation
 	) {
 		var wrongFamilyZeroed = receiver
 		if isPQFamily {
@@ -279,10 +299,10 @@ final class HeaderEncryptionTests: XCTestCase {
 		} else {
 			wrongFamilyZeroed.recvHeaderKeysPQ = [:]
 		}
-		XCTAssertNotNil(
-			wrongFamilyZeroed.tryOpen(frame),
+		#expect(
+			wrongFamilyZeroed.tryOpen(frame) != nil,
 			"expected the frame to still open with only its own family's window intact",
-			file: file, line: line)
+			sourceLocation: sourceLocation)
 
 		var ownFamilyZeroed = receiver
 		if isPQFamily {
@@ -290,10 +310,10 @@ final class HeaderEncryptionTests: XCTestCase {
 		} else {
 			ownFamilyZeroed.recvHeaderKeys = [:]
 		}
-		XCTAssertNil(
-			ownFamilyZeroed.tryOpen(frame),
+		#expect(
+			ownFamilyZeroed.tryOpen(frame) == nil,
 			"expected the frame to fail to open once its own family's window is cleared",
-			file: file, line: line)
+			sourceLocation: sourceLocation)
 	}
 
 	/// Drives a full §A.3/§A.4/§A.5 round (mirroring
@@ -305,7 +325,8 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// two families outright still passed 229/0, because trial decryption
 	/// always tries both windows regardless of which one a frame is
 	/// "supposed" to use.
-	func testSideBandFramesOpenOnlyUnderTheirDocumentedKeyFamily() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func sideBandFramesOpenOnlyUnderTheirDocumentedKeyFamily() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		// §A.3: `0x13` — alice's recv-PQ (Group_B.pq) isn't founded until
@@ -321,16 +342,16 @@ final class HeaderEncryptionTests: XCTestCase {
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let bindPrepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(bindPrepared.didCommit)
+		#expect(bindPrepared.didCommit)
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		_ = try bob.processIncomingDecrypted(boundFrame)
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPQTurn)
 
 		// §A.4: both legs are classical — their inner MLS message rides the
 		// classical groups (book, "Send rule").
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let ekFrame = try XCTUnwrap(bob.pqPendingOutbound())
+		let ekFrame = try #require(bob.pqPendingOutbound())
 		assertOpensOnlyUnderExpectedFamily(ekFrame, isPQFamily: false, receiver: alice)
 
 		let ctFrame = try alice.pqRatchetRespond(ekFrame).frame
@@ -338,10 +359,10 @@ final class HeaderEncryptionTests: XCTestCase {
 		_ = try bob.pqRatchetBind(ctFrame)
 
 		let ratchetDischarge = try bob.prepareToEncrypt()
-		XCTAssertTrue(ratchetDischarge.didCommit)
+		#expect(ratchetDischarge.didCommit)
 		let ratchetBoundFrame = try bob.encrypt(Data("ratchet-bound".utf8)).frame
 		_ = try alice.processIncomingDecrypted(ratchetBoundFrame)
-		XCTAssertTrue(alice.myPQTurn)
+		#expect(alice.myPQTurn)
 
 		// §A.5: both frames are PQ.
 		let updFrame = try alice.pqRekeyBegin().frame
@@ -362,28 +383,29 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// window evicts their epoch: the accepted cost of keying the A.4 legs
 	/// by the classical epoch (book header-encryption.md, "Why the A.4 legs
 	/// are the exception").
-	func testA4LegSurvivesClassicalChurnViaLiveResealWhileEvictedBytesStopOpening() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func a4LegSurvivesClassicalChurnViaLiveResealWhileEvictedBytesStopOpening() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("m".utf8))
-		let originalEK = try XCTUnwrap(bob.pqPendingOutbound())
-		XCTAssertNotNil(alice.tryOpen(originalEK))
+		let originalEK = try #require(bob.pqPendingOutbound())
+		#expect(alice.tryOpen(originalEK) != nil)
 
-		let depth = try XCTUnwrap(alice.sendGroup?.classical.retention.resumptionPskDepth)
+		let depth = try #require(alice.sendGroup?.classical.retention.resumptionPskDepth)
 		for round in 0..<(depth + 2) {
 			try fullFoldRound(proposer: &bob, approver: &alice, round: round)
 		}
 
 		// The pre-churn bytes are evicted past the classical family's
 		// retention window.
-		XCTAssertNil(alice.tryOpen(originalEK))
+		#expect(alice.tryOpen(originalEK) == nil)
 
 		// The round itself survives: the NEXT call re-seals live at bob's
 		// now-current recv epoch (Group_A, moved by alice's own commits
 		// above), which alice's window still holds.
-		let resealedEK = try XCTUnwrap(bob.pqPendingOutbound())
-		XCTAssertNotNil(alice.tryOpen(resealedEK))
+		let resealedEK = try #require(bob.pqPendingOutbound())
+		#expect(alice.tryOpen(resealedEK) != nil)
 	}
 
 	// MARK: - 11. Restore: an OLDER archived window entry is load-bearing
@@ -400,34 +422,37 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// works if the ARCHIVE carried N forward. Covers both families: the
 	/// classical window (a message frame) and the PQ window (an A.5
 	/// `0x1B`).
-	func testRestoreCarriesAnOlderArchivedWindowEntryNotJustTheRecapturedCurrentEpoch() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreCarriesAnOlderArchivedWindowEntryNotJustTheRecapturedCurrentEpoch()
+		throws
+	{
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 
 		// --- PQ: seal at Group_A.pq's current pq_epoch N, then advance it
 		// to N+1 via a full §A.5 round.
 		let stalePQFrame = try bob.pqRekeyBegin().frame
-		XCTAssertNotNil(alice.tryOpen(stalePQFrame))
+		#expect(alice.tryOpen(stalePQFrame) != nil)
 
 		let commitFrame = try alice.pqRekeyRespond(stalePQFrame).frame
 		_ = try bob.pqRekeyApply(commitFrame)
 		_ = try bob.prepareToEncrypt()
 		let rekeyBoundFrame = try bob.encrypt(Data("rekey-bound".utf8)).frame
 		_ = try alice.processIncomingDecrypted(rekeyBoundFrame)
-		XCTAssertTrue(alice.myPQTurn)
+		#expect(alice.myPQTurn)
 
 		// --- Classical: seal at Group_A's current classical epoch N, then
 		// advance it to N+1 via a plain fold (bob offers, alice commits).
 		_ = try bob.prepareToEncrypt()
 		let staleClassicalFrame = try bob.encrypt(Data("stale-classical".utf8)).frame
-		XCTAssertNotNil(alice.tryOpen(staleClassicalFrame))
+		#expect(alice.tryOpen(staleClassicalFrame) != nil)
 
 		try fullFoldRound(proposer: &bob, approver: &alice)
 
 		// Both epochs have moved past where each frame was sealed — a LIVE
 		// re-capture at restore time could only ever reproduce the NEW
 		// current epoch, never these.
-		XCTAssertNotNil(alice.tryOpen(stalePQFrame))
-		XCTAssertNotNil(alice.tryOpen(staleClassicalFrame))
+		#expect(alice.tryOpen(stalePQFrame) != nil)
+		#expect(alice.tryOpen(staleClassicalFrame) != nil)
 
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		let checkpoint = try sealAndOpen(archive)
@@ -436,10 +461,12 @@ final class HeaderEncryptionTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		let openedClassical = try XCTUnwrap(restored.openIncoming(staleClassicalFrame))
-		XCTAssertEqual(openedClassical.kind, .message)
-		let openedPQ = try XCTUnwrap(restored.openIncoming(stalePQFrame))
-		XCTAssertEqual(openedPQ.kind, .pqSideBand(.rekeyUpd))
+		let openedClassicalRaw = try restored.openIncoming(staleClassicalFrame)
+		let openedClassical = try #require(openedClassicalRaw)
+		#expect(openedClassical.kind == .message)
+		let openedPQRaw = try restored.openIncoming(stalePQFrame)
+		let openedPQ = try #require(openedPQRaw)
+		#expect(openedPQ.kind == .pqSideBand(.rekeyUpd))
 	}
 
 	// MARK: - 12. Fail-closed: a short header-key window entry
@@ -449,23 +476,23 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// restored classical header-key window entry shorter than the header
 	/// AEAD's 32-byte key size is a corrupt or adversarial archive — fail
 	/// closed.
-	func testShortHeaderKeyWindowEntryIsRejected() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func shortHeaderKeyWindowEntryIsRejected() throws {
 		let alice = try SessionTestSupport.established().alice
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
 		guard let firstEpoch = body.recvHeaderKeys?.entries.keys.first else {
-			XCTFail("expected at least one captured classical header-key window entry")
+			Issue.record(
+				"expected at least one captured classical header-key window entry")
 			return
 		}
 		body.recvHeaderKeys?.entries[firstEpoch] = Data(repeating: 0, count: 31)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
 				core: nil, checkpoint: try SecretArchive(encoding: body),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -480,14 +507,15 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// owed-bind cross-commit ties them together), so `alice`'s window for
 	/// Group_A.pq — the group bob's `0x1B` seals against — gains exactly
 	/// one entry per round.
-	func testPQSideBandFrameSurvivesWithinWindowAndIsEvictedBeyondIt() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func pqSideBandFrameSurvivesWithinWindowAndIsEvictedBeyondIt() throws {
 		var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
-		let capturedEpoch = try XCTUnwrap(alice.sendGroup?.pq?.context.epoch)
+		let capturedEpoch = try #require(alice.sendGroup?.pq?.context.epoch)
 
 		// Round 0: capture the frame at the CURRENT epoch, then complete
 		// this exact round with the same (already-staged) frame.
 		let updAtCapturedEpoch = try bob.pqRekeyBegin().frame
-		XCTAssertNotNil(alice.tryOpen(updAtCapturedEpoch))
+		#expect(alice.tryOpen(updAtCapturedEpoch) != nil)
 		try driveRekeyRound(
 			initiator: &bob, committer: &alice, round: 0, preStaged: updAtCapturedEpoch)
 
@@ -502,7 +530,7 @@ final class HeaderEncryptionTests: XCTestCase {
 					initiator: &alice, committer: &bob, round: round)
 			}
 		}
-		XCTAssertNotNil(alice.tryOpen(updAtCapturedEpoch))
+		#expect(alice.tryOpen(updAtCapturedEpoch) != nil)
 
 		// Round 3 (4 total): a 5th distinct epoch is captured, evicting the
 		// oldest (the captured one) past the flat keep-newest-4 window.
@@ -511,8 +539,8 @@ final class HeaderEncryptionTests: XCTestCase {
 		} else {
 			try driveRekeyRound(initiator: &alice, committer: &bob, round: 3)
 		}
-		XCTAssertNil(alice.tryOpen(updAtCapturedEpoch))
-		XCTAssertFalse(alice.recvHeaderKeysPQ.keys.contains(capturedEpoch))
+		#expect(alice.tryOpen(updAtCapturedEpoch) == nil)
+		#expect(!alice.recvHeaderKeysPQ.keys.contains(capturedEpoch))
 	}
 
 	/// One full mechanical §A.5 round: `initiator` proposes Upd′ (or reuses
@@ -522,6 +550,7 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// `driveMechanicalRekeyRound`, generalized to either party as
 	/// initiator (the turn alternates every round) and to reuse an
 	/// already-captured frame for round 0.
+	@available(iOS 26, macOS 26, *)
 	private func driveRekeyRound(
 		initiator: inout TwoMLSSession, committer: inout TwoMLSSession, round: Int,
 		preStaged: Data? = nil
@@ -541,6 +570,7 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// prefix + AEAD tag) — measured off the real provider rather than
 	/// hardcoded, so a suite change cannot silently desync this from
 	/// production.
+	@available(iOS 26, macOS 26, *)
 	private func measuredSealOverhead() throws -> Int {
 		let provider = SessionTestSupport.classicalProvider
 		let key = Data(repeating: 0, count: provider.aeadKeySize)
@@ -556,7 +586,8 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// header-encryption.md, "Frame length prefix & padding"), and the
 	/// equalized (padded) EK is still decoder-invisible: the peer opens it
 	/// and the A.4 round completes exactly as an unpadded one would.
-	func testSideBandPaddingEqualizesEKAndMessageFrameLengths() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func sideBandPaddingEqualizesEKAndMessageFrameLengths() throws {
 		let bigApp = Data(repeating: 0x41, count: 8192)
 
 		// Precondition, on an un-targeted sibling: the natural EK is
@@ -567,8 +598,8 @@ final class HeaderEncryptionTests: XCTestCase {
 		var (_, siblingBob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		_ = try siblingBob.prepareToEncrypt()
 		let siblingMsgFrame = try siblingBob.encrypt(bigApp).frame.count
-		let naturalEK = try XCTUnwrap(siblingBob.pqPendingOutbound()).count
-		XCTAssertLessThan(naturalEK, siblingMsgFrame)
+		let naturalEK = try #require(siblingBob.pqPendingOutbound()).count
+		#expect(naturalEK < siblingMsgFrame)
 
 		// The padded run: an effectively unbounded cap, so the EK grows all
 		// the way to match its own co-stapled message.
@@ -576,16 +607,16 @@ final class HeaderEncryptionTests: XCTestCase {
 		bob.setPadTarget(Int.max)
 		_ = try bob.prepareToEncrypt()
 		let encrypted = try bob.encrypt(bigApp)
-		let paddedEK = try XCTUnwrap(bob.pqPendingOutbound())
-		XCTAssertEqual(paddedEK.count, encrypted.frame.count)
+		let paddedEK = try #require(bob.pqPendingOutbound())
+		#expect(paddedEK.count == encrypted.frame.count)
 
 		let ctFrame = try alice.pqRatchetRespond(paddedEK).frame
 		_ = try bob.pqRatchetBind(ctFrame)
 		let discharge = try bob.prepareToEncrypt()
-		XCTAssertTrue(discharge.didCommit)
+		#expect(discharge.didCommit)
 		let boundFrame = try bob.encrypt(Data("bound".utf8)).frame
 		let decrypted = try alice.processIncomingDecrypted(boundFrame)
-		XCTAssertEqual(decrypted.applicationMessage, Data("bound".utf8))
+		#expect(decrypted.applicationMessage == Data("bound".utf8))
 	}
 
 	/// Absent any `setPadTarget` call, `padTarget` defaults to `nil` and a
@@ -593,12 +624,13 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// message it rides alongside (book header-encryption.md, "Frame length
 	/// prefix & padding" — "Absent the intent ... frames go out at their
 	/// natural size").
-	func testNoPadTargetLeavesSideBandFrameAtNaturalSize() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func noPadTargetLeavesSideBandFrameAtNaturalSize() throws {
 		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		_ = try bob.prepareToEncrypt()
 		let encrypted = try bob.encrypt(Data(repeating: 0x42, count: 8192))
-		let ek = try XCTUnwrap(bob.pqPendingOutbound())
-		XCTAssertLessThan(ek.count, encrypted.frame.count)
+		let ek = try #require(bob.pqPendingOutbound())
+		#expect(ek.count < encrypted.frame.count)
 	}
 
 	/// A target set below the natural EK size never shrinks it —
@@ -607,15 +639,16 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// twice on the SAME parked leg (`pqPendingOutbound` re-seals live on
 	/// every call, never caching), so the comparison needs no cross-session
 	/// assumption about matching natural sizes.
-	func testPadTargetBelowNaturalEKSizeNeverShrinksIt() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func padTargetBelowNaturalEKSizeNeverShrinksIt() throws {
 		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data(repeating: 0x43, count: 4096))
-		let naturalEK = try XCTUnwrap(bob.pqPendingOutbound())
+		let naturalEK = try #require(bob.pqPendingOutbound())
 
 		bob.setPadTarget(1)
-		let clampedEK = try XCTUnwrap(bob.pqPendingOutbound())
-		XCTAssertEqual(clampedEK.count, naturalEK.count)
+		let clampedEK = try #require(bob.pqPendingOutbound())
+		#expect(clampedEK.count == naturalEK.count)
 	}
 
 	/// `sideBandPadTo` at the function level (book header-encryption.md,
@@ -625,27 +658,28 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// here directly — `sealWith`'s own `max(0, padTo - frame.count)` clamp
 	/// masks it end-to-end, so only a unit assertion on the returned target
 	/// fails loudly if the floor is dropped.
-	func testSideBandPadToGrowsOnlyWithinCap() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func sideBandPadToGrowsOnlyWithinCap() throws {
 		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		bob.lastMessageFrameLen = 1000
 
 		bob.setPadTarget(nil)
-		XCTAssertEqual(bob.sideBandPadTo(frameLen: 300), 300)
+		#expect(bob.sideBandPadTo(frameLen: 300) == 300)
 
 		// Generous cap: grow to the co-stapled message's length.
 		bob.setPadTarget(5000)
-		XCTAssertEqual(bob.sideBandPadTo(frameLen: 300), 1000)
+		#expect(bob.sideBandPadTo(frameLen: 300) == 1000)
 
 		// Tight cap: grow only to the target.
 		bob.setPadTarget(600)
-		XCTAssertEqual(bob.sideBandPadTo(frameLen: 300), 600)
+		#expect(bob.sideBandPadTo(frameLen: 300) == 600)
 
 		// Never shrink a frame already larger than min(target,
 		// lastMessageFrameLen) — the grow-only floor.
 		bob.setPadTarget(5000)
-		XCTAssertEqual(bob.sideBandPadTo(frameLen: 2000), 2000)
+		#expect(bob.sideBandPadTo(frameLen: 2000) == 2000)
 		bob.setPadTarget(600)
-		XCTAssertEqual(bob.sideBandPadTo(frameLen: 800), 800)
+		#expect(bob.sideBandPadTo(frameLen: 800) == 800)
 	}
 
 	/// A cap strictly between the natural EK and the message frame grows
@@ -654,24 +688,25 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// prefix & padding" — `min(n, last_message_frame_len)`). Both anchors
 	/// and the cap itself are derived by measurement, on the SAME parked
 	/// leg, no magic constants.
-	func testPadTargetHonorsCapBetweenNaturalEKAndMessageFrame() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func padTargetHonorsCapBetweenNaturalEKAndMessageFrame() throws {
 		let sealOverhead = try measuredSealOverhead()
 		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		_ = try bob.prepareToEncrypt()
 		let msgFrame = try bob.encrypt(Data(repeating: 0x44, count: 8192)).frame.count
-		let naturalEK = try XCTUnwrap(bob.pqPendingOutbound()).count
-		XCTAssertLessThan(naturalEK, msgFrame)
+		let naturalEK = try #require(bob.pqPendingOutbound()).count
+		#expect(naturalEK < msgFrame)
 
 		let naturalEKUnsealed = naturalEK - sealOverhead
 		let msgFrameUnsealed = msgFrame - sealOverhead
 		let cap = (naturalEKUnsealed + msgFrameUnsealed) / 2
-		XCTAssertGreaterThan(cap, naturalEKUnsealed)
-		XCTAssertLessThan(cap, msgFrameUnsealed)
+		#expect(cap > naturalEKUnsealed)
+		#expect(cap < msgFrameUnsealed)
 
 		bob.setPadTarget(cap)
-		let cappedEK = try XCTUnwrap(bob.pqPendingOutbound())
-		XCTAssertEqual(cappedEK.count, cap + sealOverhead)
-		XCTAssertLessThan(cappedEK.count, msgFrame)
+		let cappedEK = try #require(bob.pqPendingOutbound())
+		#expect(cappedEK.count == cap + sealOverhead)
+		#expect(cappedEK.count < msgFrame)
 	}
 
 	/// `padTarget`/`lastMessageFrameLen` are live host plumbing, deliberately
@@ -679,13 +714,14 @@ final class HeaderEncryptionTests: XCTestCase {
 	/// ARE persisted): a restored session starts back at natural (unpadded)
 	/// sizing, and a host that wants padding must call `setPadTarget` again
 	/// after restoring.
-	func testPadTargetAndLastMessageFrameLenAreLiveOnlyNotArchivedAcrossRestore() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func padTargetAndLastMessageFrameLenAreLiveOnlyNotArchivedAcrossRestore() throws {
 		var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 		bob.setPadTarget(4096)
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data(repeating: 0x45, count: 2048))
-		XCTAssertNotNil(bob.padTarget)
-		XCTAssertGreaterThan(bob.lastMessageFrameLen, 0)
+		#expect(bob.padTarget != nil)
+		#expect(bob.lastMessageFrameLen > 0)
 
 		let archive = try bob.makeSessionArchive(kind: .checkpoint)
 		let checkpoint = try sealAndOpen(archive)
@@ -694,7 +730,7 @@ final class HeaderEncryptionTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		XCTAssertNil(restored.padTarget)
-		XCTAssertEqual(restored.lastMessageFrameLen, 0)
+		#expect(restored.padTarget == nil)
+		#expect(restored.lastMessageFrameLen == 0)
 	}
 }

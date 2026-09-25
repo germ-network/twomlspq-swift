@@ -4,9 +4,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
-import TwoMLSPQCrypto
-import XCTest
 import Testing
+import TwoMLSPQCrypto
 
 @testable import TwoMLSPQSession
 
@@ -17,8 +16,7 @@ import Testing
 /// `queuedProposal` at entry and withdraws a still-outstanding
 /// authorization on any later failure, rather than leaving an approval
 /// silently re-triable forever.
-@available(iOS 26, macOS 26, *)
-final class UpdateApprovalLeafValidationTests: XCTestCase {
+@Suite struct UpdateApprovalLeafValidationTests {
 
 	/// Hand-forges a validly-FRAMED "Alice Update" targeting bob's send
 	/// group (Group_B) — the enclosing proposal signed under Alice's REAL,
@@ -26,6 +24,7 @@ final class UpdateApprovalLeafValidationTests: XCTestCase {
 	/// accepts the framing; `mutateLeaf` then tampers with the embedded
 	/// replacement leaf before it is (optionally) re-signed. Mirrors
 	/// `LeafCapabilityGateTests.forgedRogueUpdate`'s technique.
+	@available(iOS 26, macOS 26, *)
 	private func forgedUpdate(
 		mutateLeaf: (inout MLS.RFC9420.LeafNode) -> Void,
 		signLeafWith signingKeyOverride: MLS.SignatureSecretKey? = nil
@@ -36,14 +35,14 @@ final class UpdateApprovalLeafValidationTests: XCTestCase {
 		var received = bob
 		_ = try received.prepareToEncrypt()
 
-		let committerSend = try XCTUnwrap(received.sendGroup).classical
-		let aliceLeafIndex = try XCTUnwrap(
+		let committerSend = try #require(received.sendGroup).classical
+		let aliceLeafIndex = try #require(
 			committerSend.tree.nonBlankLeaves()
 				.first { $0.index != committerSend.myLeafIndex }?.index)
-		let realLeafRecord = try XCTUnwrap(committerSend.tree.leaf(at: aliceLeafIndex))
+		let realLeafRecord = try #require(committerSend.tree.leaf(at: aliceLeafIndex))
 		let realLeaf = try MLS.RFC9420.LeafNode(mlsEncoded: realLeafRecord.encoded)
 		guard case .basic(let aliceID) = realLeaf.credential else {
-			XCTFail("expected a Basic credential")
+			Issue.record("expected a Basic credential")
 			throw TwoMLSError.unsupportedCredential
 		}
 
@@ -71,7 +70,7 @@ final class UpdateApprovalLeafValidationTests: XCTestCase {
 		let message = try MLS.RFC9420.Message.publicMessage(forged).mlsEncoded()
 
 		guard case .basic(let leafID) = rogueLeaf.credential else {
-			XCTFail("expected a Basic credential")
+			Issue.record("expected a Basic credential")
 			throw TwoMLSError.unsupportedCredential
 		}
 		_ = aliceID
@@ -88,7 +87,8 @@ final class UpdateApprovalLeafValidationTests: XCTestCase {
 	/// rogue (real capabilities, same credential/signature key). Mutation:
 	/// removing the `validatePolicy` call makes this fail (nothing else in
 	/// `validateOfferedUpdate` checks the encryption key at all).
-	func testQueueProposalRejectsAnUnchangedEncryptionKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func queueProposalRejectsAnUnchangedEncryptionKey() throws {
 		let round = try forgedUpdate(mutateLeaf: { _ in
 			// No-op: `rogueLeaf` starts as an exact copy of the real
 			// leaf, so its `encryptionKey` is already unchanged unless
@@ -98,11 +98,11 @@ final class UpdateApprovalLeafValidationTests: XCTestCase {
 		committer.offeredProposal = (
 			digest: round.digest, proposing: round.proposingID, message: round.message
 		)
-		XCTAssertThrowsError(try committer.queueProposal(digest: round.digest)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .proposalRejected)
+		#expect(throws: TwoMLSError.proposalRejected) {
+			try committer.queueProposal(digest: round.digest)
 		}
-		XCTAssertNotNil(committer.offeredProposal, "the rejected offer is restored")
-		XCTAssertNil(committer.queuedProposal)
+		#expect(committer.offeredProposal != nil, "the rejected offer is restored")
+		#expect(committer.queuedProposal == nil)
 	}
 
 	/// A bad `LeafNodeTBS` signature on an ID-CHANGING offer (a genuine
@@ -113,7 +113,8 @@ final class UpdateApprovalLeafValidationTests: XCTestCase {
 	/// this embedded leaf's own signature, so an unsigned/garbage-signed
 	/// replacement leaf would otherwise ride straight through to
 	/// authorization).
-	func testQueueProposalRejectsABadLeafSignatureOnAnIDChangingOffer() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func queueProposalRejectsABadLeafSignatureOnAnIDChangingOffer() throws {
 		let newID = Data("approval-rotated-\(UUID())".utf8)
 		let (garbleSigningKey, _) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (_, freshEncryptionKey) = try SessionTestSupport.classicalProvider
@@ -128,16 +129,16 @@ final class UpdateApprovalLeafValidationTests: XCTestCase {
 				leaf.encryptionKey = freshEncryptionKey
 			}, signLeafWith: garbleSigningKey)
 		var committer = round.committer
-		XCTAssertEqual(round.proposingID, newID)
+		#expect(round.proposingID == newID)
 		committer.offeredProposal = (
 			digest: round.digest, proposing: round.proposingID, message: round.message
 		)
-		XCTAssertThrowsError(try committer.queueProposal(digest: round.digest)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .proposalRejected)
+		#expect(throws: TwoMLSError.proposalRejected) {
+			try committer.queueProposal(digest: round.digest)
 		}
-		XCTAssertFalse(committer.auth.theirs.authorizedNext.contains(newID))
-		XCTAssertFalse(committer.auth.theirs.knownIDs.contains(newID))
-		XCTAssertNil(committer.queuedProposal)
+		#expect(!committer.auth.theirs.authorizedNext.contains(newID))
+		#expect(!committer.auth.theirs.knownIDs.contains(newID))
+		#expect(committer.queuedProposal == nil)
 	}
 
 	/// `committingRound` takes `queuedProposal` at entry: an injected,
@@ -150,7 +151,8 @@ final class UpdateApprovalLeafValidationTests: XCTestCase {
 	/// directly, or not clearing it) or removing the revoke each make this
 	/// fail differently — the take by leaving `queuedProposal` non-nil
 	/// after the throw, the revoke by leaving the id in `authorizedNext`.
-	func testInjectedInvalidQueuedProposalIsWithdrawnOnFailureAndRecovers() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func injectedInvalidQueuedProposalIsWithdrawnOnFailureAndRecovers() throws {
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established(
 			alice: "approval-take-alice", bob: "approval-take-bob")
 		_ = try bob.prepareToEncrypt()
@@ -161,10 +163,10 @@ final class UpdateApprovalLeafValidationTests: XCTestCase {
 		_ = try bob.prepareToEncrypt(rotating: newID)
 		let offerFrame = try bob.encrypt(Data("offer".utf8)).frame
 		let offerDecrypted = try alice.processIncomingDecrypted(offerFrame)
-		XCTAssertEqual(offerDecrypted.queuedProposal.proposing, newID)
+		#expect(offerDecrypted.queuedProposal.proposing == newID)
 		_ = try alice.queueProposal(digest: offerDecrypted.queuedProposal.digest)
-		XCTAssertTrue(alice.auth.theirs.authorizedNext.contains(newID))
-		XCTAssertNotNil(alice.queuedProposal)
+		#expect(alice.auth.theirs.authorizedNext.contains(newID))
+		#expect(alice.queuedProposal != nil)
 
 		// Inject corruption directly into the queued slot — an undecodable
 		// message, standing in for "the commit that would fold this fails
@@ -174,17 +176,17 @@ final class UpdateApprovalLeafValidationTests: XCTestCase {
 			message: Data("not-a-valid-mls-message".utf8)
 		)
 
-		XCTAssertThrowsError(try alice.prepareToEncrypt()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .invalidFoldEffects)
+		#expect(throws: TwoMLSError.invalidFoldEffects) {
+			try alice.prepareToEncrypt()
 		}
-		XCTAssertNil(alice.queuedProposal)
-		XCTAssertFalse(
-			alice.auth.theirs.authorizedNext.contains(newID),
+		#expect(alice.queuedProposal == nil)
+		#expect(
+			!alice.auth.theirs.authorizedNext.contains(newID),
 			"the still-outstanding authorization is withdrawn")
-		XCTAssertFalse(alice.auth.theirs.history.contains(newID))
+		#expect(!alice.auth.theirs.history.contains(newID))
 
 		// Second call: nothing left queued/owed — a plain routine round,
 		// succeeds normally.
-		XCTAssertNoThrow(try alice.prepareToEncrypt())
+		#expect(throws: Never.self) { try alice.prepareToEncrypt() }
 	}
 }
