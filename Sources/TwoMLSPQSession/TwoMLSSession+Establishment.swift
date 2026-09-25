@@ -20,7 +20,7 @@ extension TwoMLSSession {
 		let identity = try TwoMLSIdentity.generate(
 			clientID: principal.clientID,
 			classicalProvider: principal.classicalProvider,
-			pqProvider: principal.pqProvider)
+			pqProvider: principal.pqProvider, advertising: principal.advertising)
 		return try initiate(
 			identity: identity, their: their,
 			classicalProvider: principal.classicalProvider,
@@ -58,7 +58,10 @@ extension TwoMLSSession {
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> EstablishResult {
 		let classicalFounding = try TwoMLSIdentity.mintFoundingLeaf(
-			clientID: identity.clientID, provider: classicalProvider)
+			clientID: identity.clientID, provider: classicalProvider,
+			capabilities: TwoMLSIdentity.leafCapabilities(
+				advertising: SessionProfile.advertised(
+					by: identity.keyPackage.classical.leafNode)))
 		let pqFounding = try TwoMLSIdentity.mintFoundingLeaf(
 			clientID: identity.clientID, provider: pqProvider)
 		return try initiate(
@@ -288,7 +291,10 @@ extension TwoMLSSession {
 		// before `newClientID` is even validated, so validation failures
 		// below simply discard it.
 		let founding = try TwoMLSIdentity.mintFoundingLeaf(
-			clientID: newClientID ?? identity.clientID, provider: classicalProvider)
+			clientID: newClientID ?? identity.clientID, provider: classicalProvider,
+			capabilities: TwoMLSIdentity.leafCapabilities(
+				advertising: SessionProfile.advertised(
+					by: identity.keyPackage.classical.leafNode)))
 		let catchUpKey: LeafKey?
 		if let newClientID, newClientID != identity.clientID {
 			let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()

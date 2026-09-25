@@ -1,23 +1,56 @@
 import Foundation
+import MLSCodec
+import MLSProfileRFC9420
 
-/// Which of the two behavior profiles a session runs (protocol doc §5):
-/// `.correct` is the book plus D1–D6, with nothing kept only for the
-/// deployed engine; `.deployedCompatible` adds C1 (this file) and C2. Every
-/// session is deployed-compatible until sessions carry a real profile
-/// (recorded in the group at creation, per KeyPackage capability
-/// negotiation) — `TwoMLSSession.profile` fixes it here as the seam that
-/// stored value replaces.
+/// Which of the two behavior profiles a session runs (protocol doc §5; book
+/// group-rules.md rule 9): `.correct` is the book plus D1–D6, with nothing
+/// kept only for the deployed engine; `.deployedCompatible` adds C1 (this
+/// file) and C2. Chosen once per session from the two classical key
+/// packages and recorded in both classical halves; the default records
+/// nothing. `TwoMLSSession.profile` is still the constant seam here — a
+/// later change reads the recorded value instead.
 enum SessionProfile: Sendable, Equatable {
 	case correct
 	case deployedCompatible
+
+	/// Every non-default profile this engine recognizes, newest first. Also
+	/// the total order `negotiate` intersects against, so a future profile
+	/// added here keeps the intersection rule stable.
+	static let recognized: [SessionProfile] = [.correct]
+
+	/// `CorrectProfile` (`0xF0A3`, book wire-format.md): the leaf capability
+	/// entry and the GroupContext extension that records the profile. The
+	/// default profile has none.
+	var extensionType: MLS.RFC9420.ExtensionType? {
+		switch self {
+		case .correct: MLS.RFC9420.ExtensionType(rawValue: 0xF0A3)
+		case .deployedCompatible: nil
+		}
+	}
+
+	/// The profiles a leaf advertises, in `recognized` order.
+	static func advertised(by leaf: MLS.RFC9420.LeafNode) -> [SessionProfile] {
+		recognized.filter { profile in
+			profile.extensionType.map { leaf.capabilities.extensions.contains($0) } ?? false
+		}
+	}
+
+	/// The newest profile both classical key-package leaves advertise, else
+	/// the default (book group-rules.md rule 9).
+	static func negotiate(
+		own: MLS.RFC9420.LeafNode, their: MLS.RFC9420.LeafNode
+	) -> SessionProfile {
+		let theirs = advertised(by: their)
+		return advertised(by: own).first { theirs.contains($0) } ?? .deployedCompatible
+	}
 }
 
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
-	/// Every session is deployed-compatible until profiles exist (protocol
-	/// doc §5: "every session created before profiles exist" is this
-	/// profile) — a future change replaces this computed constant with the
-	/// value recorded in the group.
+	/// Every session is deployed-compatible until sessions carry a real
+	/// profile (recorded in the group at creation, per KeyPackage
+	/// capability negotiation) — a later change replaces this computed
+	/// constant with the value recorded in the group.
 	var profile: SessionProfile { .deployedCompatible }
 
 	/// C1 (protocol doc §4): the §A.5 `Upd′`'s authenticated data. Empty

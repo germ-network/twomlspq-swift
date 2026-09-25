@@ -27,6 +27,11 @@ public struct Principal: Sendable {
 	let pqProvider: any MLS.CipherSuiteProvider
 	let codepoints: MLS.Combiner.Codepoints
 	public let clientID: Data
+	/// The session profiles every key package this principal mints
+	/// advertises (book group-rules.md rule 9) — internal for now, and
+	/// empty by default (no behavior change): a later change exposes a
+	/// host opt-in here.
+	var advertising: [SessionProfile] = []
 
 	/// Validates the provider config for `clientID` — no key material is
 	/// minted here; each `TwoMLSIdentity` this principal later produces
@@ -61,7 +66,7 @@ public struct Principal: Sendable {
 	) {
 		let mintedIdentity = try TwoMLSIdentity.generate(
 			clientID: clientID, classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
+			pqProvider: pqProvider, advertising: advertising)
 		let invitation = Invitation(
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: codepoints, clientID: clientID, identity: mintedIdentity,

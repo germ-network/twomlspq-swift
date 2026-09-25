@@ -19,10 +19,26 @@ enum SessionTestSupport {
 	}()
 	static let pqProvider = MLKEM768CipherSuiteProvider()
 
-	static func identity(_ name: String) throws -> TwoMLSIdentity {
+	static func identity(
+		_ name: String, profile: SessionProfile = .deployedCompatible
+	) throws -> TwoMLSIdentity {
 		try TwoMLSIdentity.generate(
 			clientID: Data(name.utf8), classicalProvider: classicalProvider,
+			pqProvider: pqProvider,
+			advertising: profile == .correct ? SessionProfile.recognized : [])
+	}
+
+	/// A principal minting either the frozen deployed-compatible profile
+	/// (the suite default, matching the engine's own default) or, opted
+	/// in, the correct profile.
+	static func principal(
+		_ name: String, profile: SessionProfile = .deployedCompatible
+	) throws -> Principal {
+		var principal = try Principal.generate(
+			clientID: Data(name.utf8), classicalProvider: classicalProvider,
 			pqProvider: pqProvider)
+		principal.advertising = profile == .correct ? SessionProfile.recognized : []
+		return principal
 	}
 
 	/// Alice initiates to Bob's freshly-minted invitation, Bob receives. Bob
@@ -32,18 +48,17 @@ enum SessionTestSupport {
 	/// peer's own join credentials (e.g. the cross-party PSK binding proof);
 	/// each is the fresh leaf bundle `Principal`/`Invitation` minted for
 	/// this session (`session.identity`), not the principal itself.
-	static func established(alice aliceName: String = "alice", bob bobName: String = "bob")
+	static func established(
+		alice aliceName: String = "alice", bob bobName: String = "bob",
+		profile: SessionProfile = .deployedCompatible
+	)
 		throws -> (
 			alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
 			bobIdentity: TwoMLSIdentity, welcomeA: Data, welcomeB: Data
 		)
 	{
-		let alicePrincipal = try Principal.generate(
-			clientID: Data(aliceName.utf8), classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
-		let bobPrincipal = try Principal.generate(
-			clientID: Data(bobName.utf8), classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
+		let alicePrincipal = try principal(aliceName, profile: profile)
+		let bobPrincipal = try principal(bobName, profile: profile)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		guard let theirCombinerKP = invitation.combinerKeyPackage else {
 			throw TwoMLSError.invitationSpent
@@ -80,17 +95,14 @@ enum SessionTestSupport {
 	/// still presents as `current` until the recv-leaf catch-up.
 	static func establishedDedicated(
 		alice aliceName: String = "alice", bob bobName: String = "bob",
-		dedicatedClientID: Data = Data("bob-dedicated".utf8)
+		dedicatedClientID: Data = Data("bob-dedicated".utf8),
+		profile: SessionProfile = .deployedCompatible
 	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
 		invitationClientID: Data, dedicatedClientID: Data
 	) {
-		let alicePrincipal = try Principal.generate(
-			clientID: Data(aliceName.utf8), classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
-		let bobPrincipal = try Principal.generate(
-			clientID: Data(bobName.utf8), classicalProvider: classicalProvider,
-			pqProvider: pqProvider)
+		let alicePrincipal = try principal(aliceName, profile: profile)
+		let bobPrincipal = try principal(bobName, profile: profile)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		guard let theirCombinerKP = invitation.combinerKeyPackage else {
 			throw TwoMLSError.invitationSpent
@@ -153,9 +165,11 @@ enum SessionTestSupport {
 	}
 
 	static func establishedAndExchanged(
-		alice aliceName: String = "alice", bob bobName: String = "bob"
+		alice aliceName: String = "alice", bob bobName: String = "bob",
+		profile: SessionProfile = .deployedCompatible
 	) throws -> (alice: TwoMLSSession, bob: TwoMLSSession) {
-		var (alice, bob, _, _, _, _) = try established(alice: aliceName, bob: bobName)
+		var (alice, bob, _, _, _, _) = try established(
+			alice: aliceName, bob: bobName, profile: profile)
 		_ = try bob.prepareToEncrypt()
 		let frame = try bob.encrypt(Data("bob-hello".utf8)).frame
 		_ = try alice.processIncomingDecrypted(frame)
