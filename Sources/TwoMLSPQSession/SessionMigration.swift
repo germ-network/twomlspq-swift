@@ -812,6 +812,14 @@ public enum SessionMigration {
 			throw TwoMLSError.archiveInvalid
 		}
 
+		// Book group-rules.md rule 9: the deployed engine never advertises,
+		// so it never records a profile either — a migrated session always
+		// mints deployed-compatible.
+		for group in [sendClassical, sendPQ, recvClassical, recvPQ].compactMap({ $0 }) {
+			guard (try? SessionProfile.recorded(in: group.context)) == .deployedCompatible
+			else { throw TwoMLSError.archiveInvalid }
+		}
+
 		// Rule 1 (precedence): a supplied `parts.leafKeys` is authoritative;
 		// `nil` falls back to the temporary one-time conversion from
 		// today's owner-keyed parts — replaces `checkClassicalCustody`/

@@ -965,6 +965,30 @@ final class SessionMigrationTests: XCTestCase {
 
 	// MARK: - AC 2: restore + use
 
+	/// Book group-rules.md rule 9: the deployed engine never records a
+	/// profile, so a migrated session carrying one is refused. Kills:
+	/// dropping the mint check.
+	func testMintRefusesARecordedSessionProfile() throws {
+		for profile in [SessionProfile.correct, .deployedCompatible] {
+			let (alice, _) = try SessionTestSupport.establishedAndExchanged(
+				alice: "mint-profile-a", bob: "mint-profile-b", profile: profile)
+			let mint = {
+				try SessionMigration.mintArchive(
+					kind: .checkpoint,
+					parts: try self.migratedParts(alice, suppliedLeafKeys: true),
+					classicalProvider: SessionTestSupport.classicalProvider,
+					pqProvider: SessionTestSupport.pqProvider)
+			}
+			if profile == .correct {
+				XCTAssertThrowsError(try mint()) {
+					XCTAssertEqual($0 as? TwoMLSError, .archiveInvalid)
+				}
+			} else {
+				XCTAssertNoThrow(try mint())
+			}
+		}
+	}
+
 	func testMintedCheckpointRestoresAndKeepsMessaging() throws {
 		var (alice, bob) = try fullyEstablishedPair()
 		let minted = try SessionMigration.mintArchive(
