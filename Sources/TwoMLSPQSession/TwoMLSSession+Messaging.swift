@@ -805,7 +805,7 @@ extension TwoMLSSession {
 		// peer's genuine frame still joins (Rust is ledger-first for the same
 		// reason: `remember_send_psk` no-ops once an epoch is ledgered, so a
 		// retry never re-exports an already-consumed `(group, epoch, component)`).
-		let welcome = try MLS.RFC9420.Welcome(mlsEncoded: tBytes)
+		let welcome = try EstablishmentMessages.decodeWelcome(tBytes)
 
 		// Derive my own copy of the cross-party PSK off MY Group_A (the session's
 		// send group here — I am the initiator joining Group_B) rather than

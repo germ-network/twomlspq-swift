@@ -225,7 +225,8 @@ final class AppBindingTests: XCTestCase {
 			_ = try tSent.takePending().apply(onto: tAdopted)
 
 			let crafted = Frames.encodeAPQWelcome(
-				t: try tWelcome.mlsEncoded(), pq: try pqWelcome.mlsEncoded())
+				t: try EstablishmentMessages.encodeWelcome(tWelcome),
+				pq: try EstablishmentMessages.encodeWelcome(pqWelcome))
 
 			// The REAL join path — not just `verifyPQHalfUnbound` in isolation.
 			XCTAssertThrowsError(
@@ -647,7 +648,7 @@ final class AppBindingTests: XCTestCase {
 			crossPSK: crossPSK, nonce: provider.randomBytes(provider.hashSize),
 			provider: provider, appBinding: nil)
 		let strippedStaple = Frames.encodeAPQWelcome(
-			t: try strippedWelcome.mlsEncoded(), pq: Data())
+			t: try EstablishmentMessages.encodeWelcome(strippedWelcome), pq: Data())
 
 		let proposalSection = Frames.encodeProposalSection(
 			proposing: Data("bob".utf8), message: Data("dummy-upd".utf8))

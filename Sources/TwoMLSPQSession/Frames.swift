@@ -181,7 +181,8 @@ enum Frames {
 	// MARK: - `0x01` APQ welcome
 
 	/// `[0x01][u32 t][u32 pq]` — `t` is always present; `pq` is empty for
-	/// Group_B (classical-only, deferred PQ).
+	/// Group_B (classical-only, deferred PQ). Each non-empty section is an
+	/// RFC 9420 `MLSMessage`-wrapped `Welcome`.
 	static func encodeAPQWelcome(t: Data, pq: Data) -> Data {
 		var buffer = Data([apqWelcomeTag])
 		pushSection(t, into: &buffer)

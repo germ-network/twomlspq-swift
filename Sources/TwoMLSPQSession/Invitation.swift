@@ -83,7 +83,9 @@ public struct Invitation: Sendable {
 	}
 
 	/// Establish from a remote initiator's welcome, delegating the actual
-	/// join/found work to the identity-based `TwoMLSSession.receive`.
+	/// join/found work to the identity-based `TwoMLSSession.receive`. Each
+	/// half of `welcome` (the `0x01` APQ welcome) is an RFC 9420
+	/// `MLSMessage`-wrapped `Welcome`; a bare struct is refused.
 	/// Validation order — everything before any table insert or consume, so
 	/// a rejected welcome claims nothing (book session-lifecycle.md):
 	/// 1. `bootstrapKPCommitment` must be exactly 32 bytes.

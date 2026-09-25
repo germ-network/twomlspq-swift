@@ -17,6 +17,8 @@ import TwoMLSPQCrypto
 @available(iOS 26, macOS 26, *)
 public struct EstablishResult: Sendable {
 	public let session: TwoMLSSession
+	/// Each half of the `0x01` APQ welcome is an RFC 9420
+	/// `MLSMessage`-wrapped `Welcome`.
 	public let welcome: Data
 	/// The baseline `StateUpdate` (always `.checkpoint`) — there is no
 	/// sink/`installSink`; this return IS the first thing the app saves.

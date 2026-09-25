@@ -127,7 +127,7 @@ final class EstablishmentTests: XCTestCase {
 		let (_, _, aliceIdentity, _, _, welcomeB) = try SessionTestSupport.established()
 		let (classicalWelcomeBytes, pqWelcomeBytes) = try Frames.decodeAPQWelcome(welcomeB)
 		XCTAssertEqual(pqWelcomeBytes, Data())
-		let welcome = try MLS.RFC9420.Welcome(mlsEncoded: classicalWelcomeBytes)
+		let welcome = try EstablishmentMessages.decodeWelcome(classicalWelcomeBytes)
 
 		// `PendingJoin` is `~Copyable`, so `XCTAssertThrowsError`'s `Copyable`-bound
 		// generic cannot wrap this call — a plain do/catch instead.
@@ -212,6 +212,135 @@ final class EstablishmentTests: XCTestCase {
 		}
 	}
 
+	/// A `0x01` welcome whose halves are bare (unwrapped) `Welcome` structs —
+	/// the framing no deployed peer emits — is refused, not silently accepted
+	/// alongside the wrapped form. Covers both `receive()` (Group_A, via
+	/// `Invitation.receive`) and the Group_B staple join: each rejection
+	/// consumes no state, so re-feeding the genuine frame afterward still
+	/// joins.
+	func testBareWelcomeHalvesAreRefused() throws {
+		let alicePrincipal = try Principal.generate(
+			clientID: Data("alice".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let bobPrincipal = try Principal.generate(
+			clientID: Data("bob".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		guard let theirCombinerKP = invitation.combinerKeyPackage else {
+			return XCTFail("expected a combiner key package")
+		}
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirCombinerKP)
+
+		let (tBytes, pqBytes) = try Frames.decodeAPQWelcome(initiated.welcome)
+		let bareWelcomeA = Frames.encodeAPQWelcome(
+			t: try EstablishmentMessages.decodeWelcome(tBytes).mlsEncoded(),
+			pq: try EstablishmentMessages.decodeWelcome(pqBytes).mlsEncoded())
+
+		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
+		XCTAssertThrowsError(
+			try invitation.receive(
+				welcome: bareWelcomeA,
+				theirClassicalKeyPackage: initiated.session.identity.keyPackage
+					.classical,
+				bootstrapKPCommitment: try initiated.session
+					.bootstrapKPCommitment(),
+				spawnToken: spawnToken)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .malformedEstablishmentMessage)
+		}
+
+		let received = try invitation.receive(
+			welcome: initiated.welcome,
+			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			spawnToken: spawnToken)
+		XCTAssertTrue(received.session.isEstablished)
+
+		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
+		_ = try bob.prepareToEncrypt()
+		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
+		let (staple, _, appSection) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(genuineFrame))
+		let (classicalWelcomeBytes, _) = try Frames.decodeAPQWelcome(staple)
+		let bareClassicalWelcome = try EstablishmentMessages.decodeWelcome(
+			classicalWelcomeBytes
+		)
+		.mlsEncoded()
+		let bareStaple = Frames.encodeAPQWelcome(t: bareClassicalWelcome, pq: Data())
+		let proposalSection = Frames.encodeProposalSection(
+			proposing: Data("bob".utf8), message: Data("dummy-upd".utf8))
+		let forgedFrame = Frames.encodeMessageFrame(
+			staple: bareStaple, proposal: proposalSection, app: appSection)
+
+		XCTAssertThrowsError(try alice.processIncomingDecrypted(forgedFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .malformedEstablishmentMessage)
+		}
+		XCTAssertFalse(alice.isEstablished)
+		XCTAssertNil(alice.recvGroup)
+
+		_ = try alice.processIncomingDecrypted(genuineFrame)
+		XCTAssertTrue(alice.isEstablished)
+	}
+
+	/// A well-formed `MLSMessage` of the wrong case (a `KeyPackage`) in a
+	/// welcome slot is refused with the same precise error as a bare struct —
+	/// at both `receive()` (Group_A) and the Group_B staple join.
+	func testWelcomeSlotRejectsANonWelcomeMessage() throws {
+		let alicePrincipal = try Principal.generate(
+			clientID: Data("alice".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let bobPrincipal = try Principal.generate(
+			clientID: Data("bob".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		guard let theirCombinerKP = invitation.combinerKeyPackage else {
+			return XCTFail("expected a combiner key package")
+		}
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirCombinerKP)
+
+		let (_, pqBytes) = try Frames.decodeAPQWelcome(initiated.welcome)
+		let keyPackageInWelcomeSlot = try EstablishmentMessages.encodeKeyPackage(
+			initiated.session.identity.keyPackage.classical)
+		let wrongCaseWelcomeA = Frames.encodeAPQWelcome(
+			t: keyPackageInWelcomeSlot, pq: pqBytes)
+
+		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
+		XCTAssertThrowsError(
+			try invitation.receive(
+				welcome: wrongCaseWelcomeA,
+				theirClassicalKeyPackage: initiated.session.identity.keyPackage
+					.classical,
+				bootstrapKPCommitment: try initiated.session
+					.bootstrapKPCommitment(),
+				spawnToken: spawnToken)
+		) { error in
+			XCTAssertEqual(error as? TwoMLSError, .malformedEstablishmentMessage)
+		}
+
+		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
+		_ = try bob.prepareToEncrypt()
+		let genuineFrame = try bob.encrypt(Data("genuine".utf8)).frame
+		let (_, _, appSection) = try Frames.decodeMessageFrame(
+			alice.openOrRaw(genuineFrame))
+		let wrongCaseStaple = Frames.encodeAPQWelcome(
+			t: try EstablishmentMessages.encodeKeyPackage(
+				initiated.session.identity.keyPackage.classical), pq: Data())
+		let proposalSection = Frames.encodeProposalSection(
+			proposing: Data("bob".utf8), message: Data("dummy-upd".utf8))
+		let forgedFrame = Frames.encodeMessageFrame(
+			staple: wrongCaseStaple, proposal: proposalSection, app: appSection)
+
+		XCTAssertThrowsError(try alice.processIncomingDecrypted(forgedFrame)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .malformedEstablishmentMessage)
+		}
+	}
+
 	// MARK: - Group_B join gates: cross-party PSK + creator pin, parse-then-export
 
 	/// A forged Group_B welcome: a classical-only creation commit under
@@ -265,7 +394,7 @@ final class EstablishmentTests: XCTestCase {
 				throw MLS.Combiner.Error.missingWelcome
 			}
 			return Frames.encodeAPQWelcome(
-				t: try welcome.mlsEncoded(), pq: Data())
+				t: try EstablishmentMessages.encodeWelcome(welcome), pq: Data())
 		}
 	}
 
