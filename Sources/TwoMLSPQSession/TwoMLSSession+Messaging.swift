@@ -580,6 +580,8 @@ extension TwoMLSSession {
 			return try processStandaloneHandoff(frame, approval: approval)
 		case Frames.apqWelcomeTag:
 			return try processStandaloneWelcome(frame)
+		case Frames.preEstablishmentAppTag:
+			return try processPreEstablishmentApp(frame)
 		default:
 			throw TwoMLSError.unsupportedFrameTag(tag)
 		}
@@ -682,6 +684,43 @@ extension TwoMLSSession {
 		}
 		return .pendingEstablishment(
 			PendingEstablishment(envelope: envelope, welcome: welcome))
+	}
+
+	/// The acceptor's `0x09` pre-establishment app staple (book §A.1): the
+	/// initiator's own send group (ASG-cl) sealed the message, so this
+	/// decrypts in `recvGroup.classical` — no staple, no proposal (Rust
+	/// messaging.rs:1694-1735), so no `offeredProposal` write and no fold.
+	/// An INITIATOR (never a recv-group-less acceptor — `receive` populates
+	/// `recvGroup` from construction) rejects its own reflected frame with
+	/// `.unsupportedFrameTag`, the same error an unestablished acceptor
+	/// would see if it somehow had no `recvGroup` (unreachable in practice:
+	/// every acceptor is established from construction). Not gated by
+	/// `ensureEstablishmentDelegated` — receiving is fine on an owed
+	/// born-dedicated acceptor. The carried `authenticatedData`
+	/// (`H(currentStaple)` on the sender's side) is surfaced, not enforced
+	/// — the book is silent and the ciphertext is already bound to
+	/// Group_A.
+	private mutating func processPreEstablishmentApp(_ frame: Data) throws -> IncomingResult {
+		guard !initiated, var recv = recvGroup else {
+			throw TwoMLSError.unsupportedFrameTag(Frames.preEstablishmentAppTag)
+		}
+		let appBytes = try Frames.decodePreEstablishmentApp(frame)
+		let appMessage = try MLS.RFC9420.Message(mlsEncoded: appBytes)
+		guard case .privateMessage(let appPM) = appMessage else {
+			throw TwoMLSError.appSectionNotPrivateMessage
+		}
+		let unprotected = try recv.classical.unprotect(classicalProvider, message: appPM)
+		guard case .application(let data) = unprotected.content else {
+			throw TwoMLSError.unprotectedContentNotApplication
+		}
+		recvGroup = recv
+		advanceStateSeq()
+		let update = try stateUpdate(kind: .core)
+		return .preEstablishment(
+			PreEstablishmentMessage(
+				applicationMessage: data, sender: unprotected.sender,
+				epoch: unprotected.epoch,
+				authenticatedData: unprotected.authenticatedData, update: update))
 	}
 
 	/// The approved-join analogue of `processMessageFrame`'s ordinary

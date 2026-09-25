@@ -631,4 +631,229 @@ final class PreEstablishmentTests: XCTestCase {
 			XCTAssertEqual(error as? TwoMLSError, .unsupportedFrameTag(0x00))
 		}
 	}
+
+	// MARK: - The acceptor's `0x09` arm
+
+	private func establishedAcceptor() throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession, invitation: Invitation
+	) {
+		let (alice, invitationValue) = try setup()
+		var invitation = invitationValue
+		let returnKP = try EstablishmentMessages.decodeKeyPackage(
+			try EstablishmentMessages.encodeKeyPackage(
+				alice.identity.keyPackage.classical))
+		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
+		let received = try invitation.receive(
+			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
+			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
+			spawnToken: spawnToken)
+		return (alice, received.session, invitation)
+	}
+
+	/// Round trip. `receive` -> `processIncoming(staple)` ->
+	/// `.preEstablishment` with the message, epoch 1, and
+	/// `authenticatedData == H(welcome)`. Its `.core` update restores, and
+	/// the restored session then processes Alice's post-join `0x03`. Kills:
+	/// a missing dispatch arm (`unsupportedFrameTag(0x09)`), decrypting in
+	/// the wrong group, the update not persisting the ratchet.
+	func testRoundTrip() throws {
+		var (alice, bob, invitation) = try establishedAcceptor()
+		_ = try alice.prepareToEncrypt()
+		let sent = try alice.encrypt(Data("pre-join hello".utf8))
+		guard case .establishment(let frame) = try invitation.openInitial(sent.frame) else {
+			return XCTFail("expected .establishment")
+		}
+		let staple = try XCTUnwrap(frame.stapledMessage)
+
+		guard case .preEstablishment(let message) = try bob.processIncoming(staple) else {
+			return XCTFail("expected .preEstablishment")
+		}
+		XCTAssertEqual(message.applicationMessage, Data("pre-join hello".utf8))
+		XCTAssertEqual(message.epoch, 1)
+		XCTAssertEqual(
+			message.authenticatedData,
+			try SessionTestSupport.classicalProvider.hash(alice.currentStaple))
+
+		let archive = try bob.makeSessionArchive(kind: .checkpoint)
+		var restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: try sealAndOpen(archive),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+
+		_ = try restored.prepareToEncrypt()
+		let bobFrame = try restored.encrypt(Data("bob-hello".utf8)).frame
+		_ = try alice.processIncoming(bobFrame)
+		XCTAssertTrue(alice.isEstablished)
+	}
+
+	/// A `0x09` staple whose body decodes as an `MLSMessage` but not a
+	/// `.privateMessage` fails `.appSectionNotPrivateMessage`. Kills:
+	/// dropping that guard.
+	func testRoundTripRejectsAppSectionNotAPrivateMessage() throws {
+		let (_, bob, _) = try establishedAcceptor()
+		let notAPrivateMessage = try MLS.RFC9420.Message.keyPackage(
+			bob.identity.keyPackage.classical
+		).mlsEncoded()
+		let staple = Frames.encodePreEstablishmentApp(notAPrivateMessage)
+
+		var mutableBob = bob
+		XCTAssertThrowsError(try mutableBob.processIncoming(staple)) { error in
+			XCTAssertEqual(error as? TwoMLSError, .appSectionNotPrivateMessage)
+		}
+	}
+
+	/// Out of order: staples 2 then 1 both decrypt. Kills: a stricter
+	/// generation check.
+	func testOutOfOrderStaplesBothDecrypt() throws {
+		var (alice, bob, invitation) = try establishedAcceptor()
+		func staple(_ text: String) throws -> Data {
+			_ = try alice.prepareToEncrypt()
+			let sent = try alice.encrypt(Data(text.utf8))
+			guard
+				case .establishment(let frame) = try invitation.openInitial(
+					sent.frame)
+			else {
+				XCTFail("expected .establishment")
+				return Data()
+			}
+			return try XCTUnwrap(frame.stapledMessage)
+		}
+		let staple1 = try staple("first")
+		let staple2 = try staple("second")
+
+		guard case .preEstablishment(let m2) = try bob.processIncoming(staple2) else {
+			return XCTFail("expected .preEstablishment")
+		}
+		XCTAssertEqual(m2.applicationMessage, Data("second".utf8))
+		guard case .preEstablishment(let m1) = try bob.processIncoming(staple1) else {
+			return XCTFail("expected .preEstablishment")
+		}
+		XCTAssertEqual(m1.applicationMessage, Data("first".utf8))
+	}
+
+	/// Replay throws with `stateSeq` unchanged. Kills: bumping state
+	/// on failure.
+	func testReplayThrowsWithStateUnchanged() throws {
+		var (alice, bob, invitation) = try establishedAcceptor()
+		_ = try alice.prepareToEncrypt()
+		let sent = try alice.encrypt(Data("once".utf8))
+		guard case .establishment(let frame) = try invitation.openInitial(sent.frame) else {
+			return XCTFail("expected .establishment")
+		}
+		let staple = try XCTUnwrap(frame.stapledMessage)
+
+		guard case .preEstablishment = try bob.processIncoming(staple) else {
+			return XCTFail("expected .preEstablishment")
+		}
+		let before = bob.stateSeq
+		XCTAssertThrowsError(try bob.processIncoming(staple))
+		XCTAssertEqual(bob.stateSeq, before)
+	}
+
+	/// A late staple, delivered after Alice's first post-join fold, still
+	/// decrypts — pins the verified behavior (probed across one fold).
+	/// Kills: an epoch-floor check copied from the side-band.
+	func testLateStapleAfterAliceFirstFoldStillDecrypts() throws {
+		var (alice, bob, invitation) = try establishedAcceptor()
+		_ = try alice.prepareToEncrypt()
+		let held = try alice.encrypt(Data("held back".utf8))
+		guard case .establishment(let frame) = try invitation.openInitial(held.frame) else {
+			return XCTFail("expected .establishment")
+		}
+		let lateStaple = try XCTUnwrap(frame.stapledMessage)
+
+		_ = try bob.prepareToEncrypt()
+		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		_ = try alice.processIncoming(bobFrame)
+		XCTAssertTrue(alice.isEstablished)
+
+		// Alice's first post-join fold: Bob offers, Alice folds it in.
+		_ = try bob.prepareToEncrypt()
+		let bobOffer = try bob.encrypt(Data("post-join offer".utf8)).frame
+		let offerResult = try alice.processIncoming(bobOffer)
+		guard case .decrypted(let d) = offerResult else {
+			return XCTFail("expected .decrypted")
+		}
+		_ = try alice.queueProposal(digest: d.queuedProposal.digest)
+		_ = try alice.prepareToEncrypt()
+		let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
+		guard case .decrypted(let folded) = try bob.processIncoming(foldFrame) else {
+			return XCTFail("expected .decrypted")
+		}
+		XCTAssertTrue(folded.didApplyRemoteCommit)
+
+		guard case .preEstablishment(let late) = try bob.processIncoming(lateStaple) else {
+			return XCTFail("expected .preEstablishment")
+		}
+		XCTAssertEqual(late.applicationMessage, Data("held back".utf8))
+		XCTAssertEqual(late.epoch, 1)
+	}
+
+	/// A `0x09` frame on the INITIATOR — pre-join and post-join —
+	/// throws `.unsupportedFrameTag(0x09)` (a reflected own frame). Kills:
+	/// accepting it.
+	func testInitiatorRejectsAReflectedPreEstablishmentFrame() throws {
+		var (alice, bob, invitation) = try establishedAcceptor()
+		_ = try alice.prepareToEncrypt()
+		let sent = try alice.encrypt(Data("hello".utf8))
+		guard case .establishment(let frame) = try invitation.openInitial(sent.frame) else {
+			return XCTFail("expected .establishment")
+		}
+		let staple = try XCTUnwrap(frame.stapledMessage)
+
+		XCTAssertThrowsError(try alice.processIncoming(staple)) { error in
+			XCTAssertEqual(
+				error as? TwoMLSError,
+				.unsupportedFrameTag(Frames.preEstablishmentAppTag))
+		}
+
+		_ = try bob.prepareToEncrypt()
+		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
+		_ = try alice.processIncoming(bobFrame)
+		XCTAssertTrue(alice.isEstablished)
+
+		XCTAssertThrowsError(try alice.processIncoming(staple)) { error in
+			XCTAssertEqual(
+				error as? TwoMLSError,
+				.unsupportedFrameTag(Frames.preEstablishmentAppTag))
+		}
+	}
+
+	/// A born-dedicated acceptor BEFORE install still processes a
+	/// `0x09` — receiving is fine on an owed acceptor. Kills: over-gating
+	/// with `ensureEstablishmentDelegated`.
+	func testBornDedicatedAcceptorBeforeInstallProcessesPreEstablishmentApp() throws {
+		let alicePrincipal = try Principal.generate(
+			clientID: Data("alice".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let bobPrincipal = try Principal.generate(
+			clientID: Data("bob".utf8),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		let theirKP = try XCTUnwrap(invitation.combinerKeyPackage)
+		var alice = try TwoMLSSession.initiate(principal: alicePrincipal, their: theirKP)
+			.session
+		let received = try invitation.receive(
+			welcome: alice.currentStaple,
+			theirClassicalKeyPackage: alice.identity.keyPackage.classical,
+			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
+			spawnToken: SessionTestSupport.classicalProvider.randomBytes(16),
+			newClientID: Data("bob-dedicated".utf8))
+		var bob = received.session
+		XCTAssertTrue(bob.owesEstablishmentEnvelope)
+
+		_ = try alice.prepareToEncrypt()
+		let sent = try alice.encrypt(Data("pre-install".utf8))
+		guard case .establishment(let frame) = try invitation.openInitial(sent.frame) else {
+			return XCTFail("expected .establishment")
+		}
+		let staple = try XCTUnwrap(frame.stapledMessage)
+
+		guard case .preEstablishment(let message) = try bob.processIncoming(staple) else {
+			return XCTFail("expected .preEstablishment")
+		}
+		XCTAssertEqual(message.applicationMessage, Data("pre-install".utf8))
+	}
 }

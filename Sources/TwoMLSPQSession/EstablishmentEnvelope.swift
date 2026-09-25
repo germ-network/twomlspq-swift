@@ -171,6 +171,17 @@ public struct InitialFrame: Sendable, Equatable {
 	public var appPayload: Data?
 	public var welcome: Data?
 	public var returnKeyPackage: Data?
+	/// A pre-join initiator's `0x09` app staple (book §A.1), present on any
+	/// pre-join `encrypt` re-seal — session-lifecycle.md's host flow:
+	/// - **First envelope:** `openInitial` -> `receive` -> feed this to the
+	///   new session's `processIncoming`.
+	/// - **Re-delivery** (a later re-seal of the same establishment
+	///   vector): `openInitial` -> route by `forwardGroupID(spawnToken:
+	///   H(appPayload ?? welcome))` -> `forwarded(spawnToken:)` -> feed this
+	///   to `processIncoming`.
+	/// - **Fail-open:** a lost staple is not re-sent after the initiator
+	///   joins — every later send instead carries the header-sealed `0x03`
+	///   path.
 	public var stapledMessage: Data?
 }
 
