@@ -1311,7 +1311,7 @@ final class LeafKeysTests: XCTestCase {
 	/// apply. The durable recovery path is what this test proves instead.
 	#if DEBUG
 		func testPqRekeyApplyLeafKeysSurviveAFaultAfterWriteBack() throws {
-			// Same reason as `SigningKeyProtocolTests`'s §3 catch-up tests:
+			// Same reason as `SigningKeyProtocolTests`'s protocol doc §3 catch-up tests:
 			// the hand-built renaming Upd′ has no rotation-candidate arm to
 			// resolve through.
 			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
@@ -1319,7 +1319,7 @@ final class LeafKeysTests: XCTestCase {
 			// credential, so `promoted` would be a no-op and this fault
 			// couldn't move anything observable — hand-build a RENAMING
 			// Upd′ instead (the write-back this test targets is the
-			// promotion itself). §3's PQ leaf move is catch-up-only: the
+			// promotion itself). Protocol doc §3's PQ leaf move is catch-up-only: the
 			// new id must already be canonical, so bob classically rotates
 			// and converges to it FIRST, exactly like
 			// `SigningKeyProtocolTests.testSection3PQLeafCatchUpToAnAlreadyCanonicalID`.

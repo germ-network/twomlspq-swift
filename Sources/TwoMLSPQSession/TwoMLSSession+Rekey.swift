@@ -149,7 +149,7 @@ extension TwoMLSSession {
 	/// result as a `0x1D` side-band frame. The proposer's leaf may keep its id
 	/// (any signature-key change) or catch up to an already-canonical one
 	/// (`validatePQLeafMove` against `auth.theirs`); the C1 announced id, when
-	/// present, is cross-checked against the proposed leaf's id (C1). The commit's
+	/// present, is cross-checked against the proposed leaf's id (protocol doc C1). The commit's
 	/// own path leaf moves this party's send-PQ leaf to `auth.mine.current`
 	/// under a freshly minted key. Every check
 	/// runs before any mutation, so a rejected round leaves `self` untouched.

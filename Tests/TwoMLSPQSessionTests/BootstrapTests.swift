@@ -814,7 +814,7 @@ final class BootstrapTests: XCTestCase {
 		_ = try bob.processIncomingDecrypted(frame)
 	}
 
-	// MARK: - D1: KP′ is the identity's own PQ half
+	// MARK: - KP′ is the identity's own PQ half
 
 	/// KP′ is `identity.keyPackage.pq` itself, not a separately minted KP —
 	/// survives restore, and once Alice joins Group_B.pq off it at §A.3,

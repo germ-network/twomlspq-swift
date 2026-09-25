@@ -1397,7 +1397,7 @@ public enum SessionMigration {
 		} else if let bootstrapKPSecret {
 			// The pre-A.3 initiator's reservation: KP′'s leaf key, looked up
 			// in the PQ slots (it is signed under the founder identity's
-			// own PQ key, D1's per-half-but-shared-within-a-half model).
+			// own PQ key).
 			let kpLeaf = try MLS.RFC9420.KeyPackage(
 				mlsEncoded: bootstrapKPSecret.keyPackage
 			)

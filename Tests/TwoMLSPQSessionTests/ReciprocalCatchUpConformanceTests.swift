@@ -1480,8 +1480,8 @@ final class ReciprocalCatchUpConformanceTests: XCTestCase {
 	/// leaf in our send-PQ group presents its current id) — a rotate-before-bind deployed
 	/// peer's OWN responder Commit′ would otherwise orphan its recv-PQ key permanently. Our own
 	/// catch-up (our leaf lagging) is unaffected — only the reciprocal trigger defers.
-	/// Deployed-compatible profile only (§4 C2). Every session is deployed-compatible until
-	/// profiles exist (§5), so this runs unconditionally. When profiles land, build the session
+	/// Deployed-compatible profile only (protocol doc §4 C2). Every session is deployed-compatible until
+	/// profiles exist (protocol doc §5), so this runs unconditionally. When profiles land, build the session
 	/// under that profile and add a correct-profile twin that asserts the reciprocal A.5 opens
 	/// on the first turn. Before Alice's own A.5 lands, Bob's PQ turn opens a plain A.4
 	/// (deferral — true today, plain, since the trigger is unconditionally A.4 anyway). After

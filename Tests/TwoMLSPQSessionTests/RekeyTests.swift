@@ -316,7 +316,7 @@ final class RekeyTests: XCTestCase {
 	/// A `0x1B` Upd′ that replaces the proposer's PQ-leaf credential with an id
 	/// NEITHER party has ever offered is refused by the committer's
 	/// `pqRekeyRespond` — `.rekeyProposalRejected` — before any commit is
-	/// spent: id-based catch-up is accepted (§1/§3/D6, `+Rekey.swift` doc), but
+	/// spent: id-based catch-up is accepted (protocol doc §1/§3/D6, `+Rekey.swift` doc), but
 	/// only onto a credential already canonical in `auth.theirs`
 	/// (`validatePQLeafMove`, `CredentialAuthentication.swift`); the PQ arms
 	/// still run no persisted `AuthCore.adjudicate` of their own, so an id this

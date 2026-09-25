@@ -165,7 +165,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// respond-side id gate's own failures, all before any commit is spent:
 	/// the proposed leaf's id is not already-canonical (or is a rollback)
 	/// per `validatePQLeafMove`; either leaf's credential is not `.basic`;
-	/// or a present announced id (the Upd′'s authenticated
+	/// or a present announced id (protocol doc C1; the Upd′'s authenticated
 	/// data) disagrees with the proposed leaf's id.
 	case rekeyProposalRejected
 	/// `pqRekeyApply`'s applied `CommitEffects` were not the mechanical rekey
@@ -178,7 +178,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// backstop (`adjudicatePQRekeyEffects`/`validatePQLeafMove`,
 	/// `CredentialAuthentication.swift`) — since the PQ arms still run no
 	/// `AuthCore.adjudicate` of their own; that backstop checks the id
-	/// against the classical `AuthCore` (D2) instead.
+	/// against the classical `AuthCore` (protocol doc D2) instead.
 	case invalidRekeyEffects
 
 	// MARK: Classical FOLD (no credential rotation)
@@ -232,7 +232,7 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// leaf move to a non-canonical id, caught at `pqRekeyApply` (or, as a
 	/// backstop, at `pqRekeyRespond` after the Commit′ is built) — the PQ arms
 	/// have no persisted sequence of their own, so this checks the id against
-	/// the classical `AuthCore` (D2) rather than calling `AuthCore.adjudicate`.
+	/// the classical `AuthCore` (protocol doc D2) rather than calling `AuthCore.adjudicate`.
 	case invalidSuccession
 	/// The peer's presented identity does not match the party actually bound
 	/// at establishment: at `receive`, the caller-supplied
