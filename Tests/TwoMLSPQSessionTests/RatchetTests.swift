@@ -194,7 +194,8 @@ import TwoMLSPQCrypto
 		#expect(bob.owedBind == nil)
 		#expect(bob.sendGroup?.pq?.context.epoch == 1)
 		guard case .initiating = bob.pqInflight else {
-			Issue.record("expected bob to still hold `.initiating` after a rejected bind")
+			Issue.record(
+				"expected bob to still hold `.initiating` after a rejected bind")
 			return
 		}
 

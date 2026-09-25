@@ -3,8 +3,8 @@ import MLSCodec
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
-import TwoMLSPQCrypto
 import Testing
+import TwoMLSPQCrypto
 
 @testable import TwoMLSPQSession
 
@@ -409,8 +409,12 @@ import Testing
 		#expect(mintedIdentity.signatureKey == nativeIdentity.signatureKey)
 		#expect(mintedIdentity.pqSigningKey == nativeIdentity.pqSigningKey)
 		#expect(mintedIdentity.pqSignatureKey == nativeIdentity.pqSignatureKey)
-		#expect(mintedIdentity.classicalLeafSecretKey == nativeIdentity.classicalLeafSecretKey)
-		#expect(mintedIdentity.classicalInitSecretKey == nativeIdentity.classicalInitSecretKey)
+		#expect(
+			mintedIdentity.classicalLeafSecretKey
+				== nativeIdentity.classicalLeafSecretKey)
+		#expect(
+			mintedIdentity.classicalInitSecretKey
+				== nativeIdentity.classicalInitSecretKey)
 		#expect(mintedIdentity.pqLeafSecretKey == nativeIdentity.pqLeafSecretKey)
 		#expect(mintedIdentity.pqInitSecretKey == nativeIdentity.pqInitSecretKey)
 		#expect(mintedIdentity.classicalKeyPackage == nativeIdentity.classicalKeyPackage)
@@ -424,12 +428,22 @@ import Testing
 		#expect(mintedBody.pendingProposal == nativeBody.pendingProposal)
 		#expect(mintedBody.joinedWelcomeDigest == nativeBody.joinedWelcomeDigest)
 		#expect(mintedBody.initiated == nativeBody.initiated)
-		#expect(mintedBody.bootstrapKPSecret?.leafSecretKey == nativeBody.bootstrapKPSecret?.leafSecretKey)
-		#expect(mintedBody.bootstrapKPSecret?.initSecretKey == nativeBody.bootstrapKPSecret?.initSecretKey)
-		#expect(mintedBody.bootstrapKPSecret?.keyPackage == nativeBody.bootstrapKPSecret?.keyPackage)
-		#expect(mintedBody.expectedBootstrapKPCommitment == nativeBody.expectedBootstrapKPCommitment)
+		#expect(
+			mintedBody.bootstrapKPSecret?.leafSecretKey
+				== nativeBody.bootstrapKPSecret?.leafSecretKey)
+		#expect(
+			mintedBody.bootstrapKPSecret?.initSecretKey
+				== nativeBody.bootstrapKPSecret?.initSecretKey)
+		#expect(
+			mintedBody.bootstrapKPSecret?.keyPackage
+				== nativeBody.bootstrapKPSecret?.keyPackage)
+		#expect(
+			mintedBody.expectedBootstrapKPCommitment
+				== nativeBody.expectedBootstrapKPCommitment)
 		#expect(mintedBody.pqTurnMine == nativeBody.pqTurnMine)
-		#expect(mintedBody.owedBind?.pqCommitMessage == nativeBody.owedBind?.pqCommitMessage)
+		#expect(
+			mintedBody.owedBind?.pqCommitMessage == nativeBody.owedBind?.pqCommitMessage
+		)
 		#expect(mintedBody.owedBind?.tEpoch == nativeBody.owedBind?.tEpoch)
 		#expect(mintedBody.owedBind?.pqEpoch == nativeBody.owedBind?.pqEpoch)
 		#expect(mintedBody.pqInflight == nativeBody.pqInflight)
@@ -441,7 +455,9 @@ import Testing
 		#expect(mintedBody.offeredProposal == nativeBody.offeredProposal)
 		#expect(mintedBody.queuedProposal == nativeBody.queuedProposal)
 		#expect(mintedBody.stagedUpdates == nativeBody.stagedUpdates)
-		#expect(mintedBody.sendCrossPSKLedger.entries.count == nativeBody.sendCrossPSKLedger.entries.count)
+		#expect(
+			mintedBody.sendCrossPSKLedger.entries.count
+				== nativeBody.sendCrossPSKLedger.entries.count)
 		for (epoch, mintedPsk) in mintedBody.sendCrossPSKLedger.entries {
 			let nativePsk = try #require(
 				nativeBody.sendCrossPSKLedger.entries[epoch])
@@ -449,17 +465,37 @@ import Testing
 			#expect(mintedPsk.pskID == nativePsk.pskID)
 			#expect(mintedPsk.psk == nativePsk.psk)
 		}
-		#expect(mintedBody.rotationCandidate?.clientID == nativeBody.rotationCandidate?.clientID)
-		#expect(mintedBody.rotationCandidate?.proposedAtRecvEpoch == nativeBody.rotationCandidate?.proposedAtRecvEpoch)
+		#expect(
+			mintedBody.rotationCandidate?.clientID
+				== nativeBody.rotationCandidate?.clientID)
+		#expect(
+			mintedBody.rotationCandidate?.proposedAtRecvEpoch
+				== nativeBody.rotationCandidate?.proposedAtRecvEpoch)
 		#expect(mintedBody.spawnToken == nativeBody.spawnToken)
-		#expect(mintedBody.listenRendezvous?.entries == nativeBody.listenRendezvous?.entries)
+		#expect(
+			mintedBody.listenRendezvous?.entries == nativeBody.listenRendezvous?.entries
+		)
 		#expect(mintedBody.recvHeaderKeys?.entries == nativeBody.recvHeaderKeys?.entries)
-		#expect(mintedBody.recvHeaderKeysPQ?.entries == nativeBody.recvHeaderKeysPQ?.entries)
-		#expect(mintedBody.initialTheirKP?.classical == nativeBody.initialTheirKP?.classical)
+		#expect(
+			mintedBody.recvHeaderKeysPQ?.entries == nativeBody.recvHeaderKeysPQ?.entries
+		)
+		#expect(
+			mintedBody.initialTheirKP?.classical == nativeBody.initialTheirKP?.classical
+		)
 		#expect(mintedBody.initialTheirKP?.pq == nativeBody.initialTheirKP?.pq)
-		#expect(mintedBody.sendAttachmentLedger?.entries.mapValues { $0.wrappedValue } == nativeBody.sendAttachmentLedger?.entries.mapValues { $0.wrappedValue })
-		#expect(mintedBody.recvAttachmentLedger?.entries.mapValues { $0.wrappedValue } == nativeBody.recvAttachmentLedger?.entries.mapValues { $0.wrappedValue })
-		#expect(mintedBody.owesEstablishmentEnvelope == nativeBody.owesEstablishmentEnvelope)
+		#expect(
+			mintedBody.sendAttachmentLedger?.entries.mapValues { $0.wrappedValue }
+				== nativeBody.sendAttachmentLedger?.entries.mapValues {
+					$0.wrappedValue
+				})
+		#expect(
+			mintedBody.recvAttachmentLedger?.entries.mapValues { $0.wrappedValue }
+				== nativeBody.recvAttachmentLedger?.entries.mapValues {
+					$0.wrappedValue
+				})
+		#expect(
+			mintedBody.owesEstablishmentEnvelope == nativeBody.owesEstablishmentEnvelope
+		)
 		// The temporary conversion must land on exactly the same four
 		// stored key sets (current + pending, by target) as the live path's
 		// own seeding/staging — this is the direct parity check for "the
@@ -517,7 +553,8 @@ import Testing
 		let mintedBody = try minted.decode(SessionArchive.self)
 
 		#expect(mintedBody.auth.mine.pinned == [aliceID])
-		#expect(!(mintedBody.auth.mine.pinned.contains(
+		#expect(
+			!(mintedBody.auth.mine.pinned.contains(
 				Data("legacy-rust-founding-pin-only".utf8))))
 
 		// The minted archive must still restore and keep messaging — proves
@@ -553,8 +590,12 @@ import Testing
 		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
 
 		let mintedBody = try minted.decode(SessionArchive.self)
-		#expect(!(mintedBody.leafKeys.recvClassical.pending.isEmpty), "the staged rotating Upd(self) must convert into recvClassical.pending")
-		#expect(mintedBody.leafKeys.sendClassical.pending.isEmpty, "send-classical never holds a pending entry")
+		#expect(
+			!(mintedBody.leafKeys.recvClassical.pending.isEmpty),
+			"the staged rotating Upd(self) must convert into recvClassical.pending")
+		#expect(
+			mintedBody.leafKeys.sendClassical.pending.isEmpty,
+			"send-classical never holds a pending entry")
 	}
 
 	/// The mint's rotation-shape check: a supplied `MigratedRotationCandidate
@@ -583,10 +624,12 @@ import Testing
 			signatureKey: wrongSignatureKey.data,
 			proposedAtRecvEpoch: candidate.proposedAtRecvEpoch)
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// Isolates conversion item (c) — the staged-proposal scan — from item
@@ -641,10 +684,12 @@ import Testing
 		var parts = try migratedParts(alice)
 		parts.rotationCandidate = nil
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// A mid-A.4 `.responding` mint: the held `S`/parked CT map, the body
@@ -767,7 +812,9 @@ import Testing
 		#expect(mintedBody.leafKeys.recvClassical == nativeBody.leafKeys.recvClassical)
 		#expect(mintedBody.leafKeys.sendPQ?.current == nativeBody.leafKeys.sendPQ?.current)
 		#expect(mintedBody.leafKeys.recvPQ == nativeBody.leafKeys.recvPQ)
-		#expect(mintedBody.leafKeys.sendClassical.pending.isEmpty, "a converged rotation leaves no outstanding send-classical pending entry")
+		#expect(
+			mintedBody.leafKeys.sendClassical.pending.isEmpty,
+			"a converged rotation leaves no outstanding send-classical pending entry")
 	}
 
 	/// Mint parity for the pre-A.3 initiator: fully established classically
@@ -913,7 +960,8 @@ import Testing
 		_ = try alice.pqBootstrapBegin()
 		#expect(alice.bootstrapKPSecret != nil)
 		guard case .bootstrapInitiated = alice.pqInflight else {
-			Issue.record("expected alice to hold .bootstrapInitiated after pqBootstrapBegin")
+			Issue.record(
+				"expected alice to hold .bootstrapInitiated after pqBootstrapBegin")
 			return
 		}
 		#expect(alice.recvGroup?.pq == nil)
@@ -939,7 +987,8 @@ import Testing
 			let mint = {
 				try SessionMigration.mintArchive(
 					kind: .checkpoint,
-					parts: try self.migratedParts(alice, suppliedLeafKeys: true),
+					parts: try self.migratedParts(
+						alice, suppliedLeafKeys: true),
 					classicalProvider: SessionTestSupport.classicalProvider,
 					pqProvider: SessionTestSupport.pqProvider)
 			}
@@ -1022,7 +1071,9 @@ import Testing
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 			let mintedBody = try minted.decode(SessionArchive.self)
-			#expect(mintedBody.leafKeys.sendClassical.pending.isEmpty, "\(kind): a supplied send-classical pending entry must be dropped")
+			#expect(
+				mintedBody.leafKeys.sendClassical.pending.isEmpty,
+				"\(kind): a supplied send-classical pending entry must be dropped")
 		}
 	}
 
@@ -1048,7 +1099,9 @@ import Testing
 		let foldPrepared = try alice.prepareToEncrypt()
 		#expect(foldPrepared.didCommit)
 		#expect(alice.leafKeys.sendClassical.current?.signatureKey != sharedKey)
-		#expect(alice.leafKeys.recvClassical.current?.signatureKey == sharedKey, "recv-classical has not folded yet")
+		#expect(
+			alice.leafKeys.recvClassical.current?.signatureKey == sharedKey,
+			"recv-classical has not folded yet")
 
 		// The first FOLD: bob approves and folds alice's own offer (minted
 		// above), which diverges her recv-classical leaf too.
@@ -1176,10 +1229,12 @@ import Testing
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.sendAttachmentLedger = [:]
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	// MARK: - AC 3: mutation-verify
@@ -1221,7 +1276,8 @@ import Testing
 	private static var rogueCapabilities: MLS.RFC9420.Capabilities {
 		MLS.RFC9420.Capabilities(
 			versions: [.mls10], cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
-			extensions: [], proposals: [], credentials: [MLS.RFC9420.CredentialType(.basic)])
+			extensions: [], proposals: [],
+			credentials: [MLS.RFC9420.CredentialType(.basic)])
 	}
 
 	/// Each half checked independently: a rogue CLASSICAL half with a
@@ -1239,19 +1295,23 @@ import Testing
 		classicalRogueParts.initialTheirKP = (
 			classical: try rogueKP.mlsEncoded(), pq: try wellCapableKP.mlsEncoded()
 		)
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: classicalRogueParts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 
 		var pqRogueParts = try migratedParts(alice, suppliedLeafKeys: true)
 		pqRogueParts.initialTheirKP = (
 			classical: try wellCapableKP.mlsEncoded(), pq: try rogueKP.mlsEncoded()
 		)
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: pqRogueParts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	@available(iOS 26, macOS 26, *)
@@ -1260,10 +1320,12 @@ import Testing
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.identity.signingKey = SecretBytes(randomByteCount: 32)
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// A VALID but different ML-KEM leaf secret — one that passes the 96-B
@@ -1276,10 +1338,12 @@ import Testing
 		let (wrongSecret, _) = try SessionTestSupport.pqProvider.hpkeGenerateKeyPair()
 		parts.identity.pqLeafSecretKey = wrongSecret.data
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// Swapping the classical leaf and init secrets (two VALID X25519 keys)
@@ -1306,10 +1370,12 @@ import Testing
 			try #require(parts.identity.classicalInitSecretKey)
 		parts.identity.classicalInitSecretKey = leaf
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// An init secret supplied for an ESTABLISHED session — the native path
@@ -1321,10 +1387,12 @@ import Testing
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.identity.classicalInitSecretKey = SecretBytes(randomByteCount: 32)
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// A PQ init secret is rejected even for a pre-establishment initiator —
@@ -1351,10 +1419,12 @@ import Testing
 		let (pqInitSecret, _) = try SessionTestSupport.pqProvider.hpkeGenerateKeyPair()
 		parts.identity.pqInitSecretKey = pqInitSecret.data
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// A topology violation — no recv group with `initiated == false` — is
@@ -1372,10 +1442,12 @@ import Testing
 		parts.initiated = false
 		parts.recvGroup = nil
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// The standard (full-combiner) pair's PQ snapshot is mandatory —
@@ -1386,10 +1458,12 @@ import Testing
 		var parts = try migratedParts(alice, suppliedLeafKeys: true)
 		parts.sendGroup.pq = nil
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// A provider that doesn't back its suite is `.cipherSuiteMismatch`
@@ -1400,11 +1474,13 @@ import Testing
 		let (alice, _) = try fullyEstablishedPair()
 		let wrongProvider = SwiftCryptoProvider().cipherSuiteProvider(for: .p256Aes128)!
 
-		#expect(throws: TwoMLSError.cipherSuiteMismatch) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.cipherSuiteMismatch) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint,
 				parts: try migratedParts(alice, suppliedLeafKeys: true),
 				classicalProvider: wrongProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	// MARK: - Reconcile: a minted Core + Checkpoint pair restores as one
@@ -1474,7 +1550,10 @@ import Testing
 		let invitationCustody = bob.identity
 		#expect(established.dIdentity.clientID != invitationCustody.clientID)
 		#expect(bob.recvGroup?.pq != nil, "Group_A.pq already exists at mint time")
-		#expect(bob.leafKeys.recvPQ.current?.signatureKey == invitationCustody.pqSignatureKey, "recv-PQ still presents the invitation identity's key, not D's")
+		#expect(
+			bob.leafKeys.recvPQ.current?.signatureKey
+				== invitationCustody.pqSignatureKey,
+			"recv-PQ still presents the invitation identity's key, not D's")
 
 		let migratedCustody = MigratedRecvLeafPrincipal(
 			clientID: invitationCustody.clientID,
@@ -1490,13 +1569,21 @@ import Testing
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		let mintedBody = try minted.decode(SessionArchive.self)
-		#expect(mintedBody.leafKeys.recvPQ?.current?.signatureKey == invitationCustody.pqSignatureKey.data, "minted recvPQ.current must resolve via the retained custody's PQ slot, not identity's (D's)")
+		#expect(
+			mintedBody.leafKeys.recvPQ?.current?.signatureKey
+				== invitationCustody.pqSignatureKey.data,
+			"minted recvPQ.current must resolve via the retained custody's PQ slot, not identity's (D's)"
+		)
 
 		let restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		#expect(restored.leafKeys.recvPQ.current?.signatureKey == invitationCustody.pqSignatureKey, "restored recvPQ.current must still present the invitation identity's PQ key")
+		#expect(
+			restored.leafKeys.recvPQ.current?.signatureKey
+				== invitationCustody.pqSignatureKey,
+			"restored recvPQ.current must still present the invitation identity's PQ key"
+		)
 		#expect(restored.identity.clientID == established.dIdentity.clientID)
 		#expect(restored.owesEstablishmentEnvelope)
 	}
@@ -1544,7 +1631,10 @@ import Testing
 		#expect(catchUpDecrypted.newSender == newID)
 		#expect(alice.myPrincipalState == .sync(newID))
 		#expect(alice.rotationCandidate != nil, "convergence doesn't clear the candidate")
-		#expect(try TwoMLSSession.ownLeaf(of: alice.sendGroup!.pq!).signatureKey == alice.identity.pqSignatureKey, "send-PQ never moved off alice's original PQ key")
+		#expect(
+			try TwoMLSSession.ownLeaf(of: alice.sendGroup!.pq!).signatureKey
+				== alice.identity.pqSignatureKey,
+			"send-PQ never moved off alice's original PQ key")
 
 		let freshN = try TwoMLSIdentity.generate(
 			clientID: Data("unrelated-n".utf8),
@@ -1602,7 +1692,9 @@ import Testing
 			pqProvider: SessionTestSupport.pqProvider)
 		let mintedBody = try minted.decode(SessionArchive.self)
 		#expect(mintedBody.leafKeys.sendPQ?.current?.signatureKey == oldPQSignatureKey.data)
-		#expect(mintedBody.leafKeys.sendPQ?.current?.signatureKey != freshN.pqSignatureKey.data)
+		#expect(
+			mintedBody.leafKeys.sendPQ?.current?.signatureKey
+				!= freshN.pqSignatureKey.data)
 
 		var restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: minted,
@@ -1615,7 +1707,9 @@ import Testing
 		// pass here means any future `owePQBind` call is GUARANTEED to
 		// sign with the key the tree really presents.
 		try restored.assertLeafKeysPresented()
-		#expect(restored.leafKeys.sendPQ.current?.signingKey.data == oldPQSigningKey.data, "owePQBind reads exactly this slot, so this IS the old-key proof")
+		#expect(
+			restored.leafKeys.sendPQ.current?.signingKey.data == oldPQSigningKey.data,
+			"owePQBind reads exactly this slot, so this IS the old-key proof")
 	}
 
 	/// The negative arm: dropping `recvLeafPrincipal` from a born-dedicated
@@ -1627,10 +1721,12 @@ import Testing
 		var parts = try migratedParts(established.bob)
 		parts.recvLeafPrincipal = nil
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	// MARK: - Migration inputs on stored per-group signing keys
@@ -1769,14 +1865,18 @@ import Testing
 			senderLeafIndex: recv.classical.myLeafIndex.value, offers: [])
 		let parts = try migratedParts(bob)
 
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider,
-				deployedState: MigratedDeployedState(ownOffers: window)) }
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintOwnOfferWindow(
+				deployedState: MigratedDeployedState(ownOffers: window))
+		}
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintOwnOfferWindow(
 				window, parts: parts,
-				classicalProvider: SessionTestSupport.classicalProvider) }
+				classicalProvider: SessionTestSupport.classicalProvider)
+		}
 	}
 
 	/// The id function's own coverage, directly: two windows differing only
@@ -1835,12 +1935,16 @@ import Testing
 		// own self-signature), so rule 10's shape check rejects it before
 		// the id ever matters here — proves the tamper is real, not a
 		// silent id-only difference an attacker could route around.
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintOwnOfferWindow(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintOwnOfferWindow(
 				tampered, parts: parts,
-				classicalProvider: SessionTestSupport.classicalProvider) }
-		#expect(throws: Never.self) { try SessionMigration.mintOwnOfferWindow(
+				classicalProvider: SessionTestSupport.classicalProvider)
+		}
+		#expect(throws: Never.self) {
+			try SessionMigration.mintOwnOfferWindow(
 				genuine, parts: parts,
-				classicalProvider: SessionTestSupport.classicalProvider) }
+				classicalProvider: SessionTestSupport.classicalProvider)
+		}
 	}
 
 	/// The other half of the id function's coverage: `canonicalOrder`'s own
@@ -1871,7 +1975,9 @@ import Testing
 		#expect(forwardBody.refs == shuffledBody.refs)
 		#expect(forwardBody.proposalLengths == shuffledBody.proposalLengths)
 		#expect(forwardBody.proposals == shuffledBody.proposals)
-		#expect(forwardBody.leafSecrets.withUnsafeBytes { Data($0) } == shuffledBody.leafSecrets.withUnsafeBytes { Data($0) })
+		#expect(
+			forwardBody.leafSecrets.withUnsafeBytes { Data($0) }
+				== shuffledBody.leafSecrets.withUnsafeBytes { Data($0) })
 	}
 
 	/// Generalized catch-up, `.mintSupplied`: every existing own leaf whose
@@ -1882,7 +1988,8 @@ import Testing
 	/// a `pending` entry, so a supplied one there is silently dropped at
 	/// mint rather than carried through to restore.
 	@available(iOS 26, macOS 26, *)
-	@Test func mintSuppliedLeafKeysSatisfyTheGeneralizedCatchUpRuleAcrossAllFourGroups() throws {
+	@Test func mintSuppliedLeafKeysSatisfyTheGeneralizedCatchUpRuleAcrossAllFourGroups() throws
+	{
 		// Needs both PQ halves genuinely established (not the reservation
 		// shape from before A.3, which requires an EMPTY pending) so a
 		// non-empty PQ `pending` is check 3's "existing group" arm, not
@@ -1923,9 +2030,15 @@ import Testing
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		#expect(restored.leafKeys.sendClassical.pending.isEmpty)
-		#expect(restored.leafKeys.recvClassical.pending[newID]?.signatureKey.data == freshSignatureKey.data)
-		#expect(restored.leafKeys.sendPQ.pending[newID]?.signatureKey.data == freshSignatureKey.data)
-		#expect(restored.leafKeys.recvPQ.pending[newID]?.signatureKey.data == freshSignatureKey.data)
+		#expect(
+			restored.leafKeys.recvClassical.pending[newID]?.signatureKey.data
+				== freshSignatureKey.data)
+		#expect(
+			restored.leafKeys.sendPQ.pending[newID]?.signatureKey.data
+				== freshSignatureKey.data)
+		#expect(
+			restored.leafKeys.recvPQ.pending[newID]?.signatureKey.data
+				== freshSignatureKey.data)
 	}
 
 	/// "A rotation Rust won" — `mine.current` moved to `c` but
@@ -1997,8 +2110,11 @@ import Testing
 
 		let prepared = try restoredBob.prepareToEncrypt()
 		#expect(prepared.didCommit, "the licensed send-classical catch-up (1b)")
-		#expect(restoredBob.pendingProposal?.proposing == c, "the staged recv-classical catch-up offer (1a)")
-		#expect(try basicIdentifier(
+		#expect(
+			restoredBob.pendingProposal?.proposing == c,
+			"the staged recv-classical catch-up offer (1a)")
+		#expect(
+			try basicIdentifier(
 				TwoMLSSession.ownLeaf(
 					of: #require(restoredBob.sendGroup?.classical)
 				)
@@ -2015,7 +2131,8 @@ import Testing
 		let foldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
 		let bobApplied = try restoredBob.processIncomingDecrypted(foldFrame)
 		#expect(bobApplied.didApplyRemoteCommit, "1a lands at bob")
-		#expect(try basicIdentifier(
+		#expect(
+			try basicIdentifier(
 				TwoMLSSession.ownLeaf(
 					of: #require(restoredBob.recvGroup?.classical)
 				)
@@ -2048,10 +2165,12 @@ import Testing
 			bob, identityOverride: dIdentity, recvLeafPrincipal: migratedCustody)
 
 		// `.mintConverted` (parts.leafKeys == nil): tolerated.
-		#expect(throws: Never.self) { try SessionMigration.mintArchive(
+		#expect(throws: Never.self) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 
 		// `.mintSupplied`, mirroring conversion's own shape everywhere
 		// EXCEPT the recv-PQ catch-up key: rejected.
@@ -2077,10 +2196,12 @@ import Testing
 			sendPQ: MigratedGroupKeys(current: nil),
 			// No `pending[D]` here — the missing catch-up key.
 			recvPQ: MigratedGroupKeys(current: invitationPQKey))
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: suppliedParts,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider) }
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// Archive keys 44/45 round-trip a no-custody classical role and a PQ
@@ -2122,7 +2243,9 @@ import Testing
 		#expect(restored.noCustody == [.sendClassical])
 		#expect(restored.pqSideBandWedged)
 		#expect(!(restored.canSend), "no-custody on a classical role blocks canSend")
-		#expect(throws: TwoMLSError.leafCustodyUnavailable) { try restored.sendClassicalSigningKey() }
+		#expect(throws: TwoMLSError.leafCustodyUnavailable) {
+			try restored.sendClassicalSigningKey()
+		}
 	}
 }
 
@@ -2188,13 +2311,22 @@ extension SessionMigrationTests {
 
 		var badExtra = g.offers
 		badExtra[extra] = withBadSecret(badExtra[extra])
-		#expect(throws: TwoMLSError.archiveInvalid, "a seeded extra (index \(extra)) must be trialed") { try mint(badExtra) }
+		#expect(
+			throws: TwoMLSError.archiveInvalid,
+			"a seeded extra (index \(extra)) must be trialed"
+		) { try mint(badExtra) }
 		var badFirst = g.offers
 		badFirst[10] = withBadSecret(badFirst[10])
-		#expect(throws: TwoMLSError.archiveInvalid, "an offer in the first 64 must be trialed") { try mint(badFirst) }
+		#expect(
+			throws: TwoMLSError.archiveInvalid,
+			"an offer in the first 64 must be trialed"
+		) { try mint(badFirst) }
 		var badUnsampled = g.offers
 		badUnsampled[unsampled] = withBadSecret(badUnsampled[unsampled])
-		#expect(throws: Never.self, "the bounded sample never trials an unsampled offer (index \(unsampled))") { try mint(badUnsampled) }
+		#expect(
+			throws: Never.self,
+			"the bounded sample never trials an unsampled offer (index \(unsampled))"
+		) { try mint(badUnsampled) }
 	}
 
 	/// Items 7a/7b: `validate(cap:)`'s edge — the count equal to the cap is
@@ -2213,7 +2345,9 @@ extension SessionMigrationTests {
 				provider: SessionTestSupport.classicalProvider)
 		}
 		#expect(throws: Never.self, "count == cap accepted") { try validate(4, cap: 4) }
-		#expect(throws: TwoMLSError.archiveInvalid, "count == cap + 1 rejected") { try validate(5, cap: 4) }
+		#expect(throws: TwoMLSError.archiveInvalid, "count == cap + 1 rejected") {
+			try validate(5, cap: 4)
+		}
 	}
 
 	@available(iOS 26, macOS 26, *)
@@ -2254,14 +2388,22 @@ extension SessionMigrationTests {
 	@Test func restoreRejectsBadWindowRecord() throws {
 		let m = try mintedWithWindow()
 		#expect(try restorePatched(m.archive) { _ in }.ownOfferWindow != nil, "control")
-		#expect(throws: TwoMLSError.archiveInvalid) { try restorePatched(m.archive) { $0.epoch += 1 } }
-		#expect(throws: TwoMLSError.archiveInvalid) { try restorePatched(m.archive) { $0.epoch -= 1 } }
-		#expect(throws: Never.self) { try restorePatched(m.archive) {
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try restorePatched(m.archive) { $0.epoch += 1 }
+		}
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try restorePatched(m.archive) { $0.epoch -= 1 }
+		}
+		#expect(throws: Never.self) {
+			try restorePatched(m.archive) {
 				$0.count = UInt32(MigratedOwnOfferWindow.maximumOfferCount)
-			} }
-		#expect(throws: TwoMLSError.archiveInvalid) { try restorePatched(m.archive) {
+			}
+		}
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try restorePatched(m.archive) {
 				$0.count = UInt32(MigratedOwnOfferWindow.maximumOfferCount) + 1
-			} }
+			}
+		}
 	}
 }
 
@@ -2567,7 +2709,10 @@ extension SessionMigrationTests {
 		#expect(restored.pqInflight == nil, "dropped at import")
 		#expect(restored.pendingSideBand == nil, "dropped at import")
 		#expect(restored.myPQTurn, "pqTurnMine left as supplied")
-		#expect(restored.leafKeys.recvPQ.pending[bobNewID]?.signatureKey == freshLeafKey.signatureKey, "the rule-7 catch-up key survives — the leaf still lags mine.current")
+		#expect(
+			restored.leafKeys.recvPQ.pending[bobNewID]?.signatureKey
+				== freshLeafKey.signatureKey,
+			"the rule-7 catch-up key survives — the leaf still lags mine.current")
 
 		// The next send re-proposes fresh, signed under the key the leaf
 		// actually presents (bobOldID's), not the wrong one dropped above.
@@ -2717,7 +2862,9 @@ extension SessionMigrationTests {
 		let restored = try restoreMinted(parts)
 		#expect(restored.pqInflight == nil, "the target has left history — dropped at mint")
 		#expect(restored.pendingSideBand == nil)
-		#expect(restored.leafKeys.recvPQ.pending[target] == nil, "not the rule-7 key — target isn't mine.current")
+		#expect(
+			restored.leafKeys.recvPQ.pending[target] == nil,
+			"not the rule-7 key — target isn't mine.current")
 	}
 
 	/// The control: a parked `Upd′` targeting an id that predates
@@ -2838,7 +2985,9 @@ extension SessionMigrationTests {
 
 		let restored = try restoreMinted(parts)
 		guard case .rekeyInitiated(let kept) = restored.pqInflight else {
-			Issue.record("a same-id refresh must be kept even once its id is evicted and pinned")
+			Issue.record(
+				"a same-id refresh must be kept even once its id is evicted and pinned"
+			)
 			return
 		}
 		#expect(kept == updBytes)
@@ -2908,8 +3057,10 @@ extension SessionMigrationTests {
 			identity: rogueAlice, their: bob.keyPackage,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
 		let parts = try migratedParts(initiated.session)
-		#expect(throws: TwoMLSError.archiveInvalid) { try SessionMigration.mintArchive(
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
 				kind: .checkpoint, parts: parts,
-				classicalProvider: classicalProvider, pqProvider: pqProvider) }
+				classicalProvider: classicalProvider, pqProvider: pqProvider)
+		}
 	}
 }

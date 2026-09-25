@@ -262,7 +262,8 @@ public struct TwoMLSIdentity: Sendable {
 		let classicalKeyPackage = try signedKeyPackage(
 			cipherSuite: TwoMLSSuite.classical, provider: classicalProvider,
 			clientID: clientID, signingKey: signingKey, signatureKey: signatureKey,
-			leafPublicKey: classicalLeafPublicKey, initPublicKey: classicalInitPublicKey,
+			leafPublicKey: classicalLeafPublicKey,
+			initPublicKey: classicalInitPublicKey,
 			capabilities: leafCapabilities(advertising: profiles)
 		)
 		let pqKeyPackage = try signedKeyPackage(

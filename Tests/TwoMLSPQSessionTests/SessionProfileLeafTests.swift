@@ -53,15 +53,22 @@ import Testing
 		for (founder, peer) in [(mute, advertising), (loud, quiet)] {
 			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
 				try APQGroup.establishFull(
-					classical: try half(founder, peer: peer.keyPackage.classical, classicalProvider),
-					pq: try half(pq, peer: peer.keyPackage.pq, pqProvider), mode: 0,
-					classicalProvider: classicalProvider, pqProvider: pqProvider,
+					classical: try half(
+						founder, peer: peer.keyPackage.classical,
+						classicalProvider),
+					pq: try half(pq, peer: peer.keyPackage.pq, pqProvider),
+					mode: 0,
+					classicalProvider: classicalProvider,
+					pqProvider: pqProvider,
 					profile: .correct)
 			}
 
 			var groupA = try APQGroup.establishFull(
-				classical: try half(loud, peer: advertising.keyPackage.classical, classicalProvider),
-				pq: try half(pq, peer: advertising.keyPackage.pq, pqProvider), mode: 0,
+				classical: try half(
+					loud, peer: advertising.keyPackage.classical,
+					classicalProvider),
+				pq: try half(pq, peer: advertising.keyPackage.pq, pqProvider),
+				mode: 0,
 				classicalProvider: classicalProvider, pqProvider: pqProvider
 			).group
 			let crossPSK = try MLS.Combiner.ExportedPsk.export(
@@ -69,9 +76,13 @@ import Testing
 				componentID: TwoMLSSession.crossPartyComponentID)
 			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
 				try APQGroup.establishClassicalOnly(
-					founder: try half(founder, peer: peer.keyPackage.classical, classicalProvider),
-					pqGroupID: Data(repeating: 1, count: 32), crossPSK: crossPSK,
-					nonce: Data(repeating: 2, count: 32), provider: classicalProvider,
+					founder: try half(
+						founder, peer: peer.keyPackage.classical,
+						classicalProvider),
+					pqGroupID: Data(repeating: 1, count: 32),
+					crossPSK: crossPSK,
+					nonce: Data(repeating: 2, count: 32),
+					provider: classicalProvider,
 					profile: .correct)
 			}
 		}
@@ -86,9 +97,11 @@ import Testing
 		let bob = try SessionTestSupport.identity("cl-b", profile: .correct)
 		let mute = try TwoMLSIdentity.mintFoundingLeaf(
 			clientID: alice.clientID, provider: classicalProvider)
-		let pq = try TwoMLSIdentity.mintFoundingLeaf(clientID: alice.clientID, provider: pqProvider)
+		let pq = try TwoMLSIdentity.mintFoundingLeaf(
+			clientID: alice.clientID, provider: pqProvider)
 		let (_, welcome) = try MLS.Combiner.CombinerGroup.establish(
-			classical: try half(mute, peer: bob.keyPackage.classical, classicalProvider),
+			classical: try half(
+				mute, peer: bob.keyPackage.classical, classicalProvider),
 			pq: try half(pq, peer: bob.keyPackage.pq, pqProvider), mode: 0,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			classicalExtraExtensions: SessionProfile.correct.recordExtensions)
@@ -124,9 +137,11 @@ import Testing
 			let groupID = classicalProvider.randomBytes(classicalProvider.hashSize)
 			let info = MLS.Combiner.APQInfo(
 				tSessionGroupID: groupID,
-				pqSessionGroupID: pqProvider.randomBytes(pqProvider.hashSize), mode: 0,
+				pqSessionGroupID: pqProvider.randomBytes(pqProvider.hashSize),
+				mode: 0,
 				tCipherSuite: classicalProvider.cipherSuite,
-				pqCipherSuite: pqProvider.cipherSuite, tEpoch: 1, pqEpoch: epochUnbound)
+				pqCipherSuite: pqProvider.cipherSuite, tEpoch: 1,
+				pqEpoch: epochUnbound)
 			var pskStore = MLS.Combiner.PSKStore()
 			pskStore.register(crossPSK)
 			let epoch0 = try MLS.RFC9420.Group.create(
@@ -134,21 +149,27 @@ import Testing
 				leafSecretKey: mute.leafSecretKey,
 				extensions: [
 					try info.asExtension(
-						type: MLS.Combiner.Codepoints.deployed.apqInfoExtensionType)
+						type: MLS.Combiner.Codepoints.deployed
+							.apqInfoExtensionType)
 				] + SessionProfile.correct.recordExtensions,
-				epochSecret: SecretBytes(randomByteCount: classicalProvider.hashSize))
+				epochSecret: SecretBytes(
+					randomByteCount: classicalProvider.hashSize))
 			let transition = try epoch0.committing(
 				classicalProvider,
 				proposals: [
 					.proposal(.add(alice.identity.keyPackage.classical)),
 					.proposal(
 						crossPSK.proposal(
-							nonce: classicalProvider.randomBytes(classicalProvider.hashSize))),
+							nonce: classicalProvider.randomBytes(
+								classicalProvider.hashSize))),
 				],
-				signingKey: mute.key.signingKey, randomness: try .generate(classicalProvider),
+				signingKey: mute.key.signingKey,
+				randomness: try .generate(classicalProvider),
 				psk: pskStore.resolver())
 			let sent = transition.takeOutput()
-			guard let welcome = sent.welcome else { throw MLS.Combiner.Error.missingWelcome }
+			guard let welcome = sent.welcome else {
+				throw MLS.Combiner.Error.missingWelcome
+			}
 			return Frames.encodeAPQWelcome(
 				t: try EstablishmentMessages.encodeWelcome(welcome), pq: Data())
 		}

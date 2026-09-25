@@ -136,7 +136,8 @@ extension TwoMLSSession {
 		// `establishFull`'s own choke point covers it — nothing to
 		// re-check here.
 		let profile = SessionProfile.negotiate(
-			own: identity.keyPackage.classical.leafNode, their: their.classical.leafNode)
+			own: identity.keyPackage.classical.leafNode, their: their.classical.leafNode
+		)
 
 		let (groupA, welcome) = try APQGroup.establishFull(
 			classical: classicalHalf, pq: pqHalf, mode: 0,
