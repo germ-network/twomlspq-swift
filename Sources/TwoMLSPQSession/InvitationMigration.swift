@@ -5,7 +5,7 @@ import MLSProfileRFC9420
 import SecretBytes
 import TwoMLSPQCrypto
 
-// MARK: - Invitation migration minter (GER-2372 R1)
+// MARK: - Invitation migration minter
 //
 // The cross-module invitation migrator's parts-to-archive entry: mint the
 // Swift-native v1 `InvitationArchive` body directly from raw parts a legacy

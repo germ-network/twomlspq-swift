@@ -6,7 +6,7 @@ import MLSProfileRFC9420
 import SecretBytes
 import TwoMLSPQCrypto
 
-// MARK: - Session migration minter (GER-2433 slice B)
+// MARK: - Session migration minter
 //
 // The cross-module session migrator's parts-to-archive entry: mint the
 // Swift-native v1 `SessionArchive` body directly from raw parts a legacy Rust

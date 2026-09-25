@@ -7,7 +7,7 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// GER-2372 R1: the public parts-to-archive invitation minter. The minted
+/// The public parts-to-archive invitation minter. The minted
 /// archive must be what `Invitation.restore` accepts and semantically what
 /// `makeInvitationArchive` would have produced — the cross-module migrator
 /// calls this with raw parts read from a legacy Rust invitation, so it must

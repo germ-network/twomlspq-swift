@@ -8,7 +8,7 @@ import XCTest
 
 @testable import TwoMLSPQSession
 
-/// GER-2433 slice B: the public parts-to-archive session minter. The minted
+/// The public parts-to-archive session minter. The minted
 /// archive must be what `TwoMLSSession.restore` accepts and semantically
 /// what `makeSessionArchive` would have produced — the cross-module migrator
 /// calls this with raw parts read from a legacy Rust session, so it must
