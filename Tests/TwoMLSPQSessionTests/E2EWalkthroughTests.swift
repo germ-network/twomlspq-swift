@@ -3,6 +3,7 @@ import MLSCodec
 import MLSCombiner
 import MLSProfileRFC9420
 import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 

@@ -3,7 +3,7 @@ import MLSCodec
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
-import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
@@ -11,8 +11,8 @@ import XCTest
 /// two session-level regression tests: a replacement keeping recv-
 /// classical's dead entry around, and an idempotent re-stage refreshing the
 /// epoch so a second rotation attempt within the same epoch keeps wedging.
-@available(iOS 26, macOS 26, *)
-final class LeafKeysTests: XCTestCase {
+@Suite struct LeafKeysTests {
+	@available(iOS 26, macOS 26, *)
 	private func freshKey() throws -> LeafKey {
 		let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		return LeafKey(signingKey: signingKey, signatureKey: signatureKey)
@@ -20,58 +20,63 @@ final class LeafKeysTests: XCTestCase {
 
 	// MARK: - GroupKeySet.stage
 
-	func testStageIsIdempotentForTheSameKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func stageIsIdempotentForTheSameKey() throws {
 		var set = GroupKeySet()
 		let key = try freshKey()
 		let target = Data("target".utf8)
 		try set.stage(key, for: target)
-		XCTAssertNoThrow(try set.stage(key, for: target))
-		XCTAssertEqual(set.pending[target]?.signatureKey, key.signatureKey)
+		#expect(throws: Never.self) { try set.stage(key, for: target) }
+		#expect(set.pending[target]?.signatureKey == key.signatureKey)
 	}
 
-	func testStageThrowsOnAConflictingKeyForTheSameTarget() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func stageThrowsOnAConflictingKeyForTheSameTarget() throws {
 		var set = GroupKeySet()
 		let target = Data("target".utf8)
 		try set.stage(try freshKey(), for: target)
-		XCTAssertThrowsError(try set.stage(try freshKey(), for: target)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .rotationInFlight)
+		#expect(throws: TwoMLSError.rotationInFlight) {
+			try set.stage(try freshKey(), for: target)
 		}
 	}
 
 	// MARK: - GroupKeySet.promoted
 
-	func testPromotedIsANoOpWhenTheLeafAlreadyPresentsCurrent() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func promotedIsANoOpWhenTheLeafAlreadyPresentsCurrent() throws {
 		let current = try freshKey()
 		var set = GroupKeySet(current: current)
-		XCTAssertNoThrow(
-			try set.promoted(presenting: current.signatureKey, id: Data("id".utf8)))
-		XCTAssertEqual(set.current?.signatureKey, current.signatureKey)
+		#expect(throws: Never.self) {
+			try set.promoted(presenting: current.signatureKey, id: Data("id".utf8))
+		}
+		#expect(set.current?.signatureKey == current.signatureKey)
 	}
 
-	func testPromotedMovesAPendingEntryToCurrentAndRemovesIt() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func promotedMovesAPendingEntryToCurrentAndRemovesIt() throws {
 		let original = try freshKey()
 		let staged = try freshKey()
 		let target = Data("target".utf8)
 		var set = GroupKeySet(current: original)
 		try set.stage(staged, for: target)
 		try set.promoted(presenting: staged.signatureKey, id: target)
-		XCTAssertEqual(set.current?.signatureKey, staged.signatureKey)
-		XCTAssertNil(set.pending[target])
+		#expect(set.current?.signatureKey == staged.signatureKey)
+		#expect(set.pending[target] == nil)
 	}
 
-	func testPromotedThrowsCredentialUnknownForAnUnheldKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func promotedThrowsCredentialUnknownForAnUnheldKey() throws {
 		var set = GroupKeySet(current: try freshKey())
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.credentialUnknown) {
 			try set.promoted(
 				presenting: try freshKey().signatureKey, id: Data("id".utf8))
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .credentialUnknown)
 		}
 	}
 
 	// MARK: - retainRecvClassical
 
-	func testRetentionKeepsTheOutstandingCandidateAndDropsAnUnrelatedEntry() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func retentionKeepsTheOutstandingCandidateAndDropsAnUnrelatedEntry() throws {
 		let candidateID = Data("candidate".utf8)
 		let staleID = Data("stale".utf8)
 		var set = GroupKeySet()
@@ -80,28 +85,31 @@ final class LeafKeysTests: XCTestCase {
 		set.retainRecvClassical(
 			candidateID: candidateID, candidateCanonicalized: false, ruleFourTarget: nil
 		)
-		XCTAssertNotNil(set.pending[candidateID])
-		XCTAssertNil(set.pending[staleID])
+		#expect(set.pending[candidateID] != nil)
+		#expect(set.pending[staleID] == nil)
 	}
 
-	func testRetentionDropsTheCandidateOnceItHasCanonicalized() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func retentionDropsTheCandidateOnceItHasCanonicalized() throws {
 		let candidateID = Data("candidate".utf8)
 		var set = GroupKeySet()
 		try set.stage(try freshKey(), for: candidateID)
 		set.retainRecvClassical(
 			candidateID: candidateID, candidateCanonicalized: true, ruleFourTarget: nil)
-		XCTAssertNil(
-			set.pending[candidateID], "a canonicalized candidate is no longer live")
+		#expect(
+			set.pending[candidateID] == nil,
+			"a canonicalized candidate is no longer live")
 	}
 
-	func testRetentionKeepsTheRuleFourTarget() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func retentionKeepsTheRuleFourTarget() throws {
 		let ruleFourTarget = Data("dedicated".utf8)
 		var set = GroupKeySet()
 		try set.stage(try freshKey(), for: ruleFourTarget)
 		set.retainRecvClassical(
 			candidateID: nil, candidateCanonicalized: true,
 			ruleFourTarget: ruleFourTarget)
-		XCTAssertNotNil(set.pending[ruleFourTarget])
+		#expect(set.pending[ruleFourTarget] != nil)
 	}
 
 	// MARK: - Session-level: a replacement keeps recv-classical's dead entry
@@ -114,7 +122,8 @@ final class LeafKeysTests: XCTestCase {
 	/// Mutation-tested: a version of `prepareToEncrypt` that explicitly
 	/// pruned `pending[c1]` at the replacement moment passed every other
 	/// test in the suite — this is the one that catches it.
-	func testReplacementKeepsRecvClassicalsDeadEntry() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func replacementKeepsRecvClassicalsDeadEntry() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let c1 = Data("alice-c1".utf8)
 		let c2 = Data("alice-c2".utf8)
@@ -134,11 +143,11 @@ final class LeafKeysTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold-refresh".utf8)).frame
 		let foldDecrypted = try alice.processIncomingDecrypted(foldFrame)
-		XCTAssertTrue(foldDecrypted.didApplyRemoteCommit)
-		XCTAssertFalse(foldDecrypted.ownCredentialCanonicalized)
+		#expect(foldDecrypted.didApplyRemoteCommit)
+		#expect(!foldDecrypted.ownCredentialCanonicalized)
 
 		// c1 survived the advance (still the live candidate).
-		XCTAssertNotNil(alice.leafKeys.recvClassical.pending[c1])
+		#expect(alice.leafKeys.recvClassical.pending[c1] != nil)
 
 		// The wedge relaxation now lets c2 replace c1 (epoch moved past
 		// c1's stage point, and c1 never canonicalized).
@@ -147,10 +156,10 @@ final class LeafKeysTests: XCTestCase {
 		// c1's own pending entry is a dead leftover — still present right
 		// after the replacement (the accepted parity gap), pruned only at
 		// the NEXT epoch advance.
-		XCTAssertNotNil(
-			alice.leafKeys.recvClassical.pending[c1],
+		#expect(
+			alice.leafKeys.recvClassical.pending[c1] != nil,
 			"a replacement must not itself prune the outgoing candidate's entry")
-		XCTAssertNotNil(alice.leafKeys.recvClassical.pending[c2])
+		#expect(alice.leafKeys.recvClassical.pending[c2] != nil)
 	}
 
 	// MARK: - An idempotent re-stage refreshes the wedge epoch
@@ -163,7 +172,8 @@ final class LeafKeysTests: XCTestCase {
 	/// still live) rather than wrongly passing the wedge relaxation and
 	/// bricking c1. Finally, the peer folds the re-staged Upd(c1) and the
 	/// rotation converges normally.
-	func testRestagingTheSameCandidateRefreshesItsEpochThenConverges() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restagingTheSameCandidateRefreshesItsEpochThenConverges() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let c1 = Data("alice-c1".utf8)
 		let c2 = Data("alice-c2".utf8)
@@ -195,26 +205,26 @@ final class LeafKeysTests: XCTestCase {
 		// must be false. If the re-stage above had left `proposedAtRecvEpoch`
 		// stuck at E0, this would wrongly succeed, dropping c1's key out
 		// from under its still-live offer.
-		XCTAssertThrowsError(try alice.prepareToEncrypt(rotating: c2)) { error in
-			XCTAssertEqual(error as? TwoMLSError, .rotationInFlight)
+		#expect(throws: TwoMLSError.rotationInFlight) {
+			try alice.prepareToEncrypt(rotating: c2)
 		}
 
 		// 5: send the re-staged c1 offer and let it converge normally.
 		let c1OfferE1 = try alice.encrypt(Data("c1-offer-e1".utf8)).frame
 		let c1Decrypted = try bob.processIncomingDecrypted(c1OfferE1)
-		XCTAssertEqual(c1Decrypted.queuedProposal.proposing, c1)
+		#expect(c1Decrypted.queuedProposal.proposing == c1)
 		_ = try bob.queueProposal(digest: c1Decrypted.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
 		let c1FoldFrame = try bob.encrypt(Data("fold-c1".utf8)).frame
 		let c1FoldDecrypted = try alice.processIncomingDecrypted(c1FoldFrame)
-		XCTAssertTrue(c1FoldDecrypted.ownCredentialCanonicalized)
-		XCTAssertEqual(alice.myPrincipalState, .sync(c1))
+		#expect(c1FoldDecrypted.ownCredentialCanonicalized)
+		#expect(alice.myPrincipalState == .sync(c1))
 
 		// Signing keeps working, now under c1, end to end.
 		_ = try alice.prepareToEncrypt()
 		let aliceMsg = try alice.encrypt(Data("post-restage".utf8)).frame
 		let fromAlice = try bob.processIncomingDecrypted(aliceMsg)
-		XCTAssertEqual(fromAlice.applicationMessage, Data("post-restage".utf8))
+		#expect(fromAlice.applicationMessage == Data("post-restage".utf8))
 	}
 
 	// MARK: - Choke point: a corrupted set fails closed
@@ -227,7 +237,8 @@ final class LeafKeysTests: XCTestCase {
 	/// signing), while a corrupted classical set may be caught earlier by
 	/// its own accessor — either way the call must fail closed and mint
 	/// nothing.
-	func testChokePointCorruptionOfEachSetFailsClosed() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func chokePointCorruptionOfEachSetFailsClosed() throws {
 		func corrupted(
 			_ label: String, _ session: TwoMLSSession,
 			_ corrupt: (inout TwoMLSSession) throws -> Void,
@@ -240,8 +251,8 @@ final class LeafKeysTests: XCTestCase {
 			let before = copy.lastCheckpointedManifest
 			var thrown: Error?
 			do { try call(&copy) } catch { thrown = error }
-			XCTAssertEqual(thrown as? TwoMLSError, .credentialUnknown, label)
-			XCTAssertEqual(copy.lastCheckpointedManifest, before, label)
+			#expect(thrown as? TwoMLSError == .credentialUnknown, "\(label)")
+			#expect(copy.lastCheckpointedManifest == before, "\(label)")
 		}
 
 		// sendClassical: a session that has exchanged (so `recvGroup`
@@ -276,8 +287,8 @@ final class LeafKeysTests: XCTestCase {
 		let begin = try alice.pqBootstrapBegin()
 		let respond = try bob.pqBootstrapRespond(begin.frame)
 		_ = try alice.pqBootstrapJoin(respond.frame)
-		XCTAssertTrue(alice.isFullyEstablished)
-		XCTAssertTrue(bob.isFullyEstablished)
+		#expect(alice.isFullyEstablished)
+		#expect(bob.isFullyEstablished)
 		try corrupted("sendPQ", alice) { $0.leafKeys.sendPQ.current = try self.freshKey() }
 		try corrupted("recvPQ", alice) { $0.leafKeys.recvPQ.current = try self.freshKey() }
 	}
@@ -288,7 +299,8 @@ final class LeafKeysTests: XCTestCase {
 	/// decision, before `makeSessionArchive`/the checkpoint stamp) and
 	/// confirms `lastCheckpointedManifest` is untouched by the failed call.
 	#if DEBUG
-		func testFaultBeforeEncodeLeavesTheCheckpointStampUnset() throws {
+		@available(iOS 26, macOS 26, *)
+		@Test func faultBeforeEncodeLeavesTheCheckpointStampUnset() throws {
 			var (alice, _) = try SessionTestSupport.establishedAndExchanged()
 			// Deliberately stale: the LIVE `pqEpochManifest` (computed from
 			// `sendGroup`/`recvGroup`/`leafKeys`) does NOT match this — every
@@ -301,18 +313,21 @@ final class LeafKeysTests: XCTestCase {
 				sendPQEpoch: nil, recvPQEpoch: nil,
 				sendPQKeys: GroupKeySetFingerprint(current: nil, pending: []),
 				recvPQKeys: GroupKeySetFingerprint(current: nil, pending: []))
-			XCTAssertNotEqual(stale, alice.pqEpochManifest)
+			#expect(stale != alice.pqEpochManifest)
 			alice.lastCheckpointedManifest = stale
-			TwoMLSSessionTestHooks.armFault("stateUpdate.beforeEncode")
-			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
-			// Calls `stateUpdate` directly at `.checkpoint` (`@testable`) — a
-			// plain `prepareToEncrypt()` here would request `.core` and never
-			// even reach the conditional stamp (nothing PQ changed), which
-			// would let a "stamp before encode" mutation hide behind an
-			// untaken branch.
-			XCTAssertThrowsError(try alice.stateUpdate(kind: .checkpoint))
-			XCTAssertEqual(
-				alice.lastCheckpointedManifest, stale,
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault("stateUpdate.beforeEncode")
+				// Calls `stateUpdate` directly at `.checkpoint` (`@testable`) — a
+				// plain `prepareToEncrypt()` here would request `.core` and never
+				// even reach the conditional stamp (nothing PQ changed), which
+				// would let a "stamp before encode" mutation hide behind an
+				// untaken branch.
+				#expect(throws: (any Error).self) {
+					try alice.stateUpdate(kind: .checkpoint)
+				}
+			}
+			#expect(
+				alice.lastCheckpointedManifest == stale,
 				"a fault before encode must leave the checkpoint stamp untouched")
 		}
 	#endif
@@ -323,11 +338,12 @@ final class LeafKeysTests: XCTestCase {
 	/// `pending` entry, not just `current` — send-classical never does),
 	/// round-trips through `makeSessionArchive`/`restore`, and checks the
 	/// restored `leafKeys` matches the live one field for field.
-	func testArchiveRoundTripPreservesPendingEntries() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func archiveRoundTripPreservesPendingEntries() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		_ = try alice.prepareToEncrypt(rotating: Data("alice-v2".utf8))
-		XCTAssertFalse(alice.leafKeys.recvClassical.pending.isEmpty)
-		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
+		#expect(!alice.leafKeys.recvClassical.pending.isEmpty)
+		#expect(alice.leafKeys.sendClassical.pending.isEmpty)
 
 		let checkpoint = try alice.stateUpdate(kind: .checkpoint).archive
 		let restored = try TwoMLSSession.restore(
@@ -335,16 +351,16 @@ final class LeafKeysTests: XCTestCase {
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
-		XCTAssertEqual(
-			Set(restored.leafKeys.sendClassical.pending.keys),
-			Set(alice.leafKeys.sendClassical.pending.keys))
-		XCTAssertEqual(
-			Set(restored.leafKeys.recvClassical.pending.keys),
-			Set(alice.leafKeys.recvClassical.pending.keys))
+		#expect(
+			Set(restored.leafKeys.sendClassical.pending.keys)
+				== Set(alice.leafKeys.sendClassical.pending.keys))
+		#expect(
+			Set(restored.leafKeys.recvClassical.pending.keys)
+				== Set(alice.leafKeys.recvClassical.pending.keys))
 		for (target, key) in alice.leafKeys.recvClassical.pending {
-			XCTAssertEqual(
-				restored.leafKeys.recvClassical.pending[target]?.signatureKey,
-				key.signatureKey)
+			#expect(
+				restored.leafKeys.recvClassical.pending[target]?.signatureKey
+					== key.signatureKey)
 		}
 		_ = bob
 	}
@@ -353,7 +369,8 @@ final class LeafKeysTests: XCTestCase {
 	/// `GroupKeySetArchive.restore()`'s own check, exercised
 	/// directly since the native `LeafKeys` type can never construct one
 	/// itself (a `Dictionary` structurally can't hold a duplicate key).
-	func testGroupKeySetArchiveRestoreRejectsADuplicateTarget() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func groupKeySetArchiveRestoreRejectsADuplicateTarget() throws {
 		let key = LeafKeyArchive(try freshKey())
 		let target = Data("dup".utf8)
 		let archive = GroupKeySetArchive(
@@ -362,12 +379,13 @@ final class LeafKeysTests: XCTestCase {
 				PendingLeafKeyArchive(target: target, key: key),
 				PendingLeafKeyArchive(target: target, key: key),
 			])
-		XCTAssertThrowsError(try archive.restore()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try archive.restore()
 		}
 	}
 
-	func testGroupKeySetArchiveRestoreRejectsAnEmptyTarget() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func groupKeySetArchiveRestoreRejectsAnEmptyTarget() throws {
 		let archive = GroupKeySetArchive(
 			current: nil,
 			pending: [
@@ -375,18 +393,20 @@ final class LeafKeysTests: XCTestCase {
 					target: Data(), key: LeafKeyArchive(try freshKey()))
 			]
 		)
-		XCTAssertThrowsError(try archive.restore()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try archive.restore()
 		}
 	}
 
-	func testLeafKeyArchiveRestoreRejectsASigningKeyThatDoesNotDeriveToItsSignatureKey() throws
+	@available(iOS 26, macOS 26, *)
+	@Test func leafKeyArchiveRestoreRejectsASigningKeyThatDoesNotDeriveToItsSignatureKey()
+		throws
 	{
 		let real = LeafKeyArchive(try freshKey())
 		let mismatched = LeafKeyArchive(
 			signingKey: real.signingKey, signatureKey: try freshKey().signatureKey.data)
-		XCTAssertThrowsError(try mismatched.restore()) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try mismatched.restore()
 		}
 	}
 
@@ -400,7 +420,8 @@ final class LeafKeysTests: XCTestCase {
 	/// no stand-in — a missing optional key decodes to `nil` either way),
 	/// so the only actual difference from a genuine archive is key 41's
 	/// absence.
-	func testRestoreRejectsAnArchiveMissingLeafKeys() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreRejectsAnArchiveMissingLeafKeys() throws {
 		let alice = try SessionTestSupport.establishedAndExchanged().alice
 		let real = try alice.makeSessionArchive(kind: .checkpoint).decode(
 			SessionArchive.self)
@@ -414,61 +435,58 @@ final class LeafKeysTests: XCTestCase {
 			sendPQKeysFingerprint: real.sendPQKeysFingerprint,
 			recvPQKeysFingerprint: real.recvPQKeysFingerprint)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
 				core: nil, checkpoint: try SecretArchive(encoding: truncated),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// Check 2 through the FULL restore path (not just the live choke
 	/// point): a decoded archive whose `sendClassical.current` no longer
 	/// matches what the restored tree actually presents is rejected.
-	func testRestoreRejectsCheck2ThroughTheFullPath() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreRejectsCheck2ThroughTheFullPath() throws {
 		let alice = try SessionTestSupport.establishedAndExchanged().alice
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
 		body.leafKeys.sendClassical.current = LeafKeyArchive(try freshKey())
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
 				core: nil, checkpoint: try SecretArchive(encoding: body),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// Check 3 through the full restore path: a pre-A.3 initiator's `recvPQ`
 	/// reservation (no `recvGroup.pq` exists yet) must equal `identity`'s
 	/// own PQ key — corrupting it is rejected.
-	func testRestoreRejectsCheck3ThroughTheFullPath() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreRejectsCheck3ThroughTheFullPath() throws {
 		let alice = try SessionTestSupport.establishedAndExchanged().alice
-		XCTAssertNil(alice.recvGroup?.pq)
+		#expect(alice.recvGroup?.pq == nil)
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
 		body.leafKeys.recvPQ = GroupKeySetArchive(
 			current: LeafKeyArchive(try freshKey()), pending: [])
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
 				core: nil, checkpoint: try SecretArchive(encoding: body),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// A pre-A.3 acceptor's send-PQ holds no reservation: a smuggled
 	/// `current` is rejected, matching check 4's send-PQ arm.
-	func testRestoreRejectsAPreA3SendPQReservation() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreRejectsAPreA3SendPQReservation() throws {
 		let bob = try SessionTestSupport.establishedAndExchanged().bob
-		XCTAssertNil(bob.sendGroup?.pq)
+		#expect(bob.sendGroup?.pq == nil)
 		let archive = try bob.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
 		let smuggled = GroupKeySet(current: try freshKey())
@@ -478,33 +496,32 @@ final class LeafKeysTests: XCTestCase {
 		// catch this first, leaving check 4 itself unpinned.
 		body.sendPQKeysFingerprint = smuggled.fingerprint
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
 				core: nil, checkpoint: try SecretArchive(encoding: body),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
 	/// Twin of the above: the canonical present-but-empty shape restores
 	/// cleanly.
-	func testRestoreAcceptsAPreA3SendPQPresentButEmpty() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreAcceptsAPreA3SendPQPresentButEmpty() throws {
 		let bob = try SessionTestSupport.establishedAndExchanged().bob
-		XCTAssertNil(bob.sendGroup?.pq)
+		#expect(bob.sendGroup?.pq == nil)
 		let archive = try bob.makeSessionArchive(kind: .checkpoint)
 		let body = try archive.decode(SessionArchive.self)
-		let sendPQ = try XCTUnwrap(
+		let sendPQ = try #require(
 			body.leafKeys.sendPQ, "a Checkpoint always carries a present-but-empty set")
-		XCTAssertNil(sendPQ.current)
-		XCTAssertTrue(sendPQ.pending.isEmpty)
+		#expect(sendPQ.current == nil)
+		#expect(sendPQ.pending.isEmpty)
 
 		let restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: try SecretArchive(encoding: body),
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertNil(restored.leafKeys.sendPQ.current)
+		#expect(restored.leafKeys.sendPQ.current == nil)
 	}
 
 	/// Check 7 through the full restore path: a born-dedicated Bob still
@@ -512,24 +529,23 @@ final class LeafKeysTests: XCTestCase {
 	/// id, not yet caught up to his own identity) must carry
 	/// `recvClassical.pending[identity.clientID]` — stripping it is
 	/// rejected.
-	func testRestoreRejectsCheck7ThroughTheFullPath() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreRejectsCheck7ThroughTheFullPath() throws {
 		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
 		let bob = established.bob
-		XCTAssertNotNil(bob.leafKeys.recvClassical.pending[established.dedicatedClientID])
+		#expect(bob.leafKeys.recvClassical.pending[established.dedicatedClientID] != nil)
 		let target = established.dedicatedClientID
 		let archive = try bob.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
-		XCTAssertTrue(
+		#expect(
 			body.leafKeys.recvClassical.pending.contains { $0.target == target })
 		body.leafKeys.recvClassical.pending.removeAll { $0.target == target }
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
 				core: nil, checkpoint: try SecretArchive(encoding: body),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -543,7 +559,8 @@ final class LeafKeysTests: XCTestCase {
 	/// through a real restore too, then drives the rule-4 offer to a real
 	/// fold, confirming the retained entry was the genuine article, not a
 	/// stale leftover the fold coincidentally still accepted.
-	func testRuleFourTargetSurvivesAnUnrelatedRecvAdvance() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func ruleFourTargetSurvivesAnUnrelatedRecvAdvance() throws {
 		let established = try SessionTestSupport.establishedDedicatedAndApproved(
 			dedicatedClientID: Data("bob-d9".utf8))
 		var alice = established.alice
@@ -556,13 +573,13 @@ final class LeafKeysTests: XCTestCase {
 		let respond = try bob.pqBootstrapRespond(begin.frame)
 		_ = try alice.pqBootstrapJoin(respond.frame)
 		let prepared = try alice.prepareToEncrypt()
-		XCTAssertTrue(prepared.didCommit, "alice's owed bind discharges on Group_A")
+		#expect(prepared.didCommit, "alice's owed bind discharges on Group_A")
 		let discharge = try alice.encrypt(Data("d".utf8)).frame
 		let dischargeDecrypted = try bob.processIncomingDecrypted(discharge)
-		XCTAssertTrue(dischargeDecrypted.didApplyRemoteCommit)
-		XCTAssertFalse(dischargeDecrypted.ownCredentialCanonicalized)
-		XCTAssertNotNil(
-			bob.leafKeys.recvClassical.pending[established.dedicatedClientID],
+		#expect(dischargeDecrypted.didApplyRemoteCommit)
+		#expect(!dischargeDecrypted.ownCredentialCanonicalized)
+		#expect(
+			bob.leafKeys.recvClassical.pending[established.dedicatedClientID] != nil,
 			"rule-4 target must survive an advance that did not fold it")
 
 		let checkpoint = try bob.makeSessionArchive(kind: .checkpoint)
@@ -570,8 +587,9 @@ final class LeafKeysTests: XCTestCase {
 			core: nil, checkpoint: checkpoint,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertNotNil(
-			restored.leafKeys.recvClassical.pending[established.dedicatedClientID])
+		#expect(
+			restored.leafKeys.recvClassical.pending[established.dedicatedClientID]
+				!= nil)
 
 		_ = try bob.prepareToEncrypt()
 		let offer = try bob.encrypt(Data("o".utf8)).frame
@@ -580,7 +598,7 @@ final class LeafKeysTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let fold = try alice.encrypt(Data("f".utf8)).frame
 		let foldDecrypted = try bob.processIncomingDecrypted(fold)
-		XCTAssertTrue(foldDecrypted.ownCredentialCanonicalized)
+		#expect(foldDecrypted.ownCredentialCanonicalized)
 	}
 
 	// MARK: - Seeding tables: initiate / receive / born-dedicated receive
@@ -589,33 +607,36 @@ final class LeafKeysTests: XCTestCase {
 	/// freshly minted founding leaf — never `identity`'s own KP halves,
 	/// which stay reserved for recv-classical (the return KP) and recv-PQ
 	/// (KP′). Every `pending` is empty pre-join.
-	func testInitiateSeedsAllFourSetsToIdentitysOwnKeys() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func initiateSeedsAllFourSetsToIdentitysOwnKeys() throws {
 		let alice = try SessionTestSupport.established().alice
-		XCTAssertNil(alice.recvGroup)
+		#expect(alice.recvGroup == nil)
 
-		XCTAssertEqual(
-			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.sendGroup?.classical))
-				.signatureKey,
-			alice.leafKeys.sendClassical.current?.signatureKey)
-		XCTAssertNotEqual(
-			alice.leafKeys.sendClassical.current?.signatureKey,
-			alice.identity.signatureKey)
-		XCTAssertEqual(
-			alice.leafKeys.recvClassical.current?.signatureKey,
-			alice.identity.signatureKey)
-		XCTAssertEqual(
-			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(alice.sendGroup?.pq))
-				.signatureKey,
-			alice.leafKeys.sendPQ.current?.signatureKey)
-		XCTAssertNotEqual(
-			alice.leafKeys.sendPQ.current?.signatureKey, alice.identity.pqSignatureKey)
-		XCTAssertEqual(
-			alice.leafKeys.recvPQ.current?.signatureKey, alice.identity.pqSignatureKey)
+		#expect(
+			try TwoMLSSession.ownLeaf(of: try #require(alice.sendGroup?.classical))
+				.signatureKey
+				== alice.leafKeys.sendClassical.current?.signatureKey)
+		#expect(
+			alice.leafKeys.sendClassical.current?.signatureKey
+				!= alice.identity.signatureKey)
+		#expect(
+			alice.leafKeys.recvClassical.current?.signatureKey
+				== alice.identity.signatureKey)
+		#expect(
+			try TwoMLSSession.ownLeaf(of: try #require(alice.sendGroup?.pq))
+				.signatureKey
+				== alice.leafKeys.sendPQ.current?.signatureKey)
+		#expect(
+			alice.leafKeys.sendPQ.current?.signatureKey != alice.identity.pqSignatureKey
+		)
+		#expect(
+			alice.leafKeys.recvPQ.current?.signatureKey == alice.identity.pqSignatureKey
+		)
 		for set in [
 			alice.leafKeys.sendClassical, alice.leafKeys.recvClassical,
 			alice.leafKeys.sendPQ, alice.leafKeys.recvPQ,
 		] {
-			XCTAssertTrue(set.pending.isEmpty)
+			#expect(set.pending.isEmpty)
 		}
 	}
 
@@ -625,26 +646,29 @@ final class LeafKeysTests: XCTestCase {
 	/// half this session actually joined Group_A with); send-PQ is empty
 	/// (not founded until A.3); recv-PQ presents the same invitation
 	/// identity's PQ half. No recv-leaf custody, no `pending`.
-	func testPlainReceiveSeedsSendAndRecvClassicalToTheSameIdentity() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func plainReceiveSeedsSendAndRecvClassicalToTheSameIdentity() throws {
 		let bob = try SessionTestSupport.established().bob
-		XCTAssertTrue(bob.leafKeys.recvClassical.pending.isEmpty)
+		#expect(bob.leafKeys.recvClassical.pending.isEmpty)
 
-		XCTAssertEqual(
-			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.sendGroup?.classical))
-				.signatureKey,
-			bob.leafKeys.sendClassical.current?.signatureKey)
-		XCTAssertNotEqual(
-			bob.leafKeys.sendClassical.current?.signatureKey, bob.identity.signatureKey)
-		XCTAssertEqual(
-			bob.leafKeys.recvClassical.current?.signatureKey, bob.identity.signatureKey)
-		XCTAssertNil(bob.leafKeys.sendPQ.current)
-		XCTAssertEqual(
-			bob.leafKeys.recvPQ.current?.signatureKey, bob.identity.pqSignatureKey)
+		#expect(
+			try TwoMLSSession.ownLeaf(of: try #require(bob.sendGroup?.classical))
+				.signatureKey
+				== bob.leafKeys.sendClassical.current?.signatureKey)
+		#expect(
+			bob.leafKeys.sendClassical.current?.signatureKey
+				!= bob.identity.signatureKey)
+		#expect(
+			bob.leafKeys.recvClassical.current?.signatureKey
+				== bob.identity.signatureKey)
+		#expect(bob.leafKeys.sendPQ.current == nil)
+		#expect(
+			bob.leafKeys.recvPQ.current?.signatureKey == bob.identity.pqSignatureKey)
 		for set in [
 			bob.leafKeys.sendClassical, bob.leafKeys.recvClassical, bob.leafKeys.sendPQ,
 			bob.leafKeys.recvPQ,
 		] {
-			XCTAssertTrue(set.pending.isEmpty)
+			#expect(set.pending.isEmpty)
 		}
 	}
 
@@ -658,39 +682,40 @@ final class LeafKeysTests: XCTestCase {
 	/// `pending[D.clientID]` (rule 4's target); send-PQ is empty (not
 	/// founded until A.3); recv-PQ joins under the invitation identity's
 	/// already-signed PQ leaf (also not yet D's).
-	func testBornDedicatedReceiveSeedsSendToDAndRecvClassicalToTheInvitationWithDPending()
+	@available(iOS 26, macOS 26, *)
+	@Test func bornDedicatedReceiveSeedsSendToDAndRecvClassicalToTheInvitationWithDPending()
 		throws
 	{
 		let established = try SessionTestSupport.establishedDedicated(bob: "bob-d")
 		let bob = established.bob
-		XCTAssertEqual(bob.identity.clientID, established.invitationClientID)
-		XCTAssertEqual(bob.myPrincipalState, .sync(established.dedicatedClientID))
+		#expect(bob.identity.clientID == established.invitationClientID)
+		#expect(bob.myPrincipalState == .sync(established.dedicatedClientID))
 
-		let sendClassicalKey = try XCTUnwrap(bob.leafKeys.sendClassical.current)
-		XCTAssertEqual(
-			try TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.sendGroup?.classical))
-				.signatureKey, sendClassicalKey.signatureKey,
+		let sendClassicalKey = try #require(bob.leafKeys.sendClassical.current)
+		#expect(
+			try TwoMLSSession.ownLeaf(of: try #require(bob.sendGroup?.classical))
+				.signatureKey == sendClassicalKey.signatureKey,
 			"send-classical presents D's fresh founding leaf from the moment Group_B is founded"
 		)
-		XCTAssertNotEqual(sendClassicalKey.signatureKey, bob.identity.signatureKey)
-		XCTAssertEqual(
-			bob.leafKeys.recvClassical.current?.signatureKey,
-			bob.identity.signatureKey,
+		#expect(sendClassicalKey.signatureKey != bob.identity.signatureKey)
+		#expect(
+			bob.leafKeys.recvClassical.current?.signatureKey
+				== bob.identity.signatureKey,
 			"recv-classical still presents the invitation identity, not yet D")
 		// The rule-4 catch-up key (book group-rules.md:143-158 rule 4) is
 		// minted separately from the founding leaf's key — never the same
 		// pair.
-		let recvPending = try XCTUnwrap(
+		let recvPending = try #require(
 			bob.leafKeys.recvClassical.pending[established.dedicatedClientID])
-		XCTAssertNotEqual(recvPending.signatureKey, sendClassicalKey.signatureKey)
+		#expect(recvPending.signatureKey != sendClassicalKey.signatureKey)
 
-		XCTAssertNil(bob.leafKeys.sendPQ.current)
-		XCTAssertEqual(
-			bob.leafKeys.recvPQ.current?.signatureKey, bob.identity.pqSignatureKey,
+		#expect(bob.leafKeys.sendPQ.current == nil)
+		#expect(
+			bob.leafKeys.recvPQ.current?.signatureKey == bob.identity.pqSignatureKey,
 			"recv-PQ joins Group_A under the invitation identity's PQ leaf")
-		XCTAssertTrue(bob.leafKeys.sendClassical.pending.isEmpty)
-		XCTAssertTrue(bob.leafKeys.sendPQ.pending.isEmpty)
-		XCTAssertTrue(bob.leafKeys.recvPQ.pending.isEmpty)
+		#expect(bob.leafKeys.sendClassical.pending.isEmpty)
+		#expect(bob.leafKeys.sendPQ.pending.isEmpty)
+		#expect(bob.leafKeys.recvPQ.pending.isEmpty)
 	}
 
 	// MARK: - Identity not consulted once every step is behind us
@@ -711,15 +736,16 @@ final class LeafKeysTests: XCTestCase {
 	/// approve/fold/catch-up, exercising both classical accessors) — all
 	/// while `bob`, who never sees `identity` at all, keeps verifying every
 	/// frame.
-	func testIdentityNotConsultedOnceEveryKeyPackageStepIsBehindUs() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func identityNotConsultedOnceEveryKeyPackageStepIsBehindUs() throws {
 		// Every group's `current` still traces back to the ORIGINAL identity
 		// until each group's own next mechanism replaces it.
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let begin = try alice.pqBootstrapBegin()
 		let respond = try bob.pqBootstrapRespond(begin.frame)
 		_ = try alice.pqBootstrapJoin(respond.frame)
-		XCTAssertTrue(alice.isFullyEstablished)
-		XCTAssertTrue(bob.isFullyEstablished)
+		#expect(alice.isFullyEstablished)
+		#expect(bob.isFullyEstablished)
 
 		let bogus = try TwoMLSIdentity.generate(
 			clientID: alice.identity.clientID,
@@ -733,7 +759,7 @@ final class LeafKeysTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 		let firstFrame = try alice.encrypt(Data("post-swap".utf8)).frame
 		let firstDecrypted = try bob.processIncomingDecrypted(firstFrame)
-		XCTAssertEqual(firstDecrypted.applicationMessage, Data("post-swap".utf8))
+		#expect(firstDecrypted.applicationMessage == Data("post-swap".utf8))
 
 		// Two mechanical §A.5 rounds, one each direction, so BOTH of
 		// alice's PQ accessors get exercised under the bogus identity —
@@ -770,18 +796,18 @@ final class LeafKeysTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		let foldDecrypted = try alice.processIncomingDecrypted(foldFrame)
-		XCTAssertTrue(foldDecrypted.ownCredentialCanonicalized)
+		#expect(foldDecrypted.ownCredentialCanonicalized)
 		_ = try alice.prepareToEncrypt()
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpFrame)
-		XCTAssertEqual(catchUpDecrypted.newSender, newID)
-		XCTAssertEqual(alice.myPrincipalState, .sync(newID))
+		#expect(catchUpDecrypted.newSender == newID)
+		#expect(alice.myPrincipalState == .sync(newID))
 
 		// Traffic keeps round-tripping end to end, under the new key.
 		_ = try alice.prepareToEncrypt()
 		let finalFrame = try alice.encrypt(Data("post-rotation".utf8)).frame
 		let finalDecrypted = try bob.processIncomingDecrypted(finalFrame)
-		XCTAssertEqual(finalDecrypted.applicationMessage, Data("post-rotation".utf8))
+		#expect(finalDecrypted.applicationMessage == Data("post-rotation".utf8))
 	}
 
 	// MARK: - Check 7: send-classical `pending` must be strictly empty
@@ -795,7 +821,8 @@ final class LeafKeysTests: XCTestCase {
 	/// documents between its steps 4 and 5, confirms `leafKeys` is
 	/// naturally empty there, then pollutes it with an entry and confirms
 	/// `validateLeafKeys` rejects it.
-	func testValidateLeafKeysRejectsANonEmptySendClassicalPendingEvenWhileACandidateLags()
+	@available(iOS 26, macOS 26, *)
+	@Test func validateLeafKeysRejectsANonEmptySendClassicalPendingEvenWhileACandidateLags()
 		throws
 	{
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -807,14 +834,15 @@ final class LeafKeysTests: XCTestCase {
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		let foldDecrypted = try alice.processIncomingDecrypted(foldFrame)
-		XCTAssertTrue(foldDecrypted.ownCredentialCanonicalized)
-		XCTAssertEqual(alice.myPrincipalState, .sync(newID))
-		XCTAssertEqual(
+		#expect(foldDecrypted.ownCredentialCanonicalized)
+		#expect(alice.myPrincipalState == .sync(newID))
+		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential),
-			alice.identity.clientID, "send-classical documentedly still lags here")
-		let candidate = try XCTUnwrap(alice.rotationCandidate)
-		XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
+				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				== alice.identity.clientID,
+			"send-classical documentedly still lags here")
+		let candidate = try #require(alice.rotationCandidate)
+		#expect(alice.leafKeys.sendClassical.pending.isEmpty)
 
 		let (pollutedSigningKey, pollutedSignatureKey) =
 			try TwoMLSIdentity.mintSignatureKeypair()
@@ -822,7 +850,7 @@ final class LeafKeysTests: XCTestCase {
 		polluted.sendClassical.pending[candidate.clientID] = LeafKey(
 			signingKey: pollutedSigningKey, signatureKey: pollutedSignatureKey)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.validateLeafKeys(
 				polluted, sendGroup: alice.sendGroup,
 				recvGroup: alice.recvGroup,
@@ -834,12 +862,10 @@ final class LeafKeysTests: XCTestCase {
 				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 
 		// The unmodified `leafKeys` (strictly empty send-classical `pending`) passes.
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try TwoMLSSession.validateLeafKeys(
 				alice.leafKeys, sendGroup: alice.sendGroup,
 				recvGroup: alice.recvGroup,
@@ -850,7 +876,8 @@ final class LeafKeysTests: XCTestCase {
 				rotationCandidate: alice.rotationCandidate,
 				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider))
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 		_ = bob
 	}
 
@@ -863,9 +890,10 @@ final class LeafKeysTests: XCTestCase {
 	/// `FoldTests.authorBobCredentialRotation`) but deliberately never
 	/// stages the fresh key into `leafKeys`, simulating a tampered or
 	/// mis-mapped archive.
-	func testValidateLeafKeysRejectsAStagedUpdateNamingAnUnheldKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func validateLeafKeysRejectsAStagedUpdateNamingAnUnheldKey() throws {
 		let (alice, _) = try SessionTestSupport.establishedAndExchanged()
-		var mirror = try XCTUnwrap(alice.recvGroup)
+		var mirror = try #require(alice.recvGroup)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (message, _) = try mirror.classical.proposeUpdate(
 			SessionTestSupport.classicalProvider,
@@ -884,7 +912,7 @@ final class LeafKeysTests: XCTestCase {
 				message: bytes
 			))
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.validateLeafKeys(
 				withUntrackedUpdate.leafKeys,
 				sendGroup: withUntrackedUpdate.sendGroup,
@@ -898,12 +926,10 @@ final class LeafKeysTests: XCTestCase {
 				auth: withUntrackedUpdate.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 
 		// Unmodified (no untracked staged Upd) passes.
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try TwoMLSSession.validateLeafKeys(
 				alice.leafKeys, sendGroup: alice.sendGroup,
 				recvGroup: alice.recvGroup,
@@ -914,7 +940,8 @@ final class LeafKeysTests: XCTestCase {
 				rotationCandidate: alice.rotationCandidate,
 				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider))
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 		_ = mirror
 	}
 
@@ -923,14 +950,15 @@ final class LeafKeysTests: XCTestCase {
 	/// also fail — the only thing that ever stages one is that parked Upd′,
 	/// so an entry surviving under any other `pqInflight` is a leftover or
 	/// smuggled key, never a meaningful in-flight offer.
-	func testValidateLeafKeysRejectsARecvPQPendingEntryWithNoParkedUpd() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func validateLeafKeysRejectsARecvPQPendingEntryWithNoParkedUpd() throws {
 		let (alice, _) = try RatchetTests.fullyEstablishedTurnOnBob()
-		XCTAssertNil(alice.pqInflight)
+		#expect(alice.pqInflight == nil)
 		var withStrayPending = alice
 		withStrayPending.leafKeys.recvPQ.pending[Data("stray-pq-target".utf8)] =
 			try freshKey()
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.validateLeafKeys(
 				withStrayPending.leafKeys,
 				sendGroup: withStrayPending.sendGroup,
@@ -944,12 +972,10 @@ final class LeafKeysTests: XCTestCase {
 				auth: withStrayPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 
 		// Unmodified (empty recvPQ.pending) passes.
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try TwoMLSSession.validateLeafKeys(
 				alice.leafKeys, sendGroup: alice.sendGroup,
 				recvGroup: alice.recvGroup,
@@ -960,15 +986,17 @@ final class LeafKeysTests: XCTestCase {
 				rotationCandidate: alice.rotationCandidate,
 				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider))
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 
 	/// The `pendingProposal` arm of check 5 — `stagedUpdates` is not the
 	/// only own-Update source: an offered-but-not-yet-staged proposal must
 	/// ALSO name a held key, or restore/mint must reject it the same way.
-	func testValidateLeafKeysRejectsAPendingProposalNamingAnUnheldKey() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func validateLeafKeysRejectsAPendingProposalNamingAnUnheldKey() throws {
 		let (alice, _) = try SessionTestSupport.establishedAndExchanged()
-		var mirror = try XCTUnwrap(alice.recvGroup)
+		var mirror = try #require(alice.recvGroup)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (message, _) = try mirror.classical.proposeUpdate(
 			SessionTestSupport.classicalProvider,
@@ -986,7 +1014,7 @@ final class LeafKeysTests: XCTestCase {
 			hash: try SessionTestSupport.classicalProvider.hash(bytes)
 		)
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.validateLeafKeys(
 				withUntrackedPending.leafKeys,
 				sendGroup: withUntrackedPending.sendGroup,
@@ -1000,8 +1028,6 @@ final class LeafKeysTests: XCTestCase {
 				auth: withUntrackedPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 		_ = mirror
 	}
@@ -1010,12 +1036,13 @@ final class LeafKeysTests: XCTestCase {
 	/// nothing stages one (PQ has no rotation-candidate arm) — so
 	/// validation must reject it even though it names no OTHER invariant
 	/// check by itself.
-	func testValidateLeafKeysRejectsANonEmptySendPQPending() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func validateLeafKeysRejectsANonEmptySendPQPending() throws {
 		let (alice, _) = try SessionTestSupport.establishedAndExchanged()
 		var withStrayPending = alice
 		withStrayPending.leafKeys.sendPQ.pending[Data("stray".utf8)] = try freshKey()
 
-		XCTAssertThrowsError(
+		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.validateLeafKeys(
 				withStrayPending.leafKeys, sendGroup: withStrayPending.sendGroup,
 				recvGroup: withStrayPending.recvGroup,
@@ -1027,8 +1054,6 @@ final class LeafKeysTests: XCTestCase {
 				auth: withStrayPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
-		) { error in
-			XCTAssertEqual(error as? TwoMLSError, .archiveInvalid)
 		}
 	}
 
@@ -1040,23 +1065,24 @@ final class LeafKeysTests: XCTestCase {
 	/// comparison alone would miss it). Adds a `recvPQ` pending entry
 	/// directly (no epoch change) and confirms a plain `.core` request is
 	/// upgraded to `.checkpoint`.
-	func testPQKeySetChangeAloneTriggersTheStickyCheckpointUpgrade() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func pqKeySetChangeAloneTriggersTheStickyCheckpointUpgrade() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let begin = try alice.pqBootstrapBegin()
 		let respond = try bob.pqBootstrapRespond(begin.frame)
 		_ = try alice.pqBootstrapJoin(respond.frame)
 		let checkpoint = try alice.stateUpdate(kind: .checkpoint)
-		XCTAssertEqual(checkpoint.kind, .checkpoint)
+		#expect(checkpoint.kind == .checkpoint)
 
 		let sendPQEpochBefore = alice.sendGroup?.pq?.context.epoch
 		let recvPQEpochBefore = alice.recvGroup?.pq?.context.epoch
 		alice.leafKeys.recvPQ.pending[Data("fingerprint-probe".utf8)] = try freshKey()
 
 		let update = try alice.stateUpdate(kind: .core)
-		XCTAssertEqual(alice.sendGroup?.pq?.context.epoch, sendPQEpochBefore)
-		XCTAssertEqual(alice.recvGroup?.pq?.context.epoch, recvPQEpochBefore)
-		XCTAssertEqual(
-			update.kind, .checkpoint,
+		#expect(alice.sendGroup?.pq?.context.epoch == sendPQEpochBefore)
+		#expect(alice.recvGroup?.pq?.context.epoch == recvPQEpochBefore)
+		#expect(
+			update.kind == .checkpoint,
 			"a PQ key-set change must upgrade a .core request even with no epoch move")
 	}
 
@@ -1072,7 +1098,8 @@ final class LeafKeysTests: XCTestCase {
 	/// Complements the four AFTER-write-back points below, which prove the
 	/// opposite direction: this one proves nothing moved yet.
 	#if DEBUG
-		func testCommittingRoundLeafKeysWriteBackFailsAtomicallyOnAFault() throws {
+		@available(iOS 26, macOS 26, *)
+		@Test func committingRoundLeafKeysWriteBackFailsAtomicallyOnAFault() throws {
 			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 			let newID = Data("alice-v2".utf8)
 			_ = try alice.prepareToEncrypt(rotating: newID)
@@ -1082,26 +1109,28 @@ final class LeafKeysTests: XCTestCase {
 			_ = try bob.prepareToEncrypt()
 			let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 			let foldDecrypted = try alice.processIncomingDecrypted(foldFrame)
-			XCTAssertTrue(foldDecrypted.ownCredentialCanonicalized)
+			#expect(foldDecrypted.ownCredentialCanonicalized)
 
 			// Alice's next `prepareToEncrypt()` performs the send-leaf catch-up
 			// (`committingRound`'s `catchUpTargetID` branch) — arm the fault
 			// right at its write-back point first.
 			let before = alice.leafKeys
-			TwoMLSSessionTestHooks.armFault("committingRound.beforeWriteBack")
-			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
-			XCTAssertThrowsError(try alice.prepareToEncrypt())
-			XCTAssertEqual(
-				alice.leafKeys.sendClassical.current?.signatureKey,
-				before.sendClassical.current?.signatureKey,
-				"a fault at the write-back point must leave leafKeys untouched")
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault("committingRound.beforeWriteBack")
+				#expect(throws: (any Error).self) { try alice.prepareToEncrypt() }
+				#expect(
+					alice.leafKeys.sendClassical.current?.signatureKey
+						== before.sendClassical.current?.signatureKey,
+					"a fault at the write-back point must leave leafKeys untouched"
+				)
+			}
 
 			// The session is not bricked: a retry (fault no longer armed)
 			// completes the catch-up normally.
 			_ = try alice.prepareToEncrypt()
 			let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 			let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpFrame)
-			XCTAssertEqual(catchUpDecrypted.newSender, newID)
+			#expect(catchUpDecrypted.newSender == newID)
 		}
 	#endif
 
@@ -1123,7 +1152,8 @@ final class LeafKeysTests: XCTestCase {
 	/// from the last-persisted Checkpoint (captured before this call, so it
 	/// never saw the advance at all) still performs the catch-up cleanly.
 	#if DEBUG
-		func testCommittingRoundLeafKeysSurviveAFaultAfterWriteBack() throws {
+		@available(iOS 26, macOS 26, *)
+		@Test func committingRoundLeafKeysSurviveAFaultAfterWriteBack() throws {
 			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 			let newID = Data("alice-v3".utf8)
 			_ = try alice.prepareToEncrypt(rotating: newID)
@@ -1133,7 +1163,7 @@ final class LeafKeysTests: XCTestCase {
 			_ = try bob.prepareToEncrypt()
 			let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 			let foldDecrypted = try alice.processIncomingDecrypted(foldFrame)
-			XCTAssertTrue(foldDecrypted.ownCredentialCanonicalized)
+			#expect(foldDecrypted.ownCredentialCanonicalized)
 
 			let checkpointBeforeCatchUp = try alice.makeSessionArchive(
 				kind: .checkpoint)
@@ -1144,11 +1174,12 @@ final class LeafKeysTests: XCTestCase {
 			let recvClassicalBeforeThisCall = alice.leafKeys.recvClassical
 			let sendClassicalBeforeThisCall = alice.leafKeys.sendClassical
 
-			TwoMLSSessionTestHooks.armFault(
-				"committingRound.afterWriteBackBeforeRendezvous")
-			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
-			XCTAssertThrowsError(try alice.prepareToEncrypt())
-			try alice.assertLeafKeysPresented()
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault(
+					"committingRound.afterWriteBackBeforeRendezvous")
+				#expect(throws: (any Error).self) { try alice.prepareToEncrypt() }
+				try alice.assertLeafKeysPresented()
+			}
 
 			_ = try aliceControl.prepareToEncrypt()
 			// The fault fires inside `committingRound` — the send-side half
@@ -1164,21 +1195,21 @@ final class LeafKeysTests: XCTestCase {
 			// gets there, so `recvClassical` stays exactly as it was going
 			// into this call, not what the control's own (freshly minted,
 			// randomized) offer left it as.
-			XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
-			XCTAssertNotEqual(
-				alice.leafKeys.sendClassical.current?.signatureKey,
-				sendClassicalBeforeThisCall.current?.signatureKey,
+			#expect(alice.leafKeys.sendClassical.pending.isEmpty)
+			#expect(
+				alice.leafKeys.sendClassical.current?.signatureKey
+					!= sendClassicalBeforeThisCall.current?.signatureKey,
 				"the write-back must have minted and promoted a new send-classical key"
 			)
-			XCTAssertEqual(
-				GroupKeySetArchive(alice.leafKeys.sendPQ),
-				GroupKeySetArchive(aliceControl.leafKeys.sendPQ))
-			XCTAssertEqual(
-				GroupKeySetArchive(alice.leafKeys.recvPQ),
-				GroupKeySetArchive(aliceControl.leafKeys.recvPQ))
-			XCTAssertEqual(
-				GroupKeySetArchive(alice.leafKeys.recvClassical),
-				GroupKeySetArchive(recvClassicalBeforeThisCall),
+			#expect(
+				GroupKeySetArchive(alice.leafKeys.sendPQ)
+					== GroupKeySetArchive(aliceControl.leafKeys.sendPQ))
+			#expect(
+				GroupKeySetArchive(alice.leafKeys.recvPQ)
+					== GroupKeySetArchive(aliceControl.leafKeys.recvPQ))
+			#expect(
+				GroupKeySetArchive(alice.leafKeys.recvClassical)
+					== GroupKeySetArchive(recvClassicalBeforeThisCall),
 				"the recv-side offer mint never ran — recvClassical is untouched")
 
 			// Restoring from the last blob persisted BEFORE this call continues
@@ -1189,12 +1220,12 @@ final class LeafKeysTests: XCTestCase {
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 			let preparedRestored = try restored.prepareToEncrypt()
-			XCTAssertTrue(preparedRestored.didCommit)
+			#expect(preparedRestored.didCommit)
 			let restoredFrame = try restored.encrypt(Data("post-restore".utf8)).frame
 			let restoredDecrypted = try bobForRestoreCheck.processIncomingDecrypted(
 				restoredFrame)
-			XCTAssertEqual(
-				restoredDecrypted.applicationMessage, Data("post-restore".utf8))
+			#expect(
+				restoredDecrypted.applicationMessage == Data("post-restore".utf8))
 		}
 	#endif
 
@@ -1210,7 +1241,8 @@ final class LeafKeysTests: XCTestCase {
 	/// rotating`), not a fresh mint — this is `GroupKeySet.stage`'s own
 	/// documented idempotent no-op.
 	#if DEBUG
-		func testPrepareToEncryptLeafKeysSurviveAFaultAfterWriteBack() throws {
+		@available(iOS 26, macOS 26, *)
+		@Test func prepareToEncryptLeafKeysSurviveAFaultAfterWriteBack() throws {
 			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 			let checkpointBeforeRotation = try alice.makeSessionArchive(
 				kind: .checkpoint)
@@ -1219,25 +1251,28 @@ final class LeafKeysTests: XCTestCase {
 			var bobForRestoreCheck = bob
 			let newID = Data("alice-v4".utf8)
 
-			TwoMLSSessionTestHooks.armFault(
-				"prepareToEncrypt.afterWriteBackBeforeEncode")
-			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
-			XCTAssertThrowsError(try alice.prepareToEncrypt(rotating: newID))
-			try alice.assertLeafKeysPresented()
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault(
+					"prepareToEncrypt.afterWriteBackBeforeEncode")
+				#expect(throws: (any Error).self) {
+					try alice.prepareToEncrypt(rotating: newID)
+				}
+				try alice.assertLeafKeysPresented()
 
-			let candidate = try XCTUnwrap(alice.rotationCandidate)
-			XCTAssertEqual(candidate.clientID, newID)
-			// Send-classical is never staged in advance — only
-			// recv-classical holds the candidate's key until it converges.
-			XCTAssertNotNil(alice.leafKeys.recvClassical.pending[newID])
-			XCTAssertTrue(alice.leafKeys.sendClassical.pending.isEmpty)
+				let candidate = try #require(alice.rotationCandidate)
+				#expect(candidate.clientID == newID)
+				// Send-classical is never staged in advance — only
+				// recv-classical holds the candidate's key until it converges.
+				#expect(alice.leafKeys.recvClassical.pending[newID] != nil)
+				#expect(alice.leafKeys.sendClassical.pending.isEmpty)
+			}
 
 			// A live retry (re-staging the same id) is the documented
 			// idempotent case, and completes the round.
 			_ = try alice.prepareToEncrypt(rotating: newID)
 			let offerFrame = try alice.encrypt(Data("offer".utf8)).frame
 			let offerDecrypted = try bob.processIncomingDecrypted(offerFrame)
-			XCTAssertNotNil(offerDecrypted.queuedProposal)
+			#expect(offerDecrypted.queuedProposal != nil)
 
 			var restored = try TwoMLSSession.restore(
 				core: nil, checkpoint: checkpointBeforeRotation,
@@ -1247,8 +1282,8 @@ final class LeafKeysTests: XCTestCase {
 			let restoredFrame = try restored.encrypt(Data("post-restore".utf8)).frame
 			let restoredDecrypted = try bobForRestoreCheck.processIncomingDecrypted(
 				restoredFrame)
-			XCTAssertEqual(
-				restoredDecrypted.applicationMessage, Data("post-restore".utf8))
+			#expect(
+				restoredDecrypted.applicationMessage == Data("post-restore".utf8))
 		}
 	#endif
 
@@ -1265,7 +1300,8 @@ final class LeafKeysTests: XCTestCase {
 	/// last-persisted Checkpoint (captured before delivery) still folds
 	/// the SAME frame cleanly.
 	#if DEBUG
-		func testProcessMessageFrameLeafKeysSurviveAFaultAfterStaple() throws {
+		@available(iOS 26, macOS 26, *)
+		@Test func processMessageFrameLeafKeysSurviveAFaultAfterStaple() throws {
 			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 			let newID = Data("bob-v2".utf8)
 			_ = try bob.prepareToEncrypt(rotating: newID)
@@ -1278,17 +1314,20 @@ final class LeafKeysTests: XCTestCase {
 			let checkpointBeforeFold = try bob.makeSessionArchive(kind: .checkpoint)
 			var bobControl = bob
 
-			TwoMLSSessionTestHooks.armFault(
-				"processMessageFrame.afterStapleBeforeDecrypt")
-			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
-			XCTAssertThrowsError(try bob.processIncomingDecrypted(foldFrame))
-			try bob.assertLeafKeysPresented()
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault(
+					"processMessageFrame.afterStapleBeforeDecrypt")
+				#expect(throws: (any Error).self) {
+					try bob.processIncomingDecrypted(foldFrame)
+				}
+				try bob.assertLeafKeysPresented()
+			}
 
 			let controlDecrypted = try bobControl.processIncomingDecrypted(foldFrame)
-			XCTAssertTrue(controlDecrypted.ownCredentialCanonicalized)
-			XCTAssertEqual(
-				LeafKeysArchive(bob.leafKeys, kind: .checkpoint),
-				LeafKeysArchive(bobControl.leafKeys, kind: .checkpoint),
+			#expect(controlDecrypted.ownCredentialCanonicalized)
+			#expect(
+				LeafKeysArchive(bob.leafKeys, kind: .checkpoint)
+					== LeafKeysArchive(bobControl.leafKeys, kind: .checkpoint),
 				"the fold's write-back landed the SAME leafKeys value the unfaulted delivery would have"
 			)
 
@@ -1297,7 +1336,7 @@ final class LeafKeysTests: XCTestCase {
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 			let restoredDecrypted = try restored.processIncomingDecrypted(foldFrame)
-			XCTAssertTrue(restoredDecrypted.ownCredentialCanonicalized)
+			#expect(restoredDecrypted.ownCredentialCanonicalized)
 		}
 	#endif
 
@@ -1310,7 +1349,8 @@ final class LeafKeysTests: XCTestCase {
 	/// before the fault point), so a second call has nothing left to
 	/// apply. The durable recovery path is what this test proves instead.
 	#if DEBUG
-		func testPqRekeyApplyLeafKeysSurviveAFaultAfterWriteBack() throws {
+		@available(iOS 26, macOS 26, *)
+		@Test func pqRekeyApplyLeafKeysSurviveAFaultAfterWriteBack() throws {
 			// Same reason as `SigningKeyProtocolTests`'s protocol doc §3 catch-up tests:
 			// the hand-built renaming Upd′ has no rotation-candidate arm to
 			// resolve through.
@@ -1329,12 +1369,12 @@ final class LeafKeysTests: XCTestCase {
 			let decryptedOffer = try alice.processIncomingDecrypted(offerFrame)
 			_ = try alice.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 			let foldPrepared = try alice.prepareToEncrypt()
-			XCTAssertTrue(foldPrepared.didCommit)
+			#expect(foldPrepared.didCommit)
 			let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
 			_ = try bob.processIncomingDecrypted(foldFrame)
-			XCTAssertEqual(alice.theirPrincipalState, .sync(newBobID))
+			#expect(alice.theirPrincipalState == .sync(newBobID))
 
-			var bobMirror = try XCTUnwrap(bob.recvGroup)
+			var bobMirror = try #require(bob.recvGroup)
 			let (freshSigningKey, freshSignatureKey) =
 				try TwoMLSIdentity.mintSignatureKeypair()
 			let (message, _) = try bobMirror.pq!.proposeUpdate(
@@ -1361,15 +1401,19 @@ final class LeafKeysTests: XCTestCase {
 			let checkpointBeforeApply = try bob.makeSessionArchive(kind: .checkpoint)
 			var bobControl = bob
 
-			TwoMLSSessionTestHooks.armFault("pqRekeyApply.afterWriteBackBeforeBind")
-			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
-			XCTAssertThrowsError(try bob.pqRekeyApply(commitFrame))
-			try bob.assertLeafKeysPresented()
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault(
+					"pqRekeyApply.afterWriteBackBeforeBind")
+				#expect(throws: (any Error).self) {
+					try bob.pqRekeyApply(commitFrame)
+				}
+				try bob.assertLeafKeysPresented()
+			}
 
 			_ = try bobControl.pqRekeyApply(commitFrame)
-			XCTAssertEqual(
-				LeafKeysArchive(bob.leafKeys, kind: .checkpoint),
-				LeafKeysArchive(bobControl.leafKeys, kind: .checkpoint),
+			#expect(
+				LeafKeysArchive(bob.leafKeys, kind: .checkpoint)
+					== LeafKeysArchive(bobControl.leafKeys, kind: .checkpoint),
 				"the promotion's write-back landed the SAME leafKeys value the unfaulted apply would have"
 			)
 
@@ -1378,7 +1422,7 @@ final class LeafKeysTests: XCTestCase {
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 			_ = try restored.pqRekeyApply(commitFrame)
-			XCTAssertNotNil(restored.owedBind)
+			#expect(restored.owedBind != nil)
 		}
 
 		/// `pqBootstrapRespond` registers its founding key in the SAME
@@ -1388,19 +1432,24 @@ final class LeafKeysTests: XCTestCase {
 		/// already presenting its key, so the very next state-advancing
 		/// call's choke point (`assertLeafKeysPresented`) passes even though
 		/// this call itself threw.
-		func testPQBootstrapRespondRegistersTheFoundingKeyWithTheGroup() throws {
+		@available(iOS 26, macOS 26, *)
+		@Test func pqBootstrapRespondRegistersTheFoundingKeyWithTheGroup() throws {
 			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 			let kpFrame = try alice.pqBootstrapBegin().frame
 
-			TwoMLSSessionTestHooks.armFault("pqBootstrapRespond.afterWriteBack")
-			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
-			XCTAssertThrowsError(try bob.pqBootstrapRespond(kpFrame))
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault("pqBootstrapRespond.afterWriteBack")
+				#expect(throws: (any Error).self) {
+					try bob.pqBootstrapRespond(kpFrame)
+				}
 
-			let sendPQGroup = try XCTUnwrap(
-				bob.sendGroup?.pq, "the founded group survives the fault")
-			let presentedKey = try TwoMLSSession.ownLeaf(of: sendPQGroup).signatureKey
-			XCTAssertEqual(bob.leafKeys.sendPQ.current?.signatureKey, presentedKey)
-			try bob.assertLeafKeysPresented()
+				let sendPQGroup = try #require(
+					bob.sendGroup?.pq, "the founded group survives the fault")
+				let presentedKey = try TwoMLSSession.ownLeaf(of: sendPQGroup)
+					.signatureKey
+				#expect(bob.leafKeys.sendPQ.current?.signatureKey == presentedKey)
+				try bob.assertLeafKeysPresented()
+			}
 		}
 
 		/// `pqRekeyBegin` (via `stageRekey`) registers its fresh recv-PQ key
@@ -1411,26 +1460,29 @@ final class LeafKeysTests: XCTestCase {
 		/// together, never a stray pending key with no parked round). A
 		/// retry re-serves the SAME parked round idempotently (the top-of-
 		/// call re-serve branch), rather than minting again.
-		func testPqRekeyBeginRegistersTheFreshKeyWithTheGroup() throws {
+		@available(iOS 26, macOS 26, *)
+		@Test func pqRekeyBeginRegistersTheFreshKeyWithTheGroup() throws {
 			var (_, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
-			XCTAssertTrue(bob.myPQTurn)
+			#expect(bob.myPQTurn)
 			let ownID = try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: try XCTUnwrap(bob.recvGroup?.pq))
+				TwoMLSSession.ownLeaf(of: try #require(bob.recvGroup?.pq))
 					.credential)
 			let currentKeyBefore = bob.leafKeys.recvPQ.current
 
-			TwoMLSSessionTestHooks.armFault("pqRekeyBegin.afterWriteBack")
-			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
-			XCTAssertThrowsError(try bob.pqRekeyBegin())
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault("pqRekeyBegin.afterWriteBack")
+				#expect(throws: (any Error).self) { try bob.pqRekeyBegin() }
 
-			XCTAssertNotNil(
-				bob.pqInflight, "the atomic write-back lands pqInflight too")
-			let pendingKey = try XCTUnwrap(bob.leafKeys.recvPQ.pending[ownID])
-			XCTAssertNotEqual(pendingKey.signatureKey, currentKeyBefore?.signatureKey)
-			XCTAssertEqual(
-				bob.leafKeys.recvPQ.current?.signatureKey,
-				currentKeyBefore?.signatureKey)
-			try bob.assertLeafKeysPresented()
+				#expect(
+					bob.pqInflight != nil,
+					"the atomic write-back lands pqInflight too")
+				let pendingKey = try #require(bob.leafKeys.recvPQ.pending[ownID])
+				#expect(pendingKey.signatureKey != currentKeyBefore?.signatureKey)
+				#expect(
+					bob.leafKeys.recvPQ.current?.signatureKey
+						== currentKeyBefore?.signatureKey)
+				try bob.assertLeafKeysPresented()
+			}
 		}
 
 		/// The self-drive's own call into `stageRekey` swallows its throw
@@ -1439,7 +1491,8 @@ final class LeafKeysTests: XCTestCase {
 		/// (check 6/7 pass): the atomic write-back means the parked
 		/// `Upd′` and its staged key land together, never one without the
 		/// other. Kills: splitting that write-back around a throw.
-		func testSelfDriveFaultAfterWriteBackLeavesARestorableSession() throws {
+		@available(iOS 26, macOS 26, *)
+		@Test func selfDriveFaultAfterWriteBackLeavesARestorableSession() throws {
 			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 			let bobNewID = Data("bob-fault-after-writeback".utf8)
 
@@ -1452,17 +1505,19 @@ final class LeafKeysTests: XCTestCase {
 			let offerDecrypted = try alice.processIncomingDecrypted(offerFrame)
 			try alice.queueProposal(digest: offerDecrypted.queuedProposal.digest)
 			let foldPrepared = try alice.prepareToEncrypt()
-			XCTAssertTrue(foldPrepared.didCommit)
+			#expect(foldPrepared.didCommit)
 			let foldFrame = try alice.encrypt(Data("fold".utf8)).frame
 			_ = try bob.processIncomingDecrypted(foldFrame)
-			XCTAssertEqual(bob.myPrincipalState, .sync(bobNewID))
-			XCTAssertTrue(bob.myPQTurn)
+			#expect(bob.myPrincipalState == .sync(bobNewID))
+			#expect(bob.myPQTurn)
 
-			TwoMLSSessionTestHooks.armFault("pqRekeyBegin.afterWriteBack")
-			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
-			_ = try bob.prepareToEncrypt()
-			XCTAssertNoThrow(
-				try bob.encrypt(Data("self-driven".utf8)), "encrypt swallows it")
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault("pqRekeyBegin.afterWriteBack")
+				_ = try bob.prepareToEncrypt()
+				#expect(throws: Never.self) {
+					try bob.encrypt(Data("self-driven".utf8))
+				}
+			}
 
 			let hasParkedUpd: Bool
 			if case .rekeyInitiated = bob.pqInflight {
@@ -1471,16 +1526,17 @@ final class LeafKeysTests: XCTestCase {
 				hasParkedUpd = false
 			}
 			let hasPendingKey = bob.leafKeys.recvPQ.pending[bobNewID] != nil
-			XCTAssertEqual(
-				hasParkedUpd, hasPendingKey,
+			#expect(
+				hasParkedUpd == hasPendingKey,
 				"the atomic write-back means both land or neither does")
 
 			let archive = try bob.makeSessionArchive(kind: .checkpoint)
-			XCTAssertNoThrow(
+			#expect(throws: Never.self) {
 				try TwoMLSSession.restore(
 					core: nil, checkpoint: archive,
 					classicalProvider: SessionTestSupport.classicalProvider,
-					pqProvider: SessionTestSupport.pqProvider))
+					pqProvider: SessionTestSupport.pqProvider)
+			}
 		}
 
 		/// `pqRekeyRespond` registers its fresh send-PQ key in the SAME
@@ -1489,20 +1545,26 @@ final class LeafKeysTests: XCTestCase {
 		/// still leave the rekeyed group's fresh key already promoted into
 		/// `leafKeys.sendPQ.current`, matching `pqBootstrapRespond`'s own
 		/// precedent above.
-		func testPqRekeyRespondRegistersTheFreshKeyWithTheGroup() throws {
+		@available(iOS 26, macOS 26, *)
+		@Test func pqRekeyRespondRegistersTheFreshKeyWithTheGroup() throws {
 			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 			let begin = try bob.pqRekeyBegin()
 
-			TwoMLSSessionTestHooks.armFault("pqRekeyRespond.afterWriteBack")
-			defer { TwoMLSSessionTestHooks.disarmAllFaults() }
-			XCTAssertThrowsError(try alice.pqRekeyRespond(begin.frame))
+			try TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault("pqRekeyRespond.afterWriteBack")
+				#expect(throws: (any Error).self) {
+					try alice.pqRekeyRespond(begin.frame)
+				}
 
-			XCTAssertNil(alice.pqInflight, "the fault landed before pqInflight was set")
-			let presentedKey = try TwoMLSSession.ownLeaf(
-				of: try XCTUnwrap(alice.sendGroup?.pq)
-			).signatureKey
-			XCTAssertEqual(alice.leafKeys.sendPQ.current?.signatureKey, presentedKey)
-			try alice.assertLeafKeysPresented()
+				#expect(
+					alice.pqInflight == nil,
+					"the fault landed before pqInflight was set")
+				let presentedKey = try TwoMLSSession.ownLeaf(
+					of: try #require(alice.sendGroup?.pq)
+				).signatureKey
+				#expect(alice.leafKeys.sendPQ.current?.signatureKey == presentedKey)
+				try alice.assertLeafKeysPresented()
+			}
 		}
 	#endif
 
@@ -1534,12 +1596,13 @@ final class LeafKeysTests: XCTestCase {
 	/// state-advancing call below, not just at the end, so a moment restore
 	/// gets wrong can't hide behind a later step that happens to paper
 	/// over it.
+	@available(iOS 26, macOS 26, *)
 	private func assertRestoreEqualsLive(
 		_ session: TwoMLSSession, using tracker: RestoreTracker,
-		file: StaticString = #filePath, line: UInt = #line
+		sourceLocation: SourceLocation = #_sourceLocation
 	) throws {
 		guard let checkpoint = tracker.latestCheckpoint else {
-			XCTFail("no checkpoint recorded yet", file: file, line: line)
+			Issue.record("no checkpoint recorded yet", sourceLocation: sourceLocation)
 			return
 		}
 		let live = LeafKeysArchive(session.leafKeys, kind: .checkpoint)
@@ -1547,10 +1610,10 @@ final class LeafKeysTests: XCTestCase {
 			core: tracker.latestCore, checkpoint: checkpoint,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		XCTAssertEqual(
-			LeafKeysArchive(restored.leafKeys, kind: .checkpoint), live,
-			"restore from the tracker's latest Core + latest Checkpoint", file: file,
-			line: line)
+		#expect(
+			LeafKeysArchive(restored.leafKeys, kind: .checkpoint) == live,
+			"restore from the tracker's latest Core + latest Checkpoint",
+			sourceLocation: sourceLocation)
 	}
 
 	/// Drives the plain lifecycle — establishment, §A.3, a full §A.4
@@ -1562,7 +1625,8 @@ final class LeafKeysTests: XCTestCase {
 	/// AFTER the §A.5 round's last `.checkpoint`, so by then each tracker's
 	/// latest Core is genuinely newer than its latest Checkpoint — the
 	/// splice path, not just the Checkpoint-alone path, is exercised.
-	func testRestoreEqualsLiveAcrossThePlainLifecycle() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreEqualsLiveAcrossThePlainLifecycle() throws {
 		let established = try SessionTestSupport.established()
 		var alice = established.alice
 		var bob = established.bob
@@ -1598,7 +1662,7 @@ final class LeafKeysTests: XCTestCase {
 		let joinUpdate = try alice.pqBootstrapJoin(respond.frame)
 		aliceTracker.record(joinUpdate)
 		try assertRestoreEqualsLive(alice, using: aliceTracker)
-		XCTAssertNotNil(alice.owedBind)
+		#expect(alice.owedBind != nil)
 		let preparedDischarge = try alice.prepareToEncrypt()
 		aliceTracker.record(preparedDischarge.update)
 		let dischargeEncrypted = try alice.encrypt(Data("a3-discharge".utf8))
@@ -1615,7 +1679,7 @@ final class LeafKeysTests: XCTestCase {
 		// triggers it. This is REQUIRED, not a maybe, so a silent `if case`
 		// skip here would hide a genuine regression rather than merely a
 		// slow engine.
-		XCTAssertTrue(bob.myPQTurn)
+		#expect(bob.myPQTurn)
 		let preparedTrigger = try bob.prepareToEncrypt()
 		bobTracker.record(preparedTrigger.update)
 		let triggerEncrypted = try bob.encrypt(Data("a4-trigger".utf8))
@@ -1626,7 +1690,8 @@ final class LeafKeysTests: XCTestCase {
 		try assertRestoreEqualsLive(alice, using: aliceTracker)
 		guard case .initiating = bob.pqInflight, let ekFrame = bob.pqPendingOutbound()
 		else {
-			XCTFail("expected bob to have self-staged an A.4 EK on his own next send")
+			Issue.record(
+				"expected bob to have self-staged an A.4 EK on his own next send")
 			return
 		}
 		let sealed = try alice.pqRatchetRespond(ekFrame)
@@ -1636,7 +1701,7 @@ final class LeafKeysTests: XCTestCase {
 		bobTracker.record(bindUpdate)
 		try assertRestoreEqualsLive(bob, using: bobTracker)
 		let preparedA4Bound = try bob.prepareToEncrypt()
-		XCTAssertTrue(preparedA4Bound.didCommit)
+		#expect(preparedA4Bound.didCommit)
 		bobTracker.record(preparedA4Bound.update)
 		let a4BoundEncrypted = try bob.encrypt(Data("a4-bound".utf8))
 		bobTracker.record(a4BoundEncrypted.update)
@@ -1644,7 +1709,7 @@ final class LeafKeysTests: XCTestCase {
 		let a4BoundDecrypted = try alice.processIncomingDecrypted(a4BoundEncrypted.frame)
 		aliceTracker.record(a4BoundDecrypted.update)
 		try assertRestoreEqualsLive(alice, using: aliceTracker)
-		XCTAssertTrue(alice.myPQTurn)
+		#expect(alice.myPQTurn)
 
 		// A full §A.5 mechanical re-key: alice (who now holds the PQ turn)
 		// opens it, bob commits, alice applies and owes the bind, alice
@@ -1658,9 +1723,9 @@ final class LeafKeysTests: XCTestCase {
 		let a5ApplyUpdate = try alice.pqRekeyApply(a5Commit.frame)
 		aliceTracker.record(a5ApplyUpdate)
 		try assertRestoreEqualsLive(alice, using: aliceTracker)
-		XCTAssertNotNil(alice.owedBind)
+		#expect(alice.owedBind != nil)
 		let preparedA5Bound = try alice.prepareToEncrypt()
-		XCTAssertTrue(preparedA5Bound.didCommit)
+		#expect(preparedA5Bound.didCommit)
 		aliceTracker.record(preparedA5Bound.update)
 		let a5BoundEncrypted = try alice.encrypt(Data("a5-bound".utf8))
 		aliceTracker.record(a5BoundEncrypted.update)
@@ -1691,7 +1756,7 @@ final class LeafKeysTests: XCTestCase {
 		bobTracker.record(foldEncrypted.update)
 		try assertRestoreEqualsLive(bob, using: bobTracker)
 		let foldDecrypted = try alice.processIncomingDecrypted(foldEncrypted.frame)
-		XCTAssertTrue(foldDecrypted.ownCredentialCanonicalized)
+		#expect(foldDecrypted.ownCredentialCanonicalized)
 		aliceTracker.record(foldDecrypted.update)
 		try assertRestoreEqualsLive(alice, using: aliceTracker)
 		let preparedCatchUp = try alice.prepareToEncrypt()
@@ -1700,7 +1765,7 @@ final class LeafKeysTests: XCTestCase {
 		aliceTracker.record(catchUpEncrypted.update)
 		try assertRestoreEqualsLive(alice, using: aliceTracker)
 		let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpEncrypted.frame)
-		XCTAssertEqual(catchUpDecrypted.newSender, newID)
+		#expect(catchUpDecrypted.newSender == newID)
 		bobTracker.record(catchUpDecrypted.update)
 		try assertRestoreEqualsLive(bob, using: bobTracker)
 	}
@@ -1709,7 +1774,8 @@ final class LeafKeysTests: XCTestCase {
 	/// that discharges §A.3's owed bind, and a full rule-4 catch-up round —
 	/// offer, fold, AND the resulting canonicalization — restore equals
 	/// live at every step, tracked the same way as the plain lifecycle.
-	func testRestoreEqualsLiveAcrossTheBornDedicatedLifecycle() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreEqualsLiveAcrossTheBornDedicatedLifecycle() throws {
 		let established = try SessionTestSupport.establishedDedicatedAndApproved(
 			dedicatedClientID: Data("bob-d2-dedicated".utf8))
 		var alice = established.alice
@@ -1760,7 +1826,7 @@ final class LeafKeysTests: XCTestCase {
 		aliceTracker.record(foldEncrypted.update)
 		try assertRestoreEqualsLive(alice, using: aliceTracker)
 		let foldDecrypted = try bob.processIncomingDecrypted(foldEncrypted.frame)
-		XCTAssertTrue(foldDecrypted.ownCredentialCanonicalized)
+		#expect(foldDecrypted.ownCredentialCanonicalized)
 		bobTracker.record(foldDecrypted.update)
 		try assertRestoreEqualsLive(bob, using: bobTracker)
 	}
@@ -1911,19 +1977,19 @@ private struct WideSessionArchive: Encodable {
 	}
 }
 
-@available(iOS 26, macOS 26, *)
 extension LeafKeysTests {
 	/// Test 14: a body shaped like a pre-retirement archive — carrying
 	/// `RotationCandidateArchive`'s retired keys 1/2 and a `recvLeafPrincipal`
 	/// at key 40 — still decodes and restores, because a synthesized
 	/// `Decodable` ignores unknown integer keys. Kills a strict decoder that
 	/// rejects an archive body it doesn't recognize every key of.
-	func testArchiveWithRetiredKeyFieldsStillDecodes() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func archiveWithRetiredKeyFieldsStillDecodes() throws {
 		var alice = try SessionTestSupport.establishedAndExchanged().alice
 		_ = try alice.prepareToEncrypt(rotating: Data("alice-retired-fields".utf8))
 		let real = try alice.makeSessionArchive(kind: .checkpoint).decode(
 			SessionArchive.self)
-		let realCandidate = try XCTUnwrap(real.rotationCandidate)
+		let realCandidate = try #require(real.rotationCandidate)
 
 		let wide = WideSessionArchive(
 			version: real.version, classicalSuite: real.classicalSuite,
@@ -1970,13 +2036,14 @@ extension LeafKeysTests {
 
 		let archive = try SecretArchive(encoding: wide)
 		let decoded = try archive.decode(SessionArchive.self)
-		XCTAssertEqual(decoded.rotationCandidate?.clientID, realCandidate.clientID)
+		#expect(decoded.rotationCandidate?.clientID == realCandidate.clientID)
 
-		XCTAssertNoThrow(
+		#expect(throws: Never.self) {
 			try TwoMLSSession.restore(
 				core: nil, checkpoint: archive,
 				classicalProvider: SessionTestSupport.classicalProvider,
-				pqProvider: SessionTestSupport.pqProvider))
+				pqProvider: SessionTestSupport.pqProvider)
+		}
 	}
 }
 

@@ -7,6 +7,7 @@ import MLSProfileRFC9420
 import SecretBytes
 import TwoMLSPQCrypto
 import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 

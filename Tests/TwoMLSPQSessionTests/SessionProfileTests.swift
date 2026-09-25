@@ -5,6 +5,7 @@ import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
 import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 

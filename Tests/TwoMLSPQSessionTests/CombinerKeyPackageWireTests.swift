@@ -2,47 +2,52 @@ import Foundation
 import MLSCodec
 import MLSCrypto
 import MLSProfileRFC9420
-import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
 /// The deployed Germ opaque combiner-blob framing — byte-compatible with the
 /// Rust engine's `encode_combiner_key_package` / `decode_combiner_key_package`.
-@available(iOS 26, macOS 26, *)
-final class CombinerKeyPackageWireTests: XCTestCase {
-	private var identity: TwoMLSIdentity!
-
-	private var keyPackage: CombinerKeyPackage { identity.keyPackage }
-
-	override func setUp() {
-		super.setUp()
-		identity = try! TwoMLSIdentity.generate(
+@Suite struct CombinerKeyPackageWireTests {
+	/// A fresh identity per call, mirroring the XCTest `setUp` this replaces
+	/// (which ran before every test method). Kept out of a stored property:
+	/// `TwoMLSIdentity` is gated to iOS/macOS 26 and this suite type is not,
+	/// so a stored property of that type would have to exist unconditionally.
+	@available(iOS 26, macOS 26, *)
+	private func makeIdentity() throws -> TwoMLSIdentity {
+		try TwoMLSIdentity.generate(
 			clientID: Data("combiner-blob-wire".utf8),
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 	}
 
-	func testRoundTripsThroughDeployedFraming() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func roundTripsThroughDeployedFraming() throws {
+		let keyPackage = try makeIdentity().keyPackage
 		let blob = try keyPackage.publishedBlob()
 
-		let decoded = try XCTUnwrap(CombinerKeyPackage(publishedBlob: blob))
-		XCTAssertEqual(decoded.classical, keyPackage.classical)
-		XCTAssertEqual(decoded.pq, keyPackage.pq)
+		let decoded = try #require(CombinerKeyPackage(publishedBlob: blob))
+		#expect(decoded.classical == keyPackage.classical)
+		#expect(decoded.pq == keyPackage.pq)
 	}
 
-	func testBlobIsByteStable() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func blobIsByteStable() throws {
+		let keyPackage = try makeIdentity().keyPackage
 		let blob = try keyPackage.publishedBlob()
 		let republished = try CombinerKeyPackage(publishedBlob: blob)!.publishedBlob()
-		XCTAssertEqual(blob, republished)
+		#expect(blob == republished)
 	}
 
-	func testFramingShape() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func framingShape() throws {
+		let keyPackage = try makeIdentity().keyPackage
 		// [version byte = 3][varint len][classical MLSMessage][varint len][pq MLSMessage]
 		let blob = try keyPackage.publishedBlob()
-		XCTAssertEqual(blob.first, CombinerKeyPackage.publishedWireVersion)
+		#expect(blob.first == CombinerKeyPackage.publishedWireVersion)
 
 		var reader = MLS.Reader(blob)
-		XCTAssertEqual(try reader.readUInt8(), CombinerKeyPackage.publishedWireVersion)
+		#expect(try reader.readUInt8() == CombinerKeyPackage.publishedWireVersion)
 		let classical = try reader.readOpaque()
 		let pq = try reader.readOpaque()
 		try reader.finish()  // no trailing bytes
@@ -55,29 +60,32 @@ final class CombinerKeyPackageWireTests: XCTestCase {
 			let message = try MLS.RFC9420.Message(from: &half)
 			try half.finish()
 			guard case .keyPackage(let kp) = message else {
-				return XCTFail("half is not a keyPackage MLSMessage")
+				Issue.record("half is not a keyPackage MLSMessage")
+				return
 			}
-			XCTAssertEqual(kp.cipherSuite, expected)
+			#expect(kp.cipherSuite == expected)
 		}
 	}
 
-	func testRejectsWrongVersionTruncationTrailingAndNonKeyPackage() throws {
+	@available(iOS 26, macOS 26, *)
+	@Test func rejectsWrongVersionTruncationTrailingAndNonKeyPackage() throws {
+		let identity = try makeIdentity()
 		var blob = try identity.keyPackage.publishedBlob()
 
 		// Wrong version byte (v2 = rejected AppBinding-cut predecessor).
 		blob[0] = 2
-		XCTAssertNil(CombinerKeyPackage(publishedBlob: blob))
+		#expect(CombinerKeyPackage(publishedBlob: blob) == nil)
 		blob[0] = CombinerKeyPackage.publishedWireVersion
 
 		// Truncated / trailing bytes.
-		XCTAssertNil(CombinerKeyPackage(publishedBlob: blob.dropLast()))
-		XCTAssertNil(CombinerKeyPackage(publishedBlob: blob + Data([0])))
+		#expect(CombinerKeyPackage(publishedBlob: blob.dropLast()) == nil)
+		#expect(CombinerKeyPackage(publishedBlob: blob + Data([0])) == nil)
 
 		// A bare MLSMessage (no Germ prefix) is not a blob.
-		XCTAssertNil(
+		#expect(
 			CombinerKeyPackage(
 				publishedBlob: try MLS.RFC9420.Message.keyPackage(
 					identity.keyPackage.classical
-				).mlsEncoded()))
+				).mlsEncoded()) == nil)
 	}
 }

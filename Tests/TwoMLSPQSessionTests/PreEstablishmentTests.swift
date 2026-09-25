@@ -497,12 +497,13 @@ final class PreEstablishmentTests: XCTestCase {
 		_ = try alice.prepareToEncrypt()
 
 		let before = try XCTUnwrap(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
-		TwoMLSSessionTestHooks.armFault(
-			"encryptPreEstablishment.afterProtectBeforeWriteBack")
-		XCTAssertThrowsError(try alice.encrypt(Data("faulted".utf8))) { error in
-			XCTAssertTrue(error is InjectedTestFault)
+		try TwoMLSSessionTestHooks.withIsolatedFaults {
+			TwoMLSSessionTestHooks.armFault(
+				"encryptPreEstablishment.afterProtectBeforeWriteBack")
+			XCTAssertThrowsError(try alice.encrypt(Data("faulted".utf8))) { error in
+				XCTAssertTrue(error is InjectedTestFault)
+			}
 		}
-		TwoMLSSessionTestHooks.disarmAllFaults()
 		let after = try XCTUnwrap(alice.sendGroup).makeGroupEntry(kind: .checkpoint)
 		XCTAssertEqual(before, after)
 

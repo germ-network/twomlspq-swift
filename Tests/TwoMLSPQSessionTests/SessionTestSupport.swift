@@ -4,8 +4,8 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import SecretBytes
+import Testing
 import TwoMLSPQCrypto
-import XCTest
 
 @testable import TwoMLSPQSession
 
@@ -136,13 +136,14 @@ enum SessionTestSupport {
 		dedicatedClientID: Data, envelope: Data
 	) {
 		var (alice, bob, _, invitationClientID, resolvedDedicatedClientID) =
-			try establishedDedicated(dedicatedClientID: dedicatedClientID, profile: profile)
+			try establishedDedicated(
+				dedicatedClientID: dedicatedClientID, profile: profile)
 		let envelope = Data("fake-signed-handoff".utf8)
 		_ = try bob.installEstablishmentEnvelope(envelope)
-		let standalone = try XCTUnwrap(try bob.standaloneWelcome())
-		let opened = try XCTUnwrap(try alice.openIncoming(standalone))
+		let standalone = try #require(try bob.standaloneWelcome())
+		let opened = try #require(try alice.openIncoming(standalone))
 		guard case .pendingEstablishment = try alice.processIncoming(opened.frame) else {
-			XCTFail("expected a pause on the un-approved 0x0B")
+			Issue.record("expected a pause on the un-approved 0x0B")
 			throw TwoMLSError.notEstablished
 		}
 		let (envelopeBytes, welcomeBytes) = try Frames.decodeEstablishmentHandoff(
@@ -154,7 +155,7 @@ enum SessionTestSupport {
 				approvedWelcomeDigest: try classicalProvider.hash(welcomeBytes),
 				expectedCreator: resolvedDedicatedClientID)
 		else {
-			XCTFail("expected .joined on the approved re-feed")
+			Issue.record("expected .joined on the approved re-feed")
 			throw TwoMLSError.notEstablished
 		}
 		return (
@@ -193,7 +194,7 @@ enum SessionTestSupport {
 		epoch: UInt64, groupID: Data, senderLeafIndex: UInt32
 	) {
 		let provider = classicalProvider
-		let throwaway = try XCTUnwrap(session.recvGroup)
+		let throwaway = try #require(session.recvGroup)
 		var group = throwaway.classical
 		let current = try TwoMLSSession.ownLeaf(of: group)
 		let (hpkeSecret, hpkePublic) = try provider.hpkeGenerateKeyPair()
@@ -253,11 +254,12 @@ enum SessionTestSupport {
 	@discardableResult
 	static func drivePQRound(
 		initiator: inout TwoMLSSession, responder: inout TwoMLSSession,
-		file: StaticString = #filePath, line: UInt = #line
+		sourceLocation: SourceLocation = #_sourceLocation
 	) throws -> UInt8 {
 		_ = try initiator.prepareToEncrypt()
 		_ = try initiator.encrypt(Data("pq-round-probe".utf8))
-		let openFrame = try XCTUnwrap(initiator.pqPendingOutbound(), file: file, line: line)
+		let openFrame = try #require(
+			initiator.pqPendingOutbound(), sourceLocation: sourceLocation)
 		let tag: UInt8
 		switch initiator.pqInflight {
 		case .some(.initiating):
@@ -269,15 +271,16 @@ enum SessionTestSupport {
 			let commitFrame = try responder.pqRekeyRespond(openFrame).frame
 			_ = try initiator.pqRekeyApply(commitFrame)
 		default:
-			XCTFail(
+			Issue.record(
 				"drivePQRound: unexpected pqInflight \(String(describing: initiator.pqInflight))",
-				file: file, line: line)
+				sourceLocation: sourceLocation)
 			throw TwoMLSError.sessionNotReady
 		}
 		let discharge = try initiator.prepareToEncrypt()
-		XCTAssertTrue(discharge.didCommit, file: file, line: line)
+		#expect(discharge.didCommit, sourceLocation: sourceLocation)
 		let boundFrame = try initiator.encrypt(Data("pq-round-discharge".utf8)).frame
-		_ = try responder.processIncomingDecrypted(boundFrame, file: file, line: line)
+		_ = try responder.processIncomingDecrypted(
+			boundFrame, sourceLocation: sourceLocation)
 		return tag
 	}
 }
@@ -285,22 +288,21 @@ enum SessionTestSupport {
 /// `processIncoming` now returns the 4-case `IncomingResult`
 /// instead of a bare `DecryptResult` — this mechanically migrates the
 /// hundreds of pre-existing call sites that only ever cared about the
-/// everyday `0x03` app-frame path. Fails the test (via `XCTFail`, not a
+/// everyday `0x03` app-frame path. Fails the test (via `Issue.record`, not a
 /// thrown error) on any other case, since none of those call sites expect
 /// one.
 @available(iOS 26, macOS 26, *)
 extension TwoMLSSession {
 	mutating func processIncomingDecrypted(
-		_ inbound: Data, file: StaticString = #filePath, line: UInt = #line
+		_ inbound: Data, sourceLocation: SourceLocation = #_sourceLocation
 	) throws -> DecryptResult {
 		switch try processIncoming(inbound) {
 		case .decrypted(let result):
 			return result
 		case .joined, .pendingEstablishment, .ignored, .preEstablishment:
-			XCTFail(
+			Issue.record(
 				"expected .decrypted, got a non-decrypted IncomingResult",
-				file: file,
-				line: line)
+				sourceLocation: sourceLocation)
 			throw TwoMLSError.notEstablished
 		}
 	}

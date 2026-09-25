@@ -4,6 +4,7 @@ import MLSCombiner
 import MLSCrypto
 import MLSProfileRFC9420
 import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 

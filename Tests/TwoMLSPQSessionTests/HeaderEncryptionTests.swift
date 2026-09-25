@@ -1,6 +1,7 @@
 import Foundation
 import SecretBytes
 import XCTest
+import Testing
 
 @testable import TwoMLSPQSession
 
