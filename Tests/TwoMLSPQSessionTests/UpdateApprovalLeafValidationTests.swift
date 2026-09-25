@@ -171,8 +171,9 @@ import TwoMLSPQCrypto
 		// Inject corruption directly into the queued slot — an undecodable
 		// message, standing in for "the commit that would fold this fails
 		// to build," whatever the reason.
+		let originalQueuedDigest = try #require(alice.queuedProposal).digest
 		alice.queuedProposal = (
-			digest: alice.queuedProposal!.digest, proposing: newID,
+			digest: originalQueuedDigest, proposing: newID,
 			message: Data("not-a-valid-mls-message".utf8)
 		)
 

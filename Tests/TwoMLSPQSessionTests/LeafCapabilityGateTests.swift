@@ -416,10 +416,11 @@ import TwoMLSPQCrypto
 			var (alice, bob) = try RatchetTests.fullyEstablishedTurnOnBob()
 			_ = alice
 
-			var mirror = try #require(bob.recvGroup)
+			let mirror = try #require(bob.recvGroup)
+			var pq = try #require(mirror.pq)
 			let (freshSigningKey, freshSignatureKey) =
 				try TwoMLSIdentity.mintSignatureKeypair()
-			let (message, _) = try mirror.pq!.proposeUpdate(
+			let (message, _) = try pq.proposeUpdate(
 				SessionTestSupport.pqProvider,
 				sign: MLS.RFC9420.signingClosure(
 					SessionTestSupport.pqProvider,
@@ -446,14 +447,14 @@ import TwoMLSPQCrypto
 				label: "LeafNodeTBS",
 				content: try rogueLeaf.toBeSigned(
 					placement: .inGroup(
-						groupID: mirror.pq!.context.groupID,
-						leafIndex: mirror.pq!.myLeafIndex)))
+						groupID: pq.context.groupID,
+						leafIndex: pq.myLeafIndex)))
 			proposalPub.content.content = .proposal(.update(rogueLeaf))
 			proposalPub = try MLS.RFC9420.protectPublic(
 				SessionTestSupport.pqProvider, content: proposalPub.content,
-				groupContext: mirror.pq!.context, confirmationTag: nil,
+				groupContext: pq.context, confirmationTag: nil,
 				signingKey: try bob.recvPQSigningKey(),
-				membershipKey: mirror.pq!.epoch.membershipKey)
+				membershipKey: pq.epoch.membershipKey)
 			let updBytes = try MLS.RFC9420.Message.publicMessage(proposalPub)
 				.mlsEncoded()
 			let frame = Frames.encodePQRekeyUpd(updBytes)

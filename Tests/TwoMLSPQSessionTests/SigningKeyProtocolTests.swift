@@ -79,8 +79,9 @@ import Testing
 		proposer: inout TwoMLSSession, newID: Data
 	) throws -> (frame: Data, bytes: Data) {
 		var mirror = try #require(proposer.recvGroup)
+		var pq = try #require(mirror.pq)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (message, _) = try mirror.pq!.proposeUpdate(
+		let (message, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider,
@@ -89,6 +90,7 @@ import Testing
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: newID), signatureKey: freshSignatureKey
 			))
+		mirror.pq = pq
 		proposer.recvGroup = mirror
 		// This hand-built Upd′ bypasses `pqRekeyBegin`, which would mint and
 		// stage its own key — stage the fresh key here so `pqRekeyApply`'s
@@ -108,8 +110,9 @@ import Testing
 		proposer: inout TwoMLSSession, newID: Data, authenticatedData: Data
 	) throws -> (frame: Data, bytes: Data) {
 		var mirror = try #require(proposer.recvGroup)
+		var pq = try #require(mirror.pq)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (message, _) = try mirror.pq!.proposeUpdate(
+		let (message, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider,
@@ -119,6 +122,7 @@ import Testing
 				credential: .basic(identity: newID), signatureKey: freshSignatureKey
 			),
 			authenticatedData: authenticatedData)
+		mirror.pq = pq
 		proposer.recvGroup = mirror
 		// Same reasoning as `handBuildPQLeafMoveUpd` — stage the fresh key
 		// so `pqRekeyApply`'s promotion can find it.
@@ -608,9 +612,10 @@ import Testing
 		let decrypted2 = try alice.processIncomingDecrypted(frame2)
 		#expect(decrypted2.ownCredentialCanonicalized)
 		let recvClassicalKey = try #require(alice.leafKeys.recvClassical.current)
+		let aliceSendClassicalLagging = try #require(alice.sendGroup?.classical)
 		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				TwoMLSSession.ownLeaf(of: aliceSendClassicalLagging).credential)
 				== alice.identity.clientID,
 			"send-classical documentedly still lags here")
 

@@ -1472,7 +1472,8 @@ import TwoMLSPQCrypto
 	@available(iOS 26, macOS 26, *)
 	@Test func wrongSuiteProviderIsRejected() throws {
 		let (alice, _) = try fullyEstablishedPair()
-		let wrongProvider = SwiftCryptoProvider().cipherSuiteProvider(for: .p256Aes128)!
+		let wrongProvider = try #require(
+			SwiftCryptoProvider().cipherSuiteProvider(for: .p256Aes128))
 
 		#expect(throws: TwoMLSError.cipherSuiteMismatch) {
 			try SessionMigration.mintArchive(
@@ -1631,8 +1632,9 @@ import TwoMLSPQCrypto
 		#expect(catchUpDecrypted.newSender == newID)
 		#expect(alice.myPrincipalState == .sync(newID))
 		#expect(alice.rotationCandidate != nil, "convergence doesn't clear the candidate")
+		let alicesSendPQ = try #require(alice.sendGroup?.pq)
 		#expect(
-			try TwoMLSSession.ownLeaf(of: alice.sendGroup!.pq!).signatureKey
+			try TwoMLSSession.ownLeaf(of: alicesSendPQ).signatureKey
 				== alice.identity.pqSignatureKey,
 			"send-PQ never moved off alice's original PQ key")
 
@@ -2274,10 +2276,10 @@ extension SessionMigrationTests {
 	}
 
 	@available(iOS 26, macOS 26, *)
-	private func withBadSecret(_ offer: MigratedOwnOffer) -> MigratedOwnOffer {
+	private func withBadSecret(_ offer: MigratedOwnOffer) throws -> MigratedOwnOffer {
 		MigratedOwnOffer(
 			ref: offer.ref, proposal: offer.proposal,
-			leafSecret: try! SessionTestSupport.classicalProvider.hpkeGenerateKeyPair()
+			leafSecret: try SessionTestSupport.classicalProvider.hpkeGenerateKeyPair()
 				.0.data)
 	}
 
@@ -2310,19 +2312,19 @@ extension SessionMigrationTests {
 		#expect(try mint(g.offers).id == id, "control: the genuine window mints")
 
 		var badExtra = g.offers
-		badExtra[extra] = withBadSecret(badExtra[extra])
+		badExtra[extra] = try withBadSecret(badExtra[extra])
 		#expect(
 			throws: TwoMLSError.archiveInvalid,
 			"a seeded extra (index \(extra)) must be trialed"
 		) { try mint(badExtra) }
 		var badFirst = g.offers
-		badFirst[10] = withBadSecret(badFirst[10])
+		badFirst[10] = try withBadSecret(badFirst[10])
 		#expect(
 			throws: TwoMLSError.archiveInvalid,
 			"an offer in the first 64 must be trialed"
 		) { try mint(badFirst) }
 		var badUnsampled = g.offers
-		badUnsampled[unsampled] = withBadSecret(badUnsampled[unsampled])
+		badUnsampled[unsampled] = try withBadSecret(badUnsampled[unsampled])
 		#expect(
 			throws: Never.self,
 			"the bounded sample never trials an unsampled offer (index \(unsampled))"
@@ -2523,7 +2525,8 @@ extension SessionMigrationTests {
 		let c = Data("bob-rust-rotated".utf8)
 		var mirror = try #require(bob.recvGroup)
 		let (fsk, fpk) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (message, _) = try mirror.pq!.proposeUpdate(
+		var pq = try #require(mirror.pq)
+		let (message, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),
@@ -2830,7 +2833,8 @@ extension SessionMigrationTests {
 		// copy so `bob`'s own state is untouched.
 		var mirror = try #require(bob.recvGroup)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (message, _) = try mirror.pq!.proposeUpdate(
+		var pq = try #require(mirror.pq)
+		let (message, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),
@@ -2879,7 +2883,8 @@ extension SessionMigrationTests {
 
 		var mirror = try #require(bob.recvGroup)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (message, _) = try mirror.pq!.proposeUpdate(
+		var pq = try #require(mirror.pq)
+		let (message, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),
@@ -2934,7 +2939,8 @@ extension SessionMigrationTests {
 		// presented id, not a move to a new one.
 		var mirror = try #require(bob.recvGroup)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (message, _) = try mirror.pq!.proposeUpdate(
+		var pq = try #require(mirror.pq)
+		let (message, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider, current: try bob.recvPQSigningKey(),

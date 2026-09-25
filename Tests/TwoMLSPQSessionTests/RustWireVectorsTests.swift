@@ -15,12 +15,12 @@ import Testing
 /// `testAppDataUpdateWrapperByteMatchesDeployedRust`.
 @Suite struct RustWireVectorsTests {
 
-	private func hexData(_ hex: String) -> Data {
+	private func hexData(_ hex: String) throws -> Data {
 		var out = Data(capacity: hex.count / 2)
 		var index = hex.startIndex
 		while index < hex.endIndex {
 			let next = hex.index(index, offsetBy: 2)
-			out.append(UInt8(hex[index..<next], radix: 16)!)
+			out.append(try #require(UInt8(hex[index..<next], radix: 16)))
 			index = next
 		}
 		return out
@@ -33,7 +33,7 @@ import Testing
 		let staple = Data(repeating: 0xAA, count: 3)
 		let proposal = Data(repeating: 0xBB, count: 5)
 		let app = Data(repeating: 0xCC, count: 7)
-		let golden = hexData(RustWireVectors.messageFrame)
+		let golden = try hexData(RustWireVectors.messageFrame)
 
 		#expect(
 			Frames.encodeMessageFrame(staple: staple, proposal: proposal, app: app)
@@ -49,7 +49,7 @@ import Testing
 	@Test func proposalSectionByteIdenticalBothDirections() throws {
 		let proposing = Data(repeating: 0x11, count: 4)
 		let message = Data(repeating: 0x22, count: 6)
-		let golden = hexData(RustWireVectors.proposalSection)
+		let golden = try hexData(RustWireVectors.proposalSection)
 
 		#expect(
 			Frames.encodeProposalSection(proposing: proposing, message: message)
@@ -63,10 +63,10 @@ import Testing
 	/// The shared length-prefix primitive both frames above are built from, pinned on
 	/// its own fixed input.
 	@available(iOS 26, macOS 26, *)
-	@Test func pushSectionByteIdentical() {
+	@Test func pushSectionByteIdentical() throws {
 		var buffer = Data()
 		Frames.pushSection(Data(repeating: 0x33, count: 9), into: &buffer)
-		#expect(buffer == hexData(RustWireVectors.pushSection))
+		#expect(buffer == (try hexData(RustWireVectors.pushSection)))
 	}
 
 	// MARK: - (c) uint32 component-id width
@@ -87,7 +87,7 @@ import Testing
 		let body = try withDeployedWireConventions {
 			try attestation.appDataUpdate(componentID: componentID).mlsEncoded()
 		}
-		#expect(body == hexData(RustWireVectors.appDataUpdateBody))
+		#expect(body == (try hexData(RustWireVectors.appDataUpdateBody)))
 
 		let proposal = MLS.RFC9420.Proposal.custom(type: .init(.appDataUpdate), body: body)
 		let fullEncoded = try withDeployedWireConventions { try proposal.mlsEncoded() }
@@ -119,7 +119,7 @@ import Testing
 			).mlsEncoded()
 		}
 
-		#expect(fullEncoded == hexData(RustWireVectors.appDataUpdateFullWrapped))
+		#expect(fullEncoded == (try hexData(RustWireVectors.appDataUpdateFullWrapped)))
 	}
 
 	/// The accept direction of the same wrapper: the deployed-Rust golden wire
@@ -127,7 +127,7 @@ import Testing
 	/// naming the `appDataUpdate` type and carrying the same BODY (c) pins.
 	@available(iOS 26, macOS 26, *)
 	@Test func appDataUpdateWrapperAcceptsDeployedRustWireUnderAmbient() throws {
-		let golden = hexData(RustWireVectors.appDataUpdateFullWrapped)
+		let golden = try hexData(RustWireVectors.appDataUpdateFullWrapped)
 
 		let decoded = try withDeployedWireConventions {
 			try MLS.RFC9420.Proposal(mlsEncoded: golden)
@@ -138,7 +138,7 @@ import Testing
 			return
 		}
 		#expect(type == MLS.RFC9420.ProposalType(.appDataUpdate))
-		#expect(body == hexData(RustWireVectors.appDataUpdateBody))
+		#expect(body == (try hexData(RustWireVectors.appDataUpdateBody)))
 	}
 
 	// MARK: - (d) a real fold-only commit staple
@@ -151,9 +151,10 @@ import Testing
 	/// staples.
 	@available(iOS 26, macOS 26, *)
 	@Test func foldOnlyStapleAcceptsRealRustCommit() throws {
-		let staple = hexData(RustWireVectors.foldOnlyStaple)
+		let staple = try hexData(RustWireVectors.foldOnlyStaple)
 
-		#expect(Frames.stapleKind(staple.first!) == .mlsMessage)
+		let stapleFirstByte = try #require(staple.first)
+		#expect(Frames.stapleKind(stapleFirstByte) == .mlsMessage)
 
 		let decoded = try Frames.decodeMlsMessageStaple(staple)
 		#expect(decoded == staple)

@@ -836,9 +836,10 @@ import Testing
 		let foldDecrypted = try alice.processIncomingDecrypted(foldFrame)
 		#expect(foldDecrypted.ownCredentialCanonicalized)
 		#expect(alice.myPrincipalState == .sync(newID))
+		let aliceSendClassicalLagging = try #require(alice.sendGroup?.classical)
 		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				TwoMLSSession.ownLeaf(of: aliceSendClassicalLagging).credential)
 				== alice.identity.clientID,
 			"send-classical documentedly still lags here")
 		let candidate = try #require(alice.rotationCandidate)
@@ -1375,9 +1376,10 @@ import Testing
 			#expect(alice.theirPrincipalState == .sync(newBobID))
 
 			var bobMirror = try #require(bob.recvGroup)
+			var bobPQ = try #require(bobMirror.pq)
 			let (freshSigningKey, freshSignatureKey) =
 				try TwoMLSIdentity.mintSignatureKeypair()
-			let (message, _) = try bobMirror.pq!.proposeUpdate(
+			let (message, _) = try bobPQ.proposeUpdate(
 				SessionTestSupport.pqProvider,
 				sign: MLS.RFC9420.signingClosure(
 					SessionTestSupport.pqProvider,
@@ -1387,6 +1389,7 @@ import Testing
 					credential: .basic(identity: newBobID),
 					signatureKey: freshSignatureKey)
 			)
+			bobMirror.pq = bobPQ
 			bob.recvGroup = bobMirror
 			try bob.leafKeys.recvPQ.stage(
 				LeafKey(

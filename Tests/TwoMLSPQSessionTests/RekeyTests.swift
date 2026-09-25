@@ -344,7 +344,8 @@ import TwoMLSPQCrypto
 		// to catch it.
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		var mirror = try #require(bob.recvGroup)
-		let (rotatingUpd, _) = try mirror.pq!.proposeUpdate(
+		var pq = try #require(mirror.pq)
+		let (rotatingUpd, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider,
@@ -353,6 +354,7 @@ import TwoMLSPQCrypto
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: Data("mallory-never-approved".utf8)),
 				signatureKey: freshSignatureKey))
+		mirror.pq = pq
 		bob.recvGroup = mirror
 		let forgedUpdFrame = Frames.encodePQRekeyUpd(try rotatingUpd.mlsEncoded())
 

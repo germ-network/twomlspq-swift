@@ -136,8 +136,9 @@ import Testing
 		proposer: inout TwoMLSSession, newID: Data
 	) throws -> (frame: Data, bytes: Data) {
 		var mirror = try #require(proposer.recvGroup)
+		var pq = try #require(mirror.pq)
 		let (freshSigningKey, freshSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
-		let (message, _) = try mirror.pq!.proposeUpdate(
+		let (message, _) = try pq.proposeUpdate(
 			SessionTestSupport.pqProvider,
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider,
@@ -146,6 +147,7 @@ import Testing
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: newID), signatureKey: freshSignatureKey
 			))
+		mirror.pq = pq
 		proposer.recvGroup = mirror
 		try proposer.leafKeys.recvPQ.stage(
 			LeafKey(signingKey: freshSigningKey, signatureKey: freshSignatureKey),

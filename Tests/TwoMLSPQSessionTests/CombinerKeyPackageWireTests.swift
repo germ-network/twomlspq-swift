@@ -35,7 +35,8 @@ import Testing
 	@Test func blobIsByteStable() throws {
 		let keyPackage = try makeIdentity().keyPackage
 		let blob = try keyPackage.publishedBlob()
-		let republished = try CombinerKeyPackage(publishedBlob: blob)!.publishedBlob()
+		let republished = try #require(CombinerKeyPackage(publishedBlob: blob))
+			.publishedBlob()
 		#expect(blob == republished)
 	}
 

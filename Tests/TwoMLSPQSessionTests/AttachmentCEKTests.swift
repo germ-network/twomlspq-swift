@@ -84,19 +84,22 @@ import TwoMLSPQCrypto
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let keyId = Data(repeating: 0x03, count: 32)
 
-		#expect(bob.sendGroup!.classical.context.epoch == 1)
+		let bobSendClassicalAtStart = try #require(bob.sendGroup?.classical)
+		#expect(bobSendClassicalAtStart.context.epoch == 1)
 		let bobCEKAtEpoch1 = try bob.exportAttachmentCEKSend(keyId: keyId)
 
 		try advanceEpochByFold(proposer: &alice, approver: &bob)
-		#expect(bob.sendGroup!.classical.context.epoch > 1)
-		#expect(alice.recvGroup!.classical.context.epoch > 1)
+		let bobSendClassicalAfterFold = try #require(bob.sendGroup?.classical)
+		#expect(bobSendClassicalAfterFold.context.epoch > 1)
+		let aliceRecvClassicalAfterFold = try #require(alice.recvGroup?.classical)
+		#expect(aliceRecvClassicalAfterFold.context.epoch > 1)
 
 		let recvAtPastEpoch = try alice.exportAttachmentCEKRecv(keyId: keyId, epoch: 1)
 		#expect(recvAtPastEpoch == bobCEKAtEpoch1)
 
 		// The CURRENT epoch's own component is also ledgered (capture-on-
 		// entry), and derives a DIFFERENT CEK than epoch 1's.
-		let currentEpoch = alice.recvGroup!.classical.context.epoch
+		let currentEpoch = aliceRecvClassicalAfterFold.context.epoch
 		let recvAtCurrentEpoch = try alice.exportAttachmentCEKRecv(
 			keyId: keyId, epoch: currentEpoch)
 		#expect(recvAtCurrentEpoch != recvAtPastEpoch)
@@ -176,7 +179,7 @@ import TwoMLSPQCrypto
 
 		let alice = try SessionTestSupport.established().alice
 		let keyId = Data(repeating: 0x06, count: 32)
-		let epoch = alice.sendGroup!.classical.context.epoch
+		let epoch = try #require(alice.sendGroup?.classical.context.epoch)
 		let component = try #require(alice.sendAttachmentLedger[epoch])
 
 		// RFC 9420 §8 KDFLabel: struct { uint16 length; opaque label<V>;
@@ -212,7 +215,7 @@ import TwoMLSPQCrypto
 		for _ in 0..<8 {
 			try advanceEpochByFold(proposer: &alice, approver: &bob)
 		}
-		let currentEpoch = alice.recvGroup!.classical.context.epoch
+		let currentEpoch = try #require(alice.recvGroup?.classical.context.epoch)
 		#expect(currentEpoch == 9)
 
 		#expect(throws: TwoMLSError.attachmentComponentUnavailable) {

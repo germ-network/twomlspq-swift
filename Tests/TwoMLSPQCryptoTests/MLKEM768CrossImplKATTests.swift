@@ -12,12 +12,12 @@ import Testing
 // (BoringSSL == FIPS oracle == CryptoKit) executes when this same test runs
 // on the Android build. Do not overclaim cross-impl coverage from a run here.
 @Suite struct MLKEM768CrossImplKATTests {
-	private func hexData(_ hex: String) -> Data {
+	private func hexData(_ hex: String) throws -> Data {
 		var out = Data(capacity: hex.count / 2)
 		var index = hex.startIndex
 		while index < hex.endIndex {
 			let next = hex.index(index, offsetBy: 2)
-			out.append(UInt8(hex[index..<next], radix: 16)!)
+			out.append(try #require(UInt8(hex[index..<next], radix: 16)))
 			index = next
 		}
 		return out
@@ -27,9 +27,9 @@ import Testing
 	/// SHA3-256(encapsulation key) (32B)` — the load-bearing cross-impl
 	/// structural fact, independent of which `MLKEM768` is active.
 	@available(iOS 26, macOS 26, *)
-	@Test func archiveTailIsSHA3OfPublicKey() {
-		let secret = hexData(RustOracleVectors.deriveSecret)
-		let pub = hexData(RustOracleVectors.derivePublic)
+	@Test func archiveTailIsSHA3OfPublicKey() throws {
+		let secret = try hexData(RustOracleVectors.deriveSecret)
+		let pub = try hexData(RustOracleVectors.derivePublic)
 		#expect(secret.count == 96)
 		#expect(pub.count == 1184)
 
@@ -43,8 +43,8 @@ import Testing
 	/// seed reconstructs the oracle's public key and its exact archive bytes.
 	@available(iOS 26, macOS 26, *)
 	@Test func seedReconstructsOracleArchive() throws {
-		let secret = hexData(RustOracleVectors.deriveSecret)
-		let pub = hexData(RustOracleVectors.derivePublic)
+		let secret = try hexData(RustOracleVectors.deriveSecret)
+		let pub = try hexData(RustOracleVectors.derivePublic)
 		let seed = secret.prefix(64)
 
 		let key = try MLKEM768.PrivateKey(seedRepresentation: seed, publicKey: nil)
@@ -57,8 +57,8 @@ import Testing
 	/// same public key via the swapped `MLKEM768`.
 	@available(iOS 26, macOS 26, *)
 	@Test func integrityCheckedRepresentationReconstructs() throws {
-		let secret = hexData(RustOracleVectors.deriveSecret)
-		let pub = hexData(RustOracleVectors.derivePublic)
+		let secret = try hexData(RustOracleVectors.deriveSecret)
+		let pub = try hexData(RustOracleVectors.derivePublic)
 
 		let recon = try MLKEM768.PrivateKey(integrityCheckedRepresentation: secret)
 		#expect(recon.publicKey.rawRepresentation == pub)

@@ -158,7 +158,8 @@ import TwoMLSPQCrypto
 
 		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
-		#expect(Frames.stapleKind(staple.first!) == .apqPrivateMessage)
+		let stapleFirstByte = try #require(staple.first)
+		#expect(Frames.stapleKind(stapleFirstByte) == .apqPrivateMessage)
 
 		let decrypted = try bob.processIncomingDecrypted(frame)
 		#expect(decrypted.applicationMessage == Data("bound".utf8))
@@ -825,9 +826,10 @@ import TwoMLSPQCrypto
 		// Consumption alternative (also verified): the cross-party PSK's
 		// exporter leaf on Alice's own receive group is spent by the
 		// discharge, so re-exporting it throws.
+		var aliceRecvClassicalForReexport = try #require(alice.recvGroup?.classical)
 		#expect(throws: (any Error).self) {
 			try MLS.Combiner.ExportedPsk.export(
-				from: &alice.recvGroup!.classical,
+				from: &aliceRecvClassicalForReexport,
 				SessionTestSupport.classicalProvider,
 				componentID: TwoMLSSession.crossPartyComponentID)
 		}

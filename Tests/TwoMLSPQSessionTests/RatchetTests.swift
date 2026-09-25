@@ -77,7 +77,8 @@ import TwoMLSPQCrypto
 		#expect(ctTag == Frames.pqCTTag)
 		// `pqPendingOutbound()` re-seals under a fresh nonce every call, so
 		// compare the OPENED plaintexts, not the sealed bytes.
-		#expect(bob.openOrRaw(alice.pqPendingOutbound()!) == bob.openOrRaw(ctFrame))
+		let alicePendingOutbound = try #require(alice.pqPendingOutbound())
+		#expect(bob.openOrRaw(alicePendingOutbound) == bob.openOrRaw(ctFrame))
 		guard case .responding = alice.pqInflight else {
 			Issue.record("expected alice to hold `.responding` after sealing")
 			return
@@ -254,7 +255,7 @@ import TwoMLSPQCrypto
 		// `pqPendingOutbound()` re-seals under a fresh nonce every call, so
 		// compare the OPENED plaintexts (via `alice`, the recipient), not
 		// the sealed bytes.
-		#expect(
-			alice.openOrRaw(bob.pqPendingOutbound()!) == alice.openOrRaw(firstEK))
+		let secondEK = try #require(bob.pqPendingOutbound())
+		#expect(alice.openOrRaw(secondEK) == alice.openOrRaw(firstEK))
 	}
 }

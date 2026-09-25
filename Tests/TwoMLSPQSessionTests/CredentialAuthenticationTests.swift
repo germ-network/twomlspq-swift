@@ -412,7 +412,8 @@ private func makeRotationMember(
 	/// and `CredentialPresentation.init` are both `internal` to
 	/// `MLSProfileRFC9420` — to `AuthCore.adjudicate`.
 	@Test func adjudicateAcceptsAuthorizedRotationAndRejectsUnauthorizedOne() throws {
-		let provider = SwiftCryptoProvider().cipherSuiteProvider(for: .curve25519ChaCha)!
+		let provider = try #require(
+			SwiftCryptoProvider().cipherSuiteProvider(for: .curve25519ChaCha))
 
 		let alice = try makeRotationMember("alice", provider: provider)
 		let bob = try makeRotationMember("bob", provider: provider)

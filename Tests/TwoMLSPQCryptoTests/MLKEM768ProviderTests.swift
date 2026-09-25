@@ -13,17 +13,20 @@ import Testing
 	/// swift-mls suite-1 — the symmetric stack `0xFDEA` reuses.
 	@available(iOS 26, macOS 26, *)
 	private var suite1: any MLS.CipherSuiteProvider {
-		SwiftCryptoProvider().cipherSuiteProvider(for: .curve25519Aes128)!
+		get throws {
+			try #require(
+				SwiftCryptoProvider().cipherSuiteProvider(for: .curve25519Aes128))
+		}
 	}
 
 	private func rawBytes(_ secret: SecretBytes) -> Data { secret.withUnsafeBytes { Data($0) } }
 
-	private func hexData(_ hex: String) -> Data {
+	private func hexData(_ hex: String) throws -> Data {
 		var out = Data(capacity: hex.count / 2)
 		var index = hex.startIndex
 		while index < hex.endIndex {
 			let next = hex.index(index, offsetBy: 2)
-			out.append(UInt8(hex[index..<next], radix: 16)!)
+			out.append(try #require(UInt8(hex[index..<next], radix: 16)))
 			index = next
 		}
 		return out
@@ -234,8 +237,8 @@ import Testing
 	@Test func deriveKATMatchesRustOracle() throws {
 		let ikm = Data(repeating: 0x2A, count: 32)
 		let (secret, publicKey) = try provider.hpkeDeriveKeyPair(ikm: ikm)
-		#expect(publicKey.data == hexData(RustOracleVectors.derivePublic))
-		#expect(rawBytes(secret.data) == hexData(RustOracleVectors.deriveSecret))
+		#expect(publicKey.data == (try hexData(RustOracleVectors.derivePublic)))
+		#expect(rawBytes(secret.data) == (try hexData(RustOracleVectors.deriveSecret)))
 	}
 
 	/// Open a ciphertext SEALED BY THE RUST ORACLE: reconstruct the oracle's 96-byte
@@ -251,7 +254,7 @@ import Testing
 			info: hexData(RustOracleVectors.info),
 			aad: nil,
 			ciphertext: hexData(RustOracleVectors.sealCt))
-		#expect(opened == hexData(RustOracleVectors.plaintext))
+		#expect(opened == (try hexData(RustOracleVectors.plaintext)))
 	}
 
 	// MARK: - Symmetric parity with suite-1 (pins the forwarding wiring)

@@ -14,6 +14,15 @@ import TwoMLSPQCrypto
 /// `member(...)`/`establishedPair(...)` shape one layer up.
 @available(iOS 26, macOS 26, *)
 enum SessionTestSupport {
+	/// Force-unwrapped deliberately, unlike the rest of this pass's
+	/// `try #require(...)` conversions: this is a one-time, process-wide
+	/// fixture that virtually every test in the target depends on (400+ call
+	/// sites). If `.curve25519ChaCha` — a compile-time-constant, always-valid
+	/// suite — ever failed to resolve here, every test would be broken
+	/// anyway; crashing immediately at first access is more useful than
+	/// threading `throws` through hundreds of unrelated call sites for a
+	/// failure mode that, if it ever happened, would take down the whole
+	/// suite regardless.
 	static let classicalProvider: any MLS.CipherSuiteProvider = {
 		SwiftCryptoProvider().cipherSuiteProvider(for: .curve25519ChaCha)!
 	}()

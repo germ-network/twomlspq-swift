@@ -144,13 +144,15 @@ import TwoMLSPQCrypto
 		#expect(decrypted2.ownCredentialCanonicalized)
 		#expect(decrypted2.newSender == nil)
 		#expect(alice.myPrincipalState == .sync(aliceNewID))
+		let aliceRecvClassicalAfterFold = try #require(alice.recvGroup?.classical)
 		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.recvGroup!.classical).credential)
+				TwoMLSSession.ownLeaf(of: aliceRecvClassicalAfterFold).credential)
 				== aliceNewID)
+		let aliceSendClassicalAfterFold = try #require(alice.sendGroup?.classical)
 		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				TwoMLSSession.ownLeaf(of: aliceSendClassicalAfterFold).credential)
 				== aliceOldID,
 			"the send-classical leaf documentedly lags until the own-leaf catch-up")
 
@@ -165,9 +167,11 @@ import TwoMLSPQCrypto
 		#expect(decrypted3.newSender == aliceNewID)
 		#expect(!decrypted3.ownCredentialCanonicalized)
 		#expect(bob.theirPrincipalState == .sync(aliceNewID))
+		let aliceSendClassicalAfterCatchUp = try #require(alice.sendGroup?.classical)
 		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				TwoMLSSession.ownLeaf(of: aliceSendClassicalAfterCatchUp).credential
+			)
 				== aliceNewID, "the send-classical leaf has now caught up")
 
 		// 6: app traffic round-trips both directions under the new key.
@@ -303,12 +307,15 @@ import TwoMLSPQCrypto
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		_ = try bob.processIncomingDecrypted(catchUpFrame)
 
+		let aliceSendClassicalAfterCatchUp = try #require(alice.sendGroup?.classical)
 		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				TwoMLSSession.ownLeaf(of: aliceSendClassicalAfterCatchUp).credential
+			)
 				== aliceNewID)
+		let bobRecvClassicalAfterCatchUp = try #require(bob.recvGroup?.classical)
 		#expect(
-			try basicIdentifier(peerLeafCredential(of: bob.recvGroup!.classical))
+			try basicIdentifier(peerLeafCredential(of: bobRecvClassicalAfterCatchUp))
 				== aliceNewID)
 
 		// Refresh Alice's discharge license: her catch-up commit above
@@ -448,9 +455,10 @@ import TwoMLSPQCrypto
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		_ = try bob.processIncomingDecrypted(catchUpFrame)
 		#expect(alice.myPrincipalState == .sync(aliceNewID))
+		let aliceSendClassicalConverged = try #require(alice.sendGroup?.classical)
 		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				TwoMLSSession.ownLeaf(of: aliceSendClassicalConverged).credential)
 				== aliceNewID)
 
 		#expect(throws: TwoMLSError.rotationInFlight) {
@@ -568,9 +576,10 @@ import TwoMLSPQCrypto
 		#expect(catchUpPrepared.didCommit)
 		let catchUpFrame = try bob.encrypt(Data("bob-catchup".utf8)).frame
 		_ = try alice.processIncomingDecrypted(catchUpFrame)
+		let bobSendClassicalAfterCatchUp = try #require(bob.sendGroup?.classical)
 		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: bob.sendGroup!.classical).credential)
+				TwoMLSSession.ownLeaf(of: bobSendClassicalAfterCatchUp).credential)
 				== bobV2ID)
 
 		// Hand-author the rollback: `newIdentity: .basic(bobOriginalID)`,
@@ -1076,13 +1085,15 @@ import TwoMLSPQCrypto
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncomingDecrypted(foldFrame)
 		#expect(alice.myPrincipalState == .sync(aliceNewID))
+		let aliceRecvClassicalAfterFold2 = try #require(alice.recvGroup?.classical)
 		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.recvGroup!.classical).credential)
+				TwoMLSSession.ownLeaf(of: aliceRecvClassicalAfterFold2).credential)
 				== aliceNewID)
+		let aliceSendClassicalAfterFold2 = try #require(alice.sendGroup?.classical)
 		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				TwoMLSSession.ownLeaf(of: aliceSendClassicalAfterFold2).credential)
 				== alice.identity.clientID,
 			"the send-classical leaf documentedly lags")
 
@@ -1104,7 +1115,8 @@ import TwoMLSPQCrypto
 		#expect(!prepared.didCommit, "an unlicensed catch-up must not commit")
 		#expect(alice.owedBind != nil)
 		#expect(alice.sendGroup?.classical.context.epoch == sendEpochBefore)
-		let stalledStapleKind = Frames.stapleKind(alice.currentStaple.first!)
+		let stalledStapleFirstByte = try #require(alice.currentStaple.first)
+		let stalledStapleKind = Frames.stapleKind(stalledStapleFirstByte)
 		#expect(stalledStapleKind != .mlsMessage)
 		#expect(stalledStapleKind != .apqPrivateMessage)
 
@@ -1121,14 +1133,16 @@ import TwoMLSPQCrypto
 		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
 		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(boundFrame))
-		#expect(Frames.stapleKind(staple.first!) == .apqPrivateMessage)
+		let stapleFirstByte = try #require(staple.first)
+		#expect(Frames.stapleKind(stapleFirstByte) == .apqPrivateMessage)
 
 		let decrypted = try bob.processIncomingDecrypted(boundFrame)
 		#expect(decrypted.didApplyRemoteCommit)
 		#expect(decrypted.newSender == aliceNewID)
+		let aliceSendClassicalFinal = try #require(alice.sendGroup?.classical)
 		#expect(
 			try basicIdentifier(
-				TwoMLSSession.ownLeaf(of: alice.sendGroup!.classical).credential)
+				TwoMLSSession.ownLeaf(of: aliceSendClassicalFinal).credential)
 				== aliceNewID, "the send-classical leaf has now caught up")
 	}
 
@@ -1157,7 +1171,8 @@ import TwoMLSPQCrypto
 		let prepared = try alice.prepareToEncrypt()
 		#expect(!prepared.didCommit, "an unlicensed catch-up must not commit")
 		#expect(alice.sendGroup?.classical.context.epoch == sendEpochBefore)
-		let stalledStapleKind = Frames.stapleKind(alice.currentStaple.first!)
+		let stalledStapleFirstByte = try #require(alice.currentStaple.first)
+		let stalledStapleKind = Frames.stapleKind(stalledStapleFirstByte)
 		#expect(stalledStapleKind != .mlsMessage)
 		#expect(stalledStapleKind != .apqPrivateMessage)
 
@@ -1172,7 +1187,8 @@ import TwoMLSPQCrypto
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(catchUpFrame))
-		#expect(Frames.stapleKind(staple.first!) == .mlsMessage)
+		let stapleFirstByte = try #require(staple.first)
+		#expect(Frames.stapleKind(stapleFirstByte) == .mlsMessage)
 		let decrypted = try bob.processIncomingDecrypted(catchUpFrame)
 		#expect(decrypted.didApplyRemoteCommit)
 		#expect(decrypted.newSender == aliceNewID)
