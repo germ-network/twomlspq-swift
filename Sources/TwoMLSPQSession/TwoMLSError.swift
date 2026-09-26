@@ -472,4 +472,17 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// signing key for that group. A no-custody classical group can only
 	/// receive; a no-custody PQ group's own driver stops that door.
 	case leafCustodyUnavailable
+
+	/// A `Frames` section-codec failure. An out-of-window sealed frame is
+	/// indistinguishable from garbage (book header-encryption.md, "Receive
+	/// rule"), so its ciphertext's leading bytes can read as a section header
+	/// and mis-slice. The receive dispatcher uses this to classify such a blob
+	/// into the receive family rather than surfacing the decoder's structural
+	/// error.
+	var isWireStructural: Bool {
+		switch self {
+		case .truncatedSection, .emptySection, .trailingBytes: return true
+		default: return false
+		}
+	}
 }

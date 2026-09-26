@@ -570,20 +570,45 @@ extension TwoMLSSession {
 		// Entry: transparently removes the header seal if present,
 		// else passes an already-opened frame straight through (book,
 		// "Receive rule" convenience).
-		let frame = openOrRaw(inbound)
-		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
-		switch tag {
-		case Frames.messageFrameTag:
-			return try processMessageFrame(
-				frame, approval: approval, ownOfferWindow: ownOfferWindow)
-		case Frames.establishmentHandoffTag:
-			return try processStandaloneHandoff(frame, approval: approval)
-		case Frames.apqWelcomeTag:
-			return try processStandaloneWelcome(frame)
-		case Frames.preEstablishmentAppTag:
-			return try processPreEstablishmentApp(frame)
-		default:
-			throw TwoMLSError.unsupportedFrameTag(tag)
+		let opened = tryOpen(inbound)
+		let frame = opened ?? inbound
+		do {
+			guard let tag = frame.first else {
+				// An empty blob never opened (tryOpen rejects anything at or
+				// below the nonce size): it belongs to the indistinguishable
+				// receive space below, not the wire codec.
+				throw opened == nil
+					? TwoMLSError.decryptionFailed
+					: TwoMLSError.truncatedSection
+			}
+			switch tag {
+			case Frames.messageFrameTag:
+				return try processMessageFrame(
+					frame, approval: approval, ownOfferWindow: ownOfferWindow)
+			case Frames.establishmentHandoffTag:
+				return try processStandaloneHandoff(frame, approval: approval)
+			case Frames.apqWelcomeTag:
+				return try processStandaloneWelcome(frame)
+			case Frames.preEstablishmentAppTag:
+				return try processPreEstablishmentApp(frame)
+			default:
+				// An unrecognized leading byte on a frame that actually OPENED
+				// is an honest tag rejection; on a blob that never opened it is
+				// the indistinguishable receive space.
+				throw opened == nil
+					? TwoMLSError.decryptionFailed
+					: TwoMLSError.unsupportedFrameTag(tag)
+			}
+		} catch let error as TwoMLSError where opened == nil && error.isWireStructural {
+			// A blob that never opened is a sealed frame we cannot decrypt: an
+			// out-of-window frame and garbage are indistinguishable by
+			// construction (book header-encryption.md, "Receive rule"). The
+			// whole space resolves to one family — an unknown leading byte, a
+			// structural mis-slice, an empty blob alike — the receive family
+			// (api-reference.md:328, "Epoch misses stay `DecryptionFailed`"),
+			// matching the deployed engine. Only a frame that actually opened
+			// may claim a specific frame-codec error.
+			throw TwoMLSError.decryptionFailed
 		}
 	}
 
@@ -596,6 +621,23 @@ extension TwoMLSSession {
 		_ frame: Data, approval: EstablishmentApproval, ownOfferWindow: SecretArchive? = nil
 	) throws -> IncomingResult {
 		let (staple, proposalSection, appSection) = try Frames.decodeMessageFrame(frame)
+		// Epoch position BEFORE any further structural decode (book
+		// wire-format.md:225-226: "a commit *ahead* of the receive group
+		// surfaces `EpochDesync` before the app ciphertext is touched"). The
+		// staple is the sender's latest commit — an MLS public message, so its
+		// epoch reads off the authenticated header alone. A commit ahead is
+		// refused here, before the app section is decoded at all; behind/equal
+		// is the ordinary re-ride `handleStaple` skips/applies below. A
+		// welcome/handoff staple carries no commit epoch and falls through to
+		// its own dedup/join handling. On a `0x05` bind staple this now
+		// precedes `applyBind`'s own `notEstablished`/`sessionNotReady` guards
+		// — a degenerate bind in a state that would fail those reports
+		// `epochDesync` first; fail-closed either way.
+		if let recv = recvGroup, let commitEpoch = Self.stapleCommitEpoch(staple) {
+			_ = try Self.classifyStapleEpoch(
+				commitEpoch: commitEpoch, currentEpoch: recv.classical.context.epoch
+			)
+		}
 		if staple.first == Frames.establishmentHandoffTag, recvGroup == nil {
 			let (envelope, welcome) = try Frames.decodeEstablishmentHandoff(staple)
 			if case .approved(
