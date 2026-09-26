@@ -240,7 +240,7 @@ import TwoMLSPQCrypto
 	/// own routine rotation, which Bob approves and folds into his next
 	/// commit — only a round that actually commits reaches
 	/// `committingRound`'s own write-back; a round with nothing to
-	/// fold/discharge/catch up returns before ever getting there), confirms
+	/// fold or no bind to discharge returns before ever getting there), confirms
 	/// the record is still there, then resolves a later peer fold naming
 	/// the missing ref from the (still-present) window.
 	@available(iOS 26, macOS 26, *)
@@ -532,8 +532,8 @@ import TwoMLSPQCrypto
 	}
 
 	/// `prepareToEncrypt`'s own pre-check: refuses BEFORE `committingRound`
-	/// ever runs (it writes `recvGroup` even for a bare catch-up-only
-	/// round), independent of what `leafKeys` itself holds.
+	/// ever runs (it writes `recvGroup` on any committing round),
+	/// independent of what `leafKeys` itself holds.
 	@available(iOS 26, macOS 26, *)
 	@Test func prepareToEncryptRefusesWhenEitherClassicalRoleHasNoCustody() throws {
 		var (_, bobSend) = try SessionTestSupport.establishedAndExchanged()

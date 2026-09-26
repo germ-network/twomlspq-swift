@@ -567,8 +567,8 @@ import Testing
 		#expect(alice.leafKeys.sendClassical.pending.isEmpty)
 
 		// A catch-up: alice rotates, bob folds it into recv-classical, and
-		// alice's own next committing round catches her send-classical leaf
-		// up to the new id.
+		// alice's own next committing round — a fold of bob's routine offer,
+		// which rides her send-classical catch-up — catches that leaf up.
 		let newID = Data("alice-v2".utf8)
 		_ = try alice.prepareToEncrypt(rotating: newID)
 		let rotateFrame = try alice.encrypt(Data("rotate".utf8)).frame
@@ -580,6 +580,7 @@ import Testing
 		let aliceCanonicalized = try alice.processIncomingDecrypted(bobFoldFrame)
 		#expect(aliceCanonicalized.ownCredentialCanonicalized)
 
+		_ = try alice.queueProposal(digest: aliceCanonicalized.queuedProposal.digest)
 		let catchUpPrepared = try alice.prepareToEncrypt()
 		#expect(catchUpPrepared.didCommit)
 		let keyAfterCatchUp = try #require(alice.leafKeys.sendClassical.current)
@@ -619,7 +620,9 @@ import Testing
 				== alice.identity.clientID,
 			"send-classical documentedly still lags here")
 
-		// Alice's own-leaf catch-up — the send-classical leaf's turn.
+		// Alice's own-leaf catch-up rides a fold of Bob's routine offer (from
+		// the fold frame above) — the send-classical leaf's turn.
+		_ = try alice.queueProposal(digest: decrypted2.queuedProposal.digest)
 		let prepared3 = try alice.prepareToEncrypt()
 		#expect(prepared3.didCommit)
 		let sendClassicalKey = try #require(alice.leafKeys.sendClassical.current)

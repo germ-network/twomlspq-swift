@@ -22,10 +22,11 @@ import TwoMLSPQCrypto
 @Suite struct CanonicalizeKnownCredentialTests {
 	/// Hand-builds a SOLO `includePath: true` commit on `committer`'s OWN
 	/// `sendGroup.classical` moving the committer's own leaf's presentation
-	/// to `(newID, newKey)` — no proposals, no license needed (unlike the
-	/// real `committingRound`'s own-leaf catch-up, this bypasses its
-	/// evidence-gating entirely, standing in for whatever REAL sequence of
-	/// events could otherwise produce this exact commit shape). Applies the
+	/// to `(newID, newKey)` — no proposals. A conforming engine never builds
+	/// this shape standalone (the own-leaf catch-up rides a fold or a bind
+	/// round, never triggering one), so this is a legacy/interop tolerance
+	/// fixture, standing in for whatever hand-built or out-of-spec sequence
+	/// could otherwise produce this exact commit shape. Applies the
 	/// commit to the committer's OWN group (so its later frames stay
 	/// consistent) and returns the wire bytes.
 	@available(iOS 26, macOS 26, *)

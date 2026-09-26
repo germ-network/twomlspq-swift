@@ -855,9 +855,9 @@ import Testing
 		// history, so the extra depth is invisible to it; the fixture
 		// stays honest where it matters. (2) A REAL classical catch-up
 		// round moves both of bob's classical leaves onto that edge id,
-		// through the actual generalized-catch-up trigger (Messaging.
+		// through the actual generalized-catch-up machinery (Messaging.
 		// swift's `rotating == nil` arm) and the actual send-leaf catch-up
-		// (`committingRound`'s own-leaf catch-up trigger); (3) a REAL classical rotation, through
+		// (`committingRound`'s own-leaf catch-up, riding Bob's fold round); (3) a REAL classical rotation, through
 		// the engine's own `prepareToEncrypt(rotating:)`/fold/canonicalize
 		// path, is what finally evicts id0 — the engine's own
 		// canonicalization site. Only bob's PQ leaves are left hand-aged
@@ -877,7 +877,7 @@ import Testing
 		let s7 = try #require(bob.auth.mine.current)
 
 		// Phase 2: a REAL classical catch-up to s7, both of bob's leaves,
-		// through the actual generalized-catch-up trigger — independently
+		// through the actual generalized-catch-up machinery — independently
 		// minted keys per classical group (strict per-group independence).
 		let (recvSigningKey, recvSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (sendSigningKey, sendSignatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
@@ -886,13 +886,27 @@ import Testing
 		bob.leafKeys.sendClassical.pending[s7] = LeafKey(
 			signingKey: sendSigningKey, signatureKey: sendSignatureKey)
 
-		// Bob is already LICENSED (`fullyEstablishedTurnOnBob`), so this one
-		// `prepareToEncrypt` both commits his own SEND-classical catch-up
-		// (`didCommit`) AND stages a RECV-classical catch-up offer for
-		// the very same frame — converges in one round (verified by
-		// running it, not assumed).
+		// Bob is already LICENSED (`fullyEstablishedTurnOnBob`), but a
+		// licensed catch-up ALONE commits NOTHING (nothing queued, nothing
+		// owed) — the catch-up is a passenger, never a trigger.
+		let bobPlainRound = try bob.prepareToEncrypt()
+		#expect(!bobPlainRound.didCommit, "a licensed catch-up alone must not commit")
+		#expect(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: try #require(bob.sendGroup?.classical))
+					.credential)
+				== id0, "bob's send-classical leaf still lags")
+
+		// It rides a fold instead: Bob approves the offer Alice sent in the
+		// fixture's last frame (still live in `offeredProposal`), and his
+		// fold commit both folds it and carries the catch-up — staging a
+		// RECV-classical catch-up offer for the very same frame. Converges in
+		// one round (verified by running it, not assumed).
+		let offered = try #require(bob.offeredProposal)
+		try bob.queueProposal(digest: offered.digest)
 		let bobRound = try bob.prepareToEncrypt()
-		#expect(bobRound.didCommit, "the licensed send-classical catch-up")
+		#expect(
+			bobRound.didCommit, "the send-classical catch-up riding Bob's fold round")
 		#expect(
 			bob.pendingProposal?.proposing == s7, "the staged recv-classical offer")
 		#expect(
@@ -1097,7 +1111,18 @@ import Testing
 				signingKey: recvSigningKey, signatureKey: recvSignatureKey)
 			bob.leafKeys.sendClassical.pending[s7] = LeafKey(
 				signingKey: sendSigningKey, signatureKey: sendSignatureKey)
-			_ = try bob.prepareToEncrypt()
+			// A licensed catch-up alone commits nothing; it rides a fold of
+			// Alice's routine offer (from the fixture's last frame) instead.
+			let bobPlainRound = try bob.prepareToEncrypt()
+			#expect(
+				!bobPlainRound.didCommit,
+				"a licensed catch-up alone must not commit")
+			let offered = try #require(bob.offeredProposal)
+			try bob.queueProposal(digest: offered.digest)
+			let bobRound = try bob.prepareToEncrypt()
+			#expect(
+				bobRound.didCommit,
+				"the send-classical catch-up riding Bob's fold round")
 			let bobFrame = try bob.encrypt(Data("wb-bob-catchup".utf8)).frame
 			let aliceSaw = try alice.processIncomingDecrypted(bobFrame)
 			try alice.queueProposal(digest: aliceSaw.queuedProposal.digest)

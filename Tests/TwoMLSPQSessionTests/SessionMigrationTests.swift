@@ -766,7 +766,10 @@ import TwoMLSPQCrypto
 		_ = try bob.queueProposal(digest: offerDecrypted.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
-		_ = try alice.processIncomingDecrypted(foldFrame)
+		let foldSaw = try alice.processIncomingDecrypted(foldFrame)
+		// The catch-up is a passenger: it rides a fold of Bob's routine offer
+		// (staged on the same frame above), not a plain `prepareToEncrypt()`.
+		_ = try alice.queueProposal(digest: foldSaw.queuedProposal.digest)
 		_ = try alice.prepareToEncrypt()
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpFrame)
@@ -1625,7 +1628,10 @@ import TwoMLSPQCrypto
 		_ = try bob.queueProposal(digest: offerDecrypted.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
-		_ = try alice.processIncomingDecrypted(foldFrame)
+		let foldSaw = try alice.processIncomingDecrypted(foldFrame)
+		// The catch-up is a passenger: it rides a fold of Bob's routine offer
+		// (staged on the same frame above), not a plain `prepareToEncrypt()`.
+		_ = try alice.queueProposal(digest: foldSaw.queuedProposal.digest)
 		_ = try alice.prepareToEncrypt()
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpFrame)
@@ -2110,8 +2116,18 @@ import TwoMLSPQCrypto
 		// Rust-side rotation for real before bob ever migrated.
 		alice.auth.theirs.history.append(c)
 
+		// Alice surfaces a routine `Upd(self)` for Bob to approve — the fold
+		// that will carry Bob's send-classical catch-up (a passenger, never a
+		// trigger: a plain `prepareToEncrypt()` with nothing queued or owed
+		// commits nothing).
+		_ = try alice.prepareToEncrypt()
+		let aliceOfferFrame = try alice.encrypt(Data("alice-offer".utf8)).frame
+		let aliceOfferSaw = try restoredBob.processIncomingDecrypted(aliceOfferFrame)
+		#expect(aliceOfferSaw.queuedProposal.proposing == alice.identity.clientID)
+		try restoredBob.queueProposal(digest: aliceOfferSaw.queuedProposal.digest)
+
 		let prepared = try restoredBob.prepareToEncrypt()
-		#expect(prepared.didCommit, "the licensed send-classical catch-up (1b)")
+		#expect(prepared.didCommit, "the send-classical catch-up riding the fold (1b)")
 		#expect(
 			restoredBob.pendingProposal?.proposing == c,
 			"the staged recv-classical catch-up offer (1a)")

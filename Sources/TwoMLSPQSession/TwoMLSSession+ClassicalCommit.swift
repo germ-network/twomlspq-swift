@@ -334,25 +334,23 @@ extension TwoMLSSession {
 	/// A committing round on `sendGroup.classical` — folds the
 	/// approved peer Update (`queuedProposal`, when present: a fold needs no
 	/// license, since `queueProposal` already verified it against the live
-	/// send group, and holding it IS the evidence), discharges an owed PQ
-	/// bind (when `owedBind != nil` AND licensed), and/or catches
-	/// up my own send-leaf's presentation to my canonical principal
-	/// (`ownLeafCatchUpTarget`, when it lags). Any of the three alone is
-	/// enough to trigger a commit (the catch-up-only trigger is new: a plain
-	/// `prepareToEncrypt()` with nothing queued or owed must still fire a
-	/// commit once a rotation has canonicalized my recv-leaf but not yet my
-	/// send-leaf). Evidence-gating (`protocol-flows.md` §Evidence-gating): the
-	/// catch-up fires only on a LICENSED round, so every committing round is
-	/// either a fold (holding the peer's proposal is evidence) or licensed —
-	/// which is exactly why an owed bind rides every round that commits:
-	/// every such round already carries evidence, and one that committed past
-	/// an unapplied bind would keep the bind's reserved epoch forever
-	/// `.epochDesync` (`protocol-flows.md` §Evidence-gating). An unlicensed
-	/// catch-up is deferred, never dropped — `rotationCandidate` persists and
-	/// the peer's next inbound frame re-stamps the license. Staple selection
-	/// keys off `owed != nil` (→ `0x05`), not `didCommit`. Reports
-	/// whether a commit happened, and — fold only — the folded peer leaf's
-	/// verified identity (never the unauthenticated wire `proposing`).
+	/// send group, and holding it IS the evidence) and/or discharges an owed
+	/// PQ bind (when `owedBind != nil` AND licensed). These are the book's
+	/// ONLY two commit triggers (`protocol-flows.md` §"Where each ratchet
+	/// advances"); a plain `prepareToEncrypt()` with nothing queued and
+	/// nothing owed commits nothing. The own-leaf catch-up
+	/// (`ownLeafCatchUpTarget`) is a PASSENGER on whatever round commits,
+	/// never a trigger: it rides a fold or bind round already in flight, and
+	/// a lagging send-leaf otherwise waits for the next such round (worst
+	/// case, the PQ cadence). Evidence-gating (`protocol-flows.md`
+	/// §Evidence-gating): a bind-discharging round must be licensed (a fold
+	/// needs no license) — which is exactly why an owed bind rides every
+	/// round that commits: every such round already carries evidence, and one
+	/// that committed past an unapplied bind would keep the bind's reserved
+	/// epoch forever `.epochDesync` (`protocol-flows.md` §Evidence-gating).
+	/// Staple selection keys off `owed != nil` (→ `0x05`), not `didCommit`.
+	/// Reports whether a commit happened, and — fold only — the folded peer
+	/// leaf's verified identity (never the unauthenticated wire `proposing`).
 	// internal: used by Messaging.prepareToEncrypt
 	internal mutating func committingRound() throws -> (
 		didCommit: Bool, committedRemoteClientID: Data?
@@ -392,27 +390,32 @@ extension TwoMLSSession {
 		// It stays so a fold can never strand an owed bind by advancing the
 		// epoch without discharging it, should that invariant ever change.
 		let willDischargeBind = owed != nil && (folded != nil || licensed)
-		// The catch-up, now evidence-gated (`protocol-flows.md` §Evidence-gating):
-		// the catch-up fires only on a LICENSED round, so every committing
-		// round is either a fold (holding the peer's proposal IS the evidence)
-		// or licensed — an unlicensed commit could otherwise produce a staple
-		// nothing bridges and permanently lose a PQ epoch at the peer. The
-		// catch-up is DEFERRED, never dropped: `rotationCandidate` persists,
-		// and the peer's next inbound frame re-stamps the license
-		// (`stampLicenseIfOffered`), so the very next `prepareToEncrypt`
-		// performs it.
-		let catchUpTargetID =
-			licensed
-			? try Self.ownLeafCatchUpTarget(
-				send: sendGroup, mineCurrent: auth.mine.current)
-			: nil
-		guard folded != nil || willDischargeBind || catchUpTargetID != nil else {
+		// The classical commit triggers are exactly the book's two
+		// (`protocol-flows.md` §"Where each ratchet advances"): an approved
+		// peer Update to fold (holding the proposal IS the evidence) and a
+		// licensed owed bind to discharge. "There is deliberately no third
+		// reason to commit" — no own-leaf catch-up trigger, no commit on
+		// cadence merely because the license is present — since every commit
+		// of ours invalidates the peer's in-flight offer, and committing every
+		// licensed round would churn offers inside the window the peer's app
+		// has to approve them.
+		guard folded != nil || willDischargeBind else {
 			return (false, nil)
 		}
+		// The own-leaf catch-up is a PASSENGER, never a trigger: it rides
+		// whatever round commits above. `protocol-flows.md` §Evidence-gating
+		// gates when a round may COMMIT, not what may ride one already
+		// committing for a legal reason (§1.3: such a commit "still refreshes
+		// the sender's own leaf via the updatePath" regardless), so no
+		// license re-check here — matching the deployed pin, which rides the
+		// catch-up handoff under bare `did_commit`. A lagging send-leaf
+		// otherwise waits for the next fold/bind round or the PQ cadence.
+		let catchUpTargetID = try Self.ownLeafCatchUpTarget(
+			send: sendGroup, mineCurrent: auth.mine.current)
 		guard var send = sendGroup else { throw TwoMLSError.notEstablished }
 
 		// D3: every committing round presents a FRESH send-classical
-		// key — the catch-up id when one is licensed, else the leaf's own
+		// key — the catch-up id when the send-leaf lags, else the leaf's own
 		// current id (a same-id key-only move). No `pending` entry is ever
 		// read here any more: a migrated session missing a send-classical
 		// catch-up key now heals, minting fresh instead of throwing
@@ -697,10 +700,12 @@ extension TwoMLSSession {
 			case .apply: break
 			}
 
-			// A `0x00` staple may now be EITHER a folded peer
-			// Update/rotation OR a solo own-leaf catch-up (`committingRound`'s
-			// third trigger) — purely structural, mirroring `applyBind`'s
-			// own `foldedPeerUpdate` detection, never a trusted claim.
+			// A conforming `0x00` staple always carries a folded peer
+			// Update/rotation (the only trigger that produces one), but the
+			// detection stays purely structural — defense in depth, mirroring
+			// `applyBind`'s own `foldedPeerUpdate` detection, never a trusted
+			// claim — so a fold-less own-refresh commit stays admissible as one
+			// moved leaf rather than misclassified.
 			guard case .commit(let commitValue) = commitPub.content.content else {
 				throw TwoMLSError.malformedSideBandMessage
 			}
