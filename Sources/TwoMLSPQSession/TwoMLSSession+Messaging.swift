@@ -16,13 +16,13 @@ extension TwoMLSSession {
 	/// proposal keyed to the current staple (book §A.1 pre-establishment
 	/// send; see `prepareToEncryptPreEstablishment`, below).
 	///
-	/// First runs a `committingRound` — folding an approved peer
-	/// Update, discharging an owed bind if one is licensed, and/or catching up
-	/// my own send-leaf's presentation — into a FULL commit on
-	/// `sendGroup.classical`, stapling either a bare `0x00` fold or the `0x05`
-	/// bind pair, so `encrypt` then protects the app on the newly-advanced
-	/// epoch. `didCommit` reports whether that happened; `committedRemoteClientID`
-	/// is set only when a fold rode.
+	/// First runs a `committingRound` — folding an approved peer Update
+	/// and/or discharging an owed bind if one is licensed — into a FULL
+	/// commit on `sendGroup.classical`, stapling either a bare `0x00` fold or
+	/// the `0x05` bind pair, so `encrypt` then protects the app on the
+	/// newly-advanced epoch. The own-leaf catch-up rides such a round when the
+	/// send-leaf lags, never triggering one. `didCommit` reports whether a
+	/// commit happened; `committedRemoteClientID` is set only when a fold rode.
 	///
 	/// `rotating`, when non-nil, authors a classical principal rotation:
 	/// mint a fresh signature keypair for `rotating` (or, if it
@@ -59,7 +59,7 @@ extension TwoMLSSession {
 			throw TwoMLSError.notEstablished
 		}
 		// No-custody guard, before `committingRound()` — it writes
-		// `recvGroup` even for a bare catch-up-only round
+		// `recvGroup` on any committing round
 		// (`TwoMLSSession+ClassicalCommit.swift`'s cross-party PSK export).
 		guard !noCustody.contains(.sendClassical), !noCustody.contains(.recvClassical)
 		else {
