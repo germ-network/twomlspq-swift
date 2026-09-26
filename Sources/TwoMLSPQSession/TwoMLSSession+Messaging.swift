@@ -751,7 +751,8 @@ extension TwoMLSSession {
 		guard case .privateMessage(let appPM) = appMessage else {
 			throw TwoMLSError.appSectionNotPrivateMessage
 		}
-		let unprotected = try recv.classical.unprotect(classicalProvider, message: appPM)
+		let unprotected = try Self.unprotectApp(
+			&recv.classical, provider: classicalProvider, message: appPM)
 		guard case .application(let data) = unprotected.content else {
 			throw TwoMLSError.unprotectedContentNotApplication
 		}
@@ -803,7 +804,8 @@ extension TwoMLSSession {
 		// Hashed before `recvGroup` is written back, so it adds no throw after
 		// this helper's own mutation.
 		let context = try classicalProvider.hash(send.classical.context.groupID)
-		let unprotected = try recv.classical.unprotect(classicalProvider, message: appPM)
+		let unprotected = try Self.unprotectApp(
+			&recv.classical, provider: classicalProvider, message: appPM)
 		recvGroup = recv
 
 		guard case .application(let data) = unprotected.content else {
@@ -834,6 +836,26 @@ extension TwoMLSSession {
 				digest: digest, proposing: proposing, context: context,
 				isCatchUp: isCatchUp),
 			update: update)
+	}
+
+	/// Fold swift-mls's `messageFromUnretainedEpoch` at the message-path
+	/// `unprotect` boundary into the public
+	/// `TwoMLSError.messageFromUnretainedEpoch(epoch:)` — the peer sealed this
+	/// app message at an epoch whose message secrets this session no longer
+	/// holds (pruned-old or ahead; the case's doc has the full semantics), so
+	/// it crosses as a classified session error instead of an unmapped
+	/// dependency error. Fail-closed: the group is left unadvanced on the
+	/// throw.
+	private static func unprotectApp(
+		_ classical: inout MLS.RFC9420.Group,
+		provider: any MLS.CipherSuiteProvider,
+		message: MLS.RFC9420.PrivateMessage
+	) throws -> MLS.RFC9420.Group.Unprotected {
+		do {
+			return try classical.unprotect(provider, message: message)
+		} catch MLS.RFC9420.GroupError.messageFromUnretainedEpoch(let epoch) {
+			throw TwoMLSError.messageFromUnretainedEpoch(epoch: epoch)
+		}
 	}
 
 	/// `0x01`/`0x0B` welcome → join Group_B if this staple hasn't been
