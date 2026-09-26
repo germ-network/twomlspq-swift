@@ -100,13 +100,13 @@ import TwoMLSPQCrypto
 
 	/// Alice rotates end to end: offer → Bob approves + folds (canonicalizing
 	/// Alice's RECV-leaf, the first canonicalization) → Alice applies Bob's
-	/// staple (`ownCredentialCanonicalized`) → Alice's own-leaf catch-up
-	/// (`committingRound`, triggered by a PLAIN `prepareToEncrypt()` with
-	/// nothing else queued or owed) moves her SEND-leaf too, which Bob then
-	/// applies (`newSender`) — both `PrincipalState`s converge to
-	/// `.sync(aliceNewID)`, both of Alice's classical leaves present the new
-	/// credential, and app traffic round-trips both directions under the new
-	/// key afterward.
+	/// staple (`ownCredentialCanonicalized`) → Alice's own-leaf catch-up RIDES
+	/// a later fold (Bob's routine `Upd`, approved and folded by Alice — the
+	/// catch-up is a passenger, never a trigger: a plain `prepareToEncrypt()`
+	/// commits nothing) and moves her SEND-leaf too, which Bob then applies
+	/// (`newSender`) — both `PrincipalState`s converge to `.sync(aliceNewID)`,
+	/// both of Alice's classical leaves present the new credential, and app
+	/// traffic round-trips both directions under the new key afterward.
 	@available(iOS 26, macOS 26, *)
 	@Test func fullClassicalRotationRoundTripsBothLeavesAndPrincipalStates() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -156,11 +156,27 @@ import TwoMLSPQCrypto
 				== aliceOldID,
 			"the send-classical leaf documentedly lags until the own-leaf catch-up")
 
-		// 5: Alice's own-leaf catch-up — triggered by a PLAIN
-		// `prepareToEncrypt()`, nothing queued or owed — moves her
-		// send-classical leaf. Bob applies it and sees `newSender`.
+		// 5: The own-leaf catch-up is a PASSENGER, never a trigger: a PLAIN
+		// `prepareToEncrypt()` with nothing queued and nothing owed commits
+		// NOTHING, leaving the send-classical leaf lagging and the staple
+		// untouched.
+		let aliceSendEpochBeforeCatchUp = try #require(
+			alice.sendGroup?.classical.context.epoch)
+		let aliceStapleBeforeCatchUp = alice.currentStaple
 		let prepared3 = try alice.prepareToEncrypt()
-		#expect(prepared3.didCommit)
+		#expect(!prepared3.didCommit)
+		#expect(alice.sendGroup?.classical.context.epoch == aliceSendEpochBeforeCatchUp)
+		#expect(alice.currentStaple == aliceStapleBeforeCatchUp)
+
+		// It rides the next fold instead: Bob surfaces a routine `Upd(self)`,
+		// Alice approves and folds it — the fold commit carries the catch-up.
+		_ = try bob.prepareToEncrypt()
+		let bobOfferFrame = try bob.encrypt(Data("bob-offer".utf8)).frame
+		let bobOfferDecrypted = try alice.processIncomingDecrypted(bobOfferFrame)
+		_ = try alice.queueProposal(digest: bobOfferDecrypted.queuedProposal.digest)
+		let prepared4 = try alice.prepareToEncrypt()
+		#expect(prepared4.didCommit)
+		#expect(prepared4.committedRemoteClientID == bob.identity.clientID)
 		let frame3 = try alice.encrypt(Data("alice-catchup".utf8)).frame
 		let decrypted3 = try bob.processIncomingDecrypted(frame3)
 		#expect(decrypted3.didApplyRemoteCommit)
@@ -303,10 +319,43 @@ import TwoMLSPQCrypto
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		_ = try alice.processIncomingDecrypted(foldFrame)
-		_ = try alice.prepareToEncrypt()
+
+		// Alice's recv-leaf canonicalized on the fold above, but her
+		// send-leaf still lags — and a PLAIN `prepareToEncrypt()` with
+		// nothing queued or owed commits NOTHING (the catch-up is a
+		// passenger, never a trigger). Its frame merely re-staples.
+		let aliceSendClassicalLagging = try #require(alice.sendGroup?.classical)
+		#expect(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(of: aliceSendClassicalLagging).credential)
+				== alice.identity.clientID,
+			"the send-classical leaf documentedly lags")
+		let stalledPrepared = try alice.prepareToEncrypt()
+		#expect(!stalledPrepared.didCommit)
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		_ = try bob.processIncomingDecrypted(catchUpFrame)
+		#expect(
+			try basicIdentifier(
+				TwoMLSSession.ownLeaf(
+					of: try #require(alice.sendGroup?.classical)
+				).credential
+			) == alice.identity.clientID,
+			"still lagging after a non-committing plain round")
 
+		// §A.3 bootstrap — PQ founding stays on the founding identity
+		// throughout, unaffected by the classical rotation above.
+		let kpFrame = try alice.pqBootstrapBegin().frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		_ = try alice.pqBootstrapJoin(welcomeFrame)
+		#expect(alice.owedBind != nil)
+		let aliceDischargePrepared = try alice.prepareToEncrypt()
+		#expect(aliceDischargePrepared.didCommit, "the licensed bind discharge")
+		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
+		_ = try bob.processIncomingDecrypted(boundFrame)
+		#expect(bob.myPQTurn)
+
+		// Both classical leaves have now converged to `aliceNewID` — the
+		// catch-up rode the bind discharge above.
 		let aliceSendClassicalAfterCatchUp = try #require(alice.sendGroup?.classical)
 		#expect(
 			try basicIdentifier(
@@ -317,24 +366,6 @@ import TwoMLSPQCrypto
 		#expect(
 			try basicIdentifier(peerLeafCredential(of: bobRecvClassicalAfterCatchUp))
 				== aliceNewID)
-
-		// Refresh Alice's discharge license: her catch-up commit above
-		// advanced `sendGroup.classical` past the epoch Bob's last inbound
-		// frame evidenced, and the upcoming PQ bind needs current evidence
-		// to discharge on Alice's very next `prepareToEncrypt`.
-		_ = try bob.prepareToEncrypt()
-		let refreshFrame = try bob.encrypt(Data("refresh".utf8)).frame
-		_ = try alice.processIncomingDecrypted(refreshFrame)
-
-		// §A.3 bootstrap — PQ founding stays on the founding identity
-		// throughout, unaffected by the classical rotation above.
-		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
-		_ = try alice.pqBootstrapJoin(welcomeFrame)
-		_ = try alice.prepareToEncrypt()
-		let boundFrame = try alice.encrypt(Data("bound".utf8)).frame
-		_ = try bob.processIncomingDecrypted(boundFrame)
-		#expect(bob.myPQTurn)
 
 		// §A.4: Bob (turn-holder) stages the EK; Alice responds with the CT,
 		// signed under her NEW classical key.
@@ -447,11 +478,14 @@ import TwoMLSPQCrypto
 		_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
-		_ = try alice.processIncomingDecrypted(foldFrame)
+		let foldSaw = try alice.processIncomingDecrypted(foldFrame)
 
-		// Alice's own-leaf catch-up: BOTH her classical leaves now present
-		// `aliceNewID` — the rotation has fully converged.
-		_ = try alice.prepareToEncrypt()
+		// Alice's own-leaf catch-up rides a fold of Bob's routine `Upd`
+		// (staged on the same fold frame above): BOTH her classical leaves now
+		// present `aliceNewID` — the rotation has fully converged.
+		_ = try alice.queueProposal(digest: foldSaw.queuedProposal.digest)
+		let catchUpPrepared = try alice.prepareToEncrypt()
+		#expect(catchUpPrepared.didCommit)
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		_ = try bob.processIncomingDecrypted(catchUpFrame)
 		#expect(alice.myPrincipalState == .sync(aliceNewID))
@@ -568,10 +602,12 @@ import TwoMLSPQCrypto
 		#expect(alice.theirPrincipalState == .sync(bobV2ID))
 
 		let foldFrame = try alice.encrypt(Data("alice-fold".utf8)).frame
-		_ = try bob.processIncomingDecrypted(foldFrame)
+		let foldSaw = try bob.processIncomingDecrypted(foldFrame)
 
-		// Bob's own-leaf catch-up: a PLAIN `prepareToEncrypt()` converges his
-		// SEND-leaf to `bobV2` too, before the rollback is ever authored.
+		// Bob's own-leaf catch-up rides a fold of Alice's routine `Upd`
+		// (staged on the same fold frame above), converging his SEND-leaf to
+		// `bobV2` too, before the rollback is ever authored.
+		_ = try bob.queueProposal(digest: foldSaw.queuedProposal.digest)
 		let catchUpPrepared = try bob.prepareToEncrypt()
 		#expect(catchUpPrepared.didCommit)
 		let catchUpFrame = try bob.encrypt(Data("bob-catchup".utf8)).frame
@@ -725,8 +761,12 @@ import TwoMLSPQCrypto
 		_ = try bob.queueProposal(digest: decryptedOffer.queuedProposal.digest)
 		_ = try bob.prepareToEncrypt()
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
-		_ = try alice.processIncomingDecrypted(foldFrame)
-		_ = try alice.prepareToEncrypt()
+		let foldSaw = try alice.processIncomingDecrypted(foldFrame)
+		// The catch-up is a passenger: it rides a fold of Bob's routine `Upd`
+		// (staged on the same frame above), not a plain `prepareToEncrypt()`.
+		_ = try alice.queueProposal(digest: foldSaw.queuedProposal.digest)
+		let catchUpPrepared = try alice.prepareToEncrypt()
+		#expect(catchUpPrepared.didCommit)
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		_ = try bob.processIncomingDecrypted(catchUpFrame)
 
@@ -1060,17 +1100,16 @@ import TwoMLSPQCrypto
 
 	// MARK: - Evidence-gating: an unlicensed own-leaf catch-up must not commit
 
-	/// The §A.3-bootstrap wedge: with a lagging send-leaf
-	/// (`rotationCandidate` live), an owed bind parked, and Bob's licensing Upd
-	/// NOT yet applied (`peerAppliedSendEpoch == nil`), an unlicensed
-	/// `prepareToEncrypt` must NOT commit. Pre-fix the catch-up fired
-	/// unlicensed: the `0x00` staple advanced Alice's send group past the owed
-	/// bind's reserved epoch, and every later licensed discharge threw
-	/// `.epochDesync` forever. Post-fix the catch-up is deferred until the
-	/// license re-arrives, then lands TOGETHER with the bind on one `0x05`
-	/// round. `pqBootstrapJoin` requires `pendingProposal == nil`, so the
-	/// rotation offer's `encrypt` runs before the bootstrap join. Cites
-	/// `protocol-flows.md` §Evidence-gating.
+	/// The §A.3-bootstrap wedge: with an owed bind parked and Bob's licensing
+	/// Upd NOT yet applied (`peerAppliedSendEpoch == nil`), an unlicensed
+	/// `prepareToEncrypt` must NOT commit. A commit here would advance Alice's
+	/// send group past the owed bind's reserved epoch, and every later
+	/// licensed discharge would throw `.epochDesync` forever. Post-fix the
+	/// discharge is deferred until the license re-arrives, then the bind —
+	/// with the lagging send-leaf catch-up riding it as a passenger — lands on
+	/// one `0x05` round. `pqBootstrapJoin` requires `pendingProposal == nil`,
+	/// so the rotation offer's `encrypt` runs before the bootstrap join.
+	/// Cites `protocol-flows.md` §Evidence-gating.
 	@available(iOS 26, macOS 26, *)
 	@Test func unlicensedBootstrapOwnLeafCatchUpDoesNotCommit() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -1146,13 +1185,17 @@ import TwoMLSPQCrypto
 				== aliceNewID, "the send-classical leaf has now caught up")
 	}
 
-	/// No PQ at all: an unlicensed own-leaf catch-up must not produce a
-	/// staple nothing bridges. Same lagging send-leaf, no bootstrap, Bob's
-	/// license withheld: `didCommit == false` and the send epoch is unchanged.
-	/// Re-license and the deferred catch-up commits; Bob applies it
-	/// (`newSender == aliceNewID`). Cites `protocol-flows.md` §Evidence-gating.
+	/// The mutation pin for the removed catch-up trigger: an own-leaf
+	/// catch-up ALONE never commits. First half (unlicensed): a catch-up must
+	/// not produce a staple nothing bridges — `didCommit == false`, epoch
+	/// unchanged. Second half: even fully LICENSED, with a lagging send-leaf
+	/// and nothing queued or owed, a plain `prepareToEncrypt()` still commits
+	/// NOTHING (this assertion fails against the pre-fix code). Liveness: the
+	/// catch-up rides the next fold — Bob surfaces a routine `Upd`, Alice
+	/// approves and folds it, Bob applies (`newSender == aliceNewID`). Cites
+	/// `protocol-flows.md` §"Where each ratchet advances" and §Evidence-gating.
 	@available(iOS 26, macOS 26, *)
-	@Test func unlicensedOwnLeafCatchUpDoesNotCommit() throws {
+	@Test func ownLeafCatchUpAloneNeverCommitsButRidesTheNextFold() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceNewID = Data("alice-evidence-b3".utf8)
 
@@ -1176,14 +1219,29 @@ import TwoMLSPQCrypto
 		#expect(stalledStapleKind != .mlsMessage)
 		#expect(stalledStapleKind != .apqPrivateMessage)
 
-		// Re-license and the deferred catch-up commits.
+		// Re-license.
 		_ = try bob.prepareToEncrypt()
 		let licenseFrame = try bob.encrypt(Data("license".utf8)).frame
 		_ = try alice.processIncomingDecrypted(licenseFrame)
 		#expect(alice.peerAppliedSendEpoch != nil)
 
+		// LICENSED, lagging send-leaf, nothing queued or owed ⇒ still NO
+		// commit: the catch-up is a passenger, never a trigger. (This pins
+		// the removed trigger — it must FAIL against pre-fix code.)
+		let licensedStapleBefore = alice.currentStaple
 		let prepared2 = try alice.prepareToEncrypt()
-		#expect(prepared2.didCommit)
+		#expect(!prepared2.didCommit, "a licensed catch-up alone must not commit")
+		#expect(alice.sendGroup?.classical.context.epoch == sendEpochBefore)
+		#expect(alice.currentStaple == licensedStapleBefore)
+
+		// Liveness: the catch-up rides the next fold — Bob surfaces a routine
+		// `Upd`, Alice approves and folds it, committing the catch-up.
+		_ = try bob.prepareToEncrypt()
+		let offerFrame2 = try bob.encrypt(Data("bob-offer".utf8)).frame
+		let offerDecrypted2 = try alice.processIncomingDecrypted(offerFrame2)
+		_ = try alice.queueProposal(digest: offerDecrypted2.queuedProposal.digest)
+		let prepared3 = try alice.prepareToEncrypt()
+		#expect(prepared3.didCommit)
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		// Opened via `bob` (the recipient).
 		let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(catchUpFrame))

@@ -797,6 +797,9 @@ import Testing
 		let foldFrame = try bob.encrypt(Data("fold".utf8)).frame
 		let foldDecrypted = try alice.processIncomingDecrypted(foldFrame)
 		#expect(foldDecrypted.ownCredentialCanonicalized)
+		// The catch-up rides a fold of Bob's routine offer (staged on the same
+		// frame above), never a plain `prepareToEncrypt()`.
+		_ = try alice.queueProposal(digest: foldDecrypted.queuedProposal.digest)
 		_ = try alice.prepareToEncrypt()
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpFrame)
@@ -1112,9 +1115,11 @@ import Testing
 			let foldDecrypted = try alice.processIncomingDecrypted(foldFrame)
 			#expect(foldDecrypted.ownCredentialCanonicalized)
 
-			// Alice's next `prepareToEncrypt()` performs the send-leaf catch-up
+			// Alice's next `prepareToEncrypt()` folds Bob's routine offer
+			// (staged on the frame above) and rides the send-leaf catch-up
 			// (`committingRound`'s `catchUpTargetID` branch) — arm the fault
 			// right at its write-back point first.
+			_ = try alice.queueProposal(digest: foldDecrypted.queuedProposal.digest)
 			let before = alice.leafKeys
 			try TwoMLSSessionTestHooks.withIsolatedFaults {
 				TwoMLSSessionTestHooks.armFault("committingRound.beforeWriteBack")
@@ -1126,8 +1131,12 @@ import Testing
 				)
 			}
 
-			// The session is not bricked: a retry (fault no longer armed)
+			// The session is not bricked: a fresh fold (fault no longer armed)
 			// completes the catch-up normally.
+			_ = try bob.prepareToEncrypt()
+			let bobOfferFrame2 = try bob.encrypt(Data("bob-offer".utf8)).frame
+			let bobOfferSaw2 = try alice.processIncomingDecrypted(bobOfferFrame2)
+			_ = try alice.queueProposal(digest: bobOfferSaw2.queuedProposal.digest)
 			_ = try alice.prepareToEncrypt()
 			let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 			let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpFrame)
@@ -1175,6 +1184,12 @@ import Testing
 			let recvClassicalBeforeThisCall = alice.leafKeys.recvClassical
 			let sendClassicalBeforeThisCall = alice.leafKeys.sendClassical
 
+			// The catch-up rides a fold of Bob's routine offer (staged on the
+			// frame above) — on the faulted `alice` and on its control alike.
+			_ = try alice.queueProposal(digest: foldDecrypted.queuedProposal.digest)
+			_ = try aliceControl.queueProposal(
+				digest: foldDecrypted.queuedProposal.digest)
+
 			try TwoMLSSessionTestHooks.withIsolatedFaults {
 				TwoMLSSessionTestHooks.armFault(
 					"committingRound.afterWriteBackBeforeRendezvous")
@@ -1220,6 +1235,16 @@ import Testing
 				core: nil, checkpoint: checkpointBeforeCatchUp,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
+			// The catch-up again rides a fold — `bobForRestoreCheck` surfaces a
+			// routine `Upd(self)` for `restored` to approve and fold.
+			_ = try bobForRestoreCheck.prepareToEncrypt()
+			let restoredOfferFrame = try bobForRestoreCheck.encrypt(
+				Data("restore-offer".utf8)
+			).frame
+			let restoredOfferSaw = try restored.processIncomingDecrypted(
+				restoredOfferFrame)
+			_ = try restored.queueProposal(
+				digest: restoredOfferSaw.queuedProposal.digest)
 			let preparedRestored = try restored.prepareToEncrypt()
 			#expect(preparedRestored.didCommit)
 			let restoredFrame = try restored.encrypt(Data("post-restore".utf8)).frame
@@ -1762,6 +1787,10 @@ import Testing
 		#expect(foldDecrypted.ownCredentialCanonicalized)
 		aliceTracker.record(foldDecrypted.update)
 		try assertRestoreEqualsLive(alice, using: aliceTracker)
+		// The catch-up rides a fold of Bob's routine offer (staged on the
+		// same frame above), never a plain `prepareToEncrypt()`.
+		aliceTracker.record(
+			try alice.queueProposal(digest: foldDecrypted.queuedProposal.digest))
 		let preparedCatchUp = try alice.prepareToEncrypt()
 		aliceTracker.record(preparedCatchUp.update)
 		let catchUpEncrypted = try alice.encrypt(Data("catchup".utf8))

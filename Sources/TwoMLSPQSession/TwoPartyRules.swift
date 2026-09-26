@@ -164,8 +164,10 @@ enum TwoPartyRules {
 	/// and a folded peer rotation reports it for the peer's leaf — so this
 	/// treats the two as equivalent leaf-move signals rather than asserting
 	/// `.updated` specifically. `foldedPeerUpdate: false` is a bind-only
-	/// discharge or a solo own-leaf catch-up (the committer's own refresh
-	/// only); `foldedPeerUpdate: true` additionally folds one peer Update/
+	/// discharge or a solo own-leaf refresh (the committer's catch-up — a
+	/// shape a conforming engine never builds standalone, since the
+	/// catch-up rides rather than triggers); `foldedPeerUpdate: true`
+	/// additionally folds one peer Update/
 	/// rotation — the §A.5 mechanical rekey and the classical fold are the
 	/// same shape. Up to two `.credentialReplaced` events can co-occur (a
 	/// folded peer rotation AND an own-leaf catch-up on one commit) — both
