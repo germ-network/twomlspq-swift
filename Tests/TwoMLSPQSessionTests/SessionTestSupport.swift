@@ -173,6 +173,47 @@ enum SessionTestSupport {
 		)
 	}
 
+	/// A pair driven through `rounds` full send → fold → commit rounds, plus,
+	/// after each round, a checkpoint archive of the initiator and the
+	/// acceptor's frame from that round. Restoring the initiator to an early
+	/// checkpoint while the acceptor stays current-era is the behind-restore
+	/// fixture the epoch-desync and addressed-to-invitation receive tests need.
+	/// `bobSendEpochs[i]` is the acceptor send-group epoch `bobFrames[i]`'s app
+	/// was protected at — the epoch the carried-epoch assertions compare to.
+	static func behindRestoreFixture(rounds: Int = 6) throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession,
+		aliceCheckpoints: [SecretArchive], bobFrames: [Data],
+		bobSendEpochs: [UInt64]
+	) {
+		var (alice, bob) = try establishedAndExchanged()
+		var aliceCheckpoints: [SecretArchive] = []
+		var bobFrames: [Data] = []
+		var bobSendEpochs: [UInt64] = []
+		for round in 0..<rounds {
+			_ = try bob.prepareToEncrypt()
+			let bobFrame = try bob.encrypt(Data("b\(round)".utf8)).frame
+			bobFrames.append(bobFrame)
+			bobSendEpochs.append(try #require(bob.sendGroup).classical.context.epoch)
+			let saw = try alice.processIncomingDecrypted(bobFrame)
+			_ = try alice.queueProposal(digest: saw.queuedProposal.digest)
+			_ = try alice.prepareToEncrypt()
+			let aliceFrame = try alice.encrypt(Data("a\(round)".utf8)).frame
+			let folded = try bob.processIncomingDecrypted(aliceFrame)
+			_ = try bob.queueProposal(digest: folded.queuedProposal.digest)
+			aliceCheckpoints.append(try alice.makeSessionArchive(kind: .checkpoint))
+		}
+		return (alice, bob, aliceCheckpoints, bobFrames, bobSendEpochs)
+	}
+
+	/// Restore one session from a checkpoint (`SessionArchiveTests` covers the
+	/// app-seal boundary a real caller crosses; these tests exercise the receive
+	/// path off a restored session).
+	static func restore(checkpoint: SecretArchive) throws -> TwoMLSSession {
+		try TwoMLSSession.restore(
+			core: nil, checkpoint: checkpoint,
+			classicalProvider: classicalProvider, pqProvider: pqProvider)
+	}
+
 	static func establishedAndExchanged(
 		alice aliceName: String = "alice", bob bobName: String = "bob",
 		profile: SessionProfile = .deployedCompatible

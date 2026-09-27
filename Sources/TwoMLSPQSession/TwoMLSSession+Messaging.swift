@@ -570,20 +570,45 @@ extension TwoMLSSession {
 		// Entry: transparently removes the header seal if present,
 		// else passes an already-opened frame straight through (book,
 		// "Receive rule" convenience).
-		let frame = openOrRaw(inbound)
-		guard let tag = frame.first else { throw TwoMLSError.truncatedSection }
-		switch tag {
-		case Frames.messageFrameTag:
-			return try processMessageFrame(
-				frame, approval: approval, ownOfferWindow: ownOfferWindow)
-		case Frames.establishmentHandoffTag:
-			return try processStandaloneHandoff(frame, approval: approval)
-		case Frames.apqWelcomeTag:
-			return try processStandaloneWelcome(frame)
-		case Frames.preEstablishmentAppTag:
-			return try processPreEstablishmentApp(frame)
-		default:
-			throw TwoMLSError.unsupportedFrameTag(tag)
+		let opened = tryOpen(inbound)
+		let frame = opened ?? inbound
+		do {
+			guard let tag = frame.first else {
+				// An empty blob never opened (tryOpen rejects anything at or
+				// below the nonce size): it belongs to the indistinguishable
+				// receive space below, not the wire codec.
+				throw opened == nil
+					? TwoMLSError.decryptionFailed
+					: TwoMLSError.truncatedSection
+			}
+			switch tag {
+			case Frames.messageFrameTag:
+				return try processMessageFrame(
+					frame, approval: approval, ownOfferWindow: ownOfferWindow)
+			case Frames.establishmentHandoffTag:
+				return try processStandaloneHandoff(frame, approval: approval)
+			case Frames.apqWelcomeTag:
+				return try processStandaloneWelcome(frame)
+			case Frames.preEstablishmentAppTag:
+				return try processPreEstablishmentApp(frame)
+			default:
+				// An unrecognized leading byte on a frame that actually OPENED
+				// is an honest tag rejection; on a blob that never opened it is
+				// the indistinguishable receive space.
+				throw opened == nil
+					? TwoMLSError.decryptionFailed
+					: TwoMLSError.unsupportedFrameTag(tag)
+			}
+		} catch let error as TwoMLSError where opened == nil && error.isWireStructural {
+			// A blob that never opened is a sealed frame we cannot decrypt: an
+			// out-of-window frame and garbage are indistinguishable by
+			// construction (book header-encryption.md, "Receive rule"). The
+			// whole space resolves to one family — an unknown leading byte, a
+			// structural mis-slice, an empty blob alike — the receive family
+			// (api-reference.md:328, "Epoch misses stay `DecryptionFailed`"),
+			// matching the deployed engine. Only a frame that actually opened
+			// may claim a specific frame-codec error.
+			throw TwoMLSError.decryptionFailed
 		}
 	}
 
@@ -596,6 +621,23 @@ extension TwoMLSSession {
 		_ frame: Data, approval: EstablishmentApproval, ownOfferWindow: SecretArchive? = nil
 	) throws -> IncomingResult {
 		let (staple, proposalSection, appSection) = try Frames.decodeMessageFrame(frame)
+		// Epoch position BEFORE any further structural decode (book
+		// wire-format.md:225-226: "a commit *ahead* of the receive group
+		// surfaces `EpochDesync` before the app ciphertext is touched"). The
+		// staple is the sender's latest commit — an MLS public message, so its
+		// epoch reads off the authenticated header alone. A commit ahead is
+		// refused here, before the app section is decoded at all; behind/equal
+		// is the ordinary re-ride `handleStaple` skips/applies below. A
+		// welcome/handoff staple carries no commit epoch and falls through to
+		// its own dedup/join handling. On a `0x05` bind staple this now
+		// precedes `applyBind`'s own `notEstablished`/`sessionNotReady` guards
+		// — a degenerate bind in a state that would fail those reports
+		// `epochDesync` first; fail-closed either way.
+		if let recv = recvGroup, let commitEpoch = Self.stapleCommitEpoch(staple) {
+			_ = try Self.classifyStapleEpoch(
+				commitEpoch: commitEpoch, currentEpoch: recv.classical.context.epoch
+			)
+		}
 		if staple.first == Frames.establishmentHandoffTag, recvGroup == nil {
 			let (envelope, welcome) = try Frames.decodeEstablishmentHandoff(staple)
 			if case .approved(
@@ -709,7 +751,8 @@ extension TwoMLSSession {
 		guard case .privateMessage(let appPM) = appMessage else {
 			throw TwoMLSError.appSectionNotPrivateMessage
 		}
-		let unprotected = try recv.classical.unprotect(classicalProvider, message: appPM)
+		let unprotected = try Self.unprotectApp(
+			&recv.classical, provider: classicalProvider, message: appPM)
 		guard case .application(let data) = unprotected.content else {
 			throw TwoMLSError.unprotectedContentNotApplication
 		}
@@ -761,7 +804,8 @@ extension TwoMLSSession {
 		// Hashed before `recvGroup` is written back, so it adds no throw after
 		// this helper's own mutation.
 		let context = try classicalProvider.hash(send.classical.context.groupID)
-		let unprotected = try recv.classical.unprotect(classicalProvider, message: appPM)
+		let unprotected = try Self.unprotectApp(
+			&recv.classical, provider: classicalProvider, message: appPM)
 		recvGroup = recv
 
 		guard case .application(let data) = unprotected.content else {
@@ -792,6 +836,26 @@ extension TwoMLSSession {
 				digest: digest, proposing: proposing, context: context,
 				isCatchUp: isCatchUp),
 			update: update)
+	}
+
+	/// Fold swift-mls's `messageFromUnretainedEpoch` at the message-path
+	/// `unprotect` boundary into the public
+	/// `TwoMLSError.messageFromUnretainedEpoch(epoch:)` — the peer sealed this
+	/// app message at an epoch whose message secrets this session no longer
+	/// holds (pruned-old or ahead; the case's doc has the full semantics), so
+	/// it crosses as a classified session error instead of an unmapped
+	/// dependency error. Fail-closed: the group is left unadvanced on the
+	/// throw.
+	private static func unprotectApp(
+		_ classical: inout MLS.RFC9420.Group,
+		provider: any MLS.CipherSuiteProvider,
+		message: MLS.RFC9420.PrivateMessage
+	) throws -> MLS.RFC9420.Group.Unprotected {
+		do {
+			return try classical.unprotect(provider, message: message)
+		} catch MLS.RFC9420.GroupError.messageFromUnretainedEpoch(let epoch) {
+			throw TwoMLSError.messageFromUnretainedEpoch(epoch: epoch)
+		}
 	}
 
 	/// `0x01`/`0x0B` welcome → join Group_B if this staple hasn't been

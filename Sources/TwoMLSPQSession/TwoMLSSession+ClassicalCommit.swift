@@ -179,12 +179,41 @@ extension TwoMLSSession {
 	/// skip; ahead of it is `.epochDesync`; equal is the one live application.
 	enum StapleEpochAction { case skip, apply }
 
-	private static func classifyStapleEpoch(commitEpoch: UInt64, currentEpoch: UInt64) throws
+	static func classifyStapleEpoch(commitEpoch: UInt64, currentEpoch: UInt64) throws
 		-> StapleEpochAction
 	{
 		if commitEpoch < currentEpoch { return .skip }
 		guard commitEpoch == currentEpoch else { throw TwoMLSError.epochDesync }
 		return .apply
+	}
+
+	/// The commit epoch a `0x00`/`0x05` staple names, read off its classical
+	/// MLS public message (for `0x05`, the `t` half) — the authenticated
+	/// header alone, no ciphertext touched. `nil` for a welcome/handoff staple
+	/// or one whose bytes do not decode, letting the staple's own arm surface
+	/// its error. Lets `processMessageFrame` classify epoch position before it
+	/// structurally decodes anything else.
+	static func stapleCommitEpoch(_ staple: Data) -> UInt64? {
+		switch Frames.stapleKind(staple.first ?? 0) {
+		case .mlsMessage:
+			return withDeployedWireConventions {
+				guard
+					case .publicMessage(let pub) = try? MLS.RFC9420.Message(
+						mlsEncoded: staple)
+				else { return nil }
+				return pub.content.epoch
+			}
+		case .apqPrivateMessage:
+			return withDeployedWireConventions {
+				guard let (tBytes, _) = try? Frames.decodeAPQPrivateMessage(staple),
+					case .publicMessage(let pub) = try? MLS.RFC9420.Message(
+						mlsEncoded: tBytes)
+				else { return nil }
+				return pub.content.epoch
+			}
+		default:
+			return nil
+		}
 	}
 
 	/// Re-`verifying`+`insert` every `Upd(self)` staged into

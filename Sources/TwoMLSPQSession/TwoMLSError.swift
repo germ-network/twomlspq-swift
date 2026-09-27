@@ -157,6 +157,22 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// declared suite via untransmitted AAD").
 	case decryptionFailed
 
+	// MARK: Message-path epoch retention
+
+	/// A peer app message was sealed at an epoch this session no longer holds
+	/// message secrets for — swift-mls's `GroupError.messageFromUnretainedEpoch`,
+	/// folded at the two message-path `unprotect` sites. Both shapes are
+	/// `messageSecrets[epoch] == nil` and are indistinguishable at the receiver:
+	/// an epoch we WERE in, whose secrets were pruned after advancing past the
+	/// retention window (a late/replayed frame, or a behind-restored sender's
+	/// fresh seal at its rewound epoch), or an epoch above current — misordered
+	/// or forged, undrawn. The common case is discard-as-stale, the same family
+	/// the deployed engine reports as `StaleFrame`/`DecryptionFailed`; re-route
+	/// (at the invitation layer) or re-establish is warranted only when the host
+	/// has independent evidence the peer was restored. Fail-closed: no
+	/// generation is consumed and the receive group is left unadvanced.
+	case messageFromUnretainedEpoch(epoch: UInt64)
+
 	// MARK: §A.5 PQ re-key (mechanical)
 
 	/// A `0x1B` Upd′ did not verify as a peer `.update` proposal
@@ -472,4 +488,17 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// signing key for that group. A no-custody classical group can only
 	/// receive; a no-custody PQ group's own driver stops that door.
 	case leafCustodyUnavailable
+
+	/// A `Frames` section-codec failure. An out-of-window sealed frame is
+	/// indistinguishable from garbage (book header-encryption.md, "Receive
+	/// rule"), so its ciphertext's leading bytes can read as a section header
+	/// and mis-slice. The receive dispatcher uses this to classify such a blob
+	/// into the receive family rather than surfacing the decoder's structural
+	/// error.
+	var isWireStructural: Bool {
+		switch self {
+		case .truncatedSection, .emptySection, .trailingBytes: return true
+		default: return false
+		}
+	}
 }
