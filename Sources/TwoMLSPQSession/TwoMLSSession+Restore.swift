@@ -390,7 +390,10 @@ extension TwoMLSSession {
 		let identity = try body.identity.restore()
 		let bootstrapKPSecret = try body.bootstrapKPSecret?.restore()
 		let pqInflight = try body.pqInflight?.restore()
-		let rotationCandidate = body.rotationCandidate?.restore()
+		// Keys 46/47 are the window + park slot; key 46 is required, so a
+		// missing window is a decode failure upstream.
+		let rotationCandidates = body.rotationCandidates.map { $0.restore() }
+		let deferredRotationCandidate = body.deferredRotationCandidate
 		// `LeafKeysArchive.restore()` runs the archive-level checks (every
 		// key derives; every pending target non-empty/unique, and — since
 		// the splice above already ran — the PQ sets are present);
@@ -413,7 +416,7 @@ extension TwoMLSSession {
 			bootstrapKPSecret: bootstrapKPSecret,
 			stagedUpdates: body.stagedUpdates.map { $0.asTuple },
 			pendingProposal: body.pendingProposal?.asTuple,
-			pqInflight: pqInflight, rotationCandidate: rotationCandidate,
+			pqInflight: pqInflight, rotationCandidates: rotationCandidates,
 			auth: body.auth,
 			mode: .restore, noCustody: noCustody,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
@@ -461,7 +464,8 @@ extension TwoMLSSession {
 			body.sendAttachmentLedger?.entries.mapValues { $0.wrappedValue } ?? [:]
 		session.recvAttachmentLedger =
 			body.recvAttachmentLedger?.entries.mapValues { $0.wrappedValue } ?? [:]
-		session.rotationCandidate = try body.rotationCandidate?.restore()
+		session.rotationCandidates = rotationCandidates
+		session.deferredRotationCandidate = deferredRotationCandidate
 		// Optional-with-empty-default (SessionArchive.swift): absent on a
 		// pre-existing v1 archive, in which case this starts empty. Restore
 		// is itself a capture site — re-derive the current classical epoch's

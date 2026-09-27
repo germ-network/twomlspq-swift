@@ -183,7 +183,7 @@ extension TwoMLSSession {
 		stagedUpdates: [(digest: Data, message: Data)],
 		pendingProposal: (proposing: Data, message: Data, hash: Data)?,
 		pqInflight: PQInflight?,
-		rotationCandidate: RotationCandidate?,
+		rotationCandidates: [RotationCandidate],
 		auth: AuthCore,
 		mode: LeafKeysValidationMode = .restore,
 		noCustody: Set<MigratedGroupRole> = [],
@@ -341,14 +341,14 @@ extension TwoMLSSession {
 			}
 		}
 
-		// Check 8: while a candidate is outstanding (not yet canonicalized),
-		// recv-classical needs `pending[C]` (the offer awaiting the peer's
-		// fold). Send-classical never holds a candidate copy — its own
-		// next committing round mints fresh for whatever id it then
-		// presents, so there is nothing to require of it here.
-		if let candidate = rotationCandidate,
-			isRotationCandidateOutstanding(
-				candidate.clientID, mineHistory: auth.mine.history)
+		// Check 8: while a window member is outstanding (not yet
+		// canonicalized), recv-classical needs `pending[C]` (the offer
+		// awaiting the peer's fold). Send-classical never holds a candidate
+		// copy — its own next committing round mints fresh for whatever id
+		// it then presents, so there is nothing to require of it here.
+		for candidate in rotationCandidates
+		where isRotationCandidateOutstanding(
+			candidate.clientID, mineHistory: auth.mine.history)
 		{
 			guard leafKeys.recvClassical.pending[candidate.clientID] != nil
 			else {
@@ -511,17 +511,19 @@ extension GroupKeySet {
 	/// advance (`applyFoldCommit`/`applyBind`'s own success point, AFTER
 	/// this set's own presentation has already been promoted for that same
 	/// apply): a `pending[t]` entry survives only while `t` is still LIVE —
-	/// the outstanding rotation candidate (not yet canonicalized), or the
-	/// rule-4 catch-up target — never merely because some now-stale own
-	/// proposal named it. A target the leaf itself now presents is never
-	/// examined here at all: promotion already removed it from `pending`
-	/// before this runs, so retention only ever prunes a target the leaf
-	/// still lacks.
+	/// an outstanding window member (not yet canonicalized), or the rule-4
+	/// catch-up target — never merely because some now-stale own proposal
+	/// named it. A target the leaf itself now presents is never examined
+	/// here at all: promotion already removed it from `pending` before this
+	/// runs, so retention only ever prunes a target the leaf still lacks.
+	/// The caller passes the window's members AFTER any canonicalization
+	/// clear, so a winner that just canonicalized is not among them and its
+	/// (now-promoted) key is not retained a second time.
 	mutating func retainRecvClassical(
-		candidateID: Data?, candidateCanonicalized: Bool, ruleFourTarget: Data?
+		candidateIDs: [Data], ruleFourTarget: Data?
 	) {
 		pending = pending.filter { target, _ in
-			if let candidateID, target == candidateID, !candidateCanonicalized {
+			if candidateIDs.contains(target) {
 				return true
 			}
 			if let ruleFourTarget, target == ruleFourTarget {

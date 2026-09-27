@@ -347,10 +347,10 @@ extension TwoMLSSession {
 	/// rule-7-supplied lag a candidate could never explain. The read is
 	/// tree-derived (never a cached claim), so this can never disagree with
 	/// what the stored key set would sign with. Returns the TARGET id, not a
-	/// candidate record — the key itself always comes from
-	/// `leafKeys.sendClassical.pending`, never `rotationCandidate.
-	/// signingKey` directly — `nil` when the group is absent, there is no
-	/// canonical principal yet, or the send-leaf already presents it.
+	/// candidate record — the key itself always comes from the stored key
+	/// set (send-classical mints it fresh at the move), never a rotation
+	/// candidate's own bookkeeping — `nil` when the group is absent, there is
+	/// no canonical principal yet, or the send-leaf already presents it.
 	private static func ownLeafCatchUpTarget(
 		send: APQGroup?, mineCurrent: Data?
 	) throws -> Data? {
@@ -814,16 +814,24 @@ extension TwoMLSSession {
 			// would), so it is computed into a local copy and written back
 			// only alongside `recv`/`send` below — a throw above burns none
 			// of `recv`, `send`, or `auth`.
-			let (authCopy, newSender, ownCanonicalized) = try Self.canonicalize(
-				effects, myLeaf: myLeaf, from: auth)
+			let (authCopy, newSender, ownCanonicalized, ownCanonicalizedID) =
+				try Self.canonicalize(effects, myLeaf: myLeaf, from: auth)
+			// A real own-leaf commit canonicalizes one of our rotation
+			// candidates: clear the WHOLE window (book rule 3 — the losing
+			// candidates' authorizations expire) BEFORE retention, so
+			// retention sees the post-clear pool and prunes the losers'
+			// now-dead `pending` keys. The parked slot is deliberately
+			// untouched.
+			let updatedRotationCandidates =
+				ownCanonicalizedID == nil ? rotationCandidates : []
 			// Promote + retain, on the post-`canonicalize` local `authCopy`
 			// (never `self.auth`, which only writes back below) — every own
 			// proposal goes stale at this exact advance, whichever leaf
 			// actually moved.
 			let updatedLeafKeys = try Self.updateRecvClassicalKeys(
 				leafKeys, classical: recv.classical,
-				authCopy: authCopy, rotationCandidateID: rotationCandidate?.clientID
-			)
+				authCopy: authCopy,
+				rotationCandidateIDs: updatedRotationCandidates.map(\.clientID))
 
 			recvGroup = recv
 			sendGroup = send
@@ -839,6 +847,7 @@ extension TwoMLSSession {
 			self.ownOfferWindow = nil
 			auth = authCopy
 			leafKeys = updatedLeafKeys
+			rotationCandidates = updatedRotationCandidates
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)
@@ -878,10 +887,18 @@ extension TwoMLSSession {
 	/// as `ownCredentialCanonicalized`).
 	private static func canonicalize(
 		_ effects: MLS.RFC9420.CommitEffects, myLeaf: MLS.LeafIndex, from auth: AuthCore
-	) throws -> (auth: AuthCore, newSender: Data?, ownCredentialCanonicalized: Bool) {
+	) throws -> (
+		auth: AuthCore, newSender: Data?, ownCredentialCanonicalized: Bool,
+		ownCanonicalizedID: Data?
+	) {
 		var updated = auth
 		var newSender: Data?
 		var ownCredentialCanonicalized = false
+		// The genuinely-committed own id: non-nil iff a real `mine.commit`
+		// ran (the new-id branch below, never a same-id move or a catch-up
+		// onto an already-known id). The callers clear the rotation window
+		// on it — the ONLY event that canonicalizes one of our candidates.
+		var ownCanonicalizedID: Data?
 		for event in effects.events {
 			guard case .credentialReplaced(let leaf, let old, let new) = event else {
 				continue
@@ -909,6 +926,7 @@ extension TwoMLSSession {
 					|| updated.mine.pinned.contains(newID))
 				{
 					try updated.mine.commit(newID)
+					ownCanonicalizedID = newID
 				}
 				ownCredentialCanonicalized = true
 			} else {
@@ -920,7 +938,7 @@ extension TwoMLSSession {
 				newSender = newID
 			}
 		}
-		return (updated, newSender, ownCredentialCanonicalized)
+		return (updated, newSender, ownCredentialCanonicalized, ownCanonicalizedID)
 	}
 
 	/// recv-classical's post-apply promote + retention, shared by
@@ -942,17 +960,12 @@ extension TwoMLSSession {
 	/// lags it — subsumes the born-dedicated-only case.
 	private static func updateRecvClassicalKeys(
 		_ leafKeys: LeafKeys, classical: MLS.RFC9420.Group,
-		authCopy: AuthCore, rotationCandidateID: Data?
+		authCopy: AuthCore, rotationCandidateIDs: [Data]
 	) throws -> LeafKeys {
 		var updated = leafKeys
 		let ownLeaf = try Self.ownLeaf(of: classical)
 		let ownID = try basicIdentifier(ownLeaf.credential)
 		try updated.recvClassical.promoted(presenting: ownLeaf.signatureKey, id: ownID)
-		let candidateCanonicalized =
-			rotationCandidateID.map {
-				!isRotationCandidateOutstanding(
-					$0, mineHistory: authCopy.mine.history)
-			} ?? true
 		let ruleFourTarget: Data? = {
 			guard let mineCurrent = authCopy.mine.current, ownID != mineCurrent else {
 				return nil
@@ -960,9 +973,7 @@ extension TwoMLSSession {
 			return mineCurrent
 		}()
 		updated.recvClassical.retainRecvClassical(
-			candidateID: rotationCandidateID,
-			candidateCanonicalized: candidateCanonicalized,
-			ruleFourTarget: ruleFourTarget)
+			candidateIDs: rotationCandidateIDs, ruleFourTarget: ruleFourTarget)
 		return updated
 	}
 
@@ -1211,15 +1222,17 @@ extension TwoMLSSession {
 
 			// Value semantics extend to `auth` — computed into a local copy,
 			// written back only alongside `recv`/`send` below.
-			let (authCopy, newSender, ownCanonicalized) = try Self.canonicalize(
-				classicalEffects, myLeaf: myLeaf, from: auth)
-			// Same promote + retain as `applyFoldCommit` — this is the
-			// OTHER (and only other) site `recvGroup.classical`'s epoch
-			// advances.
+			let (authCopy, newSender, ownCanonicalized, ownCanonicalizedID) =
+				try Self.canonicalize(classicalEffects, myLeaf: myLeaf, from: auth)
+			// Same window clear + promote + retain as `applyFoldCommit` —
+			// this is the OTHER (and only other) site `recvGroup.classical`'s
+			// epoch advances.
+			let updatedRotationCandidates =
+				ownCanonicalizedID == nil ? rotationCandidates : []
 			let updatedLeafKeys = try Self.updateRecvClassicalKeys(
 				leafKeys, classical: recv.classical,
-				authCopy: authCopy, rotationCandidateID: rotationCandidate?.clientID
-			)
+				authCopy: authCopy,
+				rotationCandidateIDs: updatedRotationCandidates.map(\.clientID))
 
 			recvGroup = recv
 			sendGroup = send
@@ -1239,6 +1252,7 @@ extension TwoMLSSession {
 			}
 			auth = authCopy
 			leafKeys = updatedLeafKeys
+			rotationCandidates = updatedRotationCandidates
 			return StapleApplyResult(
 				applied: true, newSender: newSender,
 				ownCredentialCanonicalized: ownCanonicalized)

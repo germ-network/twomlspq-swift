@@ -495,7 +495,7 @@ import Testing
 
 		// Now a genuinely NEW rotation must still work — no stale
 		// `.rotationInFlight` left over from the catch-up mechanism (which
-		// never touches `rotationCandidate`).
+		// never touches `rotationCandidates`).
 		let rotated = try bob.prepareToEncrypt(rotating: Data("bob-rotated".utf8))
 		#expect(rotated.proposalMessage.isEmpty == false)
 		#expect(

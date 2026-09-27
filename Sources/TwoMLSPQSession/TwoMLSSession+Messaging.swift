@@ -25,24 +25,27 @@ extension TwoMLSSession {
 	/// commit happened; `committedRemoteClientID` is set only when a fold rode.
 	///
 	/// `rotating`, when non-nil, authors a classical principal rotation:
-	/// mint a fresh signature keypair for `rotating` (or, if it
-	/// already names the single outstanding `rotationCandidate`, reuse that
-	/// candidate's key — idempotent), then stage it as the `Upd(self)` via
-	/// the rotation ring + `NewSigningIdentity` instead of the routine
-	/// single-key form. Rejects `rotating` naming my own recv-leaf's
-	/// CURRENT id outright (`.credentialUnknown`) — that offer could never
-	/// canonicalize (`PartySequence.commit`'s own `current == id` no-op),
-	/// so it would sit `.pending` forever. The one-generation rotation cap: a
-	/// DIFFERENT id while a candidate is still outstanding is
-	/// `.rotationInFlight`, UNLESS the wedge relaxation applies — the
-	/// outstanding candidate never canonicalized (`auth.mine.history` does
-	/// not yet contain it) AND `recvGroup.classical`'s epoch has moved past
-	/// the epoch its `Upd` was staged at, so the peer can no longer fold
-	/// that now-stale proposal. A candidate that DID canonicalize is never
-	/// replaced this way — dropping it would strand the very key both
-	/// classical leaves may already present, bricking the session; a
-	/// second rotation on an already-converged leaf must instead wait for
-	/// the PQ catch-up.
+	/// mint a fresh signature keypair for `rotating` (or, if it already
+	/// names a candidate in the in-flight window, reuse that candidate's
+	/// key — idempotent), then stage it as the `Upd(self)` via the rotation
+	/// ring + `NewSigningIdentity` instead of the routine single-key form.
+	/// Rejects `rotating` naming my own recv-leaf's CURRENT id outright
+	/// (`.credentialUnknown`) — that offer could never canonicalize
+	/// (`PartySequence.commit`'s own `current == id` no-op), so it would sit
+	/// `.pending` forever. Book rule 1: a candidate proposed on the wire is
+	/// never evicted, so up to `candidateWindow` candidates may be in flight
+	/// at once; a further rotation request PARKS in the single latest-wins
+	/// `deferredRotationCandidate` slot instead of throwing, and the round
+	/// still emits its routine self-refresh. A parked request is promoted
+	/// and proposed automatically on the next routine round once a
+	/// canonicalization clears the window.
+	///
+	/// Every deterministic rotation refusal (empty id, my own recv-leaf's
+	/// current id, a peer-known id, a re-stage missing its held key) is
+	/// checked BEFORE the `committingRound` below: a refusal must never
+	/// consume a queued fold and hide a freshly-committed epoch from the
+	/// host (the caller would see a throw with no `StateUpdate` while the
+	/// live session carried the commit).
 	public mutating func prepareToEncrypt(rotating: Data? = nil) throws -> PrepareResult {
 		// The non-emittable gate, BEFORE `committingRound()`
 		// — a commit landing here before install would replace the bare
@@ -65,6 +68,71 @@ extension TwoMLSSession {
 		else {
 			throw TwoMLSError.leafCustodyUnavailable
 		}
+
+		// Rotation-request resolution, all BEFORE `committingRound()`
+		// (atomicity — a refusal must not consume a queued fold). The guard
+		// inputs are invariant across the round below EXCEPT
+		// `auth.theirs.knownIDs`, which a fold's `theirs.commit` can only
+		// SHRINK (it clears every `authorizedNext`). Monotonicity is what
+		// makes the hoist sound: a pre-commit check throws in a strict
+		// SUPERSET of the post-commit cases, so it can only refuse marginally
+		// earlier, never admit what the old post-commit check refused. The
+		// one disclosed delta: a `rotating:` naming a superseded-but-still-
+		// authorized peer id now refuses pre-commit where it was admitted
+		// post-fold. `myCurrentID` reads the recv tree (the round touches only
+		// `sendGroup`); the window, `auth.mine`, and recv-classical `pending`
+		// are untouched across it.
+		guard let preCommitRecv = recvGroup else {
+			throw TwoMLSError.notEstablished
+		}
+		let myCurrentID = try basicIdentifier(
+			Self.ownLeaf(of: preCommitRecv.classical).credential)
+
+		func rotationRejection(_ id: Data) -> TwoMLSError? {
+			if id.isEmpty { return .credentialUnknown }
+			if id == myCurrentID { return .credentialUnknown }
+			if auth.theirs.knownIDs.contains(id) { return .invalidSuccession }
+			if rotationCandidates.contains(where: { $0.clientID == id }),
+				leafKeys.recvClassical.pending[id] == nil
+			{
+				return .credentialUnknown
+			}
+			return nil
+		}
+
+		var requestedRotation = rotating
+		var promotedDeferredID: Data? = nil
+		var dropDeferred = false
+		if let explicit = requestedRotation {
+			if let rejection = rotationRejection(explicit) { throw rejection }
+		} else if let deferred = deferredRotationCandidate,
+			rotationCandidates.count < Self.candidateWindow
+		{
+			// Promote a parked request onto this routine round — but only
+			// when it is a legal target: an autonomous action must never
+			// throw the host's send, so an invalid parked id is dropped.
+			if rotationRejection(deferred) == nil {
+				requestedRotation = deferred
+				promotedDeferredID = deferred
+			} else {
+				dropDeferred = true
+			}
+		}
+
+		// A request that cannot be admitted (the window is full and it is
+		// not already a member) PARKS, and the call falls through to the
+		// routine/catch-up arms below exactly as if nothing had been named —
+		// book rule 1: a newer stage replaces the parked one, and parking is
+		// not an error, so the frame still rides.
+		var parkedRotationID: Data? = nil
+		if let id = requestedRotation, id != auth.mine.current,
+			!rotationCandidates.contains(where: { $0.clientID == id }),
+			rotationCandidates.count >= Self.candidateWindow
+		{
+			parkedRotationID = id
+			requestedRotation = nil
+		}
+
 		let (didCommit, committedRemoteClientID) = try committingRound()
 		rewrapSideBand()
 
@@ -73,6 +141,7 @@ extension TwoMLSSession {
 		let proposalBytes: Data
 		let proposing: Data
 		var mintedCandidate: RotationCandidate?
+		var restagedCandidateID: Data?
 		var mintedLeafKeys: LeafKeys?
 		var reusedThisCall = false
 
@@ -125,8 +194,8 @@ extension TwoMLSSession {
 		// CODE FIX 2: rotating "to" the id already occupying my own
 		// recv-leaf can never converge — `PartySequence.commit(current)`
 		// early-returns as a no-op, so the offer would sit `.pending`
-		// forever with no fold ever able to canonicalize it.
-		let myCurrentID = try basicIdentifier(Self.ownLeaf(of: recv.classical).credential)
+		// forever with no fold ever able to canonicalize it. (Enforced
+		// pre-commit in `rotationRejection`, above.)
 
 		// (group-rules.md rule 4, generalized —
 		// protocol-flows.md:56): the recv-leaf catch-up — my own recv-leaf
@@ -143,7 +212,8 @@ extension TwoMLSSession {
 		// otherwise mint a 2nd keypair and leak `authorize(mine.current)`
 		// into `authorizedNext` forever, since `PartySequence.commit`'s own
 		// `current == id` early return never canonicalizes a no-op).
-		if rotating == nil, let mineCurrent = auth.mine.current, myCurrentID != mineCurrent
+		if requestedRotation == nil, let mineCurrent = auth.mine.current,
+			myCurrentID != mineCurrent
 		{
 			if let reused = reuseOffer(for: mineCurrent) {
 				proposalBytes = reused
@@ -163,17 +233,10 @@ extension TwoMLSSession {
 				proposalBytes = try catchUpMessage.mlsEncoded()
 			}
 			proposing = mineCurrent
-		} else if let rotating {
-			guard !rotating.isEmpty else { throw TwoMLSError.credentialUnknown }
-			guard rotating != myCurrentID else { throw TwoMLSError.credentialUnknown }
-			// Reject a rotation naming one of the PEER's own known ids
-			// outright — never a legitimate rotation of MINE (mirrors
-			// `validateOfferedUpdate`'s own same-shaped guard against the
-			// peer naming one of my own known ids).
-			guard !auth.theirs.knownIDs.contains(rotating) else {
-				throw TwoMLSError.invalidSuccession
-			}
-
+		} else if let rotating = requestedRotation {
+			// Every deterministic refusal was checked pre-commit
+			// (`rotationRejection`), so nothing here can throw for an
+			// ordinary reason.
 			if rotating == auth.mine.current {
 				// Naming the identity already canonical isn't a NEW
 				// rotation — route it to the SAME generalized catch-up this
@@ -206,18 +269,16 @@ extension TwoMLSSession {
 			} else {
 				let candidate: RotationCandidate
 				let candidateKey: LeafKey
-				var stagedLeafKeys = leafKeys
-				if let existing = rotationCandidate, existing.clientID == rotating {
-					// Idempotent: re-stage under the SAME candidate key rather
-					// than minting a new one, which would strand whichever leaf
-					// already presents the existing candidate's key. Still
-					// rebuild the candidate record with the CURRENT recv
-					// epoch, so a second rotation attempt within the same epoch
-					// keeps throwing `.rotationInFlight` until the peer's fold
-					// actually moves the epoch on — `mintedCandidate`'s
-					// write-back below re-stamps it unconditionally.
+				if let existing = rotationCandidates.first(where: {
+					$0.clientID == rotating
+				}) {
+					// Idempotent: re-stage under the SAME window member's key
+					// rather than minting a new one, which would strand
+					// whichever leaf already presents it (the held key was
+					// checked present pre-commit). Refresh the record's epoch
+					// in place at the write-back below.
 					guard
-						let existingKey = stagedLeafKeys.recvClassical
+						let existingKey = leafKeys.recvClassical
 							.pending[rotating]
 					else {
 						throw TwoMLSError.credentialUnknown
@@ -226,34 +287,12 @@ extension TwoMLSSession {
 					candidate = RotationCandidate(
 						clientID: existing.clientID,
 						proposedAtRecvEpoch: recv.classical.context.epoch)
+					restagedCandidateID = rotating
 				} else {
-					if let existing = rotationCandidate {
-						// CODE FIX 1: the wedge relaxation may replace a
-						// candidate only when it is DEAD — never canonicalized
-						// (absent from `auth.mine.history`) — AND the peer can
-						// no longer fold its now-stale proposal
-						// (`recvGroup.classical`'s epoch has moved past the
-						// epoch it was staged at). A candidate that DID
-						// converge means a rotation already landed on this
-						// leaf, so a second rotation on a converged leaf is
-						// rejected outright (the one-generation cap) until a
-						// the PQ catch-up — lifting the cap is a
-						// separate policy call, not merely a consequence of
-						// send-classical no longer holding a candidate
-						// key that could be stranded. It also keeps at most two targets
-						// (routine + one candidate) ever outstanding per
-						// epoch, bounding `stagedUpdates`/`recvClassical.
-						// pending` the same way.
-						guard
-							isRotationCandidateOutstanding(
-								existing.clientID,
-								mineHistory: auth.mine.history),
-							recv.classical.context.epoch
-								> existing.proposedAtRecvEpoch
-						else {
-							throw TwoMLSError.rotationInFlight
-						}
-					}
+					// Admit into the window — guaranteed room, since a full
+					// window parked above instead of reaching this arm. A
+					// never-evicted candidate (book rule 1) is minted and
+					// authorized; the peer may commit any window member.
 					let (signingKey, signatureKey) =
 						try TwoMLSIdentity.mintSignatureKeypair()
 					candidate = RotationCandidate(
@@ -267,10 +306,12 @@ extension TwoMLSSession {
 					// a `pending` entry any more — its own next committing
 					// round mints fresh for whatever id it then presents, so
 					// there is nothing to stage there in advance.
+					var stagedLeafKeys = leafKeys
 					try stagedLeafKeys.recvClassical.stage(
 						candidateKey, for: rotating)
+					mintedLeafKeys = stagedLeafKeys
+					mintedCandidate = candidate
 				}
-				mintedLeafKeys = stagedLeafKeys
 
 				// `.framedContent` stays on the recv-leaf's
 				// CURRENT key (still OLD — recv-classical has not
@@ -290,7 +331,6 @@ extension TwoMLSSession {
 						signatureKey: candidateKey.signatureKey))
 				proposalBytes = try rotatingMessage.mlsEncoded()
 				proposing = candidate.clientID
-				mintedCandidate = candidate
 			}
 		} else {
 			// After `canonicalized_own`, my recv-leaf presents the NEW
@@ -320,21 +360,50 @@ extension TwoMLSSession {
 		}
 
 		// Value semantics — every throwing call above ran on the LOCAL
-		// `recv` copy (and minted a candidate only into a local var); only
-		// on success do we write back `recvGroup`, `rotationCandidate`, and
-		// `auth.mine`'s authorization.
+		// `recv` copy (and minted a candidate/leafKeys only into locals);
+		// only on success do we write back `recvGroup`, the rotation
+		// window, the park/promote slot, and `auth.mine`'s authorization.
 		recvGroup = recv
 		if let mintedCandidate {
-			rotationCandidate = mintedCandidate
+			rotationCandidates.append(mintedCandidate)
 			auth.mine.authorize(mintedCandidate.clientID)
+			lastRotationRequestID = mintedCandidate.clientID
 		}
+		if let restagedCandidateID,
+			let index = rotationCandidates.firstIndex(where: {
+				$0.clientID == restagedCandidateID
+			})
+		{
+			// An idempotent re-stage of an already-staged candidate does NOT
+			// supersede `lastRotationRequestID` — Rust's `admit_candidate`
+			// early-returns for an already-staged id before touching `my_state`
+			// (messaging.rs:704-712), so a park stays the reported request.
+			rotationCandidates[index] = RotationCandidate(
+				clientID: restagedCandidateID,
+				proposedAtRecvEpoch: recv.classical.context.epoch)
+		}
+		// A promotion consumed its park slot; an invalid promoted id is
+		// dropped; an admitted id no longer needs its slot. A park replaces
+		// whatever was there (book rule 1: a newer stage replaces it).
+		var updatedDeferred = deferredRotationCandidate
+		if promotedDeferredID != nil || dropDeferred {
+			updatedDeferred = nil
+		}
+		if let mintedCandidate, updatedDeferred == mintedCandidate.clientID {
+			updatedDeferred = nil
+		}
+		if let parkedRotationID {
+			updatedDeferred = parkedRotationID
+			lastRotationRequestID = parkedRotationID
+		}
+		deferredRotationCandidate = updatedDeferred
 		if let mintedLeafKeys {
 			leafKeys = mintedLeafKeys
 		}
 
 		// (DEBUG only): a fault point AFTER the write-back above but before
 		// the next throwing call — proves a fault here leaves `self` fully
-		// write-back-complete for `recvGroup`/`rotationCandidate`/`auth`/
+		// write-back-complete for `recvGroup`/the rotation window/`auth`/
 		// `leafKeys` alike.
 		#if DEBUG
 			if TwoMLSSessionTestHooks.shouldFault(

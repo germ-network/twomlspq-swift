@@ -787,7 +787,15 @@ struct SessionArchive: Codable, Sendable {
 	var queuedProposal: DigestedProposalArchive?
 	var stagedUpdates: [StagedUpdateArchive]
 	var sendCrossPSKLedger: ArchiveIntegerKeyedMap<ExportedPskArchive>
-	var rotationCandidate: RotationCandidateArchive?
+	/// Archive key 46 — the in-flight rotation window, oldest → newest.
+	/// REQUIRED: the window is live session state, so it is always present
+	/// (possibly empty, which encodes as an empty array). A missing key 46 is
+	/// a `DecodingError`, folded to `.archiveInvalid` like any other malformed
+	/// archive.
+	var rotationCandidates: [RotationCandidateArchive]
+	/// Archive key 47 — the single latest-wins parked rotation request, if
+	/// any. Absent when no park is outstanding.
+	var deferredRotationCandidate: Data?
 	var spawnToken: Data?
 	/// `listenRendezvous` — Optional so a pre-existing
 	/// v1 archive (encoded before this field existed) still decodes: it
@@ -871,7 +879,7 @@ struct SessionArchive: Codable, Sendable {
 		case queuedProposal = 28
 		case stagedUpdates = 29
 		case sendCrossPSKLedger = 30
-		case rotationCandidate = 31
+		// 31: unused — never reused; the rotation window lives at key 46.
 		case spawnToken = 32
 		case listenRendezvous = 33
 		case recvHeaderKeys = 34
@@ -886,6 +894,8 @@ struct SessionArchive: Codable, Sendable {
 		case recvPQKeysFingerprint = 43
 		case deployedCarry = 44
 		case initialAppPayload = 45
+		case rotationCandidates = 46
+		case deferredRotationCandidate = 47
 	}
 }
 
@@ -982,7 +992,8 @@ extension TwoMLSSession {
 			stagedUpdates: stagedUpdates.map(StagedUpdateArchive.init),
 			sendCrossPSKLedger: ArchiveIntegerKeyedMap(
 				sendCrossPSKLedger.mapValues(ExportedPskArchive.init)),
-			rotationCandidate: rotationCandidate.map(RotationCandidateArchive.init),
+			rotationCandidates: rotationCandidates.map(RotationCandidateArchive.init),
+			deferredRotationCandidate: deferredRotationCandidate,
 			spawnToken: spawnToken,
 			listenRendezvous: ArchiveIntegerKeyedMap(listenRendezvous),
 			recvHeaderKeys: ArchiveIntegerKeyedMap(recvHeaderKeys),

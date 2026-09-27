@@ -450,25 +450,16 @@ import TwoMLSPQCrypto
 		try verifyEKLegOpensCleanly(rewrappedEKFrame, against: bob)
 	}
 
-	// MARK: - CODE FIX 1: a converged rotation must not be droppable
+	// MARK: - A converged rotation frees the window
 
-	/// Session-bricking regression: once Alice's rotation has FULLY
-	/// canonicalized (both of her classical leaves present the new
-	/// credential), a second `prepareToEncrypt(rotating:)` must not replace
-	/// the converged `rotationCandidate` — the wedge relaxation's epoch
-	/// check alone (`recvGroup.classical`'s epoch has moved past the
-	/// staged-at epoch) is ALSO true after a successful convergence, so
-	/// without the `auth.mine.history` guard this would silently drop the
-	/// very key both leaves now present. Every later `encrypt`/
-	/// `prepareToEncrypt` would then throw `.credentialUnknown` forever
-	/// (the stored `leafKeys` slot the dropped candidate would have named
-	/// is gone, so the live choke point can no longer find a match for
-	/// what the tree presents) — unrecoverable. The fix instead throws
-	/// `.rotationInFlight`, and the session stays fully usable afterward.
+	/// Once Alice's rotation has FULLY canonicalized (both of her classical
+	/// leaves present the new credential), the canonicalization CLEARED the
+	/// in-flight window and the winner's key lives in `current` (promoted
+	/// out of `pending`), so a fresh `prepareToEncrypt(rotating:)` is
+	/// ADMITTED — the old single-slot bricking hazard is structurally gone.
+	/// The session stays fully usable afterward.
 	@available(iOS 26, macOS 26, *)
-	@Test func secondRotationAfterFullConvergenceIsRotationInFlightAndSessionNotBricked()
-		throws
-	{
+	@Test func secondRotationAfterFullConvergenceAdmitsFreshCandidate() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let aliceNewID = Data("alice-converged-v2".utf8)
 
@@ -489,22 +480,405 @@ import TwoMLSPQCrypto
 		let catchUpFrame = try alice.encrypt(Data("catchup".utf8)).frame
 		_ = try bob.processIncomingDecrypted(catchUpFrame)
 		#expect(alice.myPrincipalState == .sync(aliceNewID))
+		#expect(
+			alice.rotationCandidates.isEmpty,
+			"the fold's canonicalization cleared the window")
 		let aliceSendClassicalConverged = try #require(alice.sendGroup?.classical)
 		#expect(
 			try basicIdentifier(
 				TwoMLSSession.ownLeaf(of: aliceSendClassicalConverged).credential)
 				== aliceNewID)
 
-		#expect(throws: TwoMLSError.rotationInFlight) {
-			try alice.prepareToEncrypt(rotating: Data("alice-v3".utf8))
+		// A fresh rotation is ADMITTED (never thrown) — the window is free.
+		_ = try alice.prepareToEncrypt(rotating: Data("alice-v3".utf8))
+		#expect(alice.rotationCandidates.map(\.clientID) == [Data("alice-v3".utf8)])
+
+		// The session stays usable: a plain `prepareToEncrypt`/`encrypt`
+		// still works, still signing under `aliceNewID`'s key.
+		_ = try alice.prepareToEncrypt()
+		let aliceMsg = try alice.encrypt(Data("post-fresh-rotation".utf8)).frame
+		let fromAlice = try bob.processIncomingDecrypted(aliceMsg)
+		#expect(fromAlice.applicationMessage == Data("post-fresh-rotation".utf8))
+	}
+
+	// MARK: - Window: a second outstanding candidate is admitted
+
+	/// The measured divergence: a second `prepareToEncrypt(rotating:)` with a
+	/// DIFFERENT id while a candidate is still outstanding used to throw
+	/// `.rotationInFlight`; book rule 1 never evicts a proposed candidate, so
+	/// both are in flight and the SECOND rides this round. The peer may then
+	/// commit the FIRST (never-evicted) candidate and the proposer
+	/// canonicalizes onto it cleanly.
+	@available(iOS 26, macOS 26, *)
+	@Test func secondRotationWhileCandidateOutstandingIsAdmitted() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let a = Data("alice-a".utf8)
+		let b = Data("alice-b".utf8)
+
+		// Candidate A rides the first frame; the peer surfaces it.
+		_ = try alice.prepareToEncrypt(rotating: a)
+		let frameA = try alice.encrypt(Data("a-offer".utf8)).frame
+		let decA = try bob.processIncomingDecrypted(frameA)
+		#expect(decA.queuedProposal.proposing == a)
+
+		// A second, DIFFERENT candidate while A is un-canonicalized: ADMITTED
+		// (A is never evicted), and it is proposed this round.
+		let preparedB = try alice.prepareToEncrypt(rotating: b)
+		#expect(!(preparedB.proposalMessage.isEmpty))
+		#expect(alice.rotationCandidates.map(\.clientID) == [a, b])
+		#expect(alice.pendingProposal?.proposing == b)
+		_ = try alice.encrypt(Data("b-offer".utf8)).frame
+
+		// The peer commits the FIRST candidate, A — never only the latest.
+		_ = try bob.queueProposal(digest: decA.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold-a".utf8)).frame
+		let foldSaw = try alice.processIncomingDecrypted(foldFrame)
+		#expect(foldSaw.ownCredentialCanonicalized)
+		#expect(alice.rotationCandidates.isEmpty, "canonicalizing A cleared the window")
+		#expect(alice.myPrincipalState == .sync(a))
+
+		// No desync: the session still sends and the peer still reads.
+		_ = try alice.prepareToEncrypt()
+		let aliceMsg = try alice.encrypt(Data("post-a".utf8)).frame
+		let fromAlice = try bob.processIncomingDecrypted(aliceMsg)
+		#expect(fromAlice.applicationMessage == Data("post-a".utf8))
+	}
+
+	// MARK: - Window: beyond it the request parks and the frame still rides
+
+	/// Fill the window, then a further rotation request PARKS (no throw) and
+	/// the round still emits its routine self-refresh (4a) — identical bytes
+	/// across two same-epoch parked rounds (4c). After the peer commits an
+	/// in-flight candidate and the window clears, the next plain round
+	/// auto-proposes the parked id (mirrors the deployed engine).
+	@available(iOS 26, macOS 26, *)
+	@Test func stageBeyondWindowParksAndRidesNextRoutineRound() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let ids = (1...TwoMLSSession.candidateWindow).map { Data("alice-w\($0)".utf8) }
+
+		for id in ids {
+			_ = try alice.prepareToEncrypt(rotating: id)
+		}
+		#expect(alice.rotationCandidates.map(\.clientID) == ids)
+
+		// Ride the last admitted candidate's offer to the peer so it can be
+		// the one the peer commits.
+		let lastID = try #require(ids.last)
+		let lastFrame = try alice.encrypt(Data("last-offer".utf8)).frame
+		let lastDec = try bob.processIncomingDecrypted(lastFrame)
+		#expect(lastDec.queuedProposal.proposing == lastID)
+
+		let ownID = try basicIdentifier(
+			TwoMLSSession.ownLeaf(of: try #require(alice.recvGroup).classical)
+				.credential)
+
+		// The window is full: the 5th request parks and this round still
+		// yields the routine self-refresh, not silence.
+		let parkedID = Data("alice-parked".utf8)
+		let parkedRound = try alice.prepareToEncrypt(rotating: parkedID)
+		#expect(!(parkedRound.proposalMessage.isEmpty))
+		#expect(alice.deferredRotationCandidate == parkedID)
+		#expect(alice.pendingProposal?.proposing == ownID)
+		#expect(alice.myPrincipalState == .pending(old: ownID, new: parkedID))
+
+		// 4c: a second parked round this epoch repeats the IDENTICAL bytes.
+		let parkedRound2 = try alice.prepareToEncrypt(rotating: parkedID)
+		#expect(parkedRound2.proposalMessage == parkedRound.proposalMessage)
+		#expect(parkedRound2.proposalHash == parkedRound.proposalHash)
+
+		// Peer commits the last in-flight candidate; Alice canonicalizes,
+		// the window clears, the park survives.
+		_ = try bob.queueProposal(digest: lastDec.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold-last".utf8)).frame
+		let foldSaw = try alice.processIncomingDecrypted(foldFrame)
+		#expect(foldSaw.ownCredentialCanonicalized)
+		#expect(alice.rotationCandidates.isEmpty)
+		#expect(alice.deferredRotationCandidate == parkedID)
+		#expect(alice.myPrincipalState == .pending(old: lastID, new: parkedID))
+
+		// Next routine round auto-proposes the parked id.
+		_ = try alice.prepareToEncrypt()
+		#expect(alice.deferredRotationCandidate == nil)
+		#expect(alice.rotationCandidates.map(\.clientID) == [parkedID])
+		#expect(alice.pendingProposal?.proposing == parkedID)
+		let promotedFrame = try alice.encrypt(Data("promoted".utf8)).frame
+		let promotedDec = try bob.processIncomingDecrypted(promotedFrame)
+		#expect(promotedDec.queuedProposal.proposing == parkedID)
+
+		// Once the promoted id canonicalizes, the parked state converges.
+		_ = try bob.queueProposal(digest: promotedDec.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let promotedFoldFrame = try bob.encrypt(Data("fold-promoted".utf8)).frame
+		let promotedFold = try alice.processIncomingDecrypted(promotedFoldFrame)
+		#expect(promotedFold.ownCredentialCanonicalized)
+		#expect(alice.myPrincipalState == .sync(parkedID))
+		#expect(alice.deferredRotationCandidate == nil)
+	}
+
+	// MARK: - Window: a newer park replaces the older
+
+	/// A second park while the window is still full replaces the first (book
+	/// rule 1: a newer stage replaces it); after the window frees, only the
+	/// newer id is proposed.
+	@available(iOS 26, macOS 26, *)
+	@Test func newerStageReplacesParkedRequest() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let ids = (1...TwoMLSSession.candidateWindow).map { Data("alice-w\($0)".utf8) }
+		for id in ids {
+			_ = try alice.prepareToEncrypt(rotating: id)
+		}
+		let lastID = try #require(ids.last)
+		let lastFrame = try alice.encrypt(Data("last-offer".utf8)).frame
+		let lastDec = try bob.processIncomingDecrypted(lastFrame)
+
+		let x = Data("alice-x".utf8)
+		let y = Data("alice-y".utf8)
+		_ = try alice.prepareToEncrypt(rotating: x)
+		#expect(alice.deferredRotationCandidate == x)
+		_ = try alice.prepareToEncrypt(rotating: y)
+		#expect(alice.deferredRotationCandidate == y, "a newer stage replaces the park")
+
+		// Free the window (commit the last in-flight candidate), then promote.
+		_ = try bob.queueProposal(digest: lastDec.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold-last".utf8)).frame
+		_ = try alice.processIncomingDecrypted(foldFrame)
+		#expect(alice.rotationCandidates.isEmpty)
+
+		_ = try alice.prepareToEncrypt()
+		#expect(alice.rotationCandidates.map(\.clientID) == [y])
+		#expect(alice.pendingProposal?.proposing == y)
+		#expect(!(alice.rotationCandidates.map(\.clientID).contains(x)), "X was replaced")
+	}
+
+	// MARK: - Window + park: 4b reports the most recent request either way
+
+	/// The window and the park slot are last-writer-wins in the deployed
+	/// engine's `my_state`: a park overwrites an earlier admit AND an admit
+	/// overwrites an earlier park. Park X while the window is full; the peer's
+	/// commit frees the window; a NEWER explicit rotation to Y is admitted —
+	/// the reported pending request must be Y, not the still-parked X.
+	@available(iOS 26, macOS 26, *)
+	@Test func admitAfterParkReportsTheNewerRequest() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let ownID = try basicIdentifier(
+			TwoMLSSession.ownLeaf(of: try #require(alice.recvGroup).classical)
+				.credential)
+		let ids = (1...TwoMLSSession.candidateWindow).map { Data("alice-w\($0)".utf8) }
+		for id in ids {
+			_ = try alice.prepareToEncrypt(rotating: id)
+		}
+		let lastID = try #require(ids.last)
+		let lastFrame = try alice.encrypt(Data("last-offer".utf8)).frame
+		let lastDec = try bob.processIncomingDecrypted(lastFrame)
+
+		// Window full: X parks, and is the most recent request.
+		let x = Data("alice-x".utf8)
+		_ = try alice.prepareToEncrypt(rotating: x)
+		#expect(alice.deferredRotationCandidate == x)
+		#expect(alice.myPrincipalState == .pending(old: ownID, new: x))
+
+		// Peer commits the last in-flight candidate; the window clears, X
+		// stays parked.
+		_ = try bob.queueProposal(digest: lastDec.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold-last".utf8)).frame
+		let foldSaw = try alice.processIncomingDecrypted(foldFrame)
+		#expect(foldSaw.ownCredentialCanonicalized)
+		#expect(alice.rotationCandidates.isEmpty)
+
+		// A NEWER explicit rotation to Y is admitted. It supersedes X: the
+		// reported pending request is Y, not the older park.
+		let y = Data("alice-y".utf8)
+		_ = try alice.prepareToEncrypt(rotating: y)
+		#expect(alice.rotationCandidates.map(\.clientID) == [y])
+		#expect(alice.deferredRotationCandidate == x, "X is still parked")
+		#expect(alice.myPrincipalState == .pending(old: lastID, new: y))
+	}
+
+	/// An idempotent re-stage is NOT a new request: Rust's `admit_candidate`
+	/// early-returns for an already-staged id before touching `my_state`
+	/// (messaging.rs:704-712), so a park stays the reported request. Contrast
+	/// `admitAfterParkReportsTheNewerRequest`, where a genuinely NEW admit does
+	/// supersede the park.
+	@available(iOS 26, macOS 26, *)
+	@Test func restagingAWindowMemberDoesNotSupersedeAPark() throws {
+		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
+		let ownID = try basicIdentifier(
+			TwoMLSSession.ownLeaf(of: try #require(alice.recvGroup).classical)
+				.credential)
+		let ids = (1...TwoMLSSession.candidateWindow).map { Data("alice-w\($0)".utf8) }
+		for id in ids {
+			_ = try alice.prepareToEncrypt(rotating: id)
 		}
 
-		// The session must NOT be bricked: a plain `prepareToEncrypt`/
-		// `encrypt` still works, still signing under `aliceNewID`'s key.
-		_ = try alice.prepareToEncrypt()
-		let aliceMsg = try alice.encrypt(Data("post-rejected-rotation".utf8)).frame
-		let fromAlice = try bob.processIncomingDecrypted(aliceMsg)
-		#expect(fromAlice.applicationMessage == Data("post-rejected-rotation".utf8))
+		// Window full: X parks and is the reported request.
+		let x = Data("alice-x".utf8)
+		_ = try alice.prepareToEncrypt(rotating: x)
+		#expect(alice.deferredRotationCandidate == x)
+		#expect(alice.myPrincipalState == .pending(old: ownID, new: x))
+
+		// Re-stage an already-staged window member A — no new request, so the
+		// park is still the reported one and the window does not grow.
+		let a = try #require(ids.first)
+		_ = try alice.prepareToEncrypt(rotating: a)
+		#expect(alice.rotationCandidates.map(\.clientID) == ids, "no new window member")
+		#expect(alice.deferredRotationCandidate == x, "X is still parked")
+		#expect(alice.myPrincipalState == .pending(old: ownID, new: x))
+	}
+
+	// MARK: - Atomicity: an invalid rotation throws before any commit
+
+	/// Ticket regression (c), epoch invisibility: with an approved peer
+	/// proposal queued (so the next prepare WOULD fold and commit), an
+	/// invalid `rotating:` must throw BEFORE consuming that commit — the
+	/// send-group epoch and `stateSeq` are unchanged and the queued proposal
+	/// is still held. A subsequent plain prepare commits it normally.
+	@available(iOS 26, macOS 26, *)
+	@Test func invalidRotationThrowsBeforeAnyCommit() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+
+		// Queue an approved peer proposal so the next prepare would commit.
+		_ = try bob.prepareToEncrypt()
+		let bobFrame = try bob.encrypt(Data("bob-offer".utf8)).frame
+		let bobDec = try alice.processIncomingDecrypted(bobFrame)
+		_ = try alice.queueProposal(digest: bobDec.queuedProposal.digest)
+
+		let myCurrentID = try basicIdentifier(
+			TwoMLSSession.ownLeaf(of: try #require(alice.recvGroup).classical)
+				.credential)
+		let peerID = bob.identity.clientID
+		#expect(alice.auth.theirs.knownIDs.contains(peerID))
+
+		let epochBefore = try #require(alice.sendGroup?.classical.context.epoch)
+		let seqBefore = alice.stateSeq
+		let queuedBefore = try #require(alice.queuedProposal?.digest)
+
+		let cases: [(Data, TwoMLSError)] = [
+			(Data(), .credentialUnknown),
+			(myCurrentID, .credentialUnknown),
+			(peerID, .invalidSuccession),
+		]
+		for (bad, expected) in cases {
+			#expect(throws: expected) {
+				try alice.prepareToEncrypt(rotating: bad)
+			}
+			#expect(
+				alice.sendGroup?.classical.context.epoch == epochBefore,
+				"an invalid rotation must not commit")
+			#expect(alice.stateSeq == seqBefore, "no epoch advanced invisibly")
+			#expect(
+				alice.queuedProposal?.digest == queuedBefore,
+				"the fold is still held")
+		}
+
+		// The queued fold then commits normally — nothing was lost.
+		let prepared = try alice.prepareToEncrypt()
+		#expect(prepared.didCommit)
+		#expect(prepared.committedRemoteClientID == peerID)
+		_ = try alice.encrypt(Data("post-fold".utf8))
+	}
+
+	// MARK: - Window: a canonicalization evicts the losers
+
+	/// The load-bearing half of the window-clear (book rule 3): with A and B
+	/// outstanding, the peer commits the OLDER candidate A — the window
+	/// clears, B's `pending` key is pruned, and a fresh rotation to B is
+	/// treated as NEW (mints fresh, does not hit the idempotent re-stage
+	/// arm). Retention alone would KEEP B (it is still outstanding), so this
+	/// discriminates clear-before-retention from retention-only.
+	@available(iOS 26, macOS 26, *)
+	@Test func canonicalizationEvictsLoserCandidates() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let a = Data("alice-a".utf8)
+		let b = Data("alice-b".utf8)
+
+		_ = try alice.prepareToEncrypt(rotating: a)
+		let bKey = try {
+			_ = try alice.prepareToEncrypt(rotating: b)
+			return try #require(alice.leafKeys.recvClassical.pending[b])
+		}()
+		#expect(alice.rotationCandidates.map(\.clientID) == [a, b])
+
+		// Re-name A so its (unchanged, reused) offer is the one in flight,
+		// and let the peer commit A.
+		_ = try alice.prepareToEncrypt(rotating: a)
+		#expect(alice.pendingProposal?.proposing == a)
+		let aFrame = try alice.encrypt(Data("a-offer".utf8)).frame
+		let aDec = try bob.processIncomingDecrypted(aFrame)
+		_ = try bob.queueProposal(digest: aDec.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold-a".utf8)).frame
+		let foldSaw = try alice.processIncomingDecrypted(foldFrame)
+		#expect(foldSaw.ownCredentialCanonicalized)
+
+		#expect(alice.rotationCandidates.isEmpty)
+		#expect(
+			alice.leafKeys.recvClassical.pending[b] == nil,
+			"the losing candidate B's key is pruned at the clear")
+
+		// A fresh rotation to B is NEW again — it mints a fresh key.
+		_ = try alice.prepareToEncrypt(rotating: b)
+		#expect(alice.rotationCandidates.map(\.clientID) == [b])
+		let bKeyAfter = try #require(alice.leafKeys.recvClassical.pending[b])
+		#expect(
+			bKeyAfter.signatureKey != bKey.signatureKey,
+			"B was re-minted, not idempotently re-staged")
+	}
+
+	// MARK: - Window + park survive an archive round trip
+
+	/// Mid-window (two outstanding candidates) and mid-park session state
+	/// round-trips through the archive: every outstanding candidate's
+	/// `pending` key survives restore (the plural check 8) and the parked id
+	/// is still promoted on the next routine round.
+	@available(iOS 26, macOS 26, *)
+	@Test func parkedAndWindowedCandidatesSurviveArchiveRestore() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let ids = (1...TwoMLSSession.candidateWindow).map { Data("alice-w\($0)".utf8) }
+		for id in ids {
+			_ = try alice.prepareToEncrypt(rotating: id)
+		}
+		// Ride the last admitted candidate's offer so the peer can commit it
+		// after the restore, which is what frees the window for the park.
+		let lastID = try #require(ids.last)
+		let lastFrame = try alice.encrypt(Data("last-offer".utf8)).frame
+		let lastDec = try bob.processIncomingDecrypted(lastFrame)
+		#expect(lastDec.queuedProposal.proposing == lastID)
+
+		let parkedID = Data("alice-parked".utf8)
+		_ = try alice.prepareToEncrypt(rotating: parkedID)
+
+		let checkpoint = try alice.makeSessionArchive(kind: .checkpoint)
+		var restored = try TwoMLSSession.restore(
+			core: nil, checkpoint: checkpoint,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		#expect(restored.rotationCandidates.map(\.clientID) == ids)
+		for id in ids {
+			#expect(restored.leafKeys.recvClassical.pending[id] != nil)
+		}
+		#expect(restored.deferredRotationCandidate == parkedID)
+		#expect(
+			restored.myPrincipalState
+				== .pending(old: alice.identity.clientID, new: parkedID))
+
+		// After restore, the parked id is still promoted on the next routine
+		// round: the peer commits the last in-flight candidate (freeing the
+		// restored window), then a plain routine round auto-proposes the park.
+		_ = try bob.queueProposal(digest: lastDec.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let foldFrame = try bob.encrypt(Data("fold-last".utf8)).frame
+		let foldSaw = try restored.processIncomingDecrypted(foldFrame)
+		#expect(foldSaw.ownCredentialCanonicalized)
+		#expect(restored.rotationCandidates.isEmpty)
+
+		_ = try restored.prepareToEncrypt()
+		#expect(restored.deferredRotationCandidate == nil)
+		#expect(restored.rotationCandidates.map(\.clientID) == [parkedID])
+		#expect(restored.pendingProposal?.proposing == parkedID)
 	}
 
 	// MARK: - CODE FIX 2: rotating to my own current id
@@ -552,21 +926,27 @@ import TwoMLSPQCrypto
 		#expect(alice.auth.theirs.authorizedNext.isEmpty)
 	}
 
-	// MARK: - Mutation-verify: one-generation cap
+	// MARK: - Mutation-verify: a window member re-stages idempotently
 
-	/// A second `prepareToEncrypt(rotating:)` naming a DIFFERENT id while a
-	/// candidate is still outstanding is `.rotationInFlight` — the
-	/// single-in-flight cap. Naming the SAME candidate again is idempotent.
+	/// A second `prepareToEncrypt(rotating:)` naming an id already in the
+	/// window is an idempotent re-stage (same key, refreshed epoch); a
+	/// DIFFERENT id is admitted alongside it, never evicted or thrown.
 	@available(iOS 26, macOS 26, *)
-	@Test func secondRotationWithDifferentIDWhileOutstandingIsRotationInFlight() throws {
+	@Test func restagingAWindowMemberIsIdempotentAndDifferentIDIsAdmitted() throws {
 		var (alice, _) = try SessionTestSupport.establishedAndExchanged()
-		_ = try alice.prepareToEncrypt(rotating: Data("alice-v2".utf8))
-		#expect(throws: TwoMLSError.rotationInFlight) {
-			try alice.prepareToEncrypt(rotating: Data("alice-v3".utf8))
-		}
+		let v2 = Data("alice-v2".utf8)
+		let v3 = Data("alice-v3".utf8)
+		_ = try alice.prepareToEncrypt(rotating: v2)
+		let v2Key = try #require(alice.leafKeys.recvClassical.pending[v2])
 		#expect(throws: Never.self) {
-			try alice.prepareToEncrypt(rotating: Data("alice-v2".utf8))
+			try alice.prepareToEncrypt(rotating: v2)
 		}
+		#expect(
+			alice.leafKeys.recvClassical.pending[v2]?.signatureKey
+				== v2Key.signatureKey,
+			"the re-stage reuses the same held key")
+		_ = try alice.prepareToEncrypt(rotating: v3)
+		#expect(alice.rotationCandidates.map(\.clientID) == [v2, v3])
 	}
 
 	// MARK: - Mutation-verify: AS rejects a non-successor / rollback credential
@@ -582,11 +962,12 @@ import TwoMLSPQCrypto
 	///
 	/// The rollback offer is hand-authored directly on `bob.recvGroup`
 	/// (mirroring `FoldTests.authorBobCredentialRotation`) rather than via a
-	/// second `prepareToEncrypt(rotating:)` call: the single-slot keyring
-	/// cannot represent a THIRD live credential, so first letting bob's
-	/// own rotation fully converge (both leaves on `bobV2`, `rotationCandidate`
-	/// still `bobV2`) before hand-crafting the rollback keeps this test to
-	/// the TWO credentials the minimal cut supports.
+	/// second `prepareToEncrypt(rotating:)` call: this keeps the assertion
+	/// focused on the AS's own rollback guard rather than on the keyring's
+	/// ability to hold a THIRD live credential. First letting bob's own
+	/// rotation fully converge (both leaves on `bobV2`, the window cleared)
+	/// before hand-crafting the rollback keeps this test to the TWO
+	/// credentials the minimal cut supports.
 	@available(iOS 26, macOS 26, *)
 	@Test func rollbackToRetiredCredentialIsRejectedAtQueueProposal() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
@@ -1391,6 +1772,6 @@ extension RotationTests {
 			bob.leafKeys.sendClassical.pending[d] == nil,
 			"the new candidate's key is staged in recv-classical only")
 		#expect(bob.leafKeys.sendClassical.pending.count == 1)
-		#expect(bob.rotationCandidate?.clientID == d)
+		#expect(bob.rotationCandidates.map(\.clientID) == [d])
 	}
 }

@@ -1234,6 +1234,7 @@ import TwoMLSPQCrypto
 					pqTurnMine: full.pqTurnMine,
 					stagedUpdates: full.stagedUpdates,
 					sendCrossPSKLedger: full.sendCrossPSKLedger,
+					rotationCandidates: full.rotationCandidates,
 					leafKeys: full.leafKeys,
 					sendPQKeysFingerprint: full.sendPQKeysFingerprint,
 					recvPQKeysFingerprint: full.recvPQKeysFingerprint))
