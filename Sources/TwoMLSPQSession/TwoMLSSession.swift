@@ -309,28 +309,22 @@ public enum PrincipalState: Sendable, Equatable {
 	}
 }
 
-/// A minted classical successor, held while a rotation is in flight (a
-/// single candidate at a time) — bookkeeping only: the actual signing key
-/// this candidate names lives in `leafKeys.recvClassical.pending` alone,
-/// seeded from the SAME mint (`prepareToEncrypt(rotating:)`). Send-classical
-/// never holds a copy: our own commit mints its own fresh key straight into
-/// `current` on apply, independent of any recv-classical candidate. Its
-/// `.basic(clientID)` is what `NewSigningIdentity` carries (with the stored
-/// recv-classical key) when authoring the rotation or catching up the
-/// lagging leaf.
+/// A minted classical successor, held while a rotation is in flight — one
+/// member of a session's `rotationCandidates` window. Bookkeeping only:
+/// the actual signing key this candidate names lives in
+/// `leafKeys.recvClassical.pending` alone, seeded from the SAME mint
+/// (`prepareToEncrypt(rotating:)`). Send-classical never holds a copy: our
+/// own commit mints its own fresh key straight into `current` on apply,
+/// independent of any recv-classical candidate. Its `.basic(clientID)` is
+/// what `NewSigningIdentity` carries (with the stored recv-classical key)
+/// when authoring the rotation or catching up the lagging leaf.
 struct RotationCandidate: Sendable {
 	let clientID: Data
 	/// The `recvGroup.classical` epoch this candidate's rotating `Upd(self)`
-	/// was staged at — `prepareToEncrypt(rotating:)`'s wedge relaxation
-	/// compares this against that group's LIVE epoch: once it has moved on,
-	/// the peer can no longer fold this now-stale proposal, so a fresh
-	/// rotation may replace this candidate even though it has not yet
-	/// canonicalized. An idempotent RE-STAGE of this SAME candidate (naming
-	/// the same `clientID` again) refreshes this field to the CURRENT
-	/// epoch unconditionally, rather than leaving it at its original stage
-	/// point — otherwise a second re-stage within that same epoch would
-	/// wrongly qualify for the wedge relaxation and silently strand this
-	/// candidate's own key.
+	/// was staged at. Informational since the window replaced the
+	/// one-generation cap + wedge relaxation: an idempotent RE-STAGE of this
+	/// SAME candidate (naming the same `clientID` again) refreshes this
+	/// field to the CURRENT epoch, but nothing consults it any more.
 	let proposedAtRecvEpoch: UInt64
 }
 
@@ -583,14 +577,36 @@ public struct TwoMLSSession: Sendable {
 
 	// MARK: Classical principal rotation
 
-	/// The classical successor minted by our own `prepareToEncrypt(rotating:)`
-	/// (at most one in-flight candidate) — `nil` until we author a rotation.
-	/// Retained for the life of the session once set (a minimal cut: the
-	/// choke point (`assertLeafKeysPresented`) and every signing site read
-	/// the stored key sets, never this record's own key, so a stale
-	/// candidate is harmless — a real custodian would retire it once no
-	/// leaf presents it, which needs a later catch-up pass).
-	var rotationCandidate: RotationCandidate? = nil
+	/// The classical successors minted by our own `prepareToEncrypt(rotating:)`
+	/// that are still in flight — oldest → newest, at most
+	/// `candidateWindow` of them. Book rule 1: a candidate proposed on the
+	/// wire is never evicted (the peer may commit any of them, and only
+	/// this session holds the winner's signing key), so several may be
+	/// outstanding at once. A canonicalization of one of them (the peer's
+	/// applied commit moving our own recv leaf) clears the WHOLE window —
+	/// the losing candidates' authorizations expire with it. Empty until we
+	/// author a rotation.
+	var rotationCandidates: [RotationCandidate] = []
+	/// The single latest-wins park slot (book rule 1: staging beyond the
+	/// in-flight window "parks" the request in a single deferred slot; a
+	/// newer stage replaces it). Holds a rotation request that arrived
+	/// while `rotationCandidates` was full: it is NOT on the wire (never
+	/// authorized) and is proposed automatically on the next routine round
+	/// once a canonicalization frees a slot. `nil` when nothing is parked.
+	var deferredRotationCandidate: Data? = nil
+	/// The id of the most recent rotation request (`prepareToEncrypt(rotating:)`,
+	/// including a promoted park) that has not yet canonicalized — an admit and
+	/// a park each SUPERSEDE the other, so the window's newest member and the
+	/// park slot alone cannot tell which request was last. Reported by
+	/// `myPrincipalState` only while the id is still in the window or the park
+	/// slot, so it never outlives its request; not archived (a restored
+	/// session falls back to the park slot, which is).
+	var lastRotationRequestID: Data? = nil
+	/// The in-flight rotation window's size (book rule 1): an admission
+	/// while fewer than this many candidates are outstanding proposes on
+	/// the wire; one beyond it parks. Chosen for deployed-engine parity
+	/// (`CANDIDATE_WINDOW`); the book does not size the window itself.
+	static let candidateWindow = 4
 
 	// MARK: Born-dedicated principal + signed handoff
 
@@ -665,7 +681,7 @@ public struct TwoMLSSession: Sendable {
 
 	/// The four groups' own stored signing-key sets — the ONLY source of a
 	/// group's signing secrets (`LeafKeys.swift`). `identity`/
-	/// `rotationCandidate` stay for seeding, persistence and the migration
+	/// `rotationCandidates` stay for seeding, persistence and the migration
 	/// mint only; no signing site reads them directly any more.
 	var leafKeys: LeafKeys
 
@@ -746,13 +762,38 @@ public struct TwoMLSSession: Sendable {
 		return try? classicalProvider.hash(recv.classical.context.groupID)
 	}
 
-	/// My own classical-credential state, DERIVED from the Authentication
-	/// Service's `auth.mine` (never separately cached, so it cannot desync
-	/// from the sequence `commit`/`authorize` actually maintain): `.pending`
-	/// while an authorized-but-not-yet-canonical successor is outstanding
-	/// (`prepareToEncrypt(rotating:)`, before the peer's fold commit lands),
-	/// `.sync` once it has (mirrors `mod.rs:2115-2120`).
-	public var myPrincipalState: PrincipalState { Self.principalState(auth.mine) }
+	/// My own classical-credential state: `.pending` while a rotation request
+	/// is outstanding (before the peer's fold commit canonicalizes it),
+	/// `.sync` once nothing is. Reports the MOST RECENT request not yet
+	/// canonicalized: the deployed engine's `my_state` is last-writer-wins, so
+	/// a park overwrites an earlier admit AND an admit overwrites an earlier
+	/// park — but an idempotent re-stage of an already-staged candidate does
+	/// NOT supersede (Rust's `admit_candidate` early-returns before touching
+	/// `my_state`). `lastRotationRequestID` records which request was last, and is
+	/// reported only while that id is still in the window or the park slot; a
+	/// restored session carries no id, so its archived park slot is reported
+	/// directly, and no request at all falls back to the latest authorized
+	/// successor (`auth.mine.authorizedNext.last`).
+	///
+	/// For `auth.mine` alone this stays DERIVED (never separately cached, so
+	/// it cannot desync from the sequence `commit`/`authorize` maintain); the
+	/// window/park tracking is the one non-derived input, mirroring the
+	/// deployed engine surfacing a parked rotation as `Pending` too
+	/// (mirrors `mod.rs:2115-2120`).
+	public var myPrincipalState: PrincipalState {
+		if let last = lastRotationRequestID,
+			last == deferredRotationCandidate
+				|| rotationCandidates.contains(where: { $0.clientID == last })
+		{
+			return .pending(old: auth.mine.current ?? Data(), new: last)
+		}
+		// No live request id (e.g. a restored session, whose park slot is
+		// archived but its id is not): a still-parked rotation still surfaces.
+		if let deferred = deferredRotationCandidate {
+			return .pending(old: auth.mine.current ?? Data(), new: deferred)
+		}
+		return Self.principalState(auth.mine)
+	}
 	/// The peer's classical-credential state, as this session's `auth.theirs`
 	/// currently tracks it — `.pending` from the moment we approve their
 	/// offered rotation (`queueProposal`) until we fold it

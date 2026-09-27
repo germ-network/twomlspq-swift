@@ -565,7 +565,7 @@ import TwoMLSPQCrypto
 	@Test func queueProposalAcceptsSameIDCredentialRotation() throws {
 		// `authorBobCredentialRotation` hand-builds a SAME-id, fresh-key
 		// rotation directly on bob's recv-classical leaf, bypassing
-		// `prepareToEncrypt(rotating:)` (and so `rotationCandidate`)
+		// `prepareToEncrypt(rotating:)` (and so `rotationCandidates`)
 		// entirely — the pre-existing resolver has no arm for a same-id
 		// key-only rotation outside the ring either, so this was never
 		// something it covered in the first place.
@@ -604,7 +604,7 @@ import TwoMLSPQCrypto
 	@available(iOS 26, macOS 26, *)
 	@Test func foldedCredentialRotationIsAcceptedAndAdvancesEpoch() throws {
 		// Same reason as `testQueueProposalAcceptsSameIDCredentialRotation`:
-		// `authorBobCredentialRotation` bypasses `rotationCandidate` entirely.
+		// `authorBobCredentialRotation` bypasses `rotationCandidates` entirely.
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let rotatingMessage = try authorBobCredentialRotation(bob: &bob)
 		bob.stagedUpdates.append(

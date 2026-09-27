@@ -291,31 +291,14 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// `current == id` early return is a no-op), so admitting it would
 	/// leave the offer `.pending` forever.
 	case credentialUnknown
-	/// `prepareToEncrypt(rotating:)` was asked to author a SECOND classical
-	/// rotation while the outstanding `rotationCandidate` is either still
-	/// foldable by the peer OR has already canonicalized (the
-	/// one-generation cap). The wedge relaxation
-	/// (`recvGroup.classical`'s epoch has moved past the epoch the
-	/// outstanding candidate's `Upd` was staged at) only ever lets a DEAD
-	/// candidate — one that never canonicalized (absent from
-	/// `auth.mine.history`) — be replaced; once a rotation HAS canonicalized,
-	/// a second one must still wait, rather than silently dropping the
-	/// converged candidate's key (which both classical leaves may already
-	/// present). The §A.5 id-based catch-up this module now accepts
-	/// (`validatePQLeafMove`) lets a lagging RECV-PQ leaf fast-forward to an
-	/// already-canonical id when a round is opened for it — but that is a
-	/// PQ-leaf move, not a second classical rotation's sync point: the
-	/// classical AS tracks no per-generation PQ state of its own to wait on.
-	/// Naming the SAME candidate again is idempotent, not this error: it
-	/// re-stages under the SAME key and unconditionally refreshes
-	/// `proposedAtRecvEpoch` to the CURRENT recv epoch, so a further
-	/// same-candidate attempt keeps throwing this error until the peer's
-	/// fold actually moves that epoch on. Also thrown directly by
-	/// `GroupKeySet.stage(_:for:)` whenever a target already holds a
-	/// `pending` entry and the newly offered key is a DIFFERENT one — a
-	/// key a proposal already on the wire may still name is never
-	/// silently overwritten, independent of the classical-rotation-cap
-	/// path above.
+	/// Thrown ONLY by `GroupKeySet.stage(_:for:)` whenever a target already
+	/// holds a `pending` entry and the newly offered key is a DIFFERENT one —
+	/// a key a proposal already on the wire may still name is never
+	/// silently overwritten. (The classical-rotation path no longer throws
+	/// this: book rule 1 says a proposed candidate is never evicted, so
+	/// `prepareToEncrypt(rotating:)` admits up to `candidateWindow`
+	/// candidates and PARKS any further request in a single latest-wins
+	/// deferred slot rather than refusing it.)
 	case rotationInFlight
 
 	// MARK: Session archive

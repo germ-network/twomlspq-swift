@@ -82,20 +82,19 @@ import Testing
 		var set = GroupKeySet()
 		try set.stage(try freshKey(), for: candidateID)
 		try set.stage(try freshKey(), for: staleID)
-		set.retainRecvClassical(
-			candidateID: candidateID, candidateCanonicalized: false, ruleFourTarget: nil
-		)
+		set.retainRecvClassical(candidateIDs: [candidateID], ruleFourTarget: nil)
 		#expect(set.pending[candidateID] != nil)
 		#expect(set.pending[staleID] == nil)
 	}
 
 	@available(iOS 26, macOS 26, *)
-	@Test func retentionDropsTheCandidateOnceItHasCanonicalized() throws {
+	@Test func retentionDropsAWindowMemberOnceItHasCanonicalized() throws {
 		let candidateID = Data("candidate".utf8)
 		var set = GroupKeySet()
 		try set.stage(try freshKey(), for: candidateID)
-		set.retainRecvClassical(
-			candidateID: candidateID, candidateCanonicalized: true, ruleFourTarget: nil)
+		// A canonicalization clears the whole window before retention runs,
+		// so the (now-promoted) winner is not among the ids passed here.
+		set.retainRecvClassical(candidateIDs: [], ruleFourTarget: nil)
 		#expect(
 			set.pending[candidateID] == nil,
 			"a canonicalized candidate is no longer live")
@@ -106,24 +105,23 @@ import Testing
 		let ruleFourTarget = Data("dedicated".utf8)
 		var set = GroupKeySet()
 		try set.stage(try freshKey(), for: ruleFourTarget)
-		set.retainRecvClassical(
-			candidateID: nil, candidateCanonicalized: true,
-			ruleFourTarget: ruleFourTarget)
+		set.retainRecvClassical(candidateIDs: [], ruleFourTarget: ruleFourTarget)
 		#expect(set.pending[ruleFourTarget] != nil)
 	}
 
-	// MARK: - Session-level: a replacement keeps recv-classical's dead entry
+	// MARK: - Session-level: admission keeps recv-classical's earlier entry
 
-	/// A replacement keeps recv-classical's outgoing entry around. The wedge
-	/// relaxation replaces an uncanonicalized, epoch-stale candidate (c1)
-	/// with a fresh one (c2) — `prepareToEncrypt(rotating:)` never prunes
-	/// c1's own `pending` entry when it does; only the NEXT epoch advance's
-	/// retention rule (which no longer treats c1 as live) eventually does.
-	/// Mutation-tested: a version of `prepareToEncrypt` that explicitly
-	/// pruned `pending[c1]` at the replacement moment passed every other
-	/// test in the suite — this is the one that catches it.
+	/// Admitting a second candidate leaves the first one's `pending` entry
+	/// alone. Book rule 1 never evicts a proposed candidate, so c2 is
+	/// ADMITTED into the in-flight window alongside the still-outstanding c1
+	/// rather than replacing it — `prepareToEncrypt(rotating:)` never prunes
+	/// c1's own `pending` entry when it does; only a canonicalization (which
+	/// clears the whole window) eventually does. Mutation-tested: a version
+	/// of `prepareToEncrypt` that explicitly pruned `pending[c1]` at the
+	/// admission moment passed every other test in the suite — this is the
+	/// one that catches it.
 	@available(iOS 26, macOS 26, *)
-	@Test func replacementKeepsRecvClassicalsDeadEntry() throws {
+	@Test func admissionKeepsRecvClassicalsEarlierEntry() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let c1 = Data("alice-c1".utf8)
 		let c2 = Data("alice-c2".utf8)
@@ -135,7 +133,7 @@ import Testing
 
 		// Advance Group_B's epoch via an UNRELATED routine (non-rotating)
 		// offer/fold — never touches alice's credential, so c1 stays
-		// uncanonicalized while the epoch moves past its stage point.
+		// uncanonicalized across it.
 		_ = try alice.prepareToEncrypt()
 		let refreshFrame = try alice.encrypt(Data("refresh-offer".utf8)).frame
 		let refreshDecrypted = try bob.processIncomingDecrypted(refreshFrame)
@@ -146,31 +144,26 @@ import Testing
 		#expect(foldDecrypted.didApplyRemoteCommit)
 		#expect(!foldDecrypted.ownCredentialCanonicalized)
 
-		// c1 survived the advance (still the live candidate).
+		// c1 survived the advance (still an outstanding window member).
 		#expect(alice.leafKeys.recvClassical.pending[c1] != nil)
 
-		// The wedge relaxation now lets c2 replace c1 (epoch moved past
-		// c1's stage point, and c1 never canonicalized).
+		// A second rotation is admitted alongside c1 (the window has room).
 		_ = try alice.prepareToEncrypt(rotating: c2)
 
-		// c1's own pending entry is a dead leftover — still present right
-		// after the replacement (the accepted parity gap), pruned only at
-		// the NEXT epoch advance.
 		#expect(
 			alice.leafKeys.recvClassical.pending[c1] != nil,
-			"a replacement must not itself prune the outgoing candidate's entry")
+			"admitting a second candidate must not prune the first's entry")
 		#expect(alice.leafKeys.recvClassical.pending[c2] != nil)
 	}
 
-	// MARK: - An idempotent re-stage refreshes the wedge epoch
+	// MARK: - An idempotent re-stage refreshes the candidate's epoch
 
-	/// Rotate to c1, let the epoch move past c1's stage
-	/// point via an unrelated fold, THEN re-stage c1 (idempotent, same id)
-	/// — the re-stage must refresh `proposedAtRecvEpoch` to the CURRENT
-	/// epoch, so an immediately-following rotation to a DIFFERENT id (c2)
-	/// still throws `.rotationInFlight` (c1's freshly re-staged offer is
-	/// still live) rather than wrongly passing the wedge relaxation and
-	/// bricking c1. Finally, the peer folds the re-staged Upd(c1) and the
+	/// Rotate to c1, let the epoch move past c1's stage point via an
+	/// unrelated fold, THEN re-stage c1 (idempotent, same id) — the re-stage
+	/// refreshes `proposedAtRecvEpoch` to the CURRENT epoch (informational
+	/// since the window replaced the one-generation cap). A following
+	/// rotation to a DIFFERENT id (c2) is ADMITTED alongside c1 rather than
+	/// throwing. Finally, the peer folds the re-staged Upd(c1) and the
 	/// rotation converges normally.
 	@available(iOS 26, macOS 26, *)
 	@Test func restagingTheSameCandidateRefreshesItsEpochThenConverges() throws {
@@ -184,7 +177,7 @@ import Testing
 		_ = try bob.processIncomingDecrypted(c1OfferE0)
 
 		// 2: advance Group_B's epoch (E0 -> E1) via an unrelated routine
-		// fold, exactly like the replacement test above — c1 stays the
+		// fold, exactly like the admission test above — c1 stays the
 		// live (uncanonicalized) candidate across it.
 		_ = try alice.prepareToEncrypt()
 		let refreshFrame = try alice.encrypt(Data("refresh-offer".utf8)).frame
@@ -195,21 +188,18 @@ import Testing
 		_ = try alice.processIncomingDecrypted(foldFrame)
 
 		// 3: idempotent re-stage — SAME id c1, now at the NEW epoch E1.
-		// This must rebuild the candidate record with E1, not leave it
-		// stuck at E0.
+		// This rebuilds the candidate record with E1, not stuck at E0.
 		_ = try alice.prepareToEncrypt(rotating: c1)
 
-		// 4: a rotation to a DIFFERENT id must still wedge — c1's
-		// freshly-restaged offer is live at the CURRENT epoch (E1), so
-		// `recv.classical.context.epoch > existing.proposedAtRecvEpoch`
-		// must be false. If the re-stage above had left `proposedAtRecvEpoch`
-		// stuck at E0, this would wrongly succeed, dropping c1's key out
-		// from under its still-live offer.
-		#expect(throws: TwoMLSError.rotationInFlight) {
-			try alice.prepareToEncrypt(rotating: c2)
-		}
+		// 4: a rotation to a DIFFERENT id is ADMITTED into the window, not
+		// thrown — book rule 1 never evicts a proposed candidate.
+		_ = try alice.prepareToEncrypt(rotating: c2)
+		#expect(alice.rotationCandidates.map(\.clientID).contains(c2))
+		#expect(alice.rotationCandidates.map(\.clientID).contains(c1))
 
-		// 5: send the re-staged c1 offer and let it converge normally.
+		// 5: re-name c1 so its offer is the one in flight, then let it
+		// converge normally.
+		_ = try alice.prepareToEncrypt(rotating: c1)
 		let c1OfferE1 = try alice.encrypt(Data("c1-offer-e1".utf8)).frame
 		let c1Decrypted = try bob.processIncomingDecrypted(c1OfferE1)
 		#expect(c1Decrypted.queuedProposal.proposing == c1)
@@ -412,14 +402,13 @@ import Testing
 
 	// MARK: - Restore negatives: key 41, and checks 2/3/7 through the full path
 
-	/// `leafKeys` (archive key 41) is REQUIRED, unlike every other field
-	/// added since v1 — a body encoded without it is a `DecodingError`,
-	/// which `restore` folds to `.archiveInvalid` like any other malformed
-	/// archive. `PartialSessionArchive` mirrors every OTHER required field
-	/// of `SessionArchive` at the SAME coding keys (the optional ones need
-	/// no stand-in — a missing optional key decodes to `nil` either way),
-	/// so the only actual difference from a genuine archive is key 41's
-	/// absence.
+	/// `leafKeys` (archive key 41) is REQUIRED — a body encoded without it is
+	/// a `DecodingError`, which `restore` folds to `.archiveInvalid` like any
+	/// other malformed archive. `PartialSessionArchive` mirrors every OTHER
+	/// required field of `SessionArchive` at the SAME coding keys (the
+	/// optional ones need no stand-in — a missing optional key decodes to
+	/// `nil` either way), so the only actual difference from a genuine
+	/// archive is key 41's absence.
 	@available(iOS 26, macOS 26, *)
 	@Test func restoreRejectsAnArchiveMissingLeafKeys() throws {
 		let alice = try SessionTestSupport.establishedAndExchanged().alice
@@ -432,8 +421,15 @@ import Testing
 			initiated: real.initiated, pqTurnMine: real.pqTurnMine,
 			stagedUpdates: real.stagedUpdates,
 			sendCrossPSKLedger: real.sendCrossPSKLedger,
+			listenRendezvous: real.listenRendezvous,
+			recvHeaderKeys: real.recvHeaderKeys,
+			recvHeaderKeysPQ: real.recvHeaderKeysPQ,
+			sendAttachmentLedger: real.sendAttachmentLedger,
+			recvAttachmentLedger: real.recvAttachmentLedger,
+			owesEstablishmentEnvelope: real.owesEstablishmentEnvelope,
 			sendPQKeysFingerprint: real.sendPQKeysFingerprint,
-			recvPQKeysFingerprint: real.recvPQKeysFingerprint)
+			recvPQKeysFingerprint: real.recvPQKeysFingerprint,
+			rotationCandidates: real.rotationCandidates)
 
 		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
@@ -752,7 +748,8 @@ import Testing
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		alice.identity = bogus
-		alice.rotationCandidate = nil
+		alice.rotationCandidates = []
+		alice.deferredRotationCandidate = nil
 
 		// Routine send + the owed PQ bind's classical discharge commit
 		// (`sendClassicalSigningKey`).
@@ -845,13 +842,12 @@ import Testing
 				TwoMLSSession.ownLeaf(of: aliceSendClassicalLagging).credential)
 				== alice.identity.clientID,
 			"send-classical documentedly still lags here")
-		let candidate = try #require(alice.rotationCandidate)
 		#expect(alice.leafKeys.sendClassical.pending.isEmpty)
 
 		let (pollutedSigningKey, pollutedSignatureKey) =
 			try TwoMLSIdentity.mintSignatureKeypair()
 		var polluted = alice.leafKeys
-		polluted.sendClassical.pending[candidate.clientID] = LeafKey(
+		polluted.sendClassical.pending[newID] = LeafKey(
 			signingKey: pollutedSigningKey, signatureKey: pollutedSignatureKey)
 
 		#expect(throws: TwoMLSError.archiveInvalid) {
@@ -862,7 +858,7 @@ import Testing
 				stagedUpdates: alice.stagedUpdates,
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
-				rotationCandidate: alice.rotationCandidate,
+				rotationCandidates: alice.rotationCandidates,
 				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -877,7 +873,7 @@ import Testing
 				stagedUpdates: alice.stagedUpdates,
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
-				rotationCandidate: alice.rotationCandidate,
+				rotationCandidates: alice.rotationCandidates,
 				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -926,7 +922,7 @@ import Testing
 				stagedUpdates: withUntrackedUpdate.stagedUpdates,
 				pendingProposal: withUntrackedUpdate.pendingProposal,
 				pqInflight: withUntrackedUpdate.pqInflight,
-				rotationCandidate: withUntrackedUpdate.rotationCandidate,
+				rotationCandidates: withUntrackedUpdate.rotationCandidates,
 				auth: withUntrackedUpdate.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -941,7 +937,7 @@ import Testing
 				stagedUpdates: alice.stagedUpdates,
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
-				rotationCandidate: alice.rotationCandidate,
+				rotationCandidates: alice.rotationCandidates,
 				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -972,7 +968,7 @@ import Testing
 				stagedUpdates: withStrayPending.stagedUpdates,
 				pendingProposal: withStrayPending.pendingProposal,
 				pqInflight: withStrayPending.pqInflight,
-				rotationCandidate: withStrayPending.rotationCandidate,
+				rotationCandidates: withStrayPending.rotationCandidates,
 				auth: withStrayPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -987,7 +983,7 @@ import Testing
 				stagedUpdates: alice.stagedUpdates,
 				pendingProposal: alice.pendingProposal,
 				pqInflight: alice.pqInflight,
-				rotationCandidate: alice.rotationCandidate,
+				rotationCandidates: alice.rotationCandidates,
 				auth: alice.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -1028,7 +1024,7 @@ import Testing
 				stagedUpdates: withUntrackedPending.stagedUpdates,
 				pendingProposal: withUntrackedPending.pendingProposal,
 				pqInflight: withUntrackedPending.pqInflight,
-				rotationCandidate: withUntrackedPending.rotationCandidate,
+				rotationCandidates: withUntrackedPending.rotationCandidates,
 				auth: withUntrackedPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -1054,7 +1050,7 @@ import Testing
 				stagedUpdates: withStrayPending.stagedUpdates,
 				pendingProposal: withStrayPending.pendingProposal,
 				pqInflight: withStrayPending.pqInflight,
-				rotationCandidate: withStrayPending.rotationCandidate,
+				rotationCandidates: withStrayPending.rotationCandidates,
 				auth: withStrayPending.auth,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
@@ -1285,7 +1281,7 @@ import Testing
 				}
 				try alice.assertLeafKeysPresented()
 
-				let candidate = try #require(alice.rotationCandidate)
+				let candidate = try #require(alice.rotationCandidates.first)
 				#expect(candidate.clientID == newID)
 				// Send-classical is never staged in advance — only
 				// recv-classical holds the candidate's key until it converges.
@@ -1903,13 +1899,13 @@ private struct OldRecvLeafPrincipalArchive: Encodable {
 }
 
 /// A `SessionArchive` body, encoding-only, at the exact same coding keys as
-/// the live type — EXCEPT `rotationCandidate` (key 31) carries its retired
-/// keys 1/2 and an extra `recvLeafPrincipal` (key 40) rides along, neither
-/// of which the live `SessionArchive`/`RotationCandidateArchive` declare any
-/// more. Proves an archive body shaped like a pre-retirement one (a real
-/// migrator input, or a dev archive written before this change) still
-/// decodes and restores: synthesized `Decodable` ignores unknown integer
-/// keys.
+/// the live type — EXCEPT the rotation window (key 46) carries candidates in
+/// `RotationCandidateArchive`'s pre-retirement shape (retired keys 1/2) and
+/// an extra `recvLeafPrincipal` (key 40) rides along, which the live
+/// `SessionArchive` does not declare. Proves an archive body shaped like a
+/// pre-retirement one (a real migrator input, or a dev archive written before
+/// this change) still decodes and restores: synthesized `Decodable` ignores
+/// unknown integer keys.
 @available(iOS 26, macOS 26, *)
 private struct WideSessionArchive: Encodable {
 	var version: UInt64
@@ -1943,7 +1939,6 @@ private struct WideSessionArchive: Encodable {
 	var queuedProposal: DigestedProposalArchive?
 	var stagedUpdates: [StagedUpdateArchive]
 	var sendCrossPSKLedger: ArchiveIntegerKeyedMap<ExportedPskArchive>
-	var rotationCandidate: WideRotationCandidateArchive?
 	var spawnToken: Data?
 	var listenRendezvous: ArchiveIntegerKeyedMap<Data>?
 	var recvHeaderKeys: ArchiveIntegerKeyedMap<Data>?
@@ -1958,6 +1953,7 @@ private struct WideSessionArchive: Encodable {
 	var recvPQKeysFingerprint: GroupKeySetFingerprint
 	var deployedCarry: DeployedCarryArchive?
 	var initialAppPayload: Data?
+	var rotationCandidates: [WideRotationCandidateArchive]
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case version = 0
@@ -1991,7 +1987,6 @@ private struct WideSessionArchive: Encodable {
 		case queuedProposal = 28
 		case stagedUpdates = 29
 		case sendCrossPSKLedger = 30
-		case rotationCandidate = 31
 		case spawnToken = 32
 		case listenRendezvous = 33
 		case recvHeaderKeys = 34
@@ -2006,6 +2001,7 @@ private struct WideSessionArchive: Encodable {
 		case recvPQKeysFingerprint = 43
 		case deployedCarry = 44
 		case initialAppPayload = 45
+		case rotationCandidates = 46
 	}
 }
 
@@ -2021,7 +2017,7 @@ extension LeafKeysTests {
 		_ = try alice.prepareToEncrypt(rotating: Data("alice-retired-fields".utf8))
 		let real = try alice.makeSessionArchive(kind: .checkpoint).decode(
 			SessionArchive.self)
-		let realCandidate = try #require(real.rotationCandidate)
+		let realCandidate = try #require(real.rotationCandidates.first)
 
 		let wide = WideSessionArchive(
 			version: real.version, classicalSuite: real.classicalSuite,
@@ -2043,11 +2039,6 @@ extension LeafKeysTests {
 			offeredProposal: real.offeredProposal, queuedProposal: real.queuedProposal,
 			stagedUpdates: real.stagedUpdates,
 			sendCrossPSKLedger: real.sendCrossPSKLedger,
-			rotationCandidate: WideRotationCandidateArchive(
-				clientID: realCandidate.clientID,
-				signingKey: Data(repeating: 0x11, count: 32),
-				signatureKey: Data(repeating: 0x22, count: 32),
-				proposedAtRecvEpoch: realCandidate.proposedAtRecvEpoch),
 			spawnToken: real.spawnToken, listenRendezvous: real.listenRendezvous,
 			recvHeaderKeys: real.recvHeaderKeys,
 			recvHeaderKeysPQ: real.recvHeaderKeysPQ,
@@ -2063,12 +2054,20 @@ extension LeafKeysTests {
 				pqSignatureKey: Data(repeating: 0x66, count: 32)),
 			leafKeys: real.leafKeys, sendPQKeysFingerprint: real.sendPQKeysFingerprint,
 			recvPQKeysFingerprint: real.recvPQKeysFingerprint,
-			deployedCarry: real.deployedCarry, initialAppPayload: real.initialAppPayload
+			deployedCarry: real.deployedCarry,
+			initialAppPayload: real.initialAppPayload,
+			rotationCandidates: real.rotationCandidates.map {
+				WideRotationCandidateArchive(
+					clientID: $0.clientID,
+					signingKey: Data(repeating: 0x11, count: 32),
+					signatureKey: Data(repeating: 0x22, count: 32),
+					proposedAtRecvEpoch: $0.proposedAtRecvEpoch)
+			}
 		)
 
 		let archive = try SecretArchive(encoding: wide)
 		let decoded = try archive.decode(SessionArchive.self)
-		#expect(decoded.rotationCandidate?.clientID == realCandidate.clientID)
+		#expect(decoded.rotationCandidates.first?.clientID == realCandidate.clientID)
 
 		#expect(throws: Never.self) {
 			try TwoMLSSession.restore(
@@ -2099,8 +2098,15 @@ private struct PartialSessionArchive: Codable {
 	var pqTurnMine: Bool
 	var stagedUpdates: [StagedUpdateArchive]
 	var sendCrossPSKLedger: ArchiveIntegerKeyedMap<ExportedPskArchive>
+	var listenRendezvous: ArchiveIntegerKeyedMap<Data>
+	var recvHeaderKeys: ArchiveIntegerKeyedMap<Data>
+	var recvHeaderKeysPQ: ArchiveIntegerKeyedMap<Data>
+	var sendAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>
+	var recvAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>
+	var owesEstablishmentEnvelope: Bool
 	var sendPQKeysFingerprint: GroupKeySetFingerprint
 	var recvPQKeysFingerprint: GroupKeySetFingerprint
+	var rotationCandidates: [RotationCandidateArchive]
 
 	enum CodingKeys: Int, CodingKey, ArchiveIntegerCodingKey {
 		case version = 0
@@ -2115,7 +2121,14 @@ private struct PartialSessionArchive: Codable {
 		case pqTurnMine = 19
 		case stagedUpdates = 29
 		case sendCrossPSKLedger = 30
+		case listenRendezvous = 33
+		case recvHeaderKeys = 34
+		case recvHeaderKeysPQ = 35
+		case sendAttachmentLedger = 37
+		case recvAttachmentLedger = 38
+		case owesEstablishmentEnvelope = 39
 		case sendPQKeysFingerprint = 42
 		case recvPQKeysFingerprint = 43
+		case rotationCandidates = 46
 	}
 }

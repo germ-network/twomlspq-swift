@@ -228,30 +228,28 @@ import TwoMLSPQCrypto
 
 	// MARK: - Restore fail-closed on an inconsistent stripped ledger
 	//
-	// A literal "decode an archive, strip keys 37/38, re-seal, restore,
-	// confirm SUCCESS" test (as one might expect to mirror
-	// `listenRendezvous`/`recvHeaderKeys`'s own pre-existing-archive
-	// tolerance) is not constructible against THIS session: `initiate`
-	// eagerly captures `sendAttachmentLedger` at construction
+	// A literal "decode an archive, empty keys 37/38, re-seal, restore,
+	// confirm SUCCESS" test is not constructible against THIS session:
+	// `initiate` eagerly captures `sendAttachmentLedger` at construction
 	// (`captureSendAttachmentComponent`), which CONSUMES the group's
 	// `0xFF03` leaf for that epoch there and then — the archived group
 	// snapshot's exporter-tree frontier already reflects that consumption
-	// (SafeExport.swift). Stripping the archived ledger afterward does not
-	// recreate a genuine pre-feature archive (whose exporter tree would
-	// still show the leaf UNCONSUMED); it manufactures exactly the
-	// inconsistent state `TwoMLSSession+Restore.swift`'s new
+	// (SafeExport.swift). Emptying the archived ledger afterward manufactures
+	// exactly the inconsistent state `TwoMLSSession+Restore.swift`'s
 	// `ExporterTree.ExportError` → `.archiveInvalid` mapping exists to
-	// reject (an archived ledger claiming "never captured" for an epoch the
-	// group itself already shows as spent). This test confirms that
-	// fail-closed path instead, since it is otherwise uncovered.
+	// reject: restore re-captures the current epoch (idempotent per epoch),
+	// and an archived ledger claiming "never captured" for an epoch the
+	// group itself already shows as spent makes that capture throw. This
+	// test confirms that fail-closed path instead, since it is otherwise
+	// uncovered.
 	@available(iOS 26, macOS 26, *)
 	@Test func strippedSendAttachmentLedgerOnAlreadyCapturedSessionFailsClosed() throws {
 		let alice = try SessionTestSupport.established().alice
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
 
-		body.sendAttachmentLedger = nil
-		body.recvAttachmentLedger = nil
+		body.sendAttachmentLedger = ArchiveIntegerKeyedMap([:])
+		body.recvAttachmentLedger = ArchiveIntegerKeyedMap([:])
 
 		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(

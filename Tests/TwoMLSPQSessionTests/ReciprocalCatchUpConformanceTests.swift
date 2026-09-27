@@ -835,15 +835,13 @@ import Testing
 	/// and retire only once BOTH have moved.
 	@available(iOS 26, macOS 26, *)
 	@Test func rule4Pin() throws {
-		// The one-generation rotation cap makes nine SEQUENTIAL real
-		// rotations of the same party architecturally unreachable: once a
-		// rotation fully converges (both classical leaves canonicalize),
-		// `rotationCandidate` is never cleared, so every LATER
-		// `prepareToEncrypt(rotating:)` throws `.rotationInFlight` for the
-		// rest of the session's life (`TwoMLSSession+Messaging.swift:157-
-		// 180`) — pinned down by `RotationTests.
-		// testSecondRotationAfterFullConvergenceIsRotationInFlightAndSessionNotBricked`.
-		// So id0's history-window eviction is reached in three phases
+		// Nine SEQUENTIAL real rotations of the same party are supported by
+		// the engine (each canonicalization clears the in-flight window, so a
+		// fresh `prepareToEncrypt(rotating:)` is admitted afterwards —
+		// `RotationTests.secondRotationAfterFullConvergenceAdmitsFreshCandidate`),
+		// but driving nine full rotations through real leaf churn here would
+		// not exercise anything this test is about. So id0's history-window
+		// eviction is reached in three phases
 		// instead: (1) seed seven steps directly on `alice.auth.theirs`/
 		// `bob.auth.mine` (lockstep, real `.commit()`, in place) to bring
 		// the window to its edge without yet evicting id0 or touching
@@ -936,10 +934,9 @@ import Testing
 					.credential)
 				== s7, "bob's recv-classical leaf has caught up")
 
-		// Phase 3: a REAL rotation to s8 — bob has no outstanding
-		// `rotationCandidate`, so the cap does not bite — is what
-		// actually evicts id0 from both `PartySequence`s, through the
-		// engine's own canonicalization.
+		// Phase 3: a REAL rotation to s8 — bob's window is empty here, so it
+		// is admitted — is what actually evicts id0 from both
+		// `PartySequence`s, through the engine's own canonicalization.
 		let s8 = Data("bob-step8".utf8)
 		_ = try bob.prepareToEncrypt(rotating: s8)
 		let rotationOfferFrame = try bob.encrypt(Data("bob-rotate-offer".utf8)).frame

@@ -66,16 +66,19 @@ import TwoMLSPQCrypto
 		let peerID = bob.identity.clientID
 		#expect(alice.auth.theirs.knownIDs.contains(peerID))
 
-		let candidateBefore = alice.rotationCandidate
+		let candidatesBefore = alice.rotationCandidates
+		let deferredBefore = alice.deferredRotationCandidate
 		let authorizedBefore = alice.auth.mine.authorizedNext
 
 		#expect(throws: TwoMLSError.invalidSuccession) {
 			try alice.prepareToEncrypt(rotating: peerID)
 		}
-		#expect(alice.rotationCandidate == nil)
+		#expect(alice.rotationCandidates.isEmpty)
 		#expect(
-			alice.rotationCandidate?.clientID == candidateBefore?.clientID,
+			alice.rotationCandidates.map(\.clientID)
+				== candidatesBefore.map(\.clientID),
 			"no candidate was minted")
+		#expect(alice.deferredRotationCandidate == deferredBefore, "nothing was parked")
 		#expect(
 			alice.auth.mine.authorizedNext == authorizedBefore,
 			"no authorization was added")

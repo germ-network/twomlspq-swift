@@ -481,12 +481,12 @@ import Testing
 		let alice = try SessionTestSupport.established().alice
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
-		guard let firstEpoch = body.recvHeaderKeys?.entries.keys.first else {
+		guard let firstEpoch = body.recvHeaderKeys.entries.keys.first else {
 			Issue.record(
 				"expected at least one captured classical header-key window entry")
 			return
 		}
-		body.recvHeaderKeys?.entries[firstEpoch] = Data(repeating: 0, count: 31)
+		body.recvHeaderKeys.entries[firstEpoch] = Data(repeating: 0, count: 31)
 
 		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(

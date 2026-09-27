@@ -9,7 +9,7 @@ import TwoMLSPQCrypto
 // MARK: - Session migration minter
 //
 // The cross-module session migrator's parts-to-archive entry: mint the
-// Swift-native v1 `SessionArchive` body directly from raw parts a legacy Rust
+// Swift-native `SessionArchive` body directly from raw parts a legacy Rust
 // TwoMLSPQ session supplies — no live `TwoMLSSession`, no `TwoMLSIdentity`
 // construction, and no `Principal`. Unlike `InvitationMigration.mintArchive`
 // this minter is NOT provider-free: the per-group ingress needs the two
@@ -945,11 +945,13 @@ public enum SessionMigration {
 				($0.proposing, $0.message, $0.hash)
 			},
 			pqInflight: try effectivePqInflight.map(Self.nativePQInflight),
-			rotationCandidate: parts.rotationCandidate.map {
-				RotationCandidate(
-					clientID: $0.clientID,
-					proposedAtRecvEpoch: $0.proposedAtRecvEpoch)
-			},
+			rotationCandidates: parts.rotationCandidate.map {
+				[
+					RotationCandidate(
+						clientID: $0.clientID,
+						proposedAtRecvEpoch: $0.proposedAtRecvEpoch)
+				]
+			} ?? [],
 			auth: mintedAuth,
 			mode: mode,
 			noCustody: deployedState?.noCustody ?? [],
@@ -1028,11 +1030,14 @@ public enum SessionMigration {
 						componentID: $0.componentID, pskID: $0.pskID,
 						psk: $0.psk)
 				}),
-			rotationCandidate: parts.rotationCandidate.map {
-				RotationCandidateArchive(
-					clientID: $0.clientID,
-					proposedAtRecvEpoch: $0.proposedAtRecvEpoch)
-			},
+			rotationCandidates: parts.rotationCandidate.map {
+				[
+					RotationCandidateArchive(
+						clientID: $0.clientID,
+						proposedAtRecvEpoch: $0.proposedAtRecvEpoch)
+				]
+			} ?? [],
+			deferredRotationCandidate: nil,
 			spawnToken: parts.spawnToken,
 			listenRendezvous: ArchiveIntegerKeyedMap(parts.listenRendezvous),
 			recvHeaderKeys: ArchiveIntegerKeyedMap(parts.recvHeaderKeys),

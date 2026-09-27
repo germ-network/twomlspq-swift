@@ -132,27 +132,14 @@ import TwoMLSPQCrypto
 					componentID: $0.componentID.rawValue, pskID: $0.pskID,
 					psk: $0.psk)
 			},
-			rotationCandidate: try session.rotationCandidate.map { candidate in
-				// Retention keeps the record even once both classical
-				// leaves have converged onto it (`GroupKeySet`'s own
-				// doc) — by then the key sits in `current`, not
-				// `pending`, so fall back to whichever classical set's
-				// own leaf now presents this id.
-				let key: LeafKey
-				if let pending = session.leafKeys.sendClassical.pending[
-					candidate.clientID]
-					?? session.leafKeys.recvClassical.pending[
-						candidate.clientID]
-				{
-					key = pending
-				} else if try session.sendGroup.map({
-					try basicIdentifier(
-						TwoMLSSession.ownLeaf(of: $0.classical).credential)
-				}) == candidate.clientID {
-					key = try #require(session.leafKeys.sendClassical.current)
-				} else {
-					key = try #require(session.leafKeys.recvClassical.current)
-				}
+			rotationCandidate: try session.rotationCandidates.last.map { candidate in
+				// The deployed Rust dump exports only `staged_candidates.last()`
+				// — the NEWEST in-flight candidate, and no deferred slot at all
+				// (migration.rs:1697-1719). A live window member is never
+				// canonicalized (a canonicalization clears the whole window), so
+				// its held key is always the recv-classical `pending` entry.
+				let key = try #require(
+					session.leafKeys.recvClassical.pending[candidate.clientID])
 				return MigratedRotationCandidate(
 					clientID: candidate.clientID,
 					signingKey: key.signingKey.data,
@@ -466,31 +453,31 @@ import TwoMLSPQCrypto
 			#expect(mintedPsk.psk == nativePsk.psk)
 		}
 		#expect(
-			mintedBody.rotationCandidate?.clientID
-				== nativeBody.rotationCandidate?.clientID)
+			mintedBody.rotationCandidates.map(\.clientID)
+				== nativeBody.rotationCandidates.map(\.clientID))
 		#expect(
-			mintedBody.rotationCandidate?.proposedAtRecvEpoch
-				== nativeBody.rotationCandidate?.proposedAtRecvEpoch)
+			mintedBody.rotationCandidates.map(\.proposedAtRecvEpoch)
+				== nativeBody.rotationCandidates.map(\.proposedAtRecvEpoch))
 		#expect(mintedBody.spawnToken == nativeBody.spawnToken)
 		#expect(
-			mintedBody.listenRendezvous?.entries == nativeBody.listenRendezvous?.entries
+			mintedBody.listenRendezvous.entries == nativeBody.listenRendezvous.entries
 		)
-		#expect(mintedBody.recvHeaderKeys?.entries == nativeBody.recvHeaderKeys?.entries)
+		#expect(mintedBody.recvHeaderKeys.entries == nativeBody.recvHeaderKeys.entries)
 		#expect(
-			mintedBody.recvHeaderKeysPQ?.entries == nativeBody.recvHeaderKeysPQ?.entries
+			mintedBody.recvHeaderKeysPQ.entries == nativeBody.recvHeaderKeysPQ.entries
 		)
 		#expect(
 			mintedBody.initialTheirKP?.classical == nativeBody.initialTheirKP?.classical
 		)
 		#expect(mintedBody.initialTheirKP?.pq == nativeBody.initialTheirKP?.pq)
 		#expect(
-			mintedBody.sendAttachmentLedger?.entries.mapValues { $0.wrappedValue }
-				== nativeBody.sendAttachmentLedger?.entries.mapValues {
+			mintedBody.sendAttachmentLedger.entries.mapValues { $0.wrappedValue }
+				== nativeBody.sendAttachmentLedger.entries.mapValues {
 					$0.wrappedValue
 				})
 		#expect(
-			mintedBody.recvAttachmentLedger?.entries.mapValues { $0.wrappedValue }
-				== nativeBody.recvAttachmentLedger?.entries.mapValues {
+			mintedBody.recvAttachmentLedger.entries.mapValues { $0.wrappedValue }
+				== nativeBody.recvAttachmentLedger.entries.mapValues {
 					$0.wrappedValue
 				})
 		#expect(
@@ -567,7 +554,7 @@ import TwoMLSPQCrypto
 		_ = try restored.encrypt(Data("post-mint".utf8))
 	}
 
-	/// A mid-rotation session — an outstanding `rotationCandidate` plus its
+	/// A mid-rotation session — an outstanding window candidate plus its
 	/// still-staged classical Upd(self) in `stagedUpdates` — must convert
 	/// to a matching `recvClassical.pending` entry, not silently drop it:
 	/// the direct parity check for "the conversion... ignores staged/
@@ -579,7 +566,7 @@ import TwoMLSPQCrypto
 		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
 		let newID = Data("alice-v2".utf8)
 		_ = try alice.prepareToEncrypt(rotating: newID)
-		#expect(alice.rotationCandidate != nil)
+		#expect(!(alice.rotationCandidates.isEmpty))
 		#expect(!(alice.stagedUpdates.isEmpty))
 
 		let native = try alice.makeSessionArchive(kind: .checkpoint)
@@ -647,7 +634,7 @@ import TwoMLSPQCrypto
 		var (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
 		let c = Data("alice-c".utf8)
 		_ = try alice.prepareToEncrypt(rotating: c)
-		#expect(alice.rotationCandidate != nil)
+		#expect(!(alice.rotationCandidates.isEmpty))
 		let candidateKey = try #require(alice.leafKeys.recvClassical.pending[c])
 		#expect(!(alice.stagedUpdates.isEmpty))
 
@@ -728,10 +715,10 @@ import TwoMLSPQCrypto
 	// MARK: - Mint parity across more of the rotation/A.3 lifecycle
 
 	/// Mint parity right after the peer folds a rotation offer: recv-
-	/// classical has converged (the candidate's key is now `current`), but
-	/// send-classical still lags (the outstanding candidate's key is still
-	/// only `pending`) — a DIFFERENT point in the lifecycle from the
-	/// mid-rotation (staged-but-unfolded) test above.
+	/// classical has converged (the candidate's key was promoted into
+	/// `current`, and the fold CLEARED the in-flight window), but
+	/// send-classical still lags — a DIFFERENT point in the lifecycle from
+	/// the mid-rotation (staged-but-unfolded) test above.
 	@available(iOS 26, macOS 26, *)
 	@Test func mintedRotationFoldedMatchesNative() throws {
 		var (alice, bob, _, _) = try deployedShapedEstablishedAndExchanged()
@@ -746,11 +733,41 @@ import TwoMLSPQCrypto
 		#expect(foldDecrypted.ownCredentialCanonicalized)
 
 		let native = try alice.makeSessionArchive(kind: .checkpoint)
+		var parts = try migratedParts(alice)
+		// The fold cleared the window, so there is no candidate part left to
+		// resolve alice's new recv-leaf credential — supply her per-group
+		// keys directly (the deployed dump's winner key is now in `current`).
+		parts.leafKeys = migratedLeafKeys(from: alice.leafKeys)
+		// Same synthesized PQ catch-up the converged sibling needs: alice's
+		// classical rotation moved `auth.mine.current` while her PQ leaves
+		// still present the original id.
+		if let sendPQCurrent = alice.leafKeys.sendPQ.current {
+			parts.leafKeys?.sendPQ.pending.append(
+				MigratedPendingLeafKey(
+					target: newID,
+					key: MigratedLeafKey(
+						signingKey: sendPQCurrent.signingKey.data,
+						signatureKey: sendPQCurrent.signatureKey.data)))
+		}
 		let minted = try SessionMigration.mintArchive(
-			kind: .checkpoint, parts: try migratedParts(alice),
+			kind: .checkpoint, parts: parts,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		try assertMintedMatchesNative(minted, native, kind: .checkpoint)
+		// Not `assertMintedMatchesNative` for the same reason as the
+		// converged sibling: the synthesized PQ catch-up entry has no native
+		// counterpart, so only the classical sets and the shared fields are
+		// compared.
+		let mintedBody = try minted.decode(SessionArchive.self)
+		let nativeBody = try native.decode(SessionArchive.self)
+		#expect(mintedBody.auth == nativeBody.auth)
+		#expect(mintedBody.sendGroup == nativeBody.sendGroup)
+		#expect(mintedBody.recvGroup == nativeBody.recvGroup)
+		#expect(mintedBody.leafKeys.sendClassical == nativeBody.leafKeys.sendClassical)
+		#expect(mintedBody.leafKeys.recvClassical == nativeBody.leafKeys.recvClassical)
+		#expect(
+			mintedBody.rotationCandidates.map(\.clientID)
+				== nativeBody.rotationCandidates.map(\.clientID))
+		#expect(nativeBody.rotationCandidates.isEmpty)
 	}
 
 	/// Mint parity once the rotation has FULLY converged — both leaves
@@ -1594,21 +1611,20 @@ import TwoMLSPQCrypto
 
 	/// A one-sided rotation. Alice's classical rotation has FULLY
 	/// converged to `newID` (both classical leaves present it, and the
-	/// live session keeps `rotationCandidate` set even post-convergence —
-	/// `GroupKeySet`'s own retention doesn't clear it), but her PQ leaves
-	/// never moved at all — `sendGroup.pq`'s own leaf still presents her
-	/// ORIGINAL PQ key. The migrated parts hand-build the deployed
-	/// mapper's shape for this: `identity` is a FRESH, unrelated N,
-	/// proving it is never consulted for a key nothing presents — every
-	/// classical lookup instead resolves via the (untouched) candidate,
-	/// exactly as the live session's own signing does. `recvLeafPrincipal`
-	/// carries the ORIGINAL id, N's classical pair as an inert filler
-	/// (never consulted — the candidate arm already covers classical), and
-	/// the OLD PQ pair, which IS consulted: `sendPQ.current` must resolve
-	/// to it, not to `identity`'s (N's, wrong) one — proved two ways: the
-	/// minted value directly, and the restored session's own choke point,
-	/// which independently re-derives the tree's actual presented key and
-	/// would fail closed if the conversion had gotten this wrong.
+	/// canonicalization CLEARED the in-flight window — the winner's key was
+	/// promoted into `current`), but her PQ leaves never moved at all —
+	/// `sendGroup.pq`'s own leaf still presents her ORIGINAL PQ key. The
+	/// migrated parts hand-build the deployed mapper's shape for this:
+	/// `identity` is a FRESH, unrelated N, proving it is never consulted for
+	/// a key nothing presents — every classical lookup resolves via the
+	/// supplied `leafKeys` (`current`), exactly as the live session's own
+	/// signing does. `recvLeafPrincipal` carries the ORIGINAL id, N's
+	/// classical pair as an inert filler, and the OLD PQ pair, which IS
+	/// consulted: `sendPQ.current` must resolve to it, not to `identity`'s
+	/// (N's, wrong) one — proved two ways: the minted value directly, and the
+	/// restored session's own choke point, which independently re-derives the
+	/// tree's actual presented key and would fail closed if the conversion
+	/// had gotten this wrong.
 	@available(iOS 26, macOS 26, *)
 	@Test func mintedOneSidedRotationResolvesSendPQToTheOriginalKey() throws {
 		// Both PQ halves already exist, idle, turn on bob — reusing this
@@ -1637,7 +1653,10 @@ import TwoMLSPQCrypto
 		let catchUpDecrypted = try bob.processIncomingDecrypted(catchUpFrame)
 		#expect(catchUpDecrypted.newSender == newID)
 		#expect(alice.myPrincipalState == .sync(newID))
-		#expect(alice.rotationCandidate != nil, "convergence doesn't clear the candidate")
+		#expect(
+			alice.rotationCandidates.isEmpty,
+			"convergence clears the in-flight window (the winner's key lives in `current`)"
+		)
 		let alicesSendPQ = try #require(alice.sendGroup?.pq)
 		#expect(
 			try TwoMLSSession.ownLeaf(of: alicesSendPQ).signatureKey
@@ -2107,7 +2126,8 @@ import TwoMLSPQCrypto
 			core: nil, checkpoint: minted,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
-		#expect(restoredBob.rotationCandidate == nil)
+		#expect(restoredBob.rotationCandidates.isEmpty)
+		#expect(restoredBob.deferredRotationCandidate == nil)
 
 		// `alice` is a live, un-migrated session: the send-catch-up commit
 		// below lands as a fold, not a queued-and-authorized offer, so her
