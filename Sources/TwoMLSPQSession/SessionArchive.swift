@@ -672,13 +672,14 @@ extension GroupKeySetArchive {
 	}
 }
 
-/// `LeafKeys`, archived — required (archive key 41): v1 never shipped, so
-/// there is no legacy read path and no optional fallback for the classical
-/// sets. The PQ sets ride only in a Checkpoint — a Core omits them, exactly
-/// like `GroupEntry.pq` itself — so `sendPQ`/`recvPQ` are `nil` there; the
-/// two manifest-only fingerprint fields on `SessionArchive` itself carry the
-/// cheap, kind-independent signal `validateManifestAgreement` needs to
-/// cross-check a Core's claimed PQ key state without the trees.
+/// `LeafKeys`, archived — required (archive key 41). The classical sets are
+/// required too, not optional: the format is only ever read at its own
+/// version, so there is no legacy shape to tolerate. The PQ sets ride only
+/// in a Checkpoint — a Core omits them, exactly like `GroupEntry.pq` itself
+/// — so `sendPQ`/`recvPQ` are `nil` there; the two manifest-only fingerprint
+/// fields on `SessionArchive` itself carry the cheap, kind-independent signal
+/// `validateManifestAgreement` needs to cross-check a Core's claimed PQ key
+/// state without the trees.
 struct LeafKeysArchive: Codable, Sendable, Equatable {
 	var sendClassical: GroupKeySetArchive
 	var recvClassical: GroupKeySetArchive
@@ -796,42 +797,43 @@ struct SessionArchive: Codable, Sendable {
 	/// Archive key 47 — the single latest-wins parked rotation request, if
 	/// any. Absent when no park is outstanding.
 	var deferredRotationCandidate: Data?
+	/// `nil` on the initiator (or a session accepted through the lower-level
+	/// `receive(identity:...)` entry point); set only when the session was
+	/// spawned under a token via `Invitation.receive`.
 	var spawnToken: Data?
-	/// `listenRendezvous` — Optional so a pre-existing
-	/// v1 archive (encoded before this field existed) still decodes: it
-	/// decodes to an empty map, and `restore` re-captures the current
-	/// epoch's address at once (restore is itself a capture site).
-	var listenRendezvous: ArchiveIntegerKeyedMap<Data>?
-	/// `recvHeaderKeys`/`recvHeaderKeysPQ` — same
-	/// optional-with-empty-default shape as `listenRendezvous`: absent on a
-	/// pre-existing archive, in which case `restore` re-captures the
-	/// current epoch's key(s) at once.
-	var recvHeaderKeys: ArchiveIntegerKeyedMap<Data>?
-	var recvHeaderKeysPQ: ArchiveIntegerKeyedMap<Data>?
-	/// `initialTheirKP` — Optional so a pre-existing
-	/// archive still decodes; `nil` for every session except a live
+	/// `listenRendezvous` — always written, possibly empty. Restore is
+	/// itself a capture site (`recordListenRendezvous`), so a map that lacks
+	/// the current epoch's address (an empty migration-minted window) picks
+	/// it up at once rather than only after the next commit.
+	var listenRendezvous: ArchiveIntegerKeyedMap<Data>
+	/// `recvHeaderKeys`/`recvHeaderKeysPQ` — same always-written shape as
+	/// `listenRendezvous`; restore re-captures the current epoch's key(s)
+	/// (`recordListenRendezvous`/`recordPQHeaderKey`) the same way.
+	var recvHeaderKeys: ArchiveIntegerKeyedMap<Data>
+	var recvHeaderKeysPQ: ArchiveIntegerKeyedMap<Data>
+	/// `initialTheirKP` — `nil` for every session except a live
 	/// pre-Group_B-join initiator (the only state `pendingOutbound()`
 	/// applies to).
 	var initialTheirKP: CombinerKeyPackageArchive?
 	/// `sendAttachmentLedger`/`recvAttachmentLedger` (+Attachment.swift),
-	/// added for attachment CEK export — same optional-with-empty-default
-	/// shape as `listenRendezvous`/`recvHeaderKeys`: absent on a
-	/// pre-existing archive, in which case `restore` re-captures the
-	/// current epoch's `0xFF03` component at once (restore is itself a
-	/// capture site, same as those windows). Reuses the `@SecretField`
-	/// wrapper (`IdentityArchive`'s own pattern) since the raw component —
-	/// unlike a ledgered `ExportedPsk` — carries no other archived metadata.
-	var sendAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
-	var recvAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>?
-	/// Optional so a pre-existing archive still decodes
-	/// (absent means `false`, matching the live field's own default): the
-	/// non-emittable gate's live state, so a RESTORED owed-but-not-installed
-	/// Bob still owes.
-	var owesEstablishmentEnvelope: Bool?
-	/// REQUIRED, unlike every other field added since v1: this format never
-	/// shipped before this field existed, so there is no legacy archive to
-	/// tolerate its absence for, and no fallback reconstruction path. A
-	/// missing key 41 is a `DecodingError`, which `restore`/`decode` fold to
+	/// for attachment CEK export. Always written (possibly empty). Restore
+	/// re-captures the current epoch's `0xFF03` component (idempotent when
+	/// the ledger already carries it), which is also what fail-closes an
+	/// archive whose ledger omits an epoch the group itself shows spent.
+	/// Reuses the `@SecretField` wrapper (`IdentityArchive`'s own pattern)
+	/// since the raw component — unlike a ledgered `ExportedPsk` — carries no
+	/// other archived metadata.
+	var sendAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>
+	var recvAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>
+	/// The non-emittable gate's live state, so a RESTORED
+	/// owed-but-not-installed Bob still owes.
+	var owesEstablishmentEnvelope: Bool
+	/// Archive key 41 — required, like every field carrying always-present
+	/// live state: the version is only ever read by the version that wrote
+	/// it, so there is no absence to tolerate and no reconstruction
+	/// fallback. (Fields whose live value is genuinely absent stay Optional
+	/// — e.g. `spawnToken`, `deployedCarry`.) A missing key
+	/// 41 is a `DecodingError`, which `restore`/`decode` fold to
 	/// `.archiveInvalid` like any other malformed archive. Its own PQ sets
 	/// are kind-gated (present on a Checkpoint, absent on a Core); the two
 	/// fields below are not, and are just as required — they ride on every
@@ -918,10 +920,13 @@ private func derivedSignaturePublicKey(from signingKey: SecretBytes) throws
 	return MLS.SignaturePublicKey(privateKey.publicKey.rawRepresentation)
 }
 
-/// The current, and so far only, archive format version. Internal (not
-/// `private`) so `restore`'s header check references it directly instead of
-/// repeating the literal.
-let sessionArchiveVersion: UInt64 = 1
+/// The current archive format version. Bumped whenever the body's shape
+/// changes: this format is only ever read by the version that wrote it, so
+/// a `restore` of any other version is rejected at the header guard rather
+/// than silently decoding with fields dropped. Internal (not `private`) so
+/// `restore`'s header check references it directly instead of repeating the
+/// literal.
+let sessionArchiveVersion: UInt64 = 2
 
 // MARK: - Encode
 

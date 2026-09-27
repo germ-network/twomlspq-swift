@@ -9,7 +9,7 @@ import TwoMLSPQCrypto
 // MARK: - Session migration minter
 //
 // The cross-module session migrator's parts-to-archive entry: mint the
-// Swift-native v1 `SessionArchive` body directly from raw parts a legacy Rust
+// Swift-native `SessionArchive` body directly from raw parts a legacy Rust
 // TwoMLSPQ session supplies — no live `TwoMLSSession`, no `TwoMLSIdentity`
 // construction, and no `Principal`. Unlike `InvitationMigration.mintArchive`
 // this minter is NOT provider-free: the per-group ingress needs the two

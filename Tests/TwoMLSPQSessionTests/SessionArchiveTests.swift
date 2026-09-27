@@ -559,14 +559,14 @@ import TwoMLSPQCrypto
 		let archive = try alice.makeSessionArchive(kind: .checkpoint)
 		var body = try archive.decode(SessionArchive.self)
 
-		body.version = 2
+		body.version = 1
 		#expect(throws: TwoMLSError.archiveInvalid) {
 			try TwoMLSSession.restore(
 				core: nil, checkpoint: try SecretArchive(encoding: body),
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		}
-		body.version = 1
+		body.version = sessionArchiveVersion
 
 		body.classicalSuite = 0xFFFF
 		#expect(throws: TwoMLSError.archiveInvalid) {
@@ -1235,6 +1235,12 @@ import TwoMLSPQCrypto
 					stagedUpdates: full.stagedUpdates,
 					sendCrossPSKLedger: full.sendCrossPSKLedger,
 					rotationCandidates: full.rotationCandidates,
+					listenRendezvous: full.listenRendezvous,
+					recvHeaderKeys: full.recvHeaderKeys,
+					recvHeaderKeysPQ: full.recvHeaderKeysPQ,
+					sendAttachmentLedger: full.sendAttachmentLedger,
+					recvAttachmentLedger: full.recvAttachmentLedger,
+					owesEstablishmentEnvelope: full.owesEstablishmentEnvelope,
 					leafKeys: full.leafKeys,
 					sendPQKeysFingerprint: full.sendPQKeysFingerprint,
 					recvPQKeysFingerprint: full.recvPQKeysFingerprint))

@@ -221,22 +221,16 @@ extension TwoMLSSession {
 		}
 		// Every restored rendezvous address is a 32-byte exporter output; a
 		// wrong-length entry is a corrupt or adversarial archive — fail closed.
-		if let listen = body.listenRendezvous,
-			!listen.entries.values.allSatisfy({ $0.count == 32 })
-		{
+		if !body.listenRendezvous.entries.values.allSatisfy({ $0.count == 32 }) {
 			throw TwoMLSError.archiveInvalid
 		}
 		// Both header-key windows are 32-byte AEAD keys (the header
 		// AEAD's own key size), validated the same way (book
 		// header-encryption.md:456-458).
-		if let classical = body.recvHeaderKeys,
-			!classical.entries.values.allSatisfy({ $0.count == 32 })
-		{
+		if !body.recvHeaderKeys.entries.values.allSatisfy({ $0.count == 32 }) {
 			throw TwoMLSError.archiveInvalid
 		}
-		if let pq = body.recvHeaderKeysPQ,
-			!pq.entries.values.allSatisfy({ $0.count == 32 })
-		{
+		if !body.recvHeaderKeysPQ.entries.values.allSatisfy({ $0.count == 32 }) {
 			throw TwoMLSError.archiveInvalid
 		}
 		// Same reasoning, the `0xFF03` attachment components
@@ -244,18 +238,14 @@ extension TwoMLSSession {
 		// `KDF.Nh` (32 bytes for the deployed classical suite) — a
 		// wrong-length entry is corrupt or adversarial, same fail-closed
 		// treatment as the windows above.
-		if let sendAttachment = body.sendAttachmentLedger,
-			!sendAttachment.entries.values.allSatisfy({
-				$0.wrappedValue.byteCount == 32
-			})
-		{
+		if !body.sendAttachmentLedger.entries.values.allSatisfy({
+			$0.wrappedValue.byteCount == 32
+		}) {
 			throw TwoMLSError.archiveInvalid
 		}
-		if let recvAttachment = body.recvAttachmentLedger,
-			!recvAttachment.entries.values.allSatisfy({
-				$0.wrappedValue.byteCount == 32
-			})
-		{
+		if !body.recvAttachmentLedger.entries.values.allSatisfy({
+			$0.wrappedValue.byteCount == 32
+		}) {
 			throw TwoMLSError.archiveInvalid
 		}
 	}
@@ -444,7 +434,7 @@ extension TwoMLSSession {
 			lastCrossInjectedPQ: body.lastCrossInjectedPQ,
 			lastSendPQExported: body.lastSendPQExported,
 			spawnToken: body.spawnToken,
-			owesEstablishmentEnvelope: body.owesEstablishmentEnvelope ?? false,
+			owesEstablishmentEnvelope: body.owesEstablishmentEnvelope,
 			ownOfferWindow: ownOfferWindowRecord,
 			pqWedge: pqWedge,
 			noCustody: noCustody,
@@ -457,27 +447,27 @@ extension TwoMLSSession {
 		session.sendCrossPSKLedger = try body.sendCrossPSKLedger.entries.mapValues {
 			try $0.restore()
 		}
-		// Optional-with-empty-default, same reasoning as `listenRendezvous`
-		// below: absent on a pre-existing archive, in which case this starts
-		// empty and the capture-on-restore call further down populates it.
-		session.sendAttachmentLedger =
-			body.sendAttachmentLedger?.entries.mapValues { $0.wrappedValue } ?? [:]
-		session.recvAttachmentLedger =
-			body.recvAttachmentLedger?.entries.mapValues { $0.wrappedValue } ?? [:]
+		// The archived ledgers are always present; restore's capture-on-entry
+		// call further down re-captures the current epoch (idempotent when the
+		// archived ledger already carries it) and fail-closes what it can't.
+		session.sendAttachmentLedger = body.sendAttachmentLedger.entries.mapValues {
+			$0.wrappedValue
+		}
+		session.recvAttachmentLedger = body.recvAttachmentLedger.entries.mapValues {
+			$0.wrappedValue
+		}
 		session.rotationCandidates = rotationCandidates
 		session.deferredRotationCandidate = deferredRotationCandidate
-		// Optional-with-empty-default (SessionArchive.swift): absent on a
-		// pre-existing v1 archive, in which case this starts empty. Restore
-		// is itself a capture site — re-derive the current classical epoch's
-		// address at once (idempotent when the map already carries it), so
-		// even an archive that omits the current epoch lists where the peer
+		// Restore is itself a capture site — re-derive the current classical
+		// epoch's address at once (idempotent when the map already carries
+		// it), so even an empty migration-minted window lists where the peer
 		// posts NOW rather than only after the next commit.
-		session.listenRendezvous = body.listenRendezvous?.entries ?? [:]
+		session.listenRendezvous = body.listenRendezvous.entries
 		// Restore is a construction site for the header-key windows too
 		// — re-derive the current classical + PQ header keys so a restored
 		// session can open an in-flight frame at once.
-		session.recvHeaderKeys = body.recvHeaderKeys?.entries ?? [:]
-		session.recvHeaderKeysPQ = body.recvHeaderKeysPQ?.entries ?? [:]
+		session.recvHeaderKeys = body.recvHeaderKeys.entries
+		session.recvHeaderKeysPQ = body.recvHeaderKeysPQ.entries
 		try session.recordListenRendezvous()
 		try session.recordPQHeaderKey()
 		// Same "restore is itself a capture site" reasoning, `0xFF03`

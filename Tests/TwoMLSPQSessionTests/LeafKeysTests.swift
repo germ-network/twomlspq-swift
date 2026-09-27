@@ -402,14 +402,13 @@ import Testing
 
 	// MARK: - Restore negatives: key 41, and checks 2/3/7 through the full path
 
-	/// `leafKeys` (archive key 41) is REQUIRED, unlike every other field
-	/// added since v1 — a body encoded without it is a `DecodingError`,
-	/// which `restore` folds to `.archiveInvalid` like any other malformed
-	/// archive. `PartialSessionArchive` mirrors every OTHER required field
-	/// of `SessionArchive` at the SAME coding keys (the optional ones need
-	/// no stand-in — a missing optional key decodes to `nil` either way),
-	/// so the only actual difference from a genuine archive is key 41's
-	/// absence.
+	/// `leafKeys` (archive key 41) is REQUIRED — a body encoded without it is
+	/// a `DecodingError`, which `restore` folds to `.archiveInvalid` like any
+	/// other malformed archive. `PartialSessionArchive` mirrors every OTHER
+	/// required field of `SessionArchive` at the SAME coding keys (the
+	/// optional ones need no stand-in — a missing optional key decodes to
+	/// `nil` either way), so the only actual difference from a genuine
+	/// archive is key 41's absence.
 	@available(iOS 26, macOS 26, *)
 	@Test func restoreRejectsAnArchiveMissingLeafKeys() throws {
 		let alice = try SessionTestSupport.establishedAndExchanged().alice
@@ -422,6 +421,12 @@ import Testing
 			initiated: real.initiated, pqTurnMine: real.pqTurnMine,
 			stagedUpdates: real.stagedUpdates,
 			sendCrossPSKLedger: real.sendCrossPSKLedger,
+			listenRendezvous: real.listenRendezvous,
+			recvHeaderKeys: real.recvHeaderKeys,
+			recvHeaderKeysPQ: real.recvHeaderKeysPQ,
+			sendAttachmentLedger: real.sendAttachmentLedger,
+			recvAttachmentLedger: real.recvAttachmentLedger,
+			owesEstablishmentEnvelope: real.owesEstablishmentEnvelope,
 			sendPQKeysFingerprint: real.sendPQKeysFingerprint,
 			recvPQKeysFingerprint: real.recvPQKeysFingerprint,
 			rotationCandidates: real.rotationCandidates)
@@ -2093,6 +2098,12 @@ private struct PartialSessionArchive: Codable {
 	var pqTurnMine: Bool
 	var stagedUpdates: [StagedUpdateArchive]
 	var sendCrossPSKLedger: ArchiveIntegerKeyedMap<ExportedPskArchive>
+	var listenRendezvous: ArchiveIntegerKeyedMap<Data>
+	var recvHeaderKeys: ArchiveIntegerKeyedMap<Data>
+	var recvHeaderKeysPQ: ArchiveIntegerKeyedMap<Data>
+	var sendAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>
+	var recvAttachmentLedger: ArchiveIntegerKeyedMap<SecretField<SecretBytes>>
+	var owesEstablishmentEnvelope: Bool
 	var sendPQKeysFingerprint: GroupKeySetFingerprint
 	var recvPQKeysFingerprint: GroupKeySetFingerprint
 	var rotationCandidates: [RotationCandidateArchive]
@@ -2110,6 +2121,12 @@ private struct PartialSessionArchive: Codable {
 		case pqTurnMine = 19
 		case stagedUpdates = 29
 		case sendCrossPSKLedger = 30
+		case listenRendezvous = 33
+		case recvHeaderKeys = 34
+		case recvHeaderKeysPQ = 35
+		case sendAttachmentLedger = 37
+		case recvAttachmentLedger = 38
+		case owesEstablishmentEnvelope = 39
 		case sendPQKeysFingerprint = 42
 		case recvPQKeysFingerprint = 43
 		case rotationCandidates = 46

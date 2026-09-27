@@ -460,24 +460,24 @@ import TwoMLSPQCrypto
 				== nativeBody.rotationCandidates.map(\.proposedAtRecvEpoch))
 		#expect(mintedBody.spawnToken == nativeBody.spawnToken)
 		#expect(
-			mintedBody.listenRendezvous?.entries == nativeBody.listenRendezvous?.entries
+			mintedBody.listenRendezvous.entries == nativeBody.listenRendezvous.entries
 		)
-		#expect(mintedBody.recvHeaderKeys?.entries == nativeBody.recvHeaderKeys?.entries)
+		#expect(mintedBody.recvHeaderKeys.entries == nativeBody.recvHeaderKeys.entries)
 		#expect(
-			mintedBody.recvHeaderKeysPQ?.entries == nativeBody.recvHeaderKeysPQ?.entries
+			mintedBody.recvHeaderKeysPQ.entries == nativeBody.recvHeaderKeysPQ.entries
 		)
 		#expect(
 			mintedBody.initialTheirKP?.classical == nativeBody.initialTheirKP?.classical
 		)
 		#expect(mintedBody.initialTheirKP?.pq == nativeBody.initialTheirKP?.pq)
 		#expect(
-			mintedBody.sendAttachmentLedger?.entries.mapValues { $0.wrappedValue }
-				== nativeBody.sendAttachmentLedger?.entries.mapValues {
+			mintedBody.sendAttachmentLedger.entries.mapValues { $0.wrappedValue }
+				== nativeBody.sendAttachmentLedger.entries.mapValues {
 					$0.wrappedValue
 				})
 		#expect(
-			mintedBody.recvAttachmentLedger?.entries.mapValues { $0.wrappedValue }
-				== nativeBody.recvAttachmentLedger?.entries.mapValues {
+			mintedBody.recvAttachmentLedger.entries.mapValues { $0.wrappedValue }
+				== nativeBody.recvAttachmentLedger.entries.mapValues {
 					$0.wrappedValue
 				})
 		#expect(
