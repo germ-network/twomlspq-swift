@@ -87,6 +87,15 @@ import TwoMLSPQCrypto
 
 		#expect(groupA.classical.tree.nonBlankLeaves().count == 2)
 		#expect(pq.tree.nonBlankLeaves().count == 2)
+
+		// Founding commits omit their own UpdatePath, read off the as-founded
+		// tree (`established()` runs no rekey): both halves' root parent (node
+		// 1) stays blank. leafCount pinned so `isBlank(at: 1)` cannot pass
+		// vacuously on a regressed 1-node tree.
+		#expect(pq.tree.leafCount.value == 2)
+		#expect(pq.tree.isBlank(at: 1))
+		#expect(groupA.classical.tree.leafCount.value == 2)
+		#expect(groupA.classical.tree.isBlank(at: 1))
 	}
 
 	/// Group_B is classical-only: `pq == nil` on both the founder's (Bob) send
@@ -101,6 +110,14 @@ import TwoMLSPQCrypto
 		#expect(aliceGroupB.pq == nil)
 		#expect(bobGroupB.classical.tree.nonBlankLeaves().count == 2)
 		#expect(aliceGroupB.classical.tree.nonBlankLeaves().count == 2)
+
+		// `establishClassicalOnly`'s founding commit is pathless: the root
+		// parent (node 1) stays blank on both sides. leafCount pinned so
+		// `isBlank(at: 1)` cannot pass vacuously out of range.
+		#expect(bobGroupB.classical.tree.leafCount.value == 2)
+		#expect(bobGroupB.classical.tree.isBlank(at: 1))
+		#expect(aliceGroupB.classical.tree.leafCount.value == 2)
+		#expect(aliceGroupB.classical.tree.isBlank(at: 1))
 	}
 
 	/// Epochs converge on both directional pairs: Bob's copy of Group_A

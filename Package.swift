@@ -24,10 +24,11 @@ let package = Package(
 		// provider conforms to; `AppBinding` (0xF0A2) rides into Group_A's
 		// classical half via `CombinerGroup.establish(classicalExtraExtensions:)`.
 		// 0.1.6: the migration-only SPI also takes an outstanding Update's
-		// leaf HPKE secret.
+		// leaf HPKE secret. 0.1.7: `CombinerGroup.establish` omits the founding
+		// UpdatePath.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			from: "0.1.6"
+			from: "0.1.7"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`. 0.7.1 decodes keyed
 		// containers in linear time, which snapshot restore relies on.

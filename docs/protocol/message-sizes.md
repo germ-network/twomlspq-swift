@@ -17,27 +17,27 @@ framing sum to its on-wire length, and the rotation commit folds its peer
 proposal by reference, never by value — so it is deterministic and CI-safe.
 
 Measurements: `curve25519chaCha` + ML-KEM-768 (SwiftCrypto), 43-byte payload,
-opaque 30-byte client ids, DEBUG, 2026-09-27.
+opaque 30-byte client ids, DEBUG, 2026-09-28.
 
 ## Frame kinds
 
 | Frame | Tag | Bytes |
 |-------|-----|------:|
-| §A.1 initial envelope A (bare) | — | 7942 |
-| §A.1 pre-establishment app (bare) | — | 8179 |
-| §A.1 pre-establishment app (payload) | — | 7887 |
-| APQ welcome B, sealed | `0x01` | 1068 |
-| no-commit message frame + app | `0x03` | 7161 |
+| §A.1 initial envelope A (bare) | — | 6616 |
+| §A.1 pre-establishment app (bare) | — | 6853 |
+| §A.1 pre-establishment app (payload) | — | 6561 |
+| APQ welcome B, sealed | `0x01` | 982 |
+| no-commit message frame + app | `0x03` | 5835 |
 | folding commit + app | `0x03` | 1287 |
 | rotation commit + app | `0x03` | 1287 |
 | PQ bootstrap KP, sealed | `0x13` | 2624 |
-| PQ bootstrap welcome, sealed | `0x15` | 5452 |
+| PQ bootstrap welcome, sealed | `0x15` | 4212 |
 | PQ ratchet EK, sealed | `0x17` | 1380 |
 | PQ ratchet CT, sealed | `0x19` | 1336 |
 | PQ ratchet bind frame (`0x03` + staple) | `0x03` | 1573 |
 | PQ re-key `Upd'`, sealed | `0x1B` | 1498 |
 | PQ re-key `Commit'`, sealed | `0x1D` | 3929 |
-| born-dedicated establishment handoff | `0x0B` | 1022 |
+| born-dedicated establishment handoff | `0x0B` | 936 |
 
 Notes:
 
@@ -49,6 +49,14 @@ Notes:
   byte; open them on the recipient to reach it.
 - **`0x0B`** wraps the acceptor's envelope beside its unmodified `0x01`
   welcome.
+- **Every founding commit omits its own `UpdatePath`.** Group_A's classical and
+  PQ halves and both Group_B halves all found pathless (the founding commit's
+  path is a redundant leaf self-update — there is no gap between group creation
+  and the member-add it would cover). This is why the envelope-A / pre-establishment
+  / no-commit rows are smaller than an equivalent pathed founding. Group_A's
+  classical half is the last to drop its path, so those Group_A-carrying rows
+  (and only those) shrink by 86 B each; the Group_B-only `0x01`, `0x15`, and
+  `0x0B` rows were already pathless and are unchanged.
 
 ## Steady-state message frame (rotation)
 
