@@ -66,6 +66,9 @@ extension APQGroup {
 			classicalExtraExtensions: (try appBinding.map {
 				[try AppBinding(data: $0).asExtension()]
 			} ?? []) + profile.recordExtensions,
+			// Founding commits omit their own UpdatePath: it is a redundant
+			// leaf self-update for forward secrecy, with no gap between group
+			// creation and the member-add to cover.
 			codepoints: codepoints)
 		try combinerGroup.verifyPair()
 		let group = APQGroup(
@@ -170,7 +173,9 @@ extension APQGroup {
 			try TwoPartyRules.validateCreationProposals(proposals)
 			let transition = try epoch0.committing(
 				provider, proposals: proposals, signingKey: founder.signingKey,
-				randomness: founder.randomness, psk: pskStore.resolver())
+				randomness: founder.randomness,
+				includePath: false,
+				psk: pskStore.resolver())
 			return try withTransitionHandoff(transition) { adopted, sent in
 				guard let welcome = sent.welcome else {
 					throw MLS.Combiner.Error.missingWelcome
@@ -377,7 +382,9 @@ extension APQGroup {
 			try TwoPartyRules.validateCreationProposals(proposals)
 			let transition = try epoch0.committing(
 				pqProvider, proposals: proposals, signingKey: signingKey,
-				randomness: randomness, includePath: true, psk: { _ in nil })
+				randomness: randomness,
+				includePath: false,
+				psk: { _ in nil })
 			return try withTransitionHandoff(transition) { adopted, sent in
 				guard let welcome = sent.welcome else {
 					throw MLS.Combiner.Error.missingWelcome

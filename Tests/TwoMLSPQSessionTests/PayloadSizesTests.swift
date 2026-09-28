@@ -72,6 +72,17 @@ import TwoMLSPQCrypto
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal, their: bobKP)
 		var alice = initiated.session
+		// Snapshot the founding trees NOW: a blank parent only survives
+		// until the first A.5 rekey, whose forced UpdatePath refills it
+		// (`TwoMLSSession+Rekey.swift`). Node 1 is the root parent of a
+		// 2-leaf tree.
+		let foundingPQ = try #require(alice.sendGroup?.pq)
+		// Pin the count so `isBlank(at: 1)` cannot pass vacuously out of range.
+		#expect(foundingPQ.tree.leafCount.value == 2)
+		let foundingPQHalfIsBlank = foundingPQ.tree.isBlank(at: 1)
+		let foundingClassical = try #require(alice.sendGroup?.classical)
+		#expect(foundingClassical.tree.leafCount.value == 2)
+		let foundingClassicalHalfIsBlank = foundingClassical.tree.isBlank(at: 1)
 		let envelopeA = try alice.pendingOutbound()
 		// Unseal the envelope while the invitation is still live (decrypt-only,
 		// non-consuming) to read its inner welcome / return-KP split, and split
@@ -266,6 +277,16 @@ import TwoMLSPQCrypto
 		#expect(rekAlice.openOrRaw(rekeyUpd).first == Frames.pqRekeyUpdTag)
 		#expect(rekBob.openOrRaw(rekeyCommit).first == Frames.pqRekeyCommitTag)
 		#expect(!ratchetApp.isEmpty)
+
+		// Founding commits omit their own UpdatePath: BOTH halves' founding
+		// commits stay pathless — asserted against the snapshot taken at
+		// establishment above.
+		#expect(
+			foundingPQHalfIsBlank,
+			"founding PQ commit must omit its UpdatePath (blank node 1)")
+		#expect(
+			foundingClassicalHalfIsBlank,
+			"founding classical commit must omit its UpdatePath (blank node 1)")
 	}
 
 	/// The envelope's inner section sizes (bare shape: a welcome and a

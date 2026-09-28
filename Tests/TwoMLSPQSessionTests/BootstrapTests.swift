@@ -45,6 +45,15 @@ import TwoMLSPQCrypto
 		#expect(alicePQ.tree.nonBlankLeaves().count == 2)
 		#expect(bobPQ.tree.nonBlankLeaves().count == 2)
 
+		// `foundPQHalf`'s founding commit is pathless, so the root parent (node
+		// 1) stays blank on both sides. Asserted before any A.5 rekey, whose
+		// forced UpdatePath would refill it. leafCount pinned so `isBlank(at:
+		// 1)` cannot pass vacuously out of range.
+		#expect(bobPQ.tree.leafCount.value == 2)
+		#expect(bobPQ.tree.isBlank(at: 1))
+		#expect(alicePQ.tree.leafCount.value == 2)
+		#expect(alicePQ.tree.isBlank(at: 1))
+
 		let infoRaw = try MLS.Combiner.APQInfo.read(
 			fromExtensionsOf: alicePQ.context,
 			type: MLS.Combiner.Codepoints.deployed.apqInfoExtensionType)
