@@ -31,6 +31,16 @@ format. The private key is CryptoKit's 96-byte `integrityCheckedRepresentation`
 (seed-bearing), which is **not** interchangeable with other providers' secret
 formats.
 
+## Message sizes
+
+On-wire size of each frame kind is measured and recorded in
+[`docs/protocol/message-sizes.md`](docs/protocol/message-sizes.md), the Swift
+counterpart of the Rust reference's `benches/sizes.rs`. Reproduce with:
+
+```sh
+swift test --filter PayloadSizesTests
+```
+
 ## Not yet ported
 
 The following pieces of the Rust reference have not landed in this port yet:
