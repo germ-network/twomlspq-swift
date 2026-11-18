@@ -143,6 +143,202 @@ import Testing
 		}
 	}
 
+	// MARK: - Expected remote client id
+
+	private struct Tables: Equatable {
+		let forward: [Data: Data]
+		let processed: [Data: Data]
+		let bootstrap: [Data: Data]
+		let consumed: Set<Data>
+		let stateSeq: UInt64
+		let spent: Bool
+	}
+
+	@available(iOS 26, macOS 26, *)
+	private func tables(_ invitation: Invitation) -> Tables {
+		Tables(
+			forward: invitation.forwardTable, processed: invitation.processedWelcomes,
+			bootstrap: invitation.bootstrapRouting,
+			consumed: invitation.consumedRemotes,
+			stateSeq: invitation.stateSeq, spent: invitation.combinerKeyPackage == nil)
+	}
+
+	/// A welcome whose return key package names the id the host authenticated
+	/// is accepted exactly as with no expectation.
+	@available(iOS 26, macOS 26, *)
+	@Test func receiveAcceptsAReturnKeyPackageNamingTheExpectedRemote() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let bobPrincipal = try makePrincipal("bob")
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+		let initiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal,
+			their: try #require(invitation.combinerKeyPackage))
+
+		let received = try invitation.receive(
+			welcome: initiated.welcome,
+			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
+			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			spawnToken: freshSpawnToken(),
+			expectedRemoteClientID: Data("alice".utf8))
+
+		#expect(received.session.isEstablished)
+		#expect(invitation.consumedRemotes == [Data("alice".utf8)])
+	}
+
+	/// The expectation binds ids, not keys: one principal's genuine return key
+	/// package paired with a welcome from a second principal minted under the
+	/// same expected id is accepted. Only an authentication that covers the
+	/// welcome bytes tells the two apart.
+	@available(iOS 26, macOS 26, *)
+	@Test func aFreshPrincipalUnderTheExpectedIDIsAccepted() throws {
+		let genuine = try makePrincipal("alice")
+		let fresh = try makePrincipal("alice")
+		let bobPrincipal = try makePrincipal("bob")
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+		let published = try #require(invitation.combinerKeyPackage)
+		let genuineInitiated = try TwoMLSSession.initiate(
+			principal: genuine, their: published)
+		let freshInitiated = try TwoMLSSession.initiate(principal: fresh, their: published)
+
+		let received = try invitation.receive(
+			welcome: freshInitiated.welcome,
+			theirClassicalKeyPackage: genuineInitiated.session.identity.keyPackage
+				.classical,
+			bootstrapKPCommitment: try freshInitiated.session.bootstrapKPCommitment(),
+			spawnToken: freshSpawnToken(),
+			expectedRemoteClientID: Data("alice".utf8))
+		#expect(received.session.isEstablished)
+	}
+
+	/// A return key package naming the expected id, paired with a welcome some
+	/// other remote created, is rejected through `Invitation.receive` and
+	/// claims nothing.
+	@available(iOS 26, macOS 26, *)
+	@Test func aWelcomeCreatedByAnotherRemoteIsRejectedEvenWhenTheKeyPackageMatches() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let malloryPrincipal = try makePrincipal("mallory")
+		let bobPrincipal = try makePrincipal("bob")
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		let published = try #require(invitation.combinerKeyPackage)
+		let aliceInitiated = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: published)
+		let malloryInitiated = try TwoMLSSession.initiate(
+			principal: malloryPrincipal, their: published)
+		let before = tables(invitation)
+
+		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
+			try invitation.receive(
+				welcome: aliceInitiated.welcome,
+				theirClassicalKeyPackage: malloryInitiated.session.identity
+					.keyPackage
+					.classical,
+				bootstrapKPCommitment: try aliceInitiated.session
+					.bootstrapKPCommitment(),
+				spawnToken: freshSpawnToken(),
+				expectedRemoteClientID: Data("mallory".utf8))
+		}
+		#expect(tables(invitation) == before)
+	}
+
+	/// A forged welcome (a fresh principal minted under the victim's client
+	/// id) whose return key package names someone other than the id the host
+	/// authenticated throws `.remoteIdentityMismatch`.
+	@available(iOS 26, macOS 26, *)
+	@Test func receiveRejectsAReturnKeyPackageNamingAnotherRemote() throws {
+		let forger = try makePrincipal("alice")
+		let bobPrincipal = try makePrincipal("bob")
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
+		let initiated = try TwoMLSSession.initiate(
+			principal: forger, their: try #require(invitation.combinerKeyPackage))
+
+		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
+			try invitation.receive(
+				welcome: initiated.welcome,
+				theirClassicalKeyPackage: initiated.session.identity.keyPackage
+					.classical,
+				bootstrapKPCommitment: try initiated.session
+					.bootstrapKPCommitment(),
+				spawnToken: freshSpawnToken(),
+				expectedRemoteClientID: Data("mallory".utf8))
+		}
+		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
+			try invitation.receive(
+				welcome: initiated.welcome,
+				theirClassicalKeyPackage: initiated.session.identity.keyPackage
+					.classical,
+				bootstrapKPCommitment: try initiated.session
+					.bootstrapKPCommitment(),
+				spawnToken: freshSpawnToken(),
+				expectedRemoteClientID: Data())
+		}
+	}
+
+	/// A rejected forgery claiming a victim's id claims nothing: no table
+	/// entry, `stateSeq` unchanged, a single-use invitation stays unspent, and
+	/// on a last-resort invitation the victim's genuine welcome is still
+	/// accepted afterwards.
+	@available(iOS 26, macOS 26, *)
+	@Test func aRejectedForgeryDoesNotBlockTheRealRemote() throws {
+		for lastResort in [false, true] {
+			let victim = try makePrincipal("alice")
+			let forger = try makePrincipal("alice")
+			let bobPrincipal = try makePrincipal("bob")
+			var (invitation, _) = try bobPrincipal.generateInvitation(
+				lastResort: lastResort)
+			let published = try #require(invitation.combinerKeyPackage)
+			let forged = try TwoMLSSession.initiate(principal: forger, their: published)
+			let genuine = try TwoMLSSession.initiate(
+				principal: victim, their: published)
+			let before = tables(invitation)
+
+			#expect(throws: TwoMLSError.remoteIdentityMismatch) {
+				try invitation.receive(
+					welcome: forged.welcome,
+					theirClassicalKeyPackage: forged.session.identity.keyPackage
+						.classical,
+					bootstrapKPCommitment: try forged.session
+						.bootstrapKPCommitment(),
+					spawnToken: freshSpawnToken(),
+					expectedRemoteClientID: Data("mallory".utf8))
+			}
+			#expect(tables(invitation) == before)
+			#expect(invitation.combinerKeyPackage != nil)
+
+			let accepted = try invitation.receive(
+				welcome: genuine.welcome,
+				theirClassicalKeyPackage: genuine.session.identity.keyPackage
+					.classical,
+				bootstrapKPCommitment: try genuine.session.bootstrapKPCommitment(),
+				spawnToken: freshSpawnToken(),
+				expectedRemoteClientID: Data("alice".utf8))
+			#expect(accepted.session.isEstablished)
+		}
+	}
+
+	/// The expectation is checked before the per-remote dedup guard, so a
+	/// forgery naming an already-consumed remote reports the mismatch rather
+	/// than `.duplicateWelcome`.
+	@available(iOS 26, macOS 26, *)
+	@Test func expectedRemoteMismatchIsReportedBeforeDuplicateRemote() throws {
+		let alicePrincipal = try makePrincipal("alice")
+		let forger = try makePrincipal("alice")
+		let bobPrincipal = try makePrincipal("bob")
+		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
+		_ = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
+		let forged = try TwoMLSSession.initiate(
+			principal: forger, their: try #require(invitation.combinerKeyPackage))
+
+		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
+			try invitation.receive(
+				welcome: forged.welcome,
+				theirClassicalKeyPackage: forged.session.identity.keyPackage
+					.classical,
+				bootstrapKPCommitment: try forged.session.bootstrapKPCommitment(),
+				spawnToken: freshSpawnToken(),
+				expectedRemoteClientID: Data("mallory".utf8))
+		}
+	}
+
 	// MARK: - Single-use vs last-resort
 
 	@available(iOS 26, macOS 26, *)

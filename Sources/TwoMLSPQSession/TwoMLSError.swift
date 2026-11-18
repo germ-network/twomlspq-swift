@@ -262,7 +262,9 @@ public enum TwoMLSError: Error, Sendable, Equatable {
 	/// names the receiving identity's own id, read off the joined tree
 	/// itself, not a claim. Rust's `RemoteIdentityMismatch`. Distinct from
 	/// `.unknownIdentity` (the AS's membership-admission check) — this is
-	/// the establishment identity binding.
+	/// the establishment identity binding. Also thrown by
+	/// `Invitation.receive` when the return key package names a different id
+	/// than the `expectedRemoteClientID` the host authenticated.
 	case remoteIdentityMismatch
 	/// `commit` was asked to canonicalize a credential already retired for the
 	/// party — still in its `history` (but not the current head) or `pinned` — a
