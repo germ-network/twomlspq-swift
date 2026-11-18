@@ -46,7 +46,16 @@ extension TwoMLSSession {
 	/// Each party's history holds 1...`credentialHistoryWindow` distinct ids,
 	/// and no id in one party's history or `authorizedNext` is in the other's.
 	static func validateAuthShape(_ auth: AuthCore) throws {
-		fatalError("unimplemented")
+		for party in [auth.mine, auth.theirs] {
+			guard
+				(1...PartySequence.credentialHistoryWindow).contains(
+					party.history.count),
+				Set(party.history).count == party.history.count
+			else { throw TwoMLSError.archiveInvalid }
+		}
+		let mine = Set(auth.mine.history).union(auth.mine.authorizedNext)
+		let theirs = Set(auth.theirs.history).union(auth.theirs.authorizedNext)
+		guard mine.isDisjoint(with: theirs) else { throw TwoMLSError.archiveInvalid }
 	}
 
 	/// A session owes the establishment envelope exactly when it is a

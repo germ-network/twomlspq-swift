@@ -415,6 +415,7 @@ extension TwoMLSSession {
 			mode: .restore, noCustody: noCustody,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
 		try validatePQPins(body.auth, sendPQ: sendGroup?.pq, recvPQ: recvGroup?.pq)
+		try validateAuthShape(body.auth)
 
 		// `.deployed` is hard-coded, never archived: the port only ever
 		// constructs a session under the deployed codepoints

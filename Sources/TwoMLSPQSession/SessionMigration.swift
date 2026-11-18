@@ -902,6 +902,7 @@ public enum SessionMigration {
 				history: parts.auth.theirs.history,
 				authorizedNext: parts.auth.theirs.authorizedNext, pinned: [])
 		).withPQPins(mine: presentedPQIDs.mine, theirs: presentedPQIDs.theirs)
+		try TwoMLSSession.validateAuthShape(mintedAuth)
 
 		// Today this mostly re-checks `convertDeployedKeys`'s own conversion
 		// (`.mintConverted`); it becomes load-bearing against genuinely

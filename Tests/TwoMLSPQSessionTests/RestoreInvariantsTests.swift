@@ -412,39 +412,208 @@ enum RestoreInvariantFixtures {
 }
 
 @Suite struct RestoredAuthShapeTests {
+	private func ids(_ names: String...) -> [Data] { names.map { Data($0.utf8) } }
+
+	private func auth(
+		mine: [Data], theirs: [Data], mineNext: [Data] = [], theirsNext: [Data] = []
+	) -> AuthCore {
+		AuthCore(
+			mine: PartySequence(history: mine, authorizedNext: mineNext),
+			theirs: PartySequence(history: theirs, authorizedNext: theirsNext))
+	}
+
+	@available(iOS 26, macOS 26, *)
+	private func shape(_ auth: AuthCore) throws {
+		try TwoMLSSession.validateAuthShape(auth)
+	}
+
+	@available(iOS 26, macOS 26, *)
+	private func checkpointBody(_ session: TwoMLSSession) throws -> SessionArchive {
+		try session.makeSessionArchive(kind: .checkpoint).decode(SessionArchive.self)
+	}
+
+	@available(iOS 26, macOS 26, *)
+	private func restore(_ body: SessionArchive) throws -> TwoMLSSession {
+		try SessionTestSupport.restore(checkpoint: try SecretArchive(encoding: body))
+	}
+
 	/// An empty history is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsEmptyHistory() throws {}
+	@Test func rejectsEmptyHistory() throws {
+		#expect(throws: Never.self) { try shape(auth(mine: ids("a"), theirs: ids("b"))) }
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try shape(auth(mine: [], theirs: ids("b")))
+		}
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try shape(auth(mine: ids("a"), theirs: []))
+		}
+	}
 
 	/// A history longer than the credential history window is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsHistoryLongerThanWindow() throws {}
+	@Test func rejectsHistoryLongerThanWindow() throws {
+		let window = PartySequence.credentialHistoryWindow
+		let full = (0..<window).map { Data("m\($0)".utf8) }
+		#expect(throws: Never.self) { try shape(auth(mine: full, theirs: ids("b"))) }
+		let over = full + [Data("extra".utf8)]
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try shape(auth(mine: over, theirs: ids("b")))
+		}
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try shape(auth(mine: ids("a"), theirs: over.map { $0 + Data("t".utf8) }))
+		}
+	}
 
 	/// A history that repeats an id is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsDuplicateHistoryEntry() throws {}
+	@Test func rejectsDuplicateHistoryEntry() throws {
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try shape(auth(mine: ids("a", "a"), theirs: ids("b")))
+		}
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try shape(auth(mine: ids("a"), theirs: ids("b", "c", "b")))
+		}
+	}
 
 	/// An id in both parties' history or authorizations is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsIDKnownToBothParties() throws {}
+	@Test func rejectsIDKnownToBothParties() throws {
+		#expect(throws: Never.self) {
+			try shape(
+				auth(
+					mine: ids("a"), theirs: ids("b"), mineNext: ids("c"),
+					theirsNext: ids("d")))
+		}
+		let crossed: [AuthCore] = [
+			auth(mine: ids("a"), theirs: ids("a")),
+			auth(mine: ids("a"), theirs: ids("b"), theirsNext: ids("a")),
+			auth(mine: ids("a"), theirs: ids("b"), mineNext: ids("b")),
+			auth(
+				mine: ids("a"), theirs: ids("b"), mineNext: ids("c"),
+				theirsNext: ids("c")),
+		]
+		for candidate in crossed {
+			#expect(throws: TwoMLSError.archiveInvalid) { try shape(candidate) }
+		}
+	}
 
 	/// An own authorization of a retired own id, which the public API can
 	/// write, still restores.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func restoresAuthorizationOfRetiredOwnID() throws {}
+	@Test func restoresAuthorizationOfRetiredOwnID() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let oldID = alice.identity.clientID
+		_ = try alice.prepareToEncrypt(rotating: Data("alice-rotated".utf8))
+		let first = try alice.encrypt(Data("x".utf8)).frame
+		let received = try bob.processIncomingDecrypted(first)
+		_ = try bob.queueProposal(digest: received.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let reply = try bob.encrypt(Data("y".utf8)).frame
+		#expect(try alice.processIncomingDecrypted(reply).ownCredentialCanonicalized)
+		_ = try alice.prepareToEncrypt(rotating: oldID)
+		_ = try alice.encrypt(Data("z".utf8))
+
+		let archive = try alice.stateUpdate(kind: .checkpoint).archive
+		let body = try archive.decode(SessionArchive.self)
+		#expect(body.auth.mine.authorizedNext.contains(oldID))
+		#expect(body.auth.mine.history.contains(oldID))
+		#expect(throws: Never.self) { try SessionTestSupport.restore(checkpoint: archive) }
+	}
 
 	/// A peer PQ leaf presenting my own id pins it on both sides; the
 	/// archive still restores.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func restoresWhenPeerPQLeafPresentsMyID() throws {}
+	@Test func restoresWhenPeerPQLeafPresentsMyID() throws {
+		let aliceIdentity = try SessionTestSupport.identity("shape-alice")
+		let bobIdentity = try SessionTestSupport.identity("shape-bob")
+		let evil = try SessionTestSupport.identity("shape-bob")
+		let rogueKP = try MLS.RFC9420.Message.keyPackage(evil.keyPackage.pq).mlsEncoded()
+		let initiated = try TwoMLSSession.initiate(
+			identity: aliceIdentity, their: bobIdentity.keyPackage,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		var bob = try TwoMLSSession.receive(
+			identity: bobIdentity, welcome: initiated.welcome,
+			theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
+			bootstrapKPCommitment: try SessionTestSupport.classicalProvider.hash(
+				rogueKP),
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider
+		).session
+		_ = try bob.prepareToEncrypt()
+		_ = try bob.encrypt(Data("hello".utf8))
+		let response = try bob.pqBootstrapRespond(Frames.encodePQBootstrapKP(rogueKP))
+
+		let body = try response.update.archive.decode(SessionArchive.self)
+		let bobID = bobIdentity.clientID
+		#expect(body.auth.mine.pinned.contains(bobID))
+		#expect(body.auth.theirs.pinned.contains(bobID))
+		#expect(throws: Never.self) {
+			try SessionTestSupport.restore(checkpoint: response.update.archive)
+		}
+	}
+
+	/// With a well-shaped history the pin checks are still the ones that
+	/// refuse a pinned candidate and a stranded presented id: the PQ leaves
+	/// keep presenting the old own id after a classical rotation.
+	@available(iOS 26, macOS 26, *)
+	@Test func restoreStillRejectsBadPinsOnAWellShapedHistory() throws {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let oldID = alice.identity.clientID
+		let newID = Data("alice-rotated".utf8)
+		_ = try alice.prepareToEncrypt(rotating: newID)
+		let first = try alice.encrypt(Data("x".utf8)).frame
+		let received = try bob.processIncomingDecrypted(first)
+		_ = try bob.queueProposal(digest: received.queuedProposal.digest)
+		_ = try bob.prepareToEncrypt()
+		let reply = try bob.encrypt(Data("y".utf8)).frame
+		#expect(try alice.processIncomingDecrypted(reply).ownCredentialCanonicalized)
+
+		let control = try checkpointBody(alice)
+		#expect(control.auth.mine.history == [oldID, newID])
+		var wellShaped = control
+		wellShaped.auth.mine.history = [newID]
+		wellShaped.auth.mine.pinned = [oldID]
+		#expect(throws: Never.self) { try restore(wellShaped) }
+
+		var pinnedCandidate = wellShaped
+		pinnedCandidate.auth.mine.authorizedNext = [oldID]
+		#expect(throws: TwoMLSError.archiveInvalid) { try restore(pinnedCandidate) }
+
+		var stranded = wellShaped
+		stranded.auth.mine.pinned = []
+		#expect(throws: TwoMLSError.archiveInvalid) { try restore(stranded) }
+	}
 
 	/// Restore runs the auth shape check.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func restoreRejectsDuplicateHistoryEntry() throws {}
+	@Test func restoreRejectsDuplicateHistoryEntry() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let control = try checkpointBody(bob)
+		#expect(throws: Never.self) { try restore(control) }
+		var body = control
+		let current = try #require(body.auth.mine.history.last)
+		body.auth.mine.history = [current, current]
+		#expect(throws: TwoMLSError.archiveInvalid) { try restore(body) }
+	}
 
 	/// A core-kind mint runs the auth shape check.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func coreMintRejectsDuplicateHistoryEntry() throws {}
+	@Test func coreMintRejectsDuplicateHistoryEntry() throws {
+		let migration = SessionMigrationTests()
+		let (alice, _) = try migration.fullyEstablishedPair()
+		var parts = try migration.migratedParts(alice, suppliedLeafKeys: true)
+		let mint = {
+			try SessionMigration.mintArchive(
+				kind: .core, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		}
+		#expect(throws: Never.self) { try mint() }
+		let current = try #require(parts.auth.mine.history.last)
+		parts.auth.mine.history = [current, current]
+		#expect(throws: TwoMLSError.archiveInvalid) { try mint() }
+	}
 }
 
 @Suite struct MigratedPeerApprovalTests {
