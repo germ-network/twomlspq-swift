@@ -90,16 +90,18 @@ public struct Invitation: Sendable {
 	/// a rejected welcome claims nothing (book session-lifecycle.md):
 	/// 1. `bootstrapKPCommitment` must be exactly 32 bytes.
 	/// 2. parse `theirClassicalKeyPackage` for the remote's client id.
-	/// 3. an already-processed welcome digest → `.duplicateWelcome`.
-	/// 4. a single-use invitation whose KP is already spent →
+	/// 3. a non-nil `expectedRemoteClientID` that differs from that id →
+	///    `.remoteIdentityMismatch`.
+	/// 4. an already-processed welcome digest → `.duplicateWelcome`.
+	/// 5. a single-use invitation whose KP is already spent →
 	///    `.invitationSpent`.
-	/// 5. an already-consumed remote → `.duplicateWelcome`.
-	/// 6. delegate to `TwoMLSSession.receive` (enforces the welcome-creator
+	/// 6. an already-consumed remote → `.duplicateWelcome`.
+	/// 7. delegate to `TwoMLSSession.receive` (enforces the welcome-creator
 	///    ≡ KP identity binding, verifies `expectedAppBinding`, joins
 	///    Group_A, founds Group_B) — a throw here (including
 	///    `.appBindingMismatch`) claims nothing: this method's own table
 	///    writes below all happen on a copy, only after this call returns.
-	/// 7. commit: insert all four tables, single-use consume, bump
+	/// 8. commit: insert all four tables, single-use consume, bump
 	///    `stateSeq`, return the spawned session, its baseline `.checkpoint`
 	///    `StateUpdate` (`TwoMLSSession.receive`'s own
 	///    `EstablishResult.baseline`, passed through verbatim — the
@@ -113,6 +115,21 @@ public struct Invitation: Sendable {
 	///    depends on the `installEstablishmentEnvelope` `.core`, which
 	///    restores only spliced onto this baseline.
 	///
+	/// `expectedRemoteClientID` is the client id the host has authenticated
+	/// for the initiator, defaulted to `nil` (no check, the unauthenticated
+	/// behavior). The return key package's Basic id must equal it, which —
+	/// since `TwoMLSSession.receive` requires the Group_A creator to carry
+	/// that same id — makes the creator's id the authenticated one; a
+	/// mismatch throws `.remoteIdentityMismatch` before any table is read or
+	/// written, and an empty value simply mismatches. The expectation binds
+	/// ids, not keys: the host MUST obtain the id from an authentication that
+	/// covers this welcome (a signature over the welcome bytes and the key
+	/// package, or a transport that authenticates the sender of this
+	/// envelope). Otherwise a replayed proof of a victim's id, paired with an
+	/// attacker's own welcome under that id, still matches, and only an
+	/// attacker who authenticates as themselves is stopped. With `nil` the
+	/// host is trusting an id the sender chose.
+	///
 	/// `expectedAppBinding` is a TRAILING optional (see
 	/// `TwoMLSSession.receive`) — the app-state binding the welcome must
 	/// carry, `nil` for an unbound session. `newClientID` mirrors
@@ -123,6 +140,7 @@ public struct Invitation: Sendable {
 		theirClassicalKeyPackage: MLS.RFC9420.KeyPackage,
 		bootstrapKPCommitment: Data,
 		spawnToken: Data,
+		expectedRemoteClientID: Data? = nil,
 		expectedAppBinding: Data? = nil,
 		newClientID: Data? = nil
 	) throws -> (session: TwoMLSSession, archive: SecretArchive, baseline: StateUpdate) {
@@ -130,6 +148,9 @@ public struct Invitation: Sendable {
 			throw TwoMLSError.bootstrapKPMismatch
 		}
 		let remoteID = try basicIdentifier(theirClassicalKeyPackage.leafNode.credential)
+		if let expectedRemoteClientID, expectedRemoteClientID != remoteID {
+			throw TwoMLSError.remoteIdentityMismatch
+		}
 		let welcomeDigest = try classicalProvider.hash(welcome)
 
 		guard processedWelcomes[welcomeDigest] == nil else {
@@ -214,6 +235,12 @@ public struct Invitation: Sendable {
 	/// afterward, and re-opens are harmless. A spent single-use invitation
 	/// (`identity` already `nil`) fails cleanly with `.invitationSpent`
 	/// rather than crash.
+	///
+	/// Opening authenticates nothing: the envelope is base-mode HPKE to the
+	/// published combiner key package, so anyone holding it can seal one. The
+	/// host MUST authenticate the initiator (binding this welcome) and pass
+	/// the authenticated id as `receive`'s `expectedRemoteClientID` before
+	/// calling `receive`.
 	public func openInitial(_ envelope: Data) throws -> OpenedInitial {
 		guard let identity else { throw TwoMLSError.invitationSpent }
 		guard let pqInitSecretKey = identity.pqInitSecretKey else {

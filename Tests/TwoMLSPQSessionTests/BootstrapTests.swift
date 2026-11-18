@@ -846,6 +846,92 @@ import TwoMLSPQCrypto
 		_ = try bob.processIncomingDecrypted(frame)
 	}
 
+	#if DEBUG
+		/// A bind round that faults before its write-back must not spend the
+		/// recv-classical `0xFF02` exporter leaf nor stamp `lastCrossInjected`;
+		/// the retried bind (`owedBind` survives the throw) then carries the
+		/// `0xFF02` for that same recv epoch, and Bob applies it.
+		@available(iOS 26, macOS 26, *)
+		@Test func bindRetryAfterFaultBeforeWriteBackStillCarriesCrossPartyPSK() throws {
+			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+			let kpFrame = try alice.pqBootstrapBegin().frame
+			let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+			_ = try alice.pqBootstrapJoin(welcomeFrame)
+
+			let stampBefore = alice.lastCrossInjected
+			let recvEpochBefore = try #require(alice.recvGroup?.classical.context.epoch)
+			TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault("committingRound.beforeWriteBack")
+				#expect(throws: (any Error).self) { try alice.prepareToEncrypt() }
+			}
+			#expect(alice.lastCrossInjected == stampBefore)
+			#expect(alice.recvGroup?.classical.context.epoch == recvEpochBefore)
+			// `recvGroup` itself is compared through its exporter leaf: still
+			// unspent, so the same export succeeds from a copy.
+			var recvCopy = try #require(alice.recvGroup?.classical)
+			_ = try MLS.Combiner.ExportedPsk.export(
+				from: &recvCopy, SessionTestSupport.classicalProvider,
+				componentID: TwoMLSSession.crossPartyComponentID)
+
+			let prepared = try alice.prepareToEncrypt()
+			#expect(prepared.didCommit)
+			#expect(alice.lastCrossInjected == recvEpochBefore)
+			let frame = try alice.encrypt(Data("bound".utf8)).frame
+
+			let (staple, _, _) = try Frames.decodeMessageFrame(bob.openOrRaw(frame))
+			let (tBytes, _) = try Frames.decodeAPQPrivateMessage(staple)
+			try withDeployedWireConventions {
+				guard
+					case .publicMessage(let tPub) = try MLS.RFC9420.Message(
+						mlsEncoded: tBytes),
+					case .commit(let commit) = tPub.content.content
+				else {
+					Issue.record("expected a publicMessage classical commit")
+					return
+				}
+				#expect(commit.proposals.count == 3)
+				guard
+					case .proposal(let last) = try #require(
+						commit.proposals.last),
+					case .preSharedKey(.application(let componentID, _, _)) =
+						last
+				else {
+					Issue.record("expected the 0xFF02 PSK as the last proposal")
+					return
+				}
+				#expect(componentID.rawValue == 0xFF02)
+			}
+
+			let received = try bob.processIncomingDecrypted(frame)
+			#expect(received.didApplyRemoteCommit)
+		}
+
+		/// A fault after the write-back leaves the `0xFF02` injection written
+		/// back with the rest of the round: `lastCrossInjected` is stamped at
+		/// the recv-classical epoch and that epoch's exporter leaf is spent.
+		@available(iOS 26, macOS 26, *)
+		@Test func bindFaultAfterWriteBackLeavesCrossPartyPSKInjected() throws {
+			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+			let kpFrame = try alice.pqBootstrapBegin().frame
+			let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+			_ = try alice.pqBootstrapJoin(welcomeFrame)
+
+			let recvEpoch = try #require(alice.recvGroup?.classical.context.epoch)
+			TwoMLSSessionTestHooks.withIsolatedFaults {
+				TwoMLSSessionTestHooks.armFault(
+					"committingRound.afterWriteBackBeforeRendezvous")
+				#expect(throws: (any Error).self) { try alice.prepareToEncrypt() }
+			}
+			#expect(alice.lastCrossInjected == recvEpoch)
+			var recvCopy = try #require(alice.recvGroup?.classical)
+			#expect(throws: (any Error).self) {
+				try MLS.Combiner.ExportedPsk.export(
+					from: &recvCopy, SessionTestSupport.classicalProvider,
+					componentID: TwoMLSSession.crossPartyComponentID)
+			}
+		}
+	#endif
+
 	// MARK: - KP′ is the identity's own PQ half
 
 	/// KP′ is `identity.keyPackage.pq` itself, not a separately minted KP —

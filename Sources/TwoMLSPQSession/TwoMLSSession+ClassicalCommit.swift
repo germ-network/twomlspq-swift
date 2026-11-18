@@ -552,15 +552,17 @@ extension TwoMLSSession {
 				pqCommitMessageForStaple = owedValue.pqCommitMessage
 			}
 
+			var recvAfterCross = recvGroup
+			var crossInjected = lastCrossInjected
 			if var recv = recvGroup, recv.classical.context.epoch != lastCrossInjected {
 				var crossForExport = recv.classical
 				let crossPSK = try MLS.Combiner.ExportedPsk.export(
 					from: &crossForExport, classicalProvider,
 					componentID: Self.crossPartyComponentID)
 				recv.classical = crossForExport
-				recvGroup = recv
+				recvAfterCross = recv
 				store.register(crossPSK)
-				lastCrossInjected = crossForExport.context.epoch
+				crossInjected = crossForExport.context.epoch
 				proposals.append(
 					.proposal(
 						crossPSK.proposal(
@@ -640,7 +642,8 @@ extension TwoMLSSession {
 
 				// (DEBUG only): a fault point right at this round's
 				// write-back — proves every local copy above (`send`,
-				// `ledger`, `attachmentLedger`, `authCopy`, `updatedLeafKeys`)
+				// `ledger`, `attachmentLedger`, `authCopy`, `updatedLeafKeys`,
+				// `recvAfterCross`, `crossInjected`)
 				// is still write-back-only-on-success: a fault here must
 				// leave every one of `self`'s corresponding fields untouched.
 				#if DEBUG
@@ -652,6 +655,8 @@ extension TwoMLSSession {
 					}
 				#endif
 				sendGroup = send
+				recvGroup = recvAfterCross
+				lastCrossInjected = crossInjected
 				sendCrossPSKLedger = ledger
 				sendAttachmentLedger = attachmentLedger
 				auth = authCopy
