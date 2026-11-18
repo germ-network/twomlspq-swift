@@ -65,13 +65,16 @@ else
     curl -fsSL -o "$work/swift-key.asc" "$SWIFT_SIGNING_KEY_URL"
     export GNUPGHOME="$work/gnupg"
     mkdir -m 700 "$GNUPGHOME"
-    gpg --batch --quiet --import "$work/swift-key.asc" 2>/dev/null
+    gpg --batch --quiet --import "$work/swift-key.asc" ||
+        fail "swift signing key: import failed"
     gpg_rc=0
     gpg_status="$(gpg --batch --status-fd 1 --verify "$tarball.sig" "$tarball" 2>/dev/null)" || gpg_rc=$?
     # Require a good signature made by the pinned key itself.
     if [[ "$gpg_rc" -ne 0 ]] ||
         ! grep -q '^\[GNUPG:\] GOODSIG ' <<<"$gpg_status" ||
+        grep -qE '^\[GNUPG:\] (EXPKEYSIG|REVKEYSIG|EXPSIG|BADSIG|ERRSIG) ' <<<"$gpg_status" ||
         ! grep -q "^\[GNUPG:\] VALIDSIG .* $SWIFT_SIGNING_KEY_FPR\$" <<<"$gpg_status"; then
+        echo "$gpg_status" >&2
         fail "swift-host.tar.gz: signature check failed against key $SWIFT_SIGNING_KEY_FPR"
     fi
     verify_sha sha256 "$tarball" "$SWIFT_HOST_SHA256"
@@ -80,6 +83,7 @@ else
     # swift-${SWIFT_VERSION}-RELEASE-ubuntu24.04/ directory; strip it so
     # $SWIFT_HOST is the toolchain root.
     tar -xzf "$tarball" -C "$SWIFT_HOST" --strip-components=1
+    rm -f "$tarball"
 fi
 export PATH="$SWIFT_HOST/usr/bin:$PATH"
 if [[ -n "${GITHUB_PATH:-}" ]]; then
