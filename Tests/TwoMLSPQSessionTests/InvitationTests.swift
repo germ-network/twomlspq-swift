@@ -324,7 +324,7 @@ import Testing
 		let forger = try makePrincipal("alice")
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
-		_ = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
+		let round = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
 		let forged = try TwoMLSSession.initiate(
 			principal: forger, their: try #require(invitation.combinerKeyPackage))
 
@@ -334,6 +334,32 @@ import Testing
 				theirClassicalKeyPackage: forged.session.identity.keyPackage
 					.classical,
 				bootstrapKPCommitment: try forged.session.bootstrapKPCommitment(),
+				spawnToken: freshSpawnToken(),
+				expectedRemoteClientID: Data("mallory".utf8))
+		}
+
+		// A replay of the already-processed welcome reports the mismatch too.
+		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
+			try invitation.receive(
+				welcome: round.welcome,
+				theirClassicalKeyPackage: round.alice.identity.keyPackage.classical,
+				bootstrapKPCommitment: round.bootstrapKPCommitment,
+				spawnToken: round.spawnToken,
+				expectedRemoteClientID: Data("mallory".utf8))
+		}
+
+		// So does a forgery against a spent single-use invitation.
+		var (singleUse, _) = try bobPrincipal.generateInvitation(lastResort: false)
+		let published = try #require(singleUse.combinerKeyPackage)
+		let late = try TwoMLSSession.initiate(principal: forger, their: published)
+		_ = try acceptOneWelcome(from: alicePrincipal, into: &singleUse)
+		#expect(singleUse.combinerKeyPackage == nil)
+		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
+			try singleUse.receive(
+				welcome: late.welcome,
+				theirClassicalKeyPackage: late.session.identity.keyPackage
+					.classical,
+				bootstrapKPCommitment: try late.session.bootstrapKPCommitment(),
 				spawnToken: freshSpawnToken(),
 				expectedRemoteClientID: Data("mallory".utf8))
 		}
