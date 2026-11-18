@@ -420,6 +420,12 @@ extension TwoMLSSession {
 			body.owesEstablishmentEnvelope, initiated: body.initiated,
 			currentStaple: body.currentStaple, sendClassical: send.classical,
 			recvClassical: recvGroup?.classical, mineHistory: body.auth.mine.history)
+		try validateWindowEpochs(
+			listenRendezvous: body.listenRendezvous.entries.keys,
+			recvHeaderKeys: body.recvHeaderKeys.entries.keys,
+			recvHeaderKeysPQ: body.recvHeaderKeysPQ.entries.keys,
+			sendClassicalEpoch: send.classical.context.epoch,
+			sendPQEpoch: send.pq?.context.epoch)
 
 		// `.deployed` is hard-coded, never archived: the port only ever
 		// constructs a session under the deployed codepoints

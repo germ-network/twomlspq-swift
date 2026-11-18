@@ -858,25 +858,86 @@ enum RestoreInvariantFixtures {
 }
 
 @Suite struct WindowEpochInvariantTests {
+	@available(iOS 26, macOS 26, *)
+	private typealias Fixtures = RestoreInvariantFixtures
+
+	private static let entry = Data(repeating: 0x42, count: 32)
+
+	/// The patched window entry is refused, and the unpatched archive is the
+	/// control.
+	@available(iOS 26, macOS 26, *)
+	private func refuses(
+		_ session: TwoMLSSession, sourceLocation: SourceLocation = #_sourceLocation,
+		patch: (inout SessionArchive) -> Void
+	) throws {
+		let control = try Fixtures.checkpointBody(session)
+		#expect(throws: Never.self, sourceLocation: sourceLocation) {
+			try Fixtures.restore(control)
+		}
+		var body = control
+		patch(&body)
+		#expect(throws: TwoMLSError.archiveInvalid, sourceLocation: sourceLocation) {
+			try Fixtures.restore(body)
+		}
+	}
+
 	/// A rendezvous entry keyed above the send-classical epoch is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsRendezvousEntryAboveCurrentEpoch() throws {}
+	@Test func rejectsRendezvousEntryAboveCurrentEpoch() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let epoch = try #require(bob.sendGroup).classical.context.epoch
+		try refuses(bob) { $0.listenRendezvous.entries[epoch + 1] = Self.entry }
+	}
 
 	/// A header-key entry keyed above the send-classical epoch is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsHeaderKeyEntryAboveCurrentEpoch() throws {}
+	@Test func rejectsHeaderKeyEntryAboveCurrentEpoch() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let epoch = try #require(bob.sendGroup).classical.context.epoch
+		try refuses(bob) { $0.recvHeaderKeys.entries[epoch + 1] = Self.entry }
+	}
 
 	/// A PQ header-key entry keyed above the send-PQ epoch is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsPQHeaderKeyEntryAboveCurrentEpoch() throws {}
+	@Test func rejectsPQHeaderKeyEntryAboveCurrentEpoch() throws {
+		let bob = try RatchetTests.fullyEstablishedTurnOnBob().bob
+		let epoch = try #require(bob.sendGroup?.pq).context.epoch
+		try refuses(bob) { $0.recvHeaderKeysPQ.entries[epoch + 1] = Self.entry }
+	}
 
 	/// PQ header keys with no send PQ group are refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsPQHeaderKeysWithoutSendPQ() throws {}
+	@Test func rejectsPQHeaderKeysWithoutSendPQ() throws {
+		let (_, bob, _, _, _, _) = try SessionTestSupport.established()
+		#expect(bob.sendGroup?.pq == nil)
+		try refuses(bob) { $0.recvHeaderKeysPQ.entries[0] = Self.entry }
+	}
 
 	/// A core-kind mint refuses a future-keyed window entry.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func coreMintRejectsHeaderKeyEntryAboveCurrentEpoch() throws {}
+	@Test func coreMintRejectsHeaderKeyEntryAboveCurrentEpoch() throws {
+		let migration = SessionMigrationTests()
+		let (alice, _) = try migration.fullyEstablishedPair()
+		let epoch = try #require(alice.sendGroup).classical.context.epoch
+		var parts = try migration.migratedParts(alice, suppliedLeafKeys: true)
+		let mint = {
+			try SessionMigration.mintArchive(
+				kind: .core, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		}
+		#expect(throws: Never.self) { try mint() }
+		let control = parts
+		parts.recvHeaderKeys[epoch + 1] = Self.entry
+		#expect(throws: TwoMLSError.archiveInvalid) { try mint() }
+		parts = control
+		parts.listenRendezvous[epoch + 1] = Self.entry
+		#expect(throws: TwoMLSError.archiveInvalid) { try mint() }
+		parts = control
+		let pqEpoch = try #require(alice.sendGroup?.pq).context.epoch
+		parts.recvHeaderKeysPQ[pqEpoch + 1] = Self.entry
+		#expect(throws: TwoMLSError.archiveInvalid) { try mint() }
+	}
 }
 
 @Suite struct WindowRederivationTests {

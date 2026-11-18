@@ -903,6 +903,12 @@ public enum SessionMigration {
 				authorizedNext: [], pinned: [])
 		).withPQPins(mine: presentedPQIDs.mine, theirs: presentedPQIDs.theirs)
 		try TwoMLSSession.validateAuthShape(mintedAuth)
+		try TwoMLSSession.validateWindowEpochs(
+			listenRendezvous: parts.listenRendezvous.keys,
+			recvHeaderKeys: parts.recvHeaderKeys.keys,
+			recvHeaderKeysPQ: parts.recvHeaderKeysPQ.keys,
+			sendClassicalEpoch: sendClassical.context.epoch,
+			sendPQEpoch: sendPQ?.context.epoch)
 		try TwoMLSSession.validateEstablishmentOwed(
 			parts.owesEstablishmentEnvelope, initiated: parts.initiated,
 			currentStaple: parts.currentStaple, sendClassical: sendClassical,

@@ -97,7 +97,11 @@ extension TwoMLSSession {
 		recvHeaderKeysPQ: some Collection<UInt64>,
 		sendClassicalEpoch: UInt64, sendPQEpoch: UInt64?
 	) throws {
-		fatalError("unimplemented")
+		guard listenRendezvous.allSatisfy({ $0 <= sendClassicalEpoch }),
+			recvHeaderKeys.allSatisfy({ $0 <= sendClassicalEpoch }),
+			sendPQEpoch.map({ epoch in recvHeaderKeysPQ.allSatisfy { $0 <= epoch } })
+				?? recvHeaderKeysPQ.isEmpty
+		else { throw TwoMLSError.archiveInvalid }
 	}
 }
 
