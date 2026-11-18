@@ -65,6 +65,12 @@ extension TwoMLSSession {
 	/// Afterward, or for a round that was never this one, it answers
 	/// `.duplicateSideBand` with no state change.
 	///
+	/// `now` is the host's current time. RFC 9420 §7.3 requires KP′'s
+	/// lifetime to contain it, in whole seconds, bounds inclusive; otherwise
+	/// this throws `GroupError.leafNodeLifetimeOutOfRange` with no state
+	/// change, so the call is retryable. A KP′ whose `notAfter` has passed
+	/// can never found the PQ half.
+	///
 	/// Seam: this does not check KP′'s leaf credential names the already-
 	/// established peer (Rust's AS `validate_member`). It fails closed regardless — a wrong-peer KP′ founds a
 	/// Group_B.pq the real peer never agrees to join, so the bind can never

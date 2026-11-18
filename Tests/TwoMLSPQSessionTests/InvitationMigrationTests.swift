@@ -302,6 +302,23 @@ import Testing
 	/// A migrated KeyPackage that no longer decodes — here, one repeating an
 	/// extension type — mints nothing and is rejected as an invalid archive.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending"))
-	func duplicateExtensionTypeKeyPackageIsRejectedAtMint() throws {}
+	@Test func duplicateExtensionTypeKeyPackageIsRejectedAtMint() throws {
+		let (invitation, _) = try makePrincipal("bob").generateInvitation(lastResort: true)
+		let parts = try migratedParts(invitation)
+
+		for corrupt in [\MigratedIdentity.classicalKeyPackage, \.pqKeyPackage] {
+			var identity = parts.identity
+			identity[keyPath: corrupt] =
+				try SessionTestSupport.keyPackageEncodingWithDuplicateExtensionType(
+					identity[keyPath: corrupt])
+			#expect(throws: TwoMLSError.archiveInvalid) {
+				try InvitationMigration.mintArchive(
+					clientID: invitation.clientID, lastResort: true,
+					stateSeq: invitation.stateSeq, identity: identity,
+					forwardTable: [:],
+					processedWelcomes: [:], bootstrapRouting: [:],
+					consumedRemotes: [])
+			}
+		}
+	}
 }

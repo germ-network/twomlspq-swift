@@ -2296,8 +2296,22 @@ import TwoMLSPQCrypto
 	/// A migrated bootstrap KeyPackage (KP′) that no longer decodes — here,
 	/// one repeating an extension type — is rejected as an invalid archive.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending"))
-	func bootstrapKPWithDuplicateExtensionTypeIsRejectedAtMint() throws {}
+	@Test func bootstrapKPWithDuplicateExtensionTypeIsRejectedAtMint() throws {
+		let (alice, _, _, _) = try deployedShapedEstablishedAndExchanged()
+		var parts = try migratedParts(alice)
+		var secret = try #require(parts.bootstrapKPSecret)
+		secret.keyPackage =
+			try SessionTestSupport.keyPackageEncodingWithDuplicateExtensionType(
+				secret.keyPackage)
+		parts.bootstrapKPSecret = secret
+
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.mintArchive(
+				kind: .checkpoint, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		}
+	}
 }
 
 // MARK: - Own-offer window sampling and cap edges

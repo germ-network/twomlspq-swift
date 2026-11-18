@@ -115,6 +115,12 @@ public struct Invitation: Sendable {
 	///    depends on the `installEstablishmentEnvelope` `.core`, which
 	///    restores only spliced onto this baseline.
 	///
+	/// `now` is the host's current time. RFC 9420 §7.3 requires
+	/// `theirClassicalKeyPackage`'s lifetime to contain it, in whole seconds,
+	/// bounds inclusive; otherwise this throws
+	/// `GroupError.leafNodeLifetimeOutOfRange` before anything is claimed, so
+	/// the call is retryable with the invitation unchanged.
+	///
 	/// `expectedRemoteClientID` is the client id the host has authenticated
 	/// for the initiator, defaulted to `nil` (no check, the unauthenticated
 	/// behavior). The return key package's Basic id must equal it, which —

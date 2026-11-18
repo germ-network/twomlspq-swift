@@ -488,13 +488,16 @@ func checkedIdentityArchive(
 	}
 	// Keyed decodes folded to fail-closed `archiveInvalid` — an
 	// MLSMessage-FRAMED KeyPackage (the migrator's likeliest mistake)
-	// otherwise escapes as a raw `CodecError`.
+	// otherwise escapes as a raw `CodecError`, and one repeating an extension
+	// type as a `WireError`.
 	let classicalKP: MLS.RFC9420.KeyPackage
 	let pqKP: MLS.RFC9420.KeyPackage
 	do {
 		classicalKP = try MLS.RFC9420.KeyPackage(mlsEncoded: classicalKeyPackage)
 		pqKP = try MLS.RFC9420.KeyPackage(mlsEncoded: pqKeyPackage)
 	} catch is MLS.CodecError {
+		throw TwoMLSError.archiveInvalid
+	} catch is MLS.RFC9420.WireError {
 		throw TwoMLSError.archiveInvalid
 	}
 	let classicalInitOK = try matchInitSecret(
@@ -1167,6 +1170,8 @@ public enum SessionMigration {
 		do {
 			keyPackage = try MLS.RFC9420.KeyPackage(mlsEncoded: secret.keyPackage)
 		} catch is MLS.CodecError {
+			throw TwoMLSError.archiveInvalid
+		} catch is MLS.RFC9420.WireError {
 			throw TwoMLSError.archiveInvalid
 		}
 		guard

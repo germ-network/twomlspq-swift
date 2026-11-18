@@ -65,7 +65,7 @@ public struct Principal: Sendable {
 	/// Mint a fresh combiner key package under a fresh `TwoMLSIdentity`,
 	/// capture its private material into a new `Invitation`, and return it
 	/// with the invitation's initial (Swift-native v1) archive for the app
-	/// to seal and save. `lastResort` picks the key package's lifetime
+	/// to seal and save. `lastResort` picks the key package's retention
 	/// (book concepts.md): `true` retains it across many accepted welcomes,
 	/// `false` makes it single-use.
 	///

@@ -12,6 +12,12 @@ extension TwoMLSSession {
 	/// Alice's side of establishment, layered over the identity-based
 	/// primitive below: mint a fresh `TwoMLSIdentity` under `principal` (book
 	/// concepts.md's credential-scoped signer) and delegate.
+	///
+	/// `now` is the host's current time: RFC 9420 §7.3 requires every added
+	/// KeyPackage's lifetime to contain it, in whole seconds, bounds
+	/// inclusive. A peer KeyPackage outside it throws
+	/// `GroupError.leafNodeLifetimeOutOfRange`, leaving no state behind, so
+	/// the call is retryable (for instance after clock skew resolves).
 	public static func initiate(
 		principal: Principal,
 		their: CombinerKeyPackage,
@@ -42,7 +48,7 @@ extension TwoMLSSession {
 	/// hand the acceptor out of band. `isEstablished` is false until the
 	/// acceptor's first frame is processed (no receive group yet).
 	///
-	/// Internal: the app-facing entry point is `initiate(principal:their:)`
+	/// Internal: the app-facing entry point is `initiate(principal:their:now:appBinding:)`
 	/// above; this lower-level primitive stays available in-module for tests
 	/// that need direct identity access.
 	///
@@ -262,6 +268,9 @@ extension TwoMLSSession {
 	/// `bootstrapKPCommitment` is the initiator's `H(KP′)` (its
 	/// `bootstrapKPCommitment()`), pinned here before any state is claimed —
 	/// it must be exactly 32 bytes, else `.bootstrapKPMismatch`.
+	///
+	/// `now` is the host's current time, checked against
+	/// `theirClassicalKeyPackage`'s lifetime (see `initiate`).
 	///
 	/// Internal: the app-facing entry point is `Invitation.receive`, which
 	/// delegates here with its captured identity and the caller's
