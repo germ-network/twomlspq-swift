@@ -42,7 +42,7 @@ import TwoMLSPQCrypto
 		return (ref, store)
 	}
 
-	enum Half: CaseIterable { case classical, pq, both }
+	enum Half { case classical, pq, both }
 
 	/// The invitation's KeyPackages with the lifetime of `halves` replaced.
 	@available(iOS 26, macOS 26, *)
@@ -119,7 +119,8 @@ import TwoMLSPQCrypto
 		}
 	}
 
-	/// An expired return KeyPackage is rejected and claims nothing, so the same invitation still accepts a valid one afterwards.
+	/// An expired return KeyPackage is rejected and claims nothing, so the same
+	/// invitation still accepts a valid one afterwards.
 	@available(iOS 26, macOS 26, *)
 	@Test func invitationReceiveRejectsExpiredKeyPackageAndStaysUnclaimed() throws {
 		let now = Self.nowSeconds
