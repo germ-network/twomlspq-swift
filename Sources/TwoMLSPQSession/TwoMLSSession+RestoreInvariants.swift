@@ -19,7 +19,28 @@ extension TwoMLSSession {
 		sendClassical: MLS.RFC9420.Group, sendPQ: MLS.RFC9420.Group?,
 		recvClassical: MLS.RFC9420.Group?, recvPQ: MLS.RFC9420.Group?
 	) throws {
-		fatalError("unimplemented")
+		do {
+			for group in [sendClassical, sendPQ, recvClassical, recvPQ].compactMap({
+				$0
+			}) {
+				try TwoPartyRules.ensureTwoParty(group)
+			}
+			try verifyPQHalfUnbound(sendPQ)
+			try verifyPQHalfUnbound(recvPQ)
+			let sendBinding = try AppBinding.read(
+				fromExtensionsOf: sendClassical.context)
+			let sendProfile = try SessionProfile.recorded(in: sendClassical.context)
+			if let recvClassical {
+				guard
+					try AppBinding.read(fromExtensionsOf: recvClassical.context)
+						== sendBinding,
+					try SessionProfile.recorded(in: recvClassical.context)
+						== sendProfile
+				else { throw TwoMLSError.archiveInvalid }
+			}
+		} catch {
+			throw TwoMLSError.archiveInvalid
+		}
 	}
 
 	/// Each party's history holds 1...`credentialHistoryWindow` distinct ids,

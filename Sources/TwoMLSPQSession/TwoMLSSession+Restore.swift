@@ -376,6 +376,10 @@ extension TwoMLSSession {
 		}
 		try verifyManifestMatchesRebuiltGroups(
 			body, sendGroup: sendGroup, recvGroup: recvGroup)
+		guard let send = sendGroup else { throw TwoMLSError.archiveInvalid }
+		try validateRestoredGroups(
+			sendClassical: send.classical, sendPQ: send.pq,
+			recvClassical: recvGroup?.classical, recvPQ: recvGroup?.pq)
 
 		let identity = try body.identity.restore()
 		let bootstrapKPSecret = try body.bootstrapKPSecret?.restore()

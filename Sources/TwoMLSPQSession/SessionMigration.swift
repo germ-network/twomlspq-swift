@@ -673,6 +673,10 @@ public enum SessionMigration {
 			try restoredGroup($0, pqProvider)
 		}
 
+		try TwoMLSSession.validateRestoredGroups(
+			sendClassical: sendClassical, sendPQ: sendPQ, recvClassical: recvClassical,
+			recvPQ: recvPQ)
+
 		// A.2 step 2 ("drop at import", both leafKeys paths — run before
 		// `convertDeployedKeys`/`nativeLeafKeys` and before
 		// `validateLeafKeys`): a parked §A.5 Upd′ that fails to verify
