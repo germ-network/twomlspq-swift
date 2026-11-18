@@ -78,7 +78,7 @@ jobs:
             ~/.swiftpm
             ~/.local/share/swiftpm
             ~/Library/org.swift.swiftpm
-          key: android-toolchain-${{ env.NDK_VERSION }}-${{ env.SWIFT_SDK_NAME }}
+          key: android-toolchain-${{ env.NDK_VERSION }}-${{ env.SWIFT_SDK_NAME }}-${{ env.SWIFT_SDK_CHECKSUM }}-${{ hashFiles('Scripts/setup-swift-android-toolchain-linux.sh') }}
 
       - name: Install Android toolchain (Swift host + NDK + Swift SDK)
         run: ./Scripts/setup-swift-android-toolchain-linux.sh
