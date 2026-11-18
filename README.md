@@ -10,7 +10,8 @@ and RFC 9180 base-mode HPKE over it, and reuses swift-mls suite-1's symmetric
 stack (HKDF-SHA256 / AES-128-GCM / SHA-256 / Ed25519) unchanged.
 
 The APQ combiner, the post-quantum ratchet, and the session layer will land
-here next, as the Rust implementation is retired.
+here next, as the Rust implementation is retired. (This introduction and "Not
+yet ported" below lag the code.)
 
 ## Requirements
 
@@ -40,6 +41,30 @@ counterpart of the Rust reference's `benches/sizes.rs`. Reproduce with:
 ```sh
 swift test --filter PayloadSizesTests
 ```
+
+## Authenticating the initiator
+
+The engine does not authenticate who sent a welcome. Anyone holding a published
+combiner key package can seal a §A.1 envelope to it, and `Invitation.receive`
+checks only that the Group_A creator's id equals the return key package's id —
+both of which the sender chooses. The creator leaf is fresh, so verifying the
+return key package's key authenticates nothing about the creator.
+
+A host that accepts invitations MUST:
+
+- authenticate the initiator with something that binds this welcome — a
+  signature over the welcome bytes and the return key package, or a transport
+  that authenticates the sender of this envelope;
+- pass the authenticated id as `expectedRemoteClientID` to `Invitation.receive`,
+  which throws `.remoteIdentityMismatch` for any other id;
+- do both before calling `receive`, which consumes that remote's slot, after
+  which the session decrypts the initiator's frames.
+
+The expectation binds ids, not keys: if the host's authentication does not cover
+this welcome, a replayed proof of a victim's id still matches an attacker's own
+welcome under that id. The bare envelope shape carries no authentication of its
+own; accept it only from an authenticated transport. Passing `nil` trusts an id
+the sender chose.
 
 ## Not yet ported
 
