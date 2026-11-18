@@ -1,5 +1,19 @@
 # @germ-network/twomlspq-swift
 
+## 0.5.0
+
+### Minor Changes
+
+- [#107](https://github.com/germ-network/twomlspq-swift/pull/107) [`af532b7`](https://github.com/germ-network/twomlspq-swift/commit/af532b71ff85e7a0192a7316df79bfb02e1a57e5) Thanks [@germ-mark](https://github.com/germ-mark)! - `Invitation.receive` takes an optional `expectedRemoteClientID`: the id the host authenticated for the initiator. A return key package naming any other id throws `.remoteIdentityMismatch` before the invitation's tables are touched. The default `nil` keeps today's behavior. The check binds ids, not keys: the host's authentication must cover this welcome (see README, Authenticating the initiator).
+
+- [#110](https://github.com/germ-network/twomlspq-swift/pull/110) [`5de721d`](https://github.com/germ-network/twomlspq-swift/commit/5de721dfdb0ab4d12cd033ab976a48202894f1b2) Thanks [@germ-mark](https://github.com/germ-mark)! - Adopt swift-mls 0.2.0. Breaking: `TwoMLSSession.initiate`, `Invitation.receive` and `TwoMLSSession.pqBootstrapRespond` take a required `now: Date`, the host's current time, which RFC 9420 §7.3 checks against the lifetime of each KeyPackage they add. An expired or not-yet-valid peer KeyPackage throws `GroupError.leafNodeLifetimeOutOfRange` with state unchanged, so the call is retryable; a Rust KP′ answered after its 365-day lifetime can no longer found the PQ half. Migration mint maps a KeyPackage that fails to decode with a `WireError` (such as a repeated extension type) to `.archiveInvalid`.
+
+### Patch Changes
+
+- [#105](https://github.com/germ-network/twomlspq-swift/pull/105) [`2328cdb`](https://github.com/germ-network/twomlspq-swift/commit/2328cdb9ae39ee6efd3d30c06dc1820d35511601) Thanks [@germ-mark](https://github.com/germ-mark)! - A commit round that fails no longer spends the cross-party `0xFF02` PSK: the receive-group export and its `lastCrossInjected` stamp are written back only with the rest of a successful round, so a retried round still binds that epoch's PSK.
+
+- [#109](https://github.com/germ-network/twomlspq-swift/pull/109) [`6ca899f`](https://github.com/germ-network/twomlspq-swift/commit/6ca899f882a7ea15f24432c2c7224391e7460080) Thanks [@germ-mark](https://github.com/germ-mark)! - Restore and migration refuse archives that break invariants a live session enforces (group shape, credential history, owed establishment envelope, window epochs). Migration drops pending peer approvals: an approved but unfolded peer rotation must be re-requested by the peer. Restore re-derives the current window entries.
+
 ## 0.4.0
 
 ### Minor Changes
