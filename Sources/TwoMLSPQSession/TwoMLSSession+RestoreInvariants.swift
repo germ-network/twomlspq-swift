@@ -68,7 +68,25 @@ extension TwoMLSSession {
 		sendClassical: MLS.RFC9420.Group, recvClassical: MLS.RFC9420.Group?,
 		mineHistory: [Data]
 	) throws {
-		fatalError("unimplemented")
+		var shouldOwe = false
+		if !initiated && currentStaple.first == Frames.apqWelcomeTag {
+			do {
+				guard let recvClassical else { throw TwoMLSError.archiveInvalid }
+				let sendID = try basicIdentifier(
+					Self.ownLeaf(of: sendClassical).credential)
+				let recvID = try basicIdentifier(
+					Self.ownLeaf(of: recvClassical).credential)
+				if let sendIndex = mineHistory.firstIndex(of: sendID) {
+					shouldOwe =
+						mineHistory.firstIndex(of: recvID).map {
+							sendIndex > $0
+						} ?? true
+				}
+			} catch {
+				throw TwoMLSError.archiveInvalid
+			}
+		}
+		guard owes == shouldOwe else { throw TwoMLSError.archiveInvalid }
 	}
 
 	/// No window entry is keyed above its group's current epoch, and the PQ

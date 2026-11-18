@@ -82,6 +82,14 @@ enum RestoreInvariantFixtures {
 			adding: [rogue], extensions: extensions)
 	}
 
+	static func checkpointBody(_ session: TwoMLSSession) throws -> SessionArchive {
+		try session.makeSessionArchive(kind: .checkpoint).decode(SessionArchive.self)
+	}
+
+	static func restore(_ body: SessionArchive) throws -> TwoMLSSession {
+		try SessionTestSupport.restore(checkpoint: try SecretArchive(encoding: body))
+	}
+
 	static func bindingExtension(_ data: Data = binding) throws -> MLS.RFC9420.Extension {
 		try AppBinding(data: data).asExtension()
 	}
@@ -412,6 +420,9 @@ enum RestoreInvariantFixtures {
 }
 
 @Suite struct RestoredAuthShapeTests {
+	@available(iOS 26, macOS 26, *)
+	private typealias Fixtures = RestoreInvariantFixtures
+
 	private func ids(_ names: String...) -> [Data] { names.map { Data($0.utf8) } }
 
 	private func auth(
@@ -425,16 +436,6 @@ enum RestoreInvariantFixtures {
 	@available(iOS 26, macOS 26, *)
 	private func shape(_ auth: AuthCore) throws {
 		try TwoMLSSession.validateAuthShape(auth)
-	}
-
-	@available(iOS 26, macOS 26, *)
-	private func checkpointBody(_ session: TwoMLSSession) throws -> SessionArchive {
-		try session.makeSessionArchive(kind: .checkpoint).decode(SessionArchive.self)
-	}
-
-	@available(iOS 26, macOS 26, *)
-	private func restore(_ body: SessionArchive) throws -> TwoMLSSession {
-		try SessionTestSupport.restore(checkpoint: try SecretArchive(encoding: body))
 	}
 
 	/// An empty history is refused.
@@ -569,32 +570,34 @@ enum RestoreInvariantFixtures {
 		let reply = try bob.encrypt(Data("y".utf8)).frame
 		#expect(try alice.processIncomingDecrypted(reply).ownCredentialCanonicalized)
 
-		let control = try checkpointBody(alice)
+		let control = try Fixtures.checkpointBody(alice)
 		#expect(control.auth.mine.history == [oldID, newID])
 		var wellShaped = control
 		wellShaped.auth.mine.history = [newID]
 		wellShaped.auth.mine.pinned = [oldID]
-		#expect(throws: Never.self) { try restore(wellShaped) }
+		#expect(throws: Never.self) { try Fixtures.restore(wellShaped) }
 
 		var pinnedCandidate = wellShaped
 		pinnedCandidate.auth.mine.authorizedNext = [oldID]
-		#expect(throws: TwoMLSError.archiveInvalid) { try restore(pinnedCandidate) }
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try Fixtures.restore(pinnedCandidate)
+		}
 
 		var stranded = wellShaped
 		stranded.auth.mine.pinned = []
-		#expect(throws: TwoMLSError.archiveInvalid) { try restore(stranded) }
+		#expect(throws: TwoMLSError.archiveInvalid) { try Fixtures.restore(stranded) }
 	}
 
 	/// Restore runs the auth shape check.
 	@available(iOS 26, macOS 26, *)
 	@Test func restoreRejectsDuplicateHistoryEntry() throws {
 		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
-		let control = try checkpointBody(bob)
-		#expect(throws: Never.self) { try restore(control) }
+		let control = try Fixtures.checkpointBody(bob)
+		#expect(throws: Never.self) { try Fixtures.restore(control) }
 		var body = control
 		let current = try #require(body.auth.mine.history.last)
 		body.auth.mine.history = [current, current]
-		#expect(throws: TwoMLSError.archiveInvalid) { try restore(body) }
+		#expect(throws: TwoMLSError.archiveInvalid) { try Fixtures.restore(body) }
 	}
 
 	/// A core-kind mint runs the auth shape check.
@@ -736,34 +739,122 @@ enum RestoreInvariantFixtures {
 }
 
 @Suite struct EstablishmentOwedInvariantTests {
+	@available(iOS 26, macOS 26, *)
+	private typealias Fixtures = RestoreInvariantFixtures
+
+	@available(iOS 26, macOS 26, *)
+	private func restoreRefuses(
+		_ session: TwoMLSSession, owes: Bool,
+		sourceLocation: SourceLocation = #_sourceLocation
+	) throws {
+		var body = try Fixtures.checkpointBody(session)
+		#expect(
+			body.owesEstablishmentEnvelope != owes,
+			"the patch must change the flag", sourceLocation: sourceLocation)
+		#expect(throws: Never.self, sourceLocation: sourceLocation) {
+			try Fixtures.restore(try Fixtures.checkpointBody(session))
+		}
+		body.owesEstablishmentEnvelope = owes
+		#expect(throws: TwoMLSError.archiveInvalid, sourceLocation: sourceLocation) {
+			try Fixtures.restore(body)
+		}
+	}
+
 	/// An initiator that claims to owe the envelope is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsOwedOnInitiator() throws {}
+	@Test func rejectsOwedOnInitiator() throws {
+		let (alice, _, _, _, _, _) = try SessionTestSupport.established()
+		try restoreRefuses(alice, owes: true)
+	}
 
 	/// An owed envelope with a staple other than the `0x01` welcome is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsOwedWithMovedStaple() throws {}
+	@Test func rejectsOwedWithMovedStaple() throws {
+		var (_, bob, _, _, _) = try SessionTestSupport.establishedDedicated()
+		_ = try bob.installEstablishmentEnvelope(Data("fake-signed-handoff".utf8))
+		#expect(bob.currentStaple.first == Frames.establishmentHandoffTag)
+		try restoreRefuses(bob, owes: true)
+	}
 
 	/// A non-dedicated acceptor on its welcome staple that claims to owe the
 	/// envelope is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsOwedOnNonDedicatedAcceptor() throws {}
+	@Test func rejectsOwedOnNonDedicatedAcceptor() throws {
+		let (_, bob, _, _, _, _) = try SessionTestSupport.established()
+		#expect(bob.currentStaple.first == Frames.apqWelcomeTag)
+		try restoreRefuses(bob, owes: true)
+	}
 
 	/// A dedicated acceptor still on its welcome staple that claims not to owe
 	/// the envelope is refused, so the signed-handoff gate cannot be skipped.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func rejectsUnowedDedicatedAcceptorBeforeInstall() throws {}
+	@Test func rejectsUnowedDedicatedAcceptorBeforeInstall() throws {
+		let (_, bob, _, _, _) = try SessionTestSupport.establishedDedicated()
+		#expect(bob.owesEstablishmentEnvelope)
+		try restoreRefuses(bob, owes: false)
+	}
+
+	/// A recv leaf whose id has left `mine.history` counts as older than the
+	/// send leaf, so the acceptor still owes the envelope.
+	@available(iOS 26, macOS 26, *)
+	@Test func evictedRecvIDCountsAsOldest() throws {
+		let (_, bob, _, invitationID, dedicatedID) =
+			try SessionTestSupport.establishedDedicated()
+		var body = try Fixtures.checkpointBody(bob)
+		#expect(body.auth.mine.history == [invitationID, dedicatedID])
+		body.auth.mine.history = [dedicatedID]
+		#expect(throws: Never.self) { try Fixtures.restore(body) }
+		body.owesEstablishmentEnvelope = false
+		#expect(throws: TwoMLSError.archiveInvalid) { try Fixtures.restore(body) }
+	}
 
 	/// The migration path refuses the same unowed dedicated acceptor.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func mintRejectsUnowedDedicatedAcceptorBeforeInstall() throws {}
+	@Test func mintRejectsUnowedDedicatedAcceptorBeforeInstall() throws {
+		let migration = SessionMigrationTests()
+		let established = try migration.deployedShapedEstablishedDedicated(bob: "bob-owed")
+		let invitation = established.bob.identity
+		let custody = MigratedRecvLeafPrincipal(
+			clientID: invitation.clientID, signingKey: invitation.signingKey.data,
+			signatureKey: invitation.signatureKey.data,
+			pqSigningKey: invitation.pqSigningKey.data,
+			pqSignatureKey: invitation.pqSignatureKey.data)
+		var parts = try migration.migratedParts(
+			established.bob, identityOverride: established.dIdentity,
+			recvLeafPrincipal: custody)
+		let mint = {
+			try SessionMigration.mintArchive(
+				kind: .core, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		}
+		#expect(parts.owesEstablishmentEnvelope)
+		#expect(throws: Never.self) { try mint() }
+		parts.owesEstablishmentEnvelope = false
+		#expect(throws: TwoMLSError.archiveInvalid) { try mint() }
+	}
 
 	/// A non-dedicated acceptor whose recv leaf rotated ahead of its send leaf
 	/// on the welcome staple still restores.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func restoresNonDedicatedAcceptorAfterPeerFoldedRotation()
+	@Test func restoresNonDedicatedAcceptorAfterPeerFoldedRotation()
 		throws
-	{}
+	{
+		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
+		_ = try bob.prepareToEncrypt(rotating: Data("bob-rotated".utf8))
+		let first = try bob.encrypt(Data("x".utf8)).frame
+		let received = try alice.processIncomingDecrypted(first)
+		_ = try alice.queueProposal(digest: received.queuedProposal.digest)
+		_ = try alice.prepareToEncrypt()
+		let reply = try alice.encrypt(Data("y".utf8)).frame
+		_ = try bob.processIncomingDecrypted(reply)
+
+		let body = try Fixtures.checkpointBody(bob)
+		#expect(body.currentStaple.first == Frames.apqWelcomeTag)
+		#expect(!body.owesEstablishmentEnvelope)
+		#expect(body.auth.mine.history.count == 2)
+		#expect(throws: Never.self) { try Fixtures.restore(body) }
+	}
 }
 
 @Suite struct WindowEpochInvariantTests {
