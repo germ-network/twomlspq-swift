@@ -941,15 +941,44 @@ enum RestoreInvariantFixtures {
 }
 
 @Suite struct WindowRederivationTests {
+	@available(iOS 26, macOS 26, *)
+	private typealias Fixtures = RestoreInvariantFixtures
+
+	private static let tampered = Data(repeating: 0x42, count: 32)
+
 	/// A tampered current-epoch rendezvous entry is replaced by the derived value.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func restoreReplacesTamperedCurrentRendezvous() throws {}
+	@Test func restoreReplacesTamperedCurrentRendezvous() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let epoch = try #require(bob.sendGroup).classical.context.epoch
+		let derived = try #require(bob.listenRendezvous[epoch])
+		var body = try Fixtures.checkpointBody(bob)
+		body.listenRendezvous.entries[epoch] = Self.tampered
+		let restored = try Fixtures.restore(body)
+		#expect(restored.listenRendezvous[epoch] == derived)
+	}
 
 	/// A tampered current-epoch header key is replaced by the derived value.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func restoreReplacesTamperedCurrentHeaderKey() throws {}
+	@Test func restoreReplacesTamperedCurrentHeaderKey() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let epoch = try #require(bob.sendGroup).classical.context.epoch
+		let derived = try #require(bob.recvHeaderKeys[epoch])
+		var body = try Fixtures.checkpointBody(bob)
+		body.recvHeaderKeys.entries[epoch] = Self.tampered
+		let restored = try Fixtures.restore(body)
+		#expect(restored.recvHeaderKeys[epoch] == derived)
+	}
 
 	/// A tampered current-epoch PQ header key is replaced by the derived value.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func restoreReplacesTamperedCurrentPQHeaderKey() throws {}
+	@Test func restoreReplacesTamperedCurrentPQHeaderKey() throws {
+		let bob = try RatchetTests.fullyEstablishedTurnOnBob().bob
+		let epoch = try #require(bob.sendGroup?.pq).context.epoch
+		let derived = try #require(bob.recvHeaderKeysPQ[epoch])
+		var body = try Fixtures.checkpointBody(bob)
+		body.recvHeaderKeysPQ.entries[epoch] = Self.tampered
+		let restored = try Fixtures.restore(body)
+		#expect(restored.recvHeaderKeysPQ[epoch] == derived)
+	}
 }

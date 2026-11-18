@@ -473,14 +473,15 @@ extension TwoMLSSession {
 		}
 		session.rotationCandidates = rotationCandidates
 		session.deferredRotationCandidate = deferredRotationCandidate
-		// Restore is itself a capture site — re-derive the current classical
-		// epoch's address at once (idempotent when the map already carries
-		// it), so even an empty migration-minted window lists where the peer
-		// posts NOW rather than only after the next commit.
+		// Restore is itself a capture site — the current classical epoch's
+		// address is re-derived at once, replacing any archived entry, so even
+		// an empty migration-minted window lists where the peer posts NOW
+		// rather than only after the next commit.
 		session.listenRendezvous = body.listenRendezvous.entries
-		// Restore is a construction site for the header-key windows too
-		// — re-derive the current classical + PQ header keys so a restored
-		// session can open an in-flight frame at once.
+		// Restore is a construction site for the header-key windows too —
+		// the current classical + PQ header keys are re-derived, replacing any
+		// archived entry, so a restored session can open an in-flight frame
+		// at once.
 		session.recvHeaderKeys = body.recvHeaderKeys.entries
 		session.recvHeaderKeysPQ = body.recvHeaderKeysPQ.entries
 		try session.recordListenRendezvous()
