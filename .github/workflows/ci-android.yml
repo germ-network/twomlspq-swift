@@ -84,11 +84,11 @@ jobs:
         run: ./Scripts/setup-swift-android-toolchain-linux.sh
 
       - name: Build (debug)
-        run: swift build --disable-sandbox --swift-sdk "$SWIFT_SDK_NAME" --triple "${{ matrix.triple }}" -c debug
+        run: swift build --swift-sdk "$SWIFT_SDK_NAME" --triple "${{ matrix.triple }}" -c debug
 
       - name: Build (release)
-        run: swift build --disable-sandbox --swift-sdk "$SWIFT_SDK_NAME" --triple "${{ matrix.triple }}" -c release
+        run: swift build --swift-sdk "$SWIFT_SDK_NAME" --triple "${{ matrix.triple }}" -c release
 
       # Compiles the test targets; there's no Android emulator here to run them.
       - name: Build tests (debug)
-        run: swift build --disable-sandbox --swift-sdk "$SWIFT_SDK_NAME" --triple "${{ matrix.triple }}" -c debug --build-tests
+        run: swift build --swift-sdk "$SWIFT_SDK_NAME" --triple "${{ matrix.triple }}" -c debug --build-tests
