@@ -76,12 +76,35 @@ extension TwoMLSSession {
 
 @available(iOS 26, macOS 26, *)
 extension SessionMigration {
-	/// Every leaf of every migrated tree advertises the APQ capabilities, and
-	/// every leaf of a bound classical half advertises the AppBinding.
+	/// Every non-blank leaf of every migrated tree advertises the APQ
+	/// capabilities, and every one of a bound classical half advertises the
+	/// AppBinding.
 	static func validateMigratedLeafAdverts(
 		sendClassical: MLS.RFC9420.Group, sendPQ: MLS.RFC9420.Group?,
 		recvClassical: MLS.RFC9420.Group?, recvPQ: MLS.RFC9420.Group?
 	) throws {
-		fatalError("unimplemented")
+		do {
+			let halves: [(group: MLS.RFC9420.Group, isClassical: Bool)] =
+				[
+					(sendClassical, true), (recvClassical, true),
+					(sendPQ, false), (recvPQ, false),
+				]
+				.compactMap { group, isClassical in group.map { ($0, isClassical) }
+				}
+			for (group, isClassical) in halves {
+				let bound =
+					try isClassical
+					&& AppBinding.read(fromExtensionsOf: group.context) != nil
+				for entry in group.tree.nonBlankLeaves() {
+					let leaf = try MLS.RFC9420.LeafNode(
+						mlsEncoded: entry.record.encoded)
+					try TwoPartyRules.ensureAdvertisesAPQCapabilities(
+						leaf, codepoints: .deployed)
+					if bound { try ensureAppBindingCreatorLeafAdvert(leaf) }
+				}
+			}
+		} catch {
+			throw TwoMLSError.archiveInvalid
+		}
 	}
 }

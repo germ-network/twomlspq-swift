@@ -796,25 +796,9 @@ public enum SessionMigration {
 			}
 		}
 
-		// Book wire-format.md: every occupied leaf of every restored tree
-		// must advertise the APQInfo extension and the AppDataUpdate
-		// proposal — a capability-less leaf is refused at mint, mirroring
-		// the same gate the live engine enforces on every peer-leaf ingress
-		// site.
-		do {
-			for group in [sendClassical, sendPQ, recvClassical, recvPQ].compactMap({
-				$0
-			}) {
-				for entry in group.tree.nonBlankLeaves() {
-					let leaf = try MLS.RFC9420.LeafNode(
-						mlsEncoded: entry.record.encoded)
-					try TwoPartyRules.ensureAdvertisesAPQCapabilities(
-						leaf, codepoints: .deployed)
-				}
-			}
-		} catch {
-			throw TwoMLSError.archiveInvalid
-		}
+		try validateMigratedLeafAdverts(
+			sendClassical: sendClassical, sendPQ: sendPQ, recvClassical: recvClassical,
+			recvPQ: recvPQ)
 
 		// Book group-rules.md rule 9: the deployed engine never advertises,
 		// so it never records a profile either — a migrated session always

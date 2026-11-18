@@ -1265,9 +1265,9 @@ import TwoMLSPQCrypto
 	/// refuses with `.archiveInvalid`.
 	@available(iOS 26, macOS 26, *)
 	func rogueKeyPackage(
-		named name: String, capabilities: MLS.RFC9420.Capabilities
+		named name: String, capabilities: MLS.RFC9420.Capabilities,
+		provider: any MLS.CipherSuiteProvider = SessionTestSupport.classicalProvider
 	) throws -> MLS.RFC9420.KeyPackage {
-		let provider = SessionTestSupport.classicalProvider
 		let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (_, leafPublicKey) = try provider.hpkeGenerateKeyPair()
 		let (_, initPublicKey) = try provider.hpkeGenerateKeyPair()

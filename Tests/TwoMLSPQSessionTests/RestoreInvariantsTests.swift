@@ -52,6 +52,36 @@ enum RestoreInvariantFixtures {
 		return try transition.takeOutput().takePending().apply(onto: adopted).group
 	}
 
+	/// A PQ two-party group whose second leaf carries `capabilities`.
+	static func pq(
+		_ founder: TwoMLSIdentity, addingLeafWith capabilities: MLS.RFC9420.Capabilities
+	) throws -> MLS.RFC9420.Group {
+		let provider = SessionTestSupport.pqProvider
+		let rogue = try SessionMigrationTests().rogueKeyPackage(
+			named: "rogue-peer", capabilities: capabilities, provider: provider)
+		return try group(
+			provider, founderLeaf: founder.keyPackage.pq.leafNode,
+			founderSecret: founder.pqLeafSecretKey, signingKey: founder.pqSigningKey,
+			adding: [rogue], extensions: [])
+	}
+
+	/// A classical two-party group whose second leaf carries `capabilities`.
+	/// The group is built by plain Add, which does not check the leaf against
+	/// the group's extensions.
+	static func classical(
+		_ founder: TwoMLSIdentity, addingLeafWith capabilities: MLS.RFC9420.Capabilities,
+		extensions: [MLS.RFC9420.Extension] = []
+	) throws -> MLS.RFC9420.Group {
+		let provider = SessionTestSupport.classicalProvider
+		let rogue = try SessionMigrationTests().rogueKeyPackage(
+			named: "rogue-peer", capabilities: capabilities)
+		return try group(
+			provider, founderLeaf: founder.keyPackage.classical.leafNode,
+			founderSecret: founder.classicalLeafSecretKey,
+			signingKey: founder.signingKey,
+			adding: [rogue], extensions: extensions)
+	}
+
 	static func bindingExtension(_ data: Data = binding) throws -> MLS.RFC9420.Extension {
 		try AppBinding(data: data).asExtension()
 	}
@@ -301,18 +331,84 @@ enum RestoreInvariantFixtures {
 	/// leaf is never capability-checked live: a group with a capability-less
 	/// leaf passes the restore group check and fails the mint advert check.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func capabilityLessLeafPassesRestoreCheckButNotMint() throws {}
+	@Test func capabilityLessLeafPassesRestoreCheckButNotMint() throws {
+		let alice = try SessionTestSupport.identity("cap-alice")
+		let group = try Fixtures.classical(
+			alice, addingLeafWith: SessionMigrationTests.rogueCapabilities)
+		#expect(throws: Never.self) { try check(sendClassical: group) }
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.validateMigratedLeafAdverts(
+				sendClassical: group, sendPQ: nil, recvClassical: nil, recvPQ: nil)
+		}
+	}
 }
 
 @Suite struct MigratedLeafAdvertTests {
+	@available(iOS 26, macOS 26, *)
+	private typealias Fixtures = RestoreInvariantFixtures
+
+	@available(iOS 26, macOS 26, *)
+	private func adverts(
+		sendClassical: MLS.RFC9420.Group, recvClassical: MLS.RFC9420.Group? = nil
+	) throws {
+		try SessionMigration.validateMigratedLeafAdverts(
+			sendClassical: sendClassical, sendPQ: nil, recvClassical: recvClassical,
+			recvPQ: nil)
+	}
+
 	/// A migrated leaf missing the APQ capabilities is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func mintRejectsLeafWithoutAPQCapabilities() throws {}
+	@Test func mintRejectsLeafWithoutAPQCapabilities() throws {
+		let alice = try SessionTestSupport.identity("adv-alice")
+		let bob = try SessionTestSupport.identity("adv-bob")
+		let honest = try Fixtures.classical(alice, adding: [bob])
+		let rogue = try Fixtures.classical(
+			alice, addingLeafWith: SessionMigrationTests.rogueCapabilities)
+		#expect(throws: Never.self) { try adverts(sendClassical: honest) }
+		#expect(throws: TwoMLSError.archiveInvalid) { try adverts(sendClassical: rogue) }
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try adverts(sendClassical: honest, recvClassical: rogue)
+		}
+		let rogueCaps = SessionMigrationTests.rogueCapabilities
+		let rogueSendPQ = try Fixtures.pq(alice, addingLeafWith: rogueCaps)
+		let honestPQ = try Fixtures.pq(alice, adding: [bob])
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.validateMigratedLeafAdverts(
+				sendClassical: honest, sendPQ: rogueSendPQ, recvClassical: nil,
+				recvPQ: nil)
+		}
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try SessionMigration.validateMigratedLeafAdverts(
+				sendClassical: honest, sendPQ: honestPQ, recvClassical: honest,
+				recvPQ: rogueSendPQ)
+		}
+	}
 
 	/// A migrated leaf of a bound classical half that does not advertise the
 	/// AppBinding is refused.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func mintRejectsBoundLeafWithoutBindingAdvert() throws {}
+	@Test func mintRejectsBoundLeafWithoutBindingAdvert() throws {
+		let alice = try SessionTestSupport.identity("adv-bound-alice")
+		let bob = try SessionTestSupport.identity("adv-bound-bob")
+		let apqOnly = MLS.RFC9420.Capabilities(
+			versions: [.mls10], cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
+			extensions: [MLS.Combiner.Codepoints.deployed.apqInfoExtensionType],
+			proposals: [MLS.RFC9420.ProposalType(.appDataUpdate)],
+			credentials: [MLS.RFC9420.CredentialType(.basic)])
+		let binding = [try Fixtures.bindingExtension()]
+		let bound = try Fixtures.classical(alice, adding: [bob], extensions: binding)
+		let boundWithoutAdvert = try Fixtures.classical(
+			alice, addingLeafWith: apqOnly, extensions: binding)
+		let unboundWithoutAdvert = try Fixtures.classical(alice, addingLeafWith: apqOnly)
+		#expect(throws: Never.self) { try adverts(sendClassical: bound) }
+		#expect(throws: Never.self) { try adverts(sendClassical: unboundWithoutAdvert) }
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try adverts(sendClassical: boundWithoutAdvert)
+		}
+		#expect(throws: TwoMLSError.archiveInvalid) {
+			try adverts(sendClassical: bound, recvClassical: boundWithoutAdvert)
+		}
+	}
 }
 
 @Suite struct RestoredAuthShapeTests {
