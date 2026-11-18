@@ -271,19 +271,7 @@ enum RestoreInvariantFixtures {
 		let bob = try SessionTestSupport.identity("swap-bob")
 		let target = try Fixtures.boundAcceptor(alice: alice, bob: bob, binding: binding)
 		let source = try Fixtures.boundAcceptor(alice: alice, bob: bob, binding: other)
-		return (
-			try target.makeSessionArchive(kind: .checkpoint).decode(
-				SessionArchive.self),
-			try source.makeSessionArchive(kind: .checkpoint).decode(SessionArchive.self)
-		)
-	}
-
-	@available(iOS 26, macOS 26, *)
-	private func restore(_ body: SessionArchive) throws -> TwoMLSSession {
-		try TwoMLSSession.restore(
-			core: nil, checkpoint: try SecretArchive(encoding: body),
-			classicalProvider: SessionTestSupport.classicalProvider,
-			pqProvider: SessionTestSupport.pqProvider)
+		return (try Fixtures.checkpointBody(target), try Fixtures.checkpointBody(source))
 	}
 
 	/// Restore runs the group checks: an archive whose recv half is swapped
@@ -297,9 +285,11 @@ enum RestoreInvariantFixtures {
 			body.recvClassicalGroupID = source.recvClassicalGroupID
 			body.recvPQEpoch = source.recvPQEpoch
 			if accepted {
-				#expect(throws: Never.self) { try restore(body) }
+				#expect(throws: Never.self) { try Fixtures.restore(body) }
 			} else {
-				#expect(throws: TwoMLSError.archiveInvalid) { try restore(body) }
+				#expect(throws: TwoMLSError.archiveInvalid) {
+					try Fixtures.restore(body)
+				}
 			}
 		}
 	}

@@ -98,6 +98,10 @@ public struct MigratedPartySequence: Sendable {
 	/// Oldest → newest canonical credentials, trimmed to the AS history
 	/// window by the live path; supplied as the legacy state holds them.
 	public var history: [Data]
+	/// IGNORED by `mintArchive` for the peer's sequence (`auth.theirs`): nothing
+	/// in migrated state attests the app's approval of a peer rotation. A peer
+	/// rotation approved but not yet folded must be re-requested by the peer
+	/// and approved again. Kept as supplied for my own sequence.
 	public var authorizedNext: [Data]
 	/// IGNORED by `mintArchive`: the deployed engine pins only the A.3
 	/// founding ids (book group-rules.md rule 4's own example, not its full
@@ -349,6 +353,8 @@ public struct MigratedSession: Sendable {
 	public var lastCrossInjectedPQ: UInt64?
 	public var lastSendPQExported: UInt64?
 	public var offeredProposal: MigratedDigestedProposal?
+	/// IGNORED by `mintArchive`, for the same reason as the peer's
+	/// `authorizedNext`: the approval it records is not attested.
 	public var queuedProposal: MigratedDigestedProposal?
 	public var stagedUpdates: [MigratedStagedUpdate]
 	public var sendCrossPSKLedger: [UInt64: MigratedExportedPsk]
@@ -546,12 +552,14 @@ public enum SessionMigration {
 	/// migrated parts — the session-level analogue of
 	/// `InvitationMigration.mintArchive`. The result is
 	/// value-identical to what `makeSessionArchive(kind:)` would have
-	/// produced for the same state (the group halves arrive as snapshot
-	/// archives and are re-snapshotted through a live `Group.restore`, the
-	/// only public path to a `Group.Snapshot` value; restore→`makeSnapshot()`
-	/// is value-preserving, so the minted entry equals the native one) —
-	/// value-identical, not byte-identical: the integer-keyed maps encode in
-	/// `Dictionary` order, exactly as the native path's own encodings do.
+	/// produced for the same state, except that the peer's `authorizedNext`
+	/// and `queuedProposal` are dropped and `pinned` is re-derived. (The
+	/// group halves arrive as snapshot archives and are re-snapshotted
+	/// through a live `Group.restore`, the only public path to a
+	/// `Group.Snapshot` value; restore→`makeSnapshot()` is value-preserving,
+	/// so the minted entry equals the native one.) It is value-identical, not
+	/// byte-identical: the integer-keyed maps encode in `Dictionary` order,
+	/// exactly as the native path's own encodings do.
 	/// The app seals it with its own key; this library never holds a sealing
 	/// key.
 	///
