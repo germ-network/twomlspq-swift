@@ -26,8 +26,10 @@ jobs:
     name: Android cross-compile (${{ matrix.triple }})
     # Bare runner, not a swift:* container: the setup script installs the
     # open-source host toolchain pinned to exactly the Swift SDK's version,
-    # so both pins live in one place.
-    runs-on: ubuntu-latest
+    # so both pins live in one place. The image is pinned to the distro that
+    # host toolchain is built for (setup script's SWIFT_HOST_URL); newer
+    # images lack its shared libraries (libxml2.so.2).
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -47,7 +49,7 @@ jobs:
       ANDROID_SDK_ROOT: ${{ github.workspace }}/.ci-android-sdk
       ANDROID_HOME: ${{ github.workspace }}/.ci-android-sdk
       ANDROID_NDK_HOME: ${{ github.workspace }}/.ci-android-sdk/ndk/30.0.16248370
-      # ubuntu-latest exports ANDROID_NDK_ROOT into /usr/local/lib/android,
+      # The runner image exports ANDROID_NDK_ROOT into /usr/local/lib/android,
       # which "Free disk space" below deletes. Swift Build's Android support
       # reads ANDROID_NDK_ROOT before ANDROID_NDK_HOME, so a dangling value
       # here fails the build with a misleading "No Android NDK is installed"
@@ -58,7 +60,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # ubuntu-latest preinstalls several GB of toolchains this job doesn't
+      # The runner image preinstalls several GB of toolchains this job doesn't
       # use (.NET, Haskell, an older Android SDK); the Swift host toolchain +
       # NDK + Swift SDK below need room of their own.
       - name: Free disk space
