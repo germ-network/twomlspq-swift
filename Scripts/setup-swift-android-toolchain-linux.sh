@@ -4,9 +4,8 @@
 # .github/workflows/ci-android.yml. Idempotent: safe to re-run against a warm
 # cache.
 #
-# Every pin defaults from the environment, so the calling workflow's own
-# `env:` block governs; running this script with no overrides installs the
-# same pins on its own.
+# The workflow's env governs versions and paths. Download checksums are pinned
+# here, so bumping SWIFT_VERSION or NDK_VERSION needs new checksums below.
 
 set -euo pipefail
 
@@ -24,27 +23,67 @@ SWIFT_HOST_URL="https://download.swift.org/swift-${SWIFT_VERSION}-release/ubuntu
 SWIFT_SDK_URL="https://download.swift.org/swift-${SWIFT_VERSION}-release/android-sdk/swift-${SWIFT_VERSION}-RELEASE/${SWIFT_SDK_NAME}.artifactbundle.tar.gz"
 NDK_ZIP_URL="https://dl.google.com/android/repository/android-ndk-r30-linux.zip"
 
+SWIFT_HOST_SHA256="69f7b2b4dbce6090b6c92194b71149a057e16269093b5a9dded38afc4a05094e"
+SWIFT_SIGNING_KEY_FPR="52BB7E3DE28A71BE22EC05FFEF80A866B47A981F"
+SWIFT_SIGNING_KEY_URL="https://swift.org/keys/release-key-swift-6.x.asc"
+NDK_SHA1="5107f898313790e449e87eee2183d9a20602dee9"
+NDK_SHA256="753611f410d002cfcd3f3dc2ef49aad532089d3180b436c060a90bf0fcb64df2"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+
+fail() {
+    echo "::error::$*" >&2
+    exit 1
+}
+
+# verify_sha <sha1|sha256> <file> <expected-hex>
+verify_sha() {
+    local algo="$1" file="$2" expected="$3" actual
+    actual="$("${algo}sum" "$file" | cut -d' ' -f1)"
+    [[ "$actual" == "$expected" ]] ||
+        fail "$(basename "$file"): $algo mismatch (expected $expected, got $actual)"
+}
 
 export ANDROID_SDK_ROOT ANDROID_HOME ANDROID_NDK_HOME ANDROID_NDK_ROOT
 
 # ---------------------------------------------------------------------------
 # 1. Linux host toolchain. Xcode's Swift can't drive the Android Swift SDK:
 #    cross-compiling needs an open-source host toolchain whose version
-#    matches the SDK exactly. Not checksum-pinned — only the Android SDK
-#    artifactbundle below is.
+#    matches the SDK exactly. Verified by signature and checksum before
+#    extraction.
 # ---------------------------------------------------------------------------
 say "Swift ${SWIFT_VERSION} Linux host toolchain"
 if [[ -x "$SWIFT_HOST/usr/bin/swift" ]]; then
     echo "Swift ${SWIFT_VERSION} host toolchain already installed at $SWIFT_HOST"
 else
-    curl -fsSL -o /tmp/swift-host.tar.gz "$SWIFT_HOST_URL"
+    tarball="$work/swift-host.tar.gz"
+    curl -fsSL -o "$tarball" "$SWIFT_HOST_URL"
+    curl -fsSL -o "$tarball.sig" "$SWIFT_HOST_URL.sig"
+    curl -fsSL -o "$work/swift-key.asc" "$SWIFT_SIGNING_KEY_URL"
+    export GNUPGHOME="$work/gnupg"
+    mkdir -m 700 "$GNUPGHOME"
+    gpg --batch --quiet --import "$work/swift-key.asc" ||
+        fail "swift signing key: import failed"
+    gpg_rc=0
+    gpg_status="$(gpg --batch --status-fd 1 --verify "$tarball.sig" "$tarball" 2>/dev/null)" || gpg_rc=$?
+    # Require a good signature made by the pinned key itself.
+    if [[ "$gpg_rc" -ne 0 ]] ||
+        ! grep -q '^\[GNUPG:\] GOODSIG ' <<<"$gpg_status" ||
+        grep -qE '^\[GNUPG:\] (EXPKEYSIG|REVKEYSIG|EXPSIG|BADSIG|ERRSIG) ' <<<"$gpg_status" ||
+        ! grep -q "^\[GNUPG:\] VALIDSIG .* $SWIFT_SIGNING_KEY_FPR\$" <<<"$gpg_status"; then
+        echo "$gpg_status" >&2
+        fail "swift-host.tar.gz: signature check failed against key $SWIFT_SIGNING_KEY_FPR"
+    fi
+    verify_sha sha256 "$tarball" "$SWIFT_HOST_SHA256"
     mkdir -p "$SWIFT_HOST"
     # The tarball nests everything under a
     # swift-${SWIFT_VERSION}-RELEASE-ubuntu24.04/ directory; strip it so
     # $SWIFT_HOST is the toolchain root.
-    tar -xzf /tmp/swift-host.tar.gz -C "$SWIFT_HOST" --strip-components=1
-    rm -f /tmp/swift-host.tar.gz
+    tar -xzf "$tarball" -C "$SWIFT_HOST" --strip-components=1
+    rm -f "$tarball"
 fi
 export PATH="$SWIFT_HOST/usr/bin:$PATH"
 if [[ -n "${GITHUB_PATH:-}" ]]; then
@@ -63,12 +102,12 @@ say "Android NDK ${NDK_VERSION}"
 if [[ -f "$ANDROID_NDK_HOME/source.properties" ]]; then
     echo "NDK restored from cache: $ANDROID_NDK_HOME"
 else
-    curl -fsSL -o /tmp/ndk.zip "$NDK_ZIP_URL"
-    rm -rf /tmp/ndk-staging
-    mkdir -p /tmp/ndk-staging "$(dirname "$ANDROID_NDK_HOME")"
-    unzip -q /tmp/ndk.zip -d /tmp/ndk-staging
-    mv /tmp/ndk-staging/*/ "$ANDROID_NDK_HOME"
-    rm -rf /tmp/ndk.zip /tmp/ndk-staging
+    curl -fsSL -o "$work/ndk.zip" "$NDK_ZIP_URL"
+    verify_sha sha1 "$work/ndk.zip" "$NDK_SHA1"
+    verify_sha sha256 "$work/ndk.zip" "$NDK_SHA256"
+    mkdir -p "$work/ndk-staging" "$(dirname "$ANDROID_NDK_HOME")"
+    unzip -q "$work/ndk.zip" -d "$work/ndk-staging"
+    mv "$work"/ndk-staging/*/ "$ANDROID_NDK_HOME"
 fi
 if [[ -n "${GITHUB_PATH:-}" ]]; then
     # Android build support falls back to the standard
@@ -96,8 +135,7 @@ if ! swift sdk list 2>/dev/null | grep -q "$SWIFT_SDK_NAME"; then
 fi
 bundle="$(find "$HOME" -maxdepth 6 -type d -name "${SWIFT_SDK_NAME}.artifactbundle" 2>/dev/null | head -1)"
 if [[ -z "$bundle" ]]; then
-    echo "::error::${SWIFT_SDK_NAME}.artifactbundle not found under \$HOME after swift sdk install" >&2
-    exit 1
+    fail "${SWIFT_SDK_NAME}.artifactbundle not found under \$HOME after swift sdk install"
 fi
 ANDROID_NDK_HOME="$ANDROID_NDK_HOME" bash "$bundle/swift-android/scripts/setup-android-sdk.sh"
 
