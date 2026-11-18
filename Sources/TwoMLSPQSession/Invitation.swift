@@ -115,6 +115,12 @@ public struct Invitation: Sendable {
 	///    depends on the `installEstablishmentEnvelope` `.core`, which
 	///    restores only spliced onto this baseline.
 	///
+	/// `now` is the host's current time. RFC 9420 §7.3 requires
+	/// `theirClassicalKeyPackage`'s lifetime to contain it, in whole seconds,
+	/// bounds inclusive; otherwise this throws
+	/// `GroupError.leafNodeLifetimeOutOfRange` before anything is claimed, so
+	/// the call is retryable with the invitation unchanged.
+	///
 	/// `expectedRemoteClientID` is the client id the host has authenticated
 	/// for the initiator, defaulted to `nil` (no check, the unauthenticated
 	/// behavior). The return key package's Basic id must equal it, which —
@@ -140,6 +146,7 @@ public struct Invitation: Sendable {
 		theirClassicalKeyPackage: MLS.RFC9420.KeyPackage,
 		bootstrapKPCommitment: Data,
 		spawnToken: Data,
+		now: Date,
 		expectedRemoteClientID: Data? = nil,
 		expectedAppBinding: Data? = nil,
 		newClientID: Data? = nil
@@ -166,7 +173,8 @@ public struct Invitation: Sendable {
 		let result = try TwoMLSSession.receive(
 			identity: capturedIdentity, welcome: welcome,
 			theirClassicalKeyPackage: theirClassicalKeyPackage,
-			bootstrapKPCommitment: bootstrapKPCommitment, spawnToken: spawnToken,
+			bootstrapKPCommitment: bootstrapKPCommitment, now: now,
+			spawnToken: spawnToken,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: codepoints, expectedAppBinding: expectedAppBinding,
 			newClientID: newClientID)

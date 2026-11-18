@@ -60,6 +60,7 @@ import Testing
 					mode: 0,
 					classicalProvider: classicalProvider,
 					pqProvider: pqProvider,
+					lifetimeCheck: .at(SessionTestSupport.now),
 					profile: .correct)
 			}
 
@@ -69,7 +70,8 @@ import Testing
 					classicalProvider),
 				pq: try half(pq, peer: advertising.keyPackage.pq, pqProvider),
 				mode: 0,
-				classicalProvider: classicalProvider, pqProvider: pqProvider
+				classicalProvider: classicalProvider, pqProvider: pqProvider,
+				lifetimeCheck: .at(SessionTestSupport.now)
 			).group
 			let crossPSK = try MLS.Combiner.ExportedPsk.export(
 				from: &groupA.classical, classicalProvider,
@@ -83,6 +85,7 @@ import Testing
 					crossPSK: crossPSK,
 					nonce: Data(repeating: 2, count: 32),
 					provider: classicalProvider,
+					lifetimeCheck: .at(SessionTestSupport.now),
 					profile: .correct)
 			}
 		}
@@ -104,6 +107,7 @@ import Testing
 				mute, peer: bob.keyPackage.classical, classicalProvider),
 			pq: try half(pq, peer: bob.keyPackage.pq, pqProvider), mode: 0,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
+			lifetimeCheck: .at(SessionTestSupport.now),
 			classicalExtraExtensions: SessionProfile.correct.recordExtensions)
 		let frame = Frames.encodeAPQWelcome(
 			t: try EstablishmentMessages.encodeWelcome(welcome.tWelcome),
@@ -113,6 +117,7 @@ import Testing
 				identity: bob, welcome: frame,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
 				bootstrapKPCommitment: Data(repeating: 0, count: 32),
+				now: SessionTestSupport.now,
 				classicalProvider: classicalProvider, pqProvider: pqProvider)
 		}
 	}
@@ -153,7 +158,8 @@ import Testing
 							.apqInfoExtensionType)
 				] + SessionProfile.correct.recordExtensions,
 				epochSecret: SecretBytes(
-					randomByteCount: classicalProvider.hashSize))
+					randomByteCount: classicalProvider.hashSize),
+				lifetimeCheck: .at(SessionTestSupport.now))
 			let transition = try epoch0.committing(
 				classicalProvider,
 				proposals: [
@@ -165,6 +171,7 @@ import Testing
 				],
 				signingKey: mute.key.signingKey,
 				randomness: try .generate(classicalProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				psk: pskStore.resolver())
 			let sent = transition.takeOutput()
 			guard let welcome = sent.welcome else {

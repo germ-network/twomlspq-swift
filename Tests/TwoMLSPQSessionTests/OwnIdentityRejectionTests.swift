@@ -21,6 +21,7 @@ import TwoMLSPQCrypto
 		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
 			try TwoMLSSession.initiate(
 				identity: identity, their: identity.keyPackage,
+				now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		}
@@ -35,7 +36,7 @@ import TwoMLSPQCrypto
 		let alice = try SessionTestSupport.identity("own-id-receive-alice")
 		let bob = try SessionTestSupport.identity("own-id-receive-bob")
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		let mallory = TwoMLSIdentity(
@@ -51,7 +52,7 @@ import TwoMLSPQCrypto
 				identity: mallory, welcome: initiated.welcome,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
 				bootstrapKPCommitment: try initiated.session
-					.bootstrapKPCommitment(),
+					.bootstrapKPCommitment(), now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		}

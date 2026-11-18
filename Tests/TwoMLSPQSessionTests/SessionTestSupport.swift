@@ -28,6 +28,49 @@ enum SessionTestSupport {
 	}()
 	static let pqProvider = MLKEM768CipherSuiteProvider()
 
+	/// A fixed host clock: every KeyPackage the tests mint spans 0..max, so
+	/// any fixed time passes the lifetime check; tests that exercise
+	/// lifetimes mint their own bounds around it.
+	static let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+	/// `keyPackage` with its leaf lifetime replaced and both signatures
+	/// redone under `signingKey`, so only the lifetime differs from a
+	/// genuine KeyPackage.
+	static func keyPackage(
+		_ keyPackage: MLS.RFC9420.KeyPackage, notBefore: UInt64, notAfter: UInt64,
+		signingKey: MLS.SignatureSecretKey, provider: any MLS.CipherSuiteProvider
+	) throws -> MLS.RFC9420.KeyPackage {
+		var result = keyPackage
+		result.leafNode.source = .keyPackage(
+			.init(notBefore: notBefore, notAfter: notAfter))
+		result.leafNode.signature = try MLS.signWithLabel(
+			provider, privateKey: signingKey, label: "LeafNodeTBS",
+			content: try result.leafNode.toBeSigned(placement: .keyPackage))
+		result.signature = try MLS.signWithLabel(
+			provider, privateKey: signingKey, label: "KeyPackageTBS",
+			content: try result.toBeSigned())
+		return result
+	}
+
+	/// A KeyPackage encoding, minted with no extensions, spliced to carry the
+	/// same extension type twice. `KeyPackage.encode` refuses duplicates, so
+	/// the splice is by hand: it relies on the layout's tail being the empty
+	/// extensions vector then a 64-byte Ed25519 signature (`0x40 0x40` varint
+	/// prefix). Decoding fails before any signature check.
+	static func keyPackageEncodingWithDuplicateExtensionType(
+		_ encoded: Data
+	) throws -> Data {
+		let tail = 1 + 2 + 64
+		let index = try #require(encoded.count >= tail ? encoded.count - tail : nil)
+		try #require(Array(encoded[index...].prefix(3)) == [0x00, 0x40, 0x40])
+		let entry: [UInt8] = [0xF0, 0x00, 0x00]
+		var result = Data(encoded[..<index])
+		result.append(UInt8(entry.count * 2))
+		result.append(contentsOf: entry + entry)
+		result.append(encoded[(index + 1)...])
+		return result
+	}
+
 	static func identity(
 		_ name: String, profile: SessionProfile = .deployedCompatible
 	) throws -> TwoMLSIdentity {
@@ -72,13 +115,14 @@ enum SessionTestSupport {
 		}
 
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now)
 		let spawnToken = classicalProvider.randomBytes(16)
 		let received = try invitation.receive(
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 
 		return (
 			alice: initiated.session, bob: received.session,
@@ -116,13 +160,15 @@ enum SessionTestSupport {
 		}
 
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now)
 		let spawnToken = classicalProvider.randomBytes(16)
 		let received = try invitation.receive(
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: spawnToken, newClientID: dedicatedClientID)
+			spawnToken: spawnToken, now: SessionTestSupport.now,
+			newClientID: dedicatedClientID)
 
 		return (
 			alice: initiated.session, bob: received.session,

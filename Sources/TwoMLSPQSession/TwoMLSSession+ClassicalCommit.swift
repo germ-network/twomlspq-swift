@@ -599,7 +599,10 @@ extension TwoMLSSession {
 				classicalProvider, proposals: proposals,
 				proposalStore: proposalStore,
 				sign: sign,
-				randomness: try .generate(classicalProvider), includePath: true,
+				randomness: try .generate(classicalProvider),
+				lifetimeCheck: try TwoPartyRules.lifetimeCheckWithoutAdds(
+					proposals, proposalStore: proposalStore),
+				includePath: true,
 				framing: .publicMessage, psk: store.resolver(),
 				newIdentity: newIdentity)
 			return try withTransitionHandoff(transition) { adopted, sent in

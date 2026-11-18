@@ -149,7 +149,8 @@ import Testing
 		let openedKP = try #require(openedKPRaw)
 		#expect(openedKP.kind == .pqSideBand(.bootstrapKP))
 
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		let openedWelcomeRaw = try alice.openIncoming(welcomeFrame)
 		let openedWelcome = try #require(openedWelcomeRaw)
 		#expect(openedWelcome.kind == .pqSideBand(.bootstrapWelcome))
@@ -337,7 +338,8 @@ import Testing
 		// `0x15` — bob's recv-PQ (Group_A.pq) already exists from
 		// `receive`'s `APQGroup.joinFull` at establishment,
 		// so this is PQ.
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		assertOpensOnlyUnderExpectedFamily(welcomeFrame, isPQFamily: true, receiver: alice)
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 

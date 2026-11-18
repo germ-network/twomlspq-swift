@@ -59,7 +59,7 @@ import Testing
 		var alice = established.alice
 		var bob = established.bob
 		let begin = try alice.pqBootstrapBegin()
-		let respond = try bob.pqBootstrapRespond(begin.frame)
+		let respond = try bob.pqBootstrapRespond(begin.frame, now: SessionTestSupport.now)
 		_ = try alice.pqBootstrapJoin(respond.frame)
 		#expect(bob.isFullyEstablished)
 		#expect(alice.isFullyEstablished)
@@ -157,7 +157,8 @@ import Testing
 		let transition = try sendPQ.committing(
 			SessionTestSupport.pqProvider, proposals: [.reference(ref)],
 			proposalStore: proposalStore, signingKey: try committer.sendPQSigningKey(),
-			randomness: try .generate(SessionTestSupport.pqProvider), includePath: true,
+			randomness: try .generate(SessionTestSupport.pqProvider),
+			lifetimeCheck: .at(SessionTestSupport.now), includePath: true,
 			framing: .publicMessage)
 		return Frames.encodePQRekeyCommit(try transition.takeOutput().message.mlsEncoded())
 	}
@@ -193,7 +194,8 @@ import Testing
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider,
 				current: try committer.sendPQSigningKey(), new: freshSigningKey),
-			randomness: try .generate(SessionTestSupport.pqProvider), includePath: true,
+			randomness: try .generate(SessionTestSupport.pqProvider),
+			lifetimeCheck: .at(SessionTestSupport.now), includePath: true,
 			framing: .publicMessage,
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: committerNewID),
@@ -1135,7 +1137,7 @@ import Testing
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let begin = try alice.pqBootstrapBegin()
 		#expect(begin.rotatedCredential == nil)
-		let respond = try bob.pqBootstrapRespond(begin.frame)
+		let respond = try bob.pqBootstrapRespond(begin.frame, now: SessionTestSupport.now)
 		#expect(respond.rotatedCredential == nil)
 		_ = try alice.pqBootstrapJoin(respond.frame)
 
@@ -1572,7 +1574,8 @@ import Testing
 
 		// §A.3.
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		if dedicatedClientID != nil {
 			// `establishedDedicatedAndApproved` delivers no Bob→Alice frame, so

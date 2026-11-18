@@ -258,6 +258,7 @@ import TwoMLSPQCrypto
 			SessionTestSupport.pqProvider, proposals: [],
 			signingKey: try bob.recvPQSigningKey(),
 			randomness: try .generate(SessionTestSupport.pqProvider),
+			lifetimeCheck: .at(SessionTestSupport.now),
 			includePath: true, framing: .publicMessage)
 		let commitBytes = try transition.takeOutput().message.mlsEncoded()
 		let sneakyFrame = Frames.encodePQRekeyUpd(commitBytes)
@@ -303,7 +304,8 @@ import TwoMLSPQCrypto
 			SessionTestSupport.pqProvider,
 			proposals: [.reference(ref), .proposal(.add(mallory.keyPackage.pq))],
 			proposalStore: proposalStore, signingKey: try alice.sendPQSigningKey(),
-			randomness: try .generate(SessionTestSupport.pqProvider), includePath: true,
+			randomness: try .generate(SessionTestSupport.pqProvider),
+			lifetimeCheck: .at(SessionTestSupport.now), includePath: true,
 			framing: .publicMessage)
 		let commitBytes = try transition.takeOutput().message.mlsEncoded()
 		let badFrame = Frames.encodePQRekeyCommit(commitBytes)

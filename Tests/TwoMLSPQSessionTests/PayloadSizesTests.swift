@@ -70,7 +70,7 @@ import TwoMLSPQCrypto
 		let bobKP = try #require(bobInvitation.combinerKeyPackage)
 
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: bobKP)
+			principal: alicePrincipal, their: bobKP, now: SessionTestSupport.now)
 		var alice = initiated.session
 		// Snapshot the founding trees NOW: a blank parent only survives
 		// until the first A.5 rekey, whose forced UpdatePath refills it
@@ -109,7 +109,7 @@ import TwoMLSPQCrypto
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: alice.identity.keyPackage.classical,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 		var bob = received.session
 		// Bob's sealed `0x01` birth welcome (the standalone deliverable; the
 		// same bytes ride his first `0x03` frame's staple — Rust's
@@ -151,7 +151,9 @@ import TwoMLSPQCrypto
 		// MARK: §A.3 PQ bootstrap side-band.
 		var (bootAlice, bootBob) = try SessionTestSupport.establishedAndExchanged()
 		let bootstrapKP = try bootAlice.pqBootstrapBegin().frame
-		let bootstrapWelcome = try bootBob.pqBootstrapRespond(bootstrapKP).frame
+		let bootstrapWelcome = try bootBob.pqBootstrapRespond(
+			bootstrapKP, now: SessionTestSupport.now
+		).frame
 		_ = try bootAlice.pqBootstrapJoin(bootstrapWelcome)
 
 		// MARK: §A.4 PQ ratchet — fresh pair, turn on Bob after the A.3 bind.

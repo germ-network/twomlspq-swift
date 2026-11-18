@@ -90,7 +90,8 @@ import TwoMLSPQCrypto
 			leafNode: solo.keyPackage.classical.leafNode,
 			leafSecretKey: solo.classicalLeafSecretKey,
 			extensions: [try AppBinding(data: Self.binding).asExtension()],
-			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize),
+			lifetimeCheck: .at(SessionTestSupport.now))
 		#expect(throws: Never.self) {
 			try verifyAppBinding(boundGroup, expected: Self.binding)
 		}
@@ -105,7 +106,8 @@ import TwoMLSPQCrypto
 			provider, groupID: provider.randomBytes(provider.hashSize),
 			leafNode: solo.keyPackage.classical.leafNode,
 			leafSecretKey: solo.classicalLeafSecretKey, extensions: [],
-			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize),
+			lifetimeCheck: .at(SessionTestSupport.now))
 		#expect(throws: Never.self) { try verifyAppBinding(unboundGroup, expected: nil) }
 		#expect(throws: TwoMLSError.appBindingMismatch) {
 			try verifyAppBinding(unboundGroup, expected: Self.binding)
@@ -128,7 +130,8 @@ import TwoMLSPQCrypto
 			provider, groupID: provider.randomBytes(provider.hashSize),
 			leafNode: solo.keyPackage.pq.leafNode, leafSecretKey: solo.pqLeafSecretKey,
 			extensions: [smuggledExtension],
-			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize),
+			lifetimeCheck: .at(SessionTestSupport.now))
 		#expect(throws: TwoMLSError.appBindingMismatch) {
 			try verifyPQHalfUnbound(smuggledGroup)
 		}
@@ -136,7 +139,9 @@ import TwoMLSPQCrypto
 		let cleanGroup = try MLS.RFC9420.Group.create(
 			provider, groupID: provider.randomBytes(provider.hashSize),
 			leafNode: solo.keyPackage.pq.leafNode, leafSecretKey: solo.pqLeafSecretKey,
-			extensions: [], epochSecret: SecretBytes(randomByteCount: provider.hashSize)
+			extensions: [],
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize),
+			lifetimeCheck: .at(SessionTestSupport.now)
 		)
 		#expect(throws: Never.self) { try verifyPQHalfUnbound(cleanGroup) }
 		#expect(throws: Never.self) { try verifyPQHalfUnbound(nil) }
@@ -183,7 +188,8 @@ import TwoMLSPQCrypto
 				leafNode: alice.keyPackage.pq.leafNode,
 				leafSecretKey: alice.pqLeafSecretKey,
 				extensions: [infoExtension, bindingExtension],
-				epochSecret: SecretBytes(randomByteCount: pqProvider.hashSize))
+				epochSecret: SecretBytes(randomByteCount: pqProvider.hashSize),
+				lifetimeCheck: .at(SessionTestSupport.now))
 			let pqTransition = try pqEpoch0.committing(
 				pqProvider,
 				proposals: [
@@ -191,6 +197,7 @@ import TwoMLSPQCrypto
 				],
 				signingKey: alice.pqSigningKey,
 				randomness: try .generate(pqProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				psk: { _ in nil })
 			let pqAdopted = pqTransition.group
 			let pqSent = pqTransition.takeOutput()
@@ -212,7 +219,8 @@ import TwoMLSPQCrypto
 				leafSecretKey: alice.classicalLeafSecretKey,
 				extensions: [infoExtension, bindingExtension],
 				epochSecret: SecretBytes(
-					randomByteCount: classicalProvider.hashSize))
+					randomByteCount: classicalProvider.hashSize),
+				lifetimeCheck: .at(SessionTestSupport.now))
 			let tTransition = try tEpoch0.committing(
 				classicalProvider,
 				proposals: [
@@ -222,6 +230,7 @@ import TwoMLSPQCrypto
 				],
 				signingKey: alice.signingKey,
 				randomness: try .generate(classicalProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				psk: pskStore.resolver())
 			let tAdopted = tTransition.group
 			let tSent = tTransition.takeOutput()
@@ -239,6 +248,7 @@ import TwoMLSPQCrypto
 					identity: bob, welcome: crafted,
 					theirClassicalKeyPackage: alice.keyPackage.classical,
 					bootstrapKPCommitment: Data(repeating: 0, count: 32),
+					now: SessionTestSupport.now,
 					classicalProvider: classicalProvider,
 					pqProvider: pqProvider,
 					expectedAppBinding: Self.binding)
@@ -295,7 +305,7 @@ import TwoMLSPQCrypto
 
 		#expect(throws: TwoMLSError.appBindingLeafUnadvertised) {
 			try TwoMLSSession.initiate(
-				identity: alice, their: theirs,
+				identity: alice, their: theirs, now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider, appBinding: Self.binding)
 		}
@@ -304,7 +314,7 @@ import TwoMLSPQCrypto
 		// (unbound) Group_A just fine.
 		#expect(throws: Never.self) {
 			try TwoMLSSession.initiate(
-				identity: alice, their: theirs,
+				identity: alice, their: theirs, now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		}
@@ -363,13 +373,14 @@ import TwoMLSPQCrypto
 		let bob = try SessionTestSupport.identity("bound-bob")
 
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider, appBinding: Self.binding)
 		let received = try TwoMLSSession.receive(
 			identity: bob, welcome: initiated.welcome,
 			theirClassicalKeyPackage: alice.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider, expectedAppBinding: Self.binding)
 
@@ -416,7 +427,8 @@ import TwoMLSPQCrypto
 		let theirCombinerKP = try #require(invitation.combinerKeyPackage)
 
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP, appBinding: Self.binding)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now, appBinding: Self.binding)
 		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
 
 		#expect(throws: TwoMLSError.appBindingMismatch) {
@@ -426,7 +438,7 @@ import TwoMLSPQCrypto
 					.classical,
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: spawnToken,
+				spawnToken: spawnToken, now: SessionTestSupport.now,
 				expectedAppBinding: Data("wrong-digest".utf8))
 		}
 		// CODE FIX 2: `generateInvitation(lastResort: true)` never nils
@@ -447,7 +459,8 @@ import TwoMLSPQCrypto
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: spawnToken, expectedAppBinding: Self.binding)
+			spawnToken: spawnToken, now: SessionTestSupport.now,
+			expectedAppBinding: Self.binding)
 		#expect(received.session.isEstablished)
 		#expect(try received.session.appBinding() == Self.binding)
 	}
@@ -473,7 +486,8 @@ import TwoMLSPQCrypto
 		let theirCombinerKP = try #require(invitation.combinerKeyPackage)
 
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP, appBinding: Self.binding)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now, appBinding: Self.binding)
 		let spawnToken = SessionTestSupport.classicalProvider.randomBytes(16)
 
 		#expect(throws: TwoMLSError.appBindingMismatch) {
@@ -483,7 +497,7 @@ import TwoMLSPQCrypto
 					.classical,
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: spawnToken,
+				spawnToken: spawnToken, now: SessionTestSupport.now,
 				expectedAppBinding: Data("wrong-digest".utf8))
 		}
 		#expect(
@@ -496,7 +510,8 @@ import TwoMLSPQCrypto
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: spawnToken, expectedAppBinding: Self.binding)
+			spawnToken: spawnToken, now: SessionTestSupport.now,
+			expectedAppBinding: Self.binding)
 		#expect(received.session.isEstablished)
 		#expect(invitation.combinerKeyPackage == nil)
 	}
@@ -507,7 +522,7 @@ import TwoMLSPQCrypto
 		let alice = try SessionTestSupport.identity("missing-alice")
 		let bob = try SessionTestSupport.identity("missing-bob")
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
@@ -516,7 +531,7 @@ import TwoMLSPQCrypto
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
 				bootstrapKPCommitment: try initiated.session
-					.bootstrapKPCommitment(),
+					.bootstrapKPCommitment(), now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider,
 				expectedAppBinding: Self.binding)
@@ -530,7 +545,7 @@ import TwoMLSPQCrypto
 		let alice = try SessionTestSupport.identity("unexpected-alice")
 		let bob = try SessionTestSupport.identity("unexpected-bob")
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider, appBinding: Self.binding)
 
@@ -539,7 +554,7 @@ import TwoMLSPQCrypto
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
 				bootstrapKPCommitment: try initiated.session
-					.bootstrapKPCommitment(),
+					.bootstrapKPCommitment(), now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		}
@@ -563,6 +578,7 @@ import TwoMLSPQCrypto
 				identity: bob, welcome: Data("not-a-real-welcome".utf8),
 				theirClassicalKeyPackage: bob.keyPackage.classical,
 				bootstrapKPCommitment: Data(repeating: 0, count: 32),
+				now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider,
 				expectedAppBinding: Data())
@@ -580,14 +596,14 @@ import TwoMLSPQCrypto
 
 		#expect(throws: TwoMLSError.appBindingMismatch) {
 			try TwoMLSSession.initiate(
-				identity: alice, their: bob.keyPackage,
+				identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider, appBinding: Data())
 		}
 		// The same identity/peer pair still establishes with a real binding.
 		#expect(throws: Never.self) {
 			try TwoMLSSession.initiate(
-				identity: alice, their: bob.keyPackage,
+				identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider, appBinding: Self.binding)
 		}
@@ -609,13 +625,14 @@ import TwoMLSPQCrypto
 		let provider = SessionTestSupport.classicalProvider
 
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: provider, pqProvider: SessionTestSupport.pqProvider,
 			appBinding: Self.binding)
 		let received = try TwoMLSSession.receive(
 			identity: bob, welcome: initiated.welcome,
 			theirClassicalKeyPackage: alice.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			now: SessionTestSupport.now,
 			classicalProvider: provider, pqProvider: SessionTestSupport.pqProvider,
 			expectedAppBinding: Self.binding)
 		var aliceSession = initiated.session
@@ -650,7 +667,8 @@ import TwoMLSPQCrypto
 		let (_, strippedWelcome) = try APQGroup.establishClassicalOnly(
 			founder: founderHalf, pqGroupID: provider.randomBytes(provider.hashSize),
 			crossPSK: crossPSK, nonce: provider.randomBytes(provider.hashSize),
-			provider: provider, appBinding: nil)
+			provider: provider, lifetimeCheck: .at(SessionTestSupport.now),
+			appBinding: nil)
 		let strippedStaple = Frames.encodeAPQWelcome(
 			t: try EstablishmentMessages.encodeWelcome(strippedWelcome), pq: Data())
 
@@ -684,13 +702,14 @@ import TwoMLSPQCrypto
 		let alice = try SessionTestSupport.identity("restore-alice")
 		let bob = try SessionTestSupport.identity("restore-bob")
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider, appBinding: Self.binding)
 		let received = try TwoMLSSession.receive(
 			identity: bob, welcome: initiated.welcome,
 			theirClassicalKeyPackage: alice.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider, expectedAppBinding: Self.binding)
 
@@ -783,12 +802,14 @@ import TwoMLSPQCrypto
 		let bob = try SessionTestSupport.identity("update-leaf-bob-\(suffix)")
 
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage, classicalProvider: provider,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
+			classicalProvider: provider,
 			pqProvider: SessionTestSupport.pqProvider, appBinding: appBinding)
 		let received = try TwoMLSSession.receive(
 			identity: bob, welcome: initiated.welcome,
 			theirClassicalKeyPackage: alice.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			now: SessionTestSupport.now,
 			classicalProvider: provider, pqProvider: SessionTestSupport.pqProvider,
 			expectedAppBinding: appBinding)
 

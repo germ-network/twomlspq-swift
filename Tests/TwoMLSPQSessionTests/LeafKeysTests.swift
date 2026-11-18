@@ -275,7 +275,7 @@ import Testing
 		// the choke point is what catches these too.
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let begin = try alice.pqBootstrapBegin()
-		let respond = try bob.pqBootstrapRespond(begin.frame)
+		let respond = try bob.pqBootstrapRespond(begin.frame, now: SessionTestSupport.now)
 		_ = try alice.pqBootstrapJoin(respond.frame)
 		#expect(alice.isFullyEstablished)
 		#expect(bob.isFullyEstablished)
@@ -566,7 +566,7 @@ import Testing
 		_ = try alice.processIncomingDecrypted(hello)
 
 		let begin = try alice.pqBootstrapBegin()
-		let respond = try bob.pqBootstrapRespond(begin.frame)
+		let respond = try bob.pqBootstrapRespond(begin.frame, now: SessionTestSupport.now)
 		_ = try alice.pqBootstrapJoin(respond.frame)
 		let prepared = try alice.prepareToEncrypt()
 		#expect(prepared.didCommit, "alice's owed bind discharges on Group_A")
@@ -738,7 +738,7 @@ import Testing
 		// until each group's own next mechanism replaces it.
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let begin = try alice.pqBootstrapBegin()
-		let respond = try bob.pqBootstrapRespond(begin.frame)
+		let respond = try bob.pqBootstrapRespond(begin.frame, now: SessionTestSupport.now)
 		_ = try alice.pqBootstrapJoin(respond.frame)
 		#expect(alice.isFullyEstablished)
 		#expect(bob.isFullyEstablished)
@@ -1069,7 +1069,7 @@ import Testing
 	@Test func pqKeySetChangeAloneTriggersTheStickyCheckpointUpgrade() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let begin = try alice.pqBootstrapBegin()
-		let respond = try bob.pqBootstrapRespond(begin.frame)
+		let respond = try bob.pqBootstrapRespond(begin.frame, now: SessionTestSupport.now)
 		_ = try alice.pqBootstrapJoin(respond.frame)
 		let checkpoint = try alice.stateUpdate(kind: .checkpoint)
 		#expect(checkpoint.kind == .checkpoint)
@@ -1464,7 +1464,8 @@ import Testing
 			try TwoMLSSessionTestHooks.withIsolatedFaults {
 				TwoMLSSessionTestHooks.armFault("pqBootstrapRespond.afterWriteBack")
 				#expect(throws: (any Error).self) {
-					try bob.pqBootstrapRespond(kpFrame)
+					try bob.pqBootstrapRespond(
+						kpFrame, now: SessionTestSupport.now)
 				}
 
 				let sendPQGroup = try #require(
@@ -1680,7 +1681,7 @@ import Testing
 		let begin = try alice.pqBootstrapBegin()
 		aliceTracker.record(begin.update)
 		try assertRestoreEqualsLive(alice, using: aliceTracker)
-		let respond = try bob.pqBootstrapRespond(begin.frame)
+		let respond = try bob.pqBootstrapRespond(begin.frame, now: SessionTestSupport.now)
 		bobTracker.record(respond.update)
 		try assertRestoreEqualsLive(bob, using: bobTracker)
 		let joinUpdate = try alice.pqBootstrapJoin(respond.frame)

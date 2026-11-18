@@ -147,7 +147,7 @@ import TwoMLSPQCrypto
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 
 		// Precondition: the runtime secret is genuinely live, else vacuous.
 		#expect(initiated.session.identity.classicalInitSecretKey != nil)
@@ -205,7 +205,7 @@ import TwoMLSPQCrypto
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 
 		let archive = try initiated.session.makeSessionArchive(kind: .checkpoint)
 		let restored = try TwoMLSSession.restore(
@@ -255,7 +255,7 @@ import TwoMLSPQCrypto
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 
 		let archive = try initiated.session.makeSessionArchive(kind: .checkpoint)
 		var restored = try TwoMLSSession.restore(
@@ -275,7 +275,7 @@ import TwoMLSPQCrypto
 		let received = try invitation.receive(
 			welcome: try #require(frame.welcome), theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try restored.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 		var bob = received.session
 		#expect(bob.isEstablished)
 
@@ -371,7 +371,8 @@ import TwoMLSPQCrypto
 	@Test func midA3CheckpointRestoreThenBootstrapCompletes() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		// Mid-A.3: Alice hasn't joined Group_B.pq yet.
 		#expect(alice.recvGroup?.pq == nil)
 		#expect(alice.bootstrapKPSecret != nil)
@@ -742,7 +743,8 @@ import TwoMLSPQCrypto
 
 		// A.3 then completes off the restored session.
 		let kpFrame = try restored.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try restored.pqBootstrapJoin(welcomeFrame)
 		#expect(restored.isFullyEstablished)
 
@@ -1318,7 +1320,8 @@ import TwoMLSPQCrypto
 			try restoreCheckpoint(try checkpointBody(bob))
 		}
 
-		_ = try bob.pqBootstrapRespond(try alice.pqBootstrapBegin().frame)
+		_ = try bob.pqBootstrapRespond(
+			try alice.pqBootstrapBegin().frame, now: SessionTestSupport.now)
 		guard case .bootstrapResponded = bob.pqInflight else {
 			Issue.record("expected bob to hold `.bootstrapResponded`")
 			return

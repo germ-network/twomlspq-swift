@@ -422,10 +422,12 @@ private func makeRotationMember(
 		let epoch0 = try MLS.RFC9420.Group.create(
 			provider, groupID: provider.randomBytes(provider.hashSize),
 			leafNode: alice.keyPackage.leafNode, leafSecretKey: alice.leafSecretKey,
-			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize),
+			lifetimeCheck: .at(Date(timeIntervalSince1970: 1_800_000_000)))
 		let creation = try epoch0.committing(
 			provider, proposals: [.proposal(.add(bob.keyPackage))],
 			signingKey: alice.signingKey, randomness: .generate(provider),
+			lifetimeCheck: .at(Date(timeIntervalSince1970: 1_800_000_000)),
 			framing: .publicMessage)
 		let creationBase = creation.group
 		let creationSent = creation.takeOutput()
@@ -464,6 +466,7 @@ private func makeRotationMember(
 		let rotation = try aliceGroup.committing(
 			provider, proposals: [.reference(ref)], proposalStore: store,
 			signingKey: alice.signingKey, randomness: .generate(provider),
+			lifetimeCheck: .at(Date(timeIntervalSince1970: 1_800_000_000)),
 			framing: .publicMessage)
 		let rotationBase = rotation.group
 		let rotationPending = rotation.takeOutput().takePending()

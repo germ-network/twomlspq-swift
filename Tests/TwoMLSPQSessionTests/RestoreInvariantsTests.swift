@@ -44,10 +44,12 @@ enum RestoreInvariantFixtures {
 		let epoch0 = try MLS.RFC9420.Group.create(
 			provider, groupID: provider.randomBytes(provider.hashSize),
 			leafNode: founderLeaf, leafSecretKey: founderSecret, extensions: extensions,
-			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize),
+			lifetimeCheck: .at(SessionTestSupport.now))
 		let transition = try epoch0.committing(
 			provider, proposals: others.map { .proposal(.add($0)) },
-			signingKey: signingKey, randomness: try .generate(provider))
+			signingKey: signingKey, randomness: try .generate(provider),
+			lifetimeCheck: .at(SessionTestSupport.now))
 		let adopted = transition.group
 		return try transition.takeOutput().takePending().apply(onto: adopted).group
 	}
@@ -99,13 +101,14 @@ enum RestoreInvariantFixtures {
 		alice: TwoMLSIdentity, bob: TwoMLSIdentity, binding: Data?
 	) throws -> TwoMLSSession {
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider, appBinding: binding)
 		return try TwoMLSSession.receive(
 			identity: bob, welcome: initiated.welcome,
 			theirClassicalKeyPackage: alice.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider, expectedAppBinding: binding
 		).session
@@ -521,19 +524,21 @@ enum RestoreInvariantFixtures {
 		let rogueKP = try MLS.RFC9420.Message.keyPackage(evil.keyPackage.pq).mlsEncoded()
 		let initiated = try TwoMLSSession.initiate(
 			identity: aliceIdentity, their: bobIdentity.keyPackage,
+			now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		var bob = try TwoMLSSession.receive(
 			identity: bobIdentity, welcome: initiated.welcome,
 			theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
 			bootstrapKPCommitment: try SessionTestSupport.classicalProvider.hash(
-				rogueKP),
+				rogueKP), now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider
 		).session
 		_ = try bob.prepareToEncrypt()
 		_ = try bob.encrypt(Data("hello".utf8))
-		let response = try bob.pqBootstrapRespond(Frames.encodePQBootstrapKP(rogueKP))
+		let response = try bob.pqBootstrapRespond(
+			Frames.encodePQBootstrapKP(rogueKP), now: SessionTestSupport.now)
 
 		let body = try response.update.archive.decode(SessionArchive.self)
 		let bobID = bobIdentity.clientID

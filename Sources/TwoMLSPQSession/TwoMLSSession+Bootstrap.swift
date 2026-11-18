@@ -65,11 +65,19 @@ extension TwoMLSSession {
 	/// Afterward, or for a round that was never this one, it answers
 	/// `.duplicateSideBand` with no state change.
 	///
+	/// `now` is the host's current time. RFC 9420 §7.3 requires KP′'s
+	/// lifetime to contain it, in whole seconds, bounds inclusive; otherwise
+	/// this throws `GroupError.leafNodeLifetimeOutOfRange` with no state
+	/// change, so the call is retryable. A KP′ whose `notAfter` has passed
+	/// can never found the PQ half.
+	///
 	/// Seam: this does not check KP′'s leaf credential names the already-
 	/// established peer (Rust's AS `validate_member`). It fails closed regardless — a wrong-peer KP′ founds a
 	/// Group_B.pq the real peer never agrees to join, so the bind can never
 	/// complete.
-	public mutating func pqBootstrapRespond(_ inbound: Data) throws -> SideBandResult {
+	public mutating func pqBootstrapRespond(_ inbound: Data, now: Date) throws
+		-> SideBandResult
+	{
 		// The founding leaf is minted under this party's own then-canonical
 		// id (book session-lifecycle.md: A.3 runs on the principal a prior
 		// rotation may have installed) — before anything about the peer's
@@ -78,14 +86,14 @@ extension TwoMLSSession {
 		guard let founderID = auth.mine.current else { throw TwoMLSError.credentialUnknown }
 		let founding = try TwoMLSIdentity.mintFoundingLeaf(
 			clientID: founderID, provider: pqProvider)
-		return try pqBootstrapRespond(inbound, founding: founding)
+		return try pqBootstrapRespond(inbound, now: now, founding: founding)
 	}
 
 	/// The `founding:` seam: the current entry point above mints a fresh
 	/// founding leaf and calls through here. Tests that need to control it
 	/// directly (a deployed-shaped fixture, or an injected capability-less
 	/// rogue leaf) call this overload.
-	mutating func pqBootstrapRespond(_ inbound: Data, founding: FoundingLeaf) throws
+	mutating func pqBootstrapRespond(_ inbound: Data, now: Date, founding: FoundingLeaf) throws
 		-> SideBandResult
 	{
 		// The non-emittable gate.
@@ -132,7 +140,7 @@ extension TwoMLSSession {
 			signingKey: founding.key.signingKey,
 			peerBootstrapKP: peerBootstrapKP, randomness: try .generate(pqProvider),
 			epochSecret: SecretBytes(randomByteCount: pqProvider.hashSize),
-			pqProvider: pqProvider,
+			pqProvider: pqProvider, lifetimeCheck: .at(now),
 			codepoints: codepoints)
 		send.pq = pqGroup
 		sendGroup = send
@@ -291,7 +299,10 @@ extension TwoMLSSession {
 			let transition = try sendPQ.committing(
 				pqProvider, proposals: proposals,
 				signingKey: try sendPQSigningKey(),
-				randomness: try .generate(pqProvider), includePath: false,
+				randomness: try .generate(pqProvider),
+				lifetimeCheck: try TwoPartyRules.lifetimeCheckWithoutAdds(
+					proposals),
+				includePath: false,
 				framing: .publicMessage,
 				psk: { identifier in
 					guard case .external(let pskID, _) = identifier,

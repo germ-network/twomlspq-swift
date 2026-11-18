@@ -41,7 +41,7 @@ import TwoMLSPQCrypto
 		let theirKP = try #require(invitation.combinerKeyPackage)
 
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 		#expect(initiated.session.currentStaple == initiated.welcome)
 
 		let envelope = try initiated.session.pendingOutbound()
@@ -66,7 +66,7 @@ import TwoMLSPQCrypto
 		let received = try invitation.receive(
 			welcome: receivedWelcome, theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 
 		var alice = initiated.session
 		var bob = received.session
@@ -95,7 +95,7 @@ import TwoMLSPQCrypto
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 
 		let first = try initiated.session.pendingOutbound()
 		let second = try initiated.session.pendingOutbound()
@@ -132,7 +132,7 @@ import TwoMLSPQCrypto
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 
 		var wrongAAD = EstablishmentEnvelope.envelopeFramingAAD()
 		wrongAAD[wrongAAD.startIndex] = 0xFF
@@ -154,7 +154,7 @@ import TwoMLSPQCrypto
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 
 		var wrongAAD = EstablishmentEnvelope.envelopeFramingAAD()
 		wrongAAD[wrongAAD.index(before: wrongAAD.endIndex)] ^= 0xFF
@@ -176,7 +176,7 @@ import TwoMLSPQCrypto
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 
 		let blob = try sealBareVector(theirKP: theirKP, initiated: initiated, aad: nil)
 		#expect(throws: TwoMLSError.decryptionFailed) {
@@ -193,7 +193,7 @@ import TwoMLSPQCrypto
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 
 		let blob = try sealBareVector(
 			theirKP: theirKP, initiated: initiated,

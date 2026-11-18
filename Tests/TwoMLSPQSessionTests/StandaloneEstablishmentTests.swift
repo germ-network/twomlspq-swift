@@ -164,14 +164,14 @@ import Testing
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 		var alice = initiated.session
 		let spawnToken = classicalProvider.randomBytes(16)
 		let received = try invitation.receive(
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: alice.identity.keyPackage.classical,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 		var bob = received.session
 
 		// The standalone copy joins FIRST.

@@ -36,6 +36,25 @@ enum TwoPartyRules {
 		}
 	}
 
+	/// RFC 9420 §7.3's lifetime check applies to the KeyPackages a commit
+	/// adds, and only creation commits add one. Every other commit passes
+	/// `.unchecked`, which is vacuous only while it adds nothing, so this
+	/// refuses any Add, inline or by reference.
+	static func lifetimeCheckWithoutAdds(
+		_ proposals: [MLS.RFC9420.ProposalOrRef],
+		proposalStore: MLS.RFC9420.ProposalStore = .init()
+	) throws -> MLS.RFC9420.LifetimeCheck {
+		for entry in proposals {
+			let proposal: MLS.RFC9420.Proposal?
+			switch entry {
+			case .proposal(let inline): proposal = inline
+			case .reference(let ref): proposal = proposalStore[ref]?.proposal
+			}
+			if case .add = proposal { throw TwoMLSError.unexpectedProposal }
+		}
+		return .unchecked
+	}
+
 	/// A creation commit (roster 1 → 2) may carry exactly one `Add`, no
 	/// `Update`, only `application`/`external` PSKs, and — for a full pair —
 	/// the `AppDataUpdate` attestation; every other proposal type is
@@ -253,5 +272,16 @@ enum TwoPartyRules {
 		try validateTwoPartyUpdateCommit(
 			effects, foldedPeerUpdate: true, allowAppDataUpdate: false,
 			orThrow: .invalidRekeyEffects)
+	}
+}
+
+extension MLS.RFC9420.LifetimeCheck {
+	/// The check at the host-supplied `now`, in whole seconds rounded down;
+	/// out-of-range or non-finite times clamp to the representable bounds
+	/// (NaN to 0) rather than trap on host input.
+	static func at(_ now: Date) -> Self {
+		let seconds = now.timeIntervalSince1970
+		guard seconds > 0 else { return .at(unixSeconds: 0) }
+		return .at(unixSeconds: seconds >= 0x1p64 ? .max : UInt64(seconds))
 	}
 }

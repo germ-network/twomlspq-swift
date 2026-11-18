@@ -25,7 +25,8 @@ import Testing
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: lastResort)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal,
-			their: try #require(invitation.combinerKeyPackage))
+			their: try #require(invitation.combinerKeyPackage),
+			now: SessionTestSupport.now)
 		return (initiated, invitation)
 	}
 
@@ -37,7 +38,8 @@ import Testing
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: Support.classicalProvider.randomBytes(16)
+			spawnToken: Support.classicalProvider.randomBytes(16),
+			now: SessionTestSupport.now
 		).session
 	}
 
@@ -151,7 +153,7 @@ import Testing
 			invitation.bootstrapKPGroupID(kpFrame: held)
 				== bob.recvGroup?.classical.context.groupID)
 
-		let welcome = try bob.pqBootstrapRespond(held)
+		let welcome = try bob.pqBootstrapRespond(held, now: SessionTestSupport.now)
 		#expect(welcome.update.kind == .checkpoint)
 
 		// Opens under alice's own Group_A.pq window, but there is nothing to
@@ -184,10 +186,10 @@ import Testing
 	@Test func respondReServesOnlyWhileItsRoundIsOpen() throws {
 		var (alice, bob) = try Support.establishedAndExchanged()
 		let kp = try alice.pqBootstrapBegin().frame
-		let first = try bob.pqBootstrapRespond(kp)
+		let first = try bob.pqBootstrapRespond(kp, now: SessionTestSupport.now)
 
 		// Round open: the SAME Welcome′ again.
-		let again = try bob.pqBootstrapRespond(kp)
+		let again = try bob.pqBootstrapRespond(kp, now: SessionTestSupport.now)
 		#expect(alice.openOrRaw(first.frame) == alice.openOrRaw(again.frame))
 		#expect(first.update.kind == .checkpoint)
 		#expect(again.update.kind == .core)
@@ -195,10 +197,12 @@ import Testing
 		// Garbage or a wrong KP′ never earns a re-serve.
 		let seq = bob.stateSeq
 		#expect(throws: (any Error).self) {
-			try bob.pqBootstrapRespond(Data([0x42, 0x01]))
+			try bob.pqBootstrapRespond(Data([0x42, 0x01]), now: SessionTestSupport.now)
 		}
 		#expect(throws: TwoMLSError.bootstrapKPMismatch) {
-			try bob.pqBootstrapRespond(Frames.encodePQBootstrapKP(Data("other".utf8)))
+			try bob.pqBootstrapRespond(
+				Frames.encodePQBootstrapKP(Data("other".utf8)),
+				now: SessionTestSupport.now)
 		}
 		#expect(bob.stateSeq == seq)
 
@@ -210,7 +214,7 @@ import Testing
 		// Round closed: refused, with nothing moved.
 		let closedSeq = bob.stateSeq
 		#expect(throws: TwoMLSError.duplicateSideBand) {
-			try bob.pqBootstrapRespond(kp)
+			try bob.pqBootstrapRespond(kp, now: SessionTestSupport.now)
 		}
 		#expect(bob.stateSeq == closedSeq)
 
@@ -220,7 +224,7 @@ import Testing
 		_ = try bob.encrypt(Data("b2".utf8))
 		let parked = try #require(bob.pendingSideBand)
 		#expect(throws: TwoMLSError.duplicateSideBand) {
-			try bob.pqBootstrapRespond(kp)
+			try bob.pqBootstrapRespond(kp, now: SessionTestSupport.now)
 		}
 		#expect(bob.pendingSideBand == parked)
 	}
@@ -238,7 +242,7 @@ import Testing
 		let seqBefore = alice.stateSeq
 
 		#expect(throws: TwoMLSError.bootstrapKPMismatch) {
-			try alice.pqBootstrapRespond(ownFrame)
+			try alice.pqBootstrapRespond(ownFrame, now: SessionTestSupport.now)
 		}
 		#expect(alice.pendingSideBand == pendingBefore)
 		#expect(alice.stateSeq == seqBefore)

@@ -21,7 +21,8 @@ import TwoMLSPQCrypto
 		#expect(!bob.isFullyEstablished)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		#expect(bob.isFullyEstablished)
 		#expect(!alice.isFullyEstablished)
 
@@ -35,7 +36,8 @@ import TwoMLSPQCrypto
 	@Test func joinedPQHalfHasMirrorAPQInfoAndEpochOne() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let alicePQ = try #require(alice.recvGroup?.pq)
@@ -70,7 +72,7 @@ import TwoMLSPQCrypto
 		let alice = try SessionTestSupport.identity("alice")
 		let bob = try SessionTestSupport.identity("bob")
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
@@ -78,7 +80,7 @@ import TwoMLSPQCrypto
 			try TwoMLSSession.receive(
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
-				bootstrapKPCommitment: Data([1, 2, 3]),
+				bootstrapKPCommitment: Data([1, 2, 3]), now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		}
@@ -89,7 +91,7 @@ import TwoMLSPQCrypto
 		let alice = try SessionTestSupport.identity("alice")
 		let bob = try SessionTestSupport.identity("bob")
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		// A commitment of the right length but the wrong value.
@@ -97,7 +99,7 @@ import TwoMLSPQCrypto
 		let received = try TwoMLSSession.receive(
 			identity: bob, welcome: initiated.welcome,
 			theirClassicalKeyPackage: alice.keyPackage.classical,
-			bootstrapKPCommitment: wrongCommitment,
+			bootstrapKPCommitment: wrongCommitment, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
@@ -108,7 +110,7 @@ import TwoMLSPQCrypto
 
 		let kpFrame = try aliceSession.pqBootstrapBegin().frame
 		#expect(throws: TwoMLSError.bootstrapKPMismatch) {
-			try bobSession.pqBootstrapRespond(kpFrame)
+			try bobSession.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
 		}
 	}
 
@@ -132,7 +134,8 @@ import TwoMLSPQCrypto
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		#expect(bob.isFullyEstablished)
 
 		// The fidelity proof (D1): each side's PQ leaf presents its
@@ -195,7 +198,8 @@ import TwoMLSPQCrypto
 	@Test func secondFrameAfterBindIsIdempotent() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		_ = try alice.prepareToEncrypt()
@@ -224,7 +228,8 @@ import TwoMLSPQCrypto
 	@Test func dischargeWithoutLicenseDoesNotCommit() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		#expect(alice.owedBind != nil)
 
@@ -250,7 +255,8 @@ import TwoMLSPQCrypto
 	@Test func tamperedOwedBindEpochThrowsEpochDesync() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		alice.owedBind?.pqEpoch += 1
@@ -270,7 +276,8 @@ import TwoMLSPQCrypto
 	@Test func corruptedBindStapleIsRejected() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		_ = try alice.prepareToEncrypt()
 		let frame = try alice.encrypt(Data("bound".utf8)).frame
@@ -341,6 +348,7 @@ import TwoMLSPQCrypto
 				SessionTestSupport.pqProvider, proposals: proposals,
 				signingKey: signingKey,
 				randomness: try .generate(SessionTestSupport.pqProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				includePath: false, framing: .publicMessage, psk: { _ in nil })
 			return try transition.takeOutput().message.mlsEncoded()
 		}
@@ -369,6 +377,7 @@ import TwoMLSPQCrypto
 				SessionTestSupport.classicalProvider, proposals: proposals,
 				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				includePath: true, framing: .publicMessage, psk: { _ in nil })
 			return try transition.takeOutput().message.mlsEncoded()
 		}
@@ -390,7 +399,8 @@ import TwoMLSPQCrypto
 		_ = try alice.processIncomingDecrypted(helloFrame)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		// Snapshot Group_A.pq at its PRE-apply epoch-1 state and forge the no-S
 		// PQ commit BEFORE the join's `owePQBind` applies the genuine PQ commit
 		// to the session's own copy — after that, the group frames at epoch 2
@@ -464,7 +474,8 @@ import TwoMLSPQCrypto
 		_ = try alice.processIncomingDecrypted(helloFrame)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		let owed = try #require(alice.owedBind)
 
@@ -526,7 +537,8 @@ import TwoMLSPQCrypto
 		_ = try alice.processIncomingDecrypted(helloFrame)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		return (
 			alice: alice, bob: bob, aliceIdentity: aliceIdentity,
@@ -577,6 +589,7 @@ import TwoMLSPQCrypto
 				SessionTestSupport.classicalProvider, proposals: proposals,
 				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				includePath: true, framing: .publicMessage, psk: store.resolver())
 			return try transition.takeOutput().message.mlsEncoded()
 		}
@@ -675,7 +688,8 @@ import TwoMLSPQCrypto
 		_ = try alice.processIncomingDecrypted(helloFrame)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let owed = try #require(alice.owedBind)
@@ -740,6 +754,7 @@ import TwoMLSPQCrypto
 					signingKey: try alice.sendClassicalSigningKey(),
 					randomness: try .generate(
 						SessionTestSupport.classicalProvider),
+					lifetimeCheck: .at(SessionTestSupport.now),
 					includePath: true, framing: .publicMessage,
 					psk: store.resolver())
 				let adopted = transition.group
@@ -783,7 +798,8 @@ import TwoMLSPQCrypto
 	@Test func bindCommitCarriesBothApplicationPSKsAndAttestation() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let prepared = try alice.prepareToEncrypt()
@@ -855,7 +871,9 @@ import TwoMLSPQCrypto
 		@Test func bindRetryAfterFaultBeforeWriteBackStillCarriesCrossPartyPSK() throws {
 			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 			let kpFrame = try alice.pqBootstrapBegin().frame
-			let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+			let welcomeFrame = try bob.pqBootstrapRespond(
+				kpFrame, now: SessionTestSupport.now
+			).frame
 			_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 			let stampBefore = alice.lastCrossInjected
@@ -913,7 +931,9 @@ import TwoMLSPQCrypto
 		@Test func bindFaultAfterWriteBackLeavesCrossPartyPSKInjected() throws {
 			var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 			let kpFrame = try alice.pqBootstrapBegin().frame
-			let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+			let welcomeFrame = try bob.pqBootstrapRespond(
+				kpFrame, now: SessionTestSupport.now
+			).frame
 			_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 			let recvEpoch = try #require(alice.recvGroup?.classical.context.epoch)
@@ -943,6 +963,7 @@ import TwoMLSPQCrypto
 		let bobIdentity = try SessionTestSupport.identity("kpprime-bob")
 		let initiated = try TwoMLSSession.initiate(
 			identity: aliceIdentity, their: bobIdentity.keyPackage,
+			now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
@@ -961,6 +982,7 @@ import TwoMLSPQCrypto
 			identity: bobIdentity, welcome: initiated.welcome,
 			theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		var bob = received.session
@@ -969,7 +991,8 @@ import TwoMLSPQCrypto
 		_ = try alice.processIncomingDecrypted(hello)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let recvPQLeaf = try TwoMLSSession.ownLeaf(of: try #require(alice.recvGroup?.pq))

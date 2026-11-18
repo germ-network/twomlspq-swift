@@ -48,6 +48,7 @@ extension APQGroup {
 		mode: UInt8,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
+		lifetimeCheck: MLS.RFC9420.LifetimeCheck,
 		appBinding: Data? = nil,
 		profile: SessionProfile = .deployedCompatible,
 		codepoints: MLS.Combiner.Codepoints = .deployed
@@ -63,6 +64,7 @@ extension APQGroup {
 		let (combinerGroup, welcome) = try MLS.Combiner.CombinerGroup.establish(
 			classical: classical, pq: pq, mode: mode,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
+			lifetimeCheck: lifetimeCheck,
 			classicalExtraExtensions: (try appBinding.map {
 				[try AppBinding(data: $0).asExtension()]
 			} ?? []) + profile.recordExtensions,
@@ -128,6 +130,7 @@ extension APQGroup {
 		crossPSK: MLS.Combiner.ExportedPsk,
 		nonce: Data,
 		provider: any MLS.CipherSuiteProvider,
+		lifetimeCheck: MLS.RFC9420.LifetimeCheck,
 		appBinding: Data? = nil,
 		profile: SessionProfile = .deployedCompatible,
 		codepoints: MLS.Combiner.Codepoints = .deployed
@@ -165,7 +168,7 @@ extension APQGroup {
 				provider, groupID: founder.groupID, leafNode: founder.leafNode,
 				leafSecretKey: founder.leafSecretKey,
 				extensions: classicalExtensions,
-				epochSecret: founder.epochSecret)
+				epochSecret: founder.epochSecret, lifetimeCheck: lifetimeCheck)
 			let proposals: [MLS.RFC9420.ProposalOrRef] = [
 				.proposal(.add(founder.peerKeyPackage)),
 				.proposal(crossPSK.proposal(nonce: nonce)),
@@ -173,7 +176,7 @@ extension APQGroup {
 			try TwoPartyRules.validateCreationProposals(proposals)
 			let transition = try epoch0.committing(
 				provider, proposals: proposals, signingKey: founder.signingKey,
-				randomness: founder.randomness,
+				randomness: founder.randomness, lifetimeCheck: lifetimeCheck,
 				includePath: false,
 				psk: pskStore.resolver())
 			return try withTransitionHandoff(transition) { adopted, sent in
@@ -350,6 +353,7 @@ extension APQGroup {
 		randomness: MLS.RFC9420.Group.CommitRandomness,
 		epochSecret: SecretBytes,
 		pqProvider: any MLS.CipherSuiteProvider,
+		lifetimeCheck: MLS.RFC9420.LifetimeCheck,
 		codepoints: MLS.Combiner.Codepoints = .deployed
 	) throws -> (pqGroup: MLS.RFC9420.Group, welcome: MLS.RFC9420.Welcome) {
 		try withDeployedWireConventions {
@@ -374,7 +378,7 @@ extension APQGroup {
 			let epoch0 = try MLS.RFC9420.Group.create(
 				pqProvider, groupID: pqGroupID, leafNode: ownPQLeaf,
 				leafSecretKey: ownPQLeafSecret, extensions: [mirrorExtension],
-				epochSecret: epochSecret)
+				epochSecret: epochSecret, lifetimeCheck: lifetimeCheck)
 
 			let proposals: [MLS.RFC9420.ProposalOrRef] = [
 				.proposal(.add(peerBootstrapKP))
@@ -382,7 +386,7 @@ extension APQGroup {
 			try TwoPartyRules.validateCreationProposals(proposals)
 			let transition = try epoch0.committing(
 				pqProvider, proposals: proposals, signingKey: signingKey,
-				randomness: randomness,
+				randomness: randomness, lifetimeCheck: lifetimeCheck,
 				includePath: false,
 				psk: { _ in nil })
 			return try withTransitionHandoff(transition) { adopted, sent in

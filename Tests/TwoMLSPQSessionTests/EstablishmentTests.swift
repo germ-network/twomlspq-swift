@@ -260,7 +260,8 @@ import TwoMLSPQCrypto
 			return
 		}
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now)
 
 		let (tBytes, pqBytes) = try Frames.decodeAPQWelcome(initiated.welcome)
 		let bareWelcomeA = Frames.encodeAPQWelcome(
@@ -275,14 +276,14 @@ import TwoMLSPQCrypto
 					.classical,
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: spawnToken)
+				spawnToken: spawnToken, now: SessionTestSupport.now)
 		}
 
 		let received = try invitation.receive(
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 		#expect(received.session.isEstablished)
 
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
@@ -330,7 +331,8 @@ import TwoMLSPQCrypto
 			return
 		}
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now)
 
 		let (_, pqBytes) = try Frames.decodeAPQWelcome(initiated.welcome)
 		let keyPackageInWelcomeSlot = try EstablishmentMessages.encodeKeyPackage(
@@ -346,7 +348,7 @@ import TwoMLSPQCrypto
 					.classical,
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: spawnToken)
+				spawnToken: spawnToken, now: SessionTestSupport.now)
 		}
 
 		var (alice, bob, _, _, _, _) = try SessionTestSupport.established()
@@ -403,7 +405,8 @@ import TwoMLSPQCrypto
 				leafNode: creator.keyPackage.classical.leafNode,
 				leafSecretKey: creator.classicalLeafSecretKey,
 				extensions: [infoExtension],
-				epochSecret: SecretBytes(randomByteCount: provider.hashSize))
+				epochSecret: SecretBytes(randomByteCount: provider.hashSize),
+				lifetimeCheck: .at(SessionTestSupport.now))
 			var proposals: [MLS.RFC9420.ProposalOrRef] = [.proposal(.add(joinerKP))]
 			if let crossPSK {
 				proposals.append(
@@ -415,7 +418,9 @@ import TwoMLSPQCrypto
 			try TwoPartyRules.validateCreationProposals(proposals)
 			let transition = try epoch0.committing(
 				provider, proposals: proposals, signingKey: creator.signingKey,
-				randomness: try .generate(provider), psk: pskStore.resolver())
+				randomness: try .generate(provider),
+				lifetimeCheck: .at(SessionTestSupport.now), psk: pskStore.resolver()
+			)
 			let sent = transition.takeOutput()
 			guard let welcome = sent.welcome else {
 				throw MLS.Combiner.Error.missingWelcome
@@ -560,7 +565,7 @@ import TwoMLSPQCrypto
 		let bob = try SessionTestSupport.identity("as-bob")
 		let carol = try SessionTestSupport.identity("as-carol")
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
@@ -568,7 +573,7 @@ import TwoMLSPQCrypto
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: carol.keyPackage.classical,
 				bootstrapKPCommitment: try initiated.session
-					.bootstrapKPCommitment(),
+					.bootstrapKPCommitment(), now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		}
@@ -582,7 +587,7 @@ import TwoMLSPQCrypto
 		let alice = try SessionTestSupport.identity("as-alice-2")
 		let bob = try SessionTestSupport.identity("as-bob-2")
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
@@ -590,7 +595,7 @@ import TwoMLSPQCrypto
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: bob.keyPackage.classical,
 				bootstrapKPCommitment: try initiated.session
-					.bootstrapKPCommitment(),
+					.bootstrapKPCommitment(), now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		}
@@ -607,7 +612,7 @@ import TwoMLSPQCrypto
 			classical: bob.keyPackage.classical, pq: carol.keyPackage.pq)
 		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
 			try TwoMLSSession.initiate(
-				identity: alice, their: mismatched,
+				identity: alice, their: mismatched, now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		}

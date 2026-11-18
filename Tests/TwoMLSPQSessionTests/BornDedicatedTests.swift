@@ -133,7 +133,8 @@ import Testing
 			return
 		}
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now)
 		let spawnToken = classicalProvider.randomBytes(16)
 
 		// `newClientID` explicitly equal to the invitation identity.
@@ -141,7 +142,8 @@ import Testing
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: spawnToken, newClientID: Data("bob".utf8))
+			spawnToken: spawnToken, now: SessionTestSupport.now,
+			newClientID: Data("bob".utf8))
 		#expect(!received.session.owesEstablishmentEnvelope)
 		#expect(received.session.leafKeys.recvClassical.pending.isEmpty)
 		#expect(received.session.currentStaple.first == Frames.apqWelcomeTag)
@@ -204,7 +206,7 @@ import Testing
 	@Test func bootstrapFoundsGroupBPQUnderDedicatedPrincipal() throws {
 		var (alice, bob, _, dedicatedClientID, _) = try fullyEstablishedDedicated()
 		let begin = try alice.pqBootstrapBegin()
-		let respond = try bob.pqBootstrapRespond(begin.frame)
+		let respond = try bob.pqBootstrapRespond(begin.frame, now: SessionTestSupport.now)
 		_ = try alice.pqBootstrapJoin(respond.frame)
 		#expect(bob.isFullyEstablished)
 
@@ -250,7 +252,8 @@ import Testing
 			_ = try alice.processIncomingDecrypted(bobFrame2)
 
 			let begin = try alice.pqBootstrapBegin()
-			let respond = try bob.pqBootstrapRespond(begin.frame)
+			let respond = try bob.pqBootstrapRespond(
+				begin.frame, now: SessionTestSupport.now)
 			_ = try alice.pqBootstrapJoin(respond.frame)
 			#expect(bob.isFullyEstablished)
 
@@ -333,7 +336,7 @@ import Testing
 		_ = try alice.processIncomingDecrypted(bobFrame2)
 
 		let begin = try alice.pqBootstrapBegin()
-		let respond = try bob.pqBootstrapRespond(begin.frame)
+		let respond = try bob.pqBootstrapRespond(begin.frame, now: SessionTestSupport.now)
 		_ = try alice.pqBootstrapJoin(respond.frame)
 		#expect(bob.isFullyEstablished)
 
@@ -402,7 +405,7 @@ import Testing
 		_ = try alice.processIncomingDecrypted(bobFrame2)
 
 		let begin = try alice.pqBootstrapBegin()
-		let respond = try bob.pqBootstrapRespond(begin.frame)
+		let respond = try bob.pqBootstrapRespond(begin.frame, now: SessionTestSupport.now)
 		_ = try alice.pqBootstrapJoin(respond.frame)
 		#expect(bob.isFullyEstablished)
 
@@ -603,7 +606,8 @@ import Testing
 			return
 		}
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now)
 		let spawnToken = classicalProvider.randomBytes(16)
 		#expect(throws: TwoMLSError.invalidClientID) {
 			try invitation.receive(
@@ -612,7 +616,8 @@ import Testing
 					.classical,
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: spawnToken, newClientID: Data())
+				spawnToken: spawnToken, now: SessionTestSupport.now,
+				newClientID: Data())
 		}
 	}
 
@@ -678,7 +683,7 @@ import Testing
 			try bob.pqBootstrapBegin()
 		}
 		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
-			try bob.pqBootstrapRespond(Data([0x13]))
+			try bob.pqBootstrapRespond(Data([0x13]), now: SessionTestSupport.now)
 		}
 		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
 			try bob.pqRekeyBegin()
@@ -1007,7 +1012,8 @@ import Testing
 			return
 		}
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now)
 		let spawnToken = classicalProvider.randomBytes(16)
 		#expect(throws: TwoMLSError.invalidClientID) {
 			try invitation.receive(
@@ -1016,7 +1022,8 @@ import Testing
 					.classical,
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: spawnToken, newClientID: Data("alice".utf8))
+				spawnToken: spawnToken, now: SessionTestSupport.now,
+				newClientID: Data("alice".utf8))
 		}
 	}
 
@@ -1068,7 +1075,8 @@ import Testing
 
 		// §A.3, so all four of D's own-leaf groups exist.
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		// Drive the rule-4 catch-up fold (mirrors

@@ -85,7 +85,8 @@ import TwoMLSPQCrypto
 		#expect(bob.profile == .correct)
 
 		let kp = try alice.pqBootstrapBegin().frame
-		_ = try alice.pqBootstrapJoin(try bob.pqBootstrapRespond(kp).frame)
+		_ = try alice.pqBootstrapJoin(
+			try bob.pqBootstrapRespond(kp, now: SessionTestSupport.now).frame)
 		#expect(try recorded(bob.sendGroup?.pq) == .deployedCompatible)
 		#expect(try recorded(alice.recvGroup?.pq) == .deployedCompatible)
 	}
@@ -104,7 +105,8 @@ import TwoMLSPQCrypto
 			var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 			let initiated = try TwoMLSSession.initiate(
 				principal: alicePrincipal,
-				their: try #require(invitation.combinerKeyPackage))
+				their: try #require(invitation.combinerKeyPackage),
+				now: SessionTestSupport.now)
 			#expect(
 				try recorded(initiated.session.sendGroup?.classical)
 					== .deployedCompatible)
@@ -114,7 +116,7 @@ import TwoMLSPQCrypto
 					.classical,
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: Data("s".utf8)
+				spawnToken: Data("s".utf8), now: SessionTestSupport.now
 			).session
 			#expect(bob.profile == .deployedCompatible)
 		}
@@ -150,6 +152,7 @@ import TwoMLSPQCrypto
 				classical, peer: bob.keyPackage.classical, classicalProvider),
 			pq: try half(pq, peer: bob.keyPackage.pq, pqProvider), mode: 0,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
+			lifetimeCheck: .at(SessionTestSupport.now),
 			classicalExtraExtensions: classicalExtra)
 		return Frames.encodeAPQWelcome(
 			t: try EstablishmentMessages.encodeWelcome(welcome.tWelcome),
@@ -168,6 +171,7 @@ import TwoMLSPQCrypto
 				identity: bob, welcome: welcome,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
 				bootstrapKPCommitment: Data(repeating: 0, count: 32),
+				now: SessionTestSupport.now,
 				classicalProvider: classicalProvider, pqProvider: pqProvider)
 		}
 	}
@@ -204,6 +208,7 @@ import TwoMLSPQCrypto
 					alice: aliceC3, bob: bobC3, classicalExtra: record),
 				theirClassicalKeyPackage: aliceC3.keyPackage.classical,
 				bootstrapKPCommitment: Data(repeating: 0, count: 32),
+				now: SessionTestSupport.now,
 				classicalProvider: classicalProvider, pqProvider: pqProvider)
 		}
 	}
@@ -247,17 +252,18 @@ import TwoMLSPQCrypto
 				welcome: forged,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
 				bootstrapKPCommitment: Data(repeating: 0, count: 32),
-				spawnToken: Data("f".utf8))
+				spawnToken: Data("f".utf8), now: SessionTestSupport.now)
 		}
 		let genuine = try TwoMLSSession.initiate(
-			identity: alice, their: their, classicalProvider: classicalProvider,
+			identity: alice, their: their, now: SessionTestSupport.now,
+			classicalProvider: classicalProvider,
 			pqProvider: pqProvider)
 		#expect(throws: Never.self) {
 			try invitation.receive(
 				welcome: genuine.welcome,
 				theirClassicalKeyPackage: alice.keyPackage.classical,
 				bootstrapKPCommitment: try genuine.session.bootstrapKPCommitment(),
-				spawnToken: Data("g".utf8))
+				spawnToken: Data("g".utf8), now: SessionTestSupport.now)
 		}
 	}
 
@@ -280,13 +286,14 @@ import TwoMLSPQCrypto
 			var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 			let initiated = try TwoMLSSession.initiate(
 				principal: alicePrincipal,
-				their: try #require(invitation.combinerKeyPackage))
+				their: try #require(invitation.combinerKeyPackage),
+				now: SessionTestSupport.now)
 			var alice = initiated.session
 			var bob = try invitation.receive(
 				welcome: initiated.welcome,
 				theirClassicalKeyPackage: alice.identity.keyPackage.classical,
 				bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
-				spawnToken: Data("rw".utf8)
+				spawnToken: Data("rw".utf8), now: SessionTestSupport.now
 			).session
 			#expect(alice.profile == bobProfile)
 			_ = try bob.prepareToEncrypt()
@@ -317,7 +324,8 @@ import TwoMLSPQCrypto
 				pqGroupID: pqProvider.randomBytes(pqProvider.hashSize),
 				crossPSK: crossPSK,
 				nonce: classicalProvider.randomBytes(classicalProvider.hashSize),
-				provider: classicalProvider, profile: forgedRecord)
+				provider: classicalProvider,
+				lifetimeCheck: .at(SessionTestSupport.now), profile: forgedRecord)
 			let staple = Frames.encodeAPQWelcome(
 				t: try EstablishmentMessages.encodeWelcome(welcomeB), pq: Data())
 			let forged = Frames.encodeMessageFrame(
@@ -411,7 +419,8 @@ import TwoMLSPQCrypto
 		let group = try MLS.RFC9420.Group.create(
 			pqProvider, groupID: Data([7]), leafNode: leaf, leafSecretKey: secret,
 			extensions: SessionProfile.correct.recordExtensions,
-			epochSecret: SecretBytes(randomByteCount: pqProvider.hashSize))
+			epochSecret: SecretBytes(randomByteCount: pqProvider.hashSize),
+			lifetimeCheck: .at(SessionTestSupport.now))
 		#expect(throws: TwoMLSError.sessionProfileMismatch) {
 			try verifyPQHalfUnbound(group)
 		}

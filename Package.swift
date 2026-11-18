@@ -28,7 +28,7 @@ let package = Package(
 		// UpdatePath.
 		.package(
 			url: "https://github.com/germ-network/swift-mls.git",
-			from: "0.1.7"
+			from: "0.2.0"
 		),
 		// The zeroizing storage behind `MLS.HpkeSecretKey.data`. 0.7.1 decodes keyed
 		// containers in linear time, which snapshot restore relies on.

@@ -770,7 +770,8 @@ extension DeployedStateTests {
 	@Test func bindDetectionPrecedesPQHalf() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		#expect(alice.owedBind != nil)
 		let round = try foldedButUnframedOwnOfferRound(proposer: &bob, approver: &alice)
@@ -888,6 +889,7 @@ extension DeployedStateTests {
 				proposalStore: proposalStore,
 				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				includePath: true, framing: .publicMessage,
 				psk: { _ in SecretBytes(randomByteCount: 32) })
 			return try transition.takeOutput().message.mlsEncoded()

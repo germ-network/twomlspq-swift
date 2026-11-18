@@ -65,6 +65,7 @@ import TwoMLSPQCrypto
 
 		let initiated = try TwoMLSSession.initiate(
 			identity: aliceIdentity, their: bobIdentity.keyPackage,
+			now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		try store.save(initiated.baseline)
@@ -74,6 +75,7 @@ import TwoMLSPQCrypto
 			identity: bobIdentity, welcome: initiated.welcome,
 			theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
+			now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		var bob = received.session
@@ -117,7 +119,7 @@ import TwoMLSPQCrypto
 		// The §A.3 bootstrap-and-bind — a Checkpoint-heavy stretch.
 		let kp = try alice.pqBootstrapBegin()
 		try store.save(kp.update)
-		let welcome = try bob.pqBootstrapRespond(kp.frame)
+		let welcome = try bob.pqBootstrapRespond(kp.frame, now: SessionTestSupport.now)
 		let joined = try alice.pqBootstrapJoin(welcome.frame)
 		try store.save(joined)
 
@@ -170,7 +172,7 @@ import TwoMLSPQCrypto
 		// (founds sendGroup.pq) / join (joins recvGroup.pq) → .checkpoint.
 		let kp = try alice.pqBootstrapBegin()
 		#expect(kp.update.kind == .core)
-		let welcome = try bob.pqBootstrapRespond(kp.frame)
+		let welcome = try bob.pqBootstrapRespond(kp.frame, now: SessionTestSupport.now)
 		#expect(welcome.update.kind == .checkpoint)
 		let joined = try alice.pqBootstrapJoin(welcome.frame)
 		#expect(joined.kind == .checkpoint)
@@ -236,8 +238,8 @@ import TwoMLSPQCrypto
 		#expect(bob.openOrRaw(first.frame) == bob.openOrRaw(second.frame))
 		#expect(second.update.kind == .core)
 
-		let welcome1 = try bob.pqBootstrapRespond(first.frame)
-		let welcome2 = try bob.pqBootstrapRespond(first.frame)
+		let welcome1 = try bob.pqBootstrapRespond(first.frame, now: SessionTestSupport.now)
+		let welcome2 = try bob.pqBootstrapRespond(first.frame, now: SessionTestSupport.now)
 		#expect(alice.openOrRaw(welcome1.frame) == alice.openOrRaw(welcome2.frame))
 		// The re-serve moves nothing group-level (unlike the founding
 		// answer above, `welcome1`, which is still `.checkpoint`) — a host
@@ -258,7 +260,7 @@ import TwoMLSPQCrypto
 	@Test func processIncomingOfBindFrameReturnsCheckpointMutationVerified() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kp = try alice.pqBootstrapBegin()
-		let welcome = try bob.pqBootstrapRespond(kp.frame)
+		let welcome = try bob.pqBootstrapRespond(kp.frame, now: SessionTestSupport.now)
 		_ = try alice.pqBootstrapJoin(welcome.frame)
 
 		// Bob's last Checkpoint BEFORE the bind lands — his recvGroup.pq (the
@@ -315,7 +317,7 @@ import TwoMLSPQCrypto
 
 		let kp = try alice.pqBootstrapBegin()
 		#expect(kp.update.stateSeq > encrypted.update.stateSeq)
-		let welcome = try bob.pqBootstrapRespond(kp.frame)
+		let welcome = try bob.pqBootstrapRespond(kp.frame, now: SessionTestSupport.now)
 		let joined = try alice.pqBootstrapJoin(welcome.frame)
 		#expect(joined.stateSeq > kp.update.stateSeq)
 
@@ -371,7 +373,7 @@ import TwoMLSPQCrypto
 		// Bob's own `.checkpoint` return (founding `sendGroup.pq`) — restore
 		// needs a `.checkpoint`-kind archive in the `checkpoint:` slot.
 		let kp = try alice.pqBootstrapBegin()
-		let welcome = try bob.pqBootstrapRespond(kp.frame)
+		let welcome = try bob.pqBootstrapRespond(kp.frame, now: SessionTestSupport.now)
 
 		var restored = try TwoMLSSession.restore(
 			core: nil, checkpoint: try sealAndOpen(welcome.update.archive),
@@ -404,6 +406,7 @@ import TwoMLSPQCrypto
 		// time mid-A.3 is reached below.
 		let initiated = try TwoMLSSession.initiate(
 			identity: aliceIdentity, their: bobIdentity.keyPackage,
+			now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		var alice = initiated.session
@@ -412,6 +415,7 @@ import TwoMLSPQCrypto
 			identity: bobIdentity, welcome: initiated.welcome,
 			theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
+			now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 		var bob = received.session
@@ -421,7 +425,7 @@ import TwoMLSPQCrypto
 		_ = try alice.processIncomingDecrypted(bobHello.frame)
 
 		let kp = try alice.pqBootstrapBegin()
-		let welcome = try bob.pqBootstrapRespond(kp.frame)
+		let welcome = try bob.pqBootstrapRespond(kp.frame, now: SessionTestSupport.now)
 
 		#expect(alice.recvGroup?.pq == nil)
 		#expect(alice.bootstrapKPSecret != nil)
@@ -458,7 +462,7 @@ import TwoMLSPQCrypto
 	@Test func midA4ReachedViaLiveCadenceRestoresAndCompletes() throws {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kp = try alice.pqBootstrapBegin()
-		let welcome = try bob.pqBootstrapRespond(kp.frame)
+		let welcome = try bob.pqBootstrapRespond(kp.frame, now: SessionTestSupport.now)
 		// `pqBootstrapJoin`'s own `.checkpoint` return — Alice's PQ trees
 		// don't move again until the ratchet round below, so this is the
 		// live cadence's own up-to-date Checkpoint for the whole stretch.
@@ -520,7 +524,7 @@ import TwoMLSPQCrypto
 	{
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
 		let kp = try alice.pqBootstrapBegin()
-		let welcome = try bob.pqBootstrapRespond(kp.frame)
+		let welcome = try bob.pqBootstrapRespond(kp.frame, now: SessionTestSupport.now)
 		// Bob's last saved Checkpoint, from before the bind frame ever arrives.
 		let lastSavedCheckpoint = try sealAndOpen(welcome.update.archive)
 
