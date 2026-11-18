@@ -900,7 +900,7 @@ public enum SessionMigration {
 				authorizedNext: parts.auth.mine.authorizedNext, pinned: []),
 			theirs: PartySequence(
 				history: parts.auth.theirs.history,
-				authorizedNext: parts.auth.theirs.authorizedNext, pinned: [])
+				authorizedNext: [], pinned: [])
 		).withPQPins(mine: presentedPQIDs.mine, theirs: presentedPQIDs.theirs)
 		try TwoMLSSession.validateAuthShape(mintedAuth)
 
@@ -1005,11 +1005,7 @@ public enum SessionMigration {
 					digest: $0.digest, proposing: $0.proposing,
 					message: $0.message)
 			},
-			queuedProposal: parts.queuedProposal.map {
-				DigestedProposalArchive(
-					digest: $0.digest, proposing: $0.proposing,
-					message: $0.message)
-			},
+			queuedProposal: nil,
 			stagedUpdates: parts.stagedUpdates.map {
 				StagedUpdateArchive(digest: $0.digest, message: $0.message)
 			},

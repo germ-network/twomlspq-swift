@@ -617,29 +617,122 @@ enum RestoreInvariantFixtures {
 }
 
 @Suite struct MigratedPeerApprovalTests {
+	/// Alice asks to rotate; Bob has approved the offer but not yet folded it.
+	@available(iOS 26, macOS 26, *)
+	private func approvedButUnfolded() throws -> (
+		alice: TwoMLSSession, bob: TwoMLSSession, oldID: Data, newID: Data
+	) {
+		var (alice, bob) = try SessionTestSupport.establishedAndExchanged()
+		let oldID = alice.identity.clientID
+		let newID = Data("alice-rotated".utf8)
+		_ = try alice.prepareToEncrypt(rotating: newID)
+		let frame = try alice.encrypt(Data("x".utf8)).frame
+		let received = try bob.processIncomingDecrypted(frame)
+		_ = try bob.queueProposal(digest: received.queuedProposal.digest)
+		return (alice, bob, oldID, newID)
+	}
+
+	@available(iOS 26, macOS 26, *)
+	private func mint(_ session: TwoMLSSession) throws -> (
+		parts: MigratedSession, archive: SecretArchive
+	) {
+		let parts = try SessionMigrationTests().migratedParts(
+			session, suppliedLeafKeys: true)
+		return (
+			parts,
+			try SessionMigration.mintArchive(
+				kind: .checkpoint, parts: parts,
+				classicalProvider: SessionTestSupport.classicalProvider,
+				pqProvider: SessionTestSupport.pqProvider)
+		)
+	}
+
 	/// A migrated peer authorization is dropped at mint, so it cannot admit
 	/// an unapproved peer rotation after restore.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func mintDropsTheirAuthorization() throws {}
+	@Test func mintDropsTheirAuthorization() throws {
+		let (_, bob, _, newID) = try approvedButUnfolded()
+		let minted = try mint(bob)
+		#expect(minted.parts.auth.theirs.authorizedNext == [newID])
+		let body = try minted.archive.decode(SessionArchive.self)
+		#expect(body.auth.theirs.authorizedNext.isEmpty)
+	}
+
+	/// The dropped authorization never shields a pin: an id the peer's PQ
+	/// leaf presents, listed only as a migrated authorization, is pinned by
+	/// the minted archive.
+	@available(iOS 26, macOS 26, *)
+	@Test func mintPinsAPresentedIDListedOnlyAsAuthorization() throws {
+		let (_, bob) = try SessionTestSupport.establishedAndExchanged()
+		let presented = try #require(bob.auth.theirs.history.last)
+		var parts = try SessionMigrationTests().migratedParts(bob, suppliedLeafKeys: true)
+		parts.auth.theirs = MigratedPartySequence(
+			history: [Data("former-peer-id".utf8)], authorizedNext: [presented],
+			pinned: [])
+		let archive = try SessionMigration.mintArchive(
+			kind: .checkpoint, parts: parts,
+			classicalProvider: SessionTestSupport.classicalProvider,
+			pqProvider: SessionTestSupport.pqProvider)
+		let body = try archive.decode(SessionArchive.self)
+		#expect(body.auth.theirs.pinned == [presented])
+		#expect(throws: Never.self) { try SessionTestSupport.restore(checkpoint: archive) }
+	}
 
 	/// A migrated queued proposal is dropped at mint, so the next fold cannot
 	/// canonicalize a peer rotation the app never approved.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func mintDropsQueuedProposal() throws {}
+	@Test func mintDropsQueuedProposal() throws {
+		let (_, bob, _, _) = try approvedButUnfolded()
+		let minted = try mint(bob)
+		#expect(minted.parts.queuedProposal != nil)
+		let body = try minted.archive.decode(SessionArchive.self)
+		#expect(body.queuedProposal == nil)
+	}
 
 	/// After a migrated approval is dropped, the next fold canonicalizes no
 	/// peer rotation: the peer stays in sync on its old id.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func droppedApprovalLeavesPeerOnOldID() throws {}
+	@Test func droppedApprovalLeavesPeerOnOldID() throws {
+		let (_, bob, oldID, _) = try approvedButUnfolded()
+		var restored = try SessionTestSupport.restore(checkpoint: try mint(bob).archive)
+		#expect(restored.theirPrincipalState == .sync(oldID))
+		let historyBefore = restored.auth.theirs.history
+		let prepared = try restored.prepareToEncrypt()
+		#expect(!prepared.didCommit)
+		#expect(restored.auth.theirs.history == historyBefore)
+		#expect(restored.theirPrincipalState == .sync(oldID))
+	}
 
 	/// A dropped peer rotation converges once the peer re-requests it and the
 	/// app approves it again.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func droppedPeerRotationConvergesAfterReapproval() throws {}
+	@Test func droppedPeerRotationConvergesAfterReapproval() throws {
+		var (alice, bob, oldID, newID) = try approvedButUnfolded()
+		var restored = try SessionTestSupport.restore(checkpoint: try mint(bob).archive)
+		_ = try restored.prepareToEncrypt()
+		_ = try alice.processIncomingDecrypted(try restored.encrypt(Data("y".utf8)).frame)
+		#expect(alice.myPrincipalState == .pending(old: oldID, new: newID))
+
+		_ = try alice.prepareToEncrypt(rotating: newID)
+		let request = try restored.processIncomingDecrypted(
+			try alice.encrypt(Data("z".utf8)).frame)
+		_ = try restored.queueProposal(digest: request.queuedProposal.digest)
+		_ = try restored.prepareToEncrypt()
+		let reply = try alice.processIncomingDecrypted(
+			try restored.encrypt(Data("w".utf8)).frame)
+		#expect(reply.ownCredentialCanonicalized)
+		#expect(restored.auth.theirs.history.last == newID)
+	}
 
 	/// My own migrated authorizations survive the mint unchanged.
 	@available(iOS 26, macOS 26, *)
-	@Test(.disabled("pending")) func mintKeepsMyAuthorizations() throws {}
+	@Test func mintKeepsMyAuthorizations() throws {
+		let (alice, _, _, newID) = try approvedButUnfolded()
+		let minted = try mint(alice)
+		#expect(minted.parts.auth.mine.authorizedNext == [newID])
+		let body = try minted.archive.decode(SessionArchive.self)
+		#expect(body.auth.mine.authorizedNext == [newID])
+	}
 }
 
 @Suite struct EstablishmentOwedInvariantTests {
