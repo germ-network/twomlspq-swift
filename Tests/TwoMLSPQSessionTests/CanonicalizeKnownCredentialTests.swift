@@ -45,6 +45,7 @@ import TwoMLSPQCrypto
 			credential: .basic(identity: newID), signatureKey: newKey.signatureKey)
 		let transition = try send.classical.committing(
 			provider, proposals: [], sign: sign, randomness: try .generate(provider),
+			lifetimeCheck: .at(SessionTestSupport.now),
 			includePath: true, framing: .publicMessage, newIdentity: newIdentity)
 		return try withTransitionHandoff(transition) { adopted, sent in
 			let commitBytes = try sent.message.mlsEncoded()
@@ -277,6 +278,7 @@ import TwoMLSPQCrypto
 		let transition = try send.classical.committing(
 			provider, proposals: [.reference(ref)], proposalStore: proposalStore,
 			signingKey: currentKey, randomness: try .generate(provider),
+			lifetimeCheck: .at(SessionTestSupport.now),
 			includePath: true, framing: .publicMessage)
 		return try withTransitionHandoff(transition) { adopted, sent in
 			let commitBytes = try sent.message.mlsEncoded()

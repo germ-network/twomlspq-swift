@@ -29,7 +29,8 @@ import Testing
 			provider, groupID: provider.randomBytes(provider.hashSize),
 			leafNode: alice.keyPackage.classical.leafNode,
 			leafSecretKey: alice.classicalLeafSecretKey,
-			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize),
+			lifetimeCheck: .at(SessionTestSupport.now))
 		#expect(throws: TwoMLSError.notTwoParty(count: 1)) {
 			try TwoPartyRules.ensureTwoParty(group)
 		}
@@ -46,14 +47,16 @@ import Testing
 			provider, groupID: provider.randomBytes(provider.hashSize),
 			leafNode: alice.keyPackage.classical.leafNode,
 			leafSecretKey: alice.classicalLeafSecretKey,
-			epochSecret: SecretBytes(randomByteCount: provider.hashSize))
+			epochSecret: SecretBytes(randomByteCount: provider.hashSize),
+			lifetimeCheck: .at(SessionTestSupport.now))
 		let transition = try epoch0.committing(
 			provider,
 			proposals: [
 				.proposal(.add(bob.keyPackage.classical)),
 				.proposal(.add(carol.keyPackage.classical)),
 			],
-			signingKey: alice.signingKey, randomness: try .generate(provider))
+			signingKey: alice.signingKey, randomness: try .generate(provider),
+			lifetimeCheck: .at(SessionTestSupport.now))
 		let adopted = transition.group
 		let advanced = try transition.takeOutput().takePending().apply(onto: adopted)
 

@@ -14,7 +14,7 @@ import Testing
 		let alice = try SessionTestSupport.identity("alice")
 		let bob = try SessionTestSupport.identity("bob")
 		let initiated = try TwoMLSSession.initiate(
-			identity: alice, their: bob.keyPackage,
+			identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
@@ -26,6 +26,7 @@ import Testing
 			identity: bob, welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.returnKeyPackage,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			now: SessionTestSupport.now,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 	}

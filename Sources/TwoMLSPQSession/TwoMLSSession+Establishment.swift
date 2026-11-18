@@ -15,6 +15,7 @@ extension TwoMLSSession {
 	public static func initiate(
 		principal: Principal,
 		their: CombinerKeyPackage,
+		now: Date,
 		appBinding: Data? = nil
 	) throws -> EstablishResult {
 		let identity = try TwoMLSIdentity.generate(
@@ -22,7 +23,7 @@ extension TwoMLSSession {
 			classicalProvider: principal.classicalProvider,
 			pqProvider: principal.pqProvider, advertising: principal.advertising)
 		return try initiate(
-			identity: identity, their: their,
+			identity: identity, their: their, now: now,
 			classicalProvider: principal.classicalProvider,
 			pqProvider: principal.pqProvider, appBinding: appBinding,
 			codepoints: principal.codepoints)
@@ -52,6 +53,7 @@ extension TwoMLSSession {
 	static func initiate(
 		identity: TwoMLSIdentity,
 		their: CombinerKeyPackage,
+		now: Date,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
 		appBinding: Data? = nil,
@@ -65,7 +67,7 @@ extension TwoMLSSession {
 		let pqFounding = try TwoMLSIdentity.mintFoundingLeaf(
 			clientID: identity.clientID, provider: pqProvider)
 		return try initiate(
-			identity: identity, their: their,
+			identity: identity, their: their, now: now,
 			founding: (classical: classicalFounding, pq: pqFounding),
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			appBinding: appBinding, codepoints: codepoints)
@@ -78,6 +80,7 @@ extension TwoMLSSession {
 	static func initiate(
 		identity: TwoMLSIdentity,
 		their: CombinerKeyPackage,
+		now: Date,
 		founding: (classical: FoundingLeaf, pq: FoundingLeaf),
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
@@ -142,6 +145,7 @@ extension TwoMLSSession {
 		let (groupA, welcome) = try APQGroup.establishFull(
 			classical: classicalHalf, pq: pqHalf, mode: 0,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
+			lifetimeCheck: .at(now),
 			appBinding: appBinding, profile: profile, codepoints: codepoints)
 
 		let apqWelcomeA = Frames.encodeAPQWelcome(
@@ -289,6 +293,7 @@ extension TwoMLSSession {
 		welcome: Data,
 		theirClassicalKeyPackage: MLS.RFC9420.KeyPackage,
 		bootstrapKPCommitment: Data,
+		now: Date,
 		spawnToken: Data? = nil,
 		classicalProvider: any MLS.CipherSuiteProvider,
 		pqProvider: any MLS.CipherSuiteProvider,
@@ -315,7 +320,8 @@ extension TwoMLSSession {
 		return try receive(
 			identity: identity, welcome: welcome,
 			theirClassicalKeyPackage: theirClassicalKeyPackage,
-			bootstrapKPCommitment: bootstrapKPCommitment, spawnToken: spawnToken,
+			bootstrapKPCommitment: bootstrapKPCommitment, now: now,
+			spawnToken: spawnToken,
 			founding: founding, catchUpKey: catchUpKey,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: codepoints, expectedAppBinding: expectedAppBinding,
@@ -332,6 +338,7 @@ extension TwoMLSSession {
 		welcome: Data,
 		theirClassicalKeyPackage: MLS.RFC9420.KeyPackage,
 		bootstrapKPCommitment: Data,
+		now: Date,
 		spawnToken: Data? = nil,
 		founding: FoundingLeaf,
 		catchUpKey: LeafKey?,
@@ -466,7 +473,8 @@ extension TwoMLSSession {
 		let (groupB, classicalWelcomeB) = try APQGroup.establishClassicalOnly(
 			founder: founderHalf, pqGroupID: pqGroupID, crossPSK: crossPSK,
 			nonce: nonce,
-			provider: classicalProvider, appBinding: verifiedAppBinding,
+			provider: classicalProvider, lifetimeCheck: .at(now),
+			appBinding: verifiedAppBinding,
 			profile: profile, codepoints: codepoints)
 		try TwoPartyRules.ensureTwoParty(groupB.classical)
 

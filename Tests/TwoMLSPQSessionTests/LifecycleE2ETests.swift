@@ -219,7 +219,8 @@ import TwoMLSPQCrypto
 			case .pqSideBand(let kind):
 				switch kind {
 				case .bootstrapKP:
-					let r = try session.pqBootstrapRespond(opened.frame)
+					let r = try session.pqBootstrapRespond(
+						opened.frame, now: SessionTestSupport.now)
 					persist(r.update)
 					outbox.append(
 						Blob(
@@ -403,7 +404,8 @@ import TwoMLSPQCrypto
 		let bobCombinerKP = try #require(bobInvitation.combinerKeyPackage)
 
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: bobCombinerKP)
+			principal: alicePrincipal, their: bobCombinerKP, now: SessionTestSupport.now
+		)
 		var alice = Host(initiated.session)
 		alice.persist(initiated.baseline)
 
@@ -440,7 +442,8 @@ import TwoMLSPQCrypto
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: spawnToken, newClientID: dedicatedClientID)
+			spawnToken: spawnToken, now: SessionTestSupport.now,
+			newClientID: dedicatedClientID)
 		var bob = Host(receivedResult.session)
 		bob.persist(receivedResult.baseline)
 		#expect(throws: TwoMLSError.invitationSpent) {
@@ -470,14 +473,15 @@ import TwoMLSPQCrypto
 		// Not yet: a born-dedicated acceptor answers nothing before its
 		// handoff envelope is installed.
 		#expect(throws: TwoMLSError.establishmentEnvelopeRequired) {
-			try bob.session.pqBootstrapRespond(heldKPFrame)
+			try bob.session.pqBootstrapRespond(heldKPFrame, now: SessionTestSupport.now)
 		}
 
 		let envelope = Data("fake-signed-handoff".utf8)
 		bob.persist(try bob.session.installEstablishmentEnvelope(envelope))
 
 		// The acceptor answers the held KP′ before its first send.
-		let earlyWelcome = try bob.session.pqBootstrapRespond(heldKPFrame)
+		let earlyWelcome = try bob.session.pqBootstrapRespond(
+			heldKPFrame, now: SessionTestSupport.now)
 		bob.persist(earlyWelcome.update)
 		#expect(bob.session.isFullyEstablished)
 		guard case .bootstrapResponded = bob.session.pqInflight else {
@@ -495,7 +499,8 @@ import TwoMLSPQCrypto
 		// A re-delivered KP′ while the round is open re-serves the SAME
 		// Welcome′.
 		var reServeProbe = bob.session
-		let reServed = try reServeProbe.pqBootstrapRespond(heldKPFrame)
+		let reServed = try reServeProbe.pqBootstrapRespond(
+			heldKPFrame, now: SessionTestSupport.now)
 		#expect(reServeProbe.pendingSideBand == bob.session.pendingSideBand)
 		let reServedOpenedRaw = try alice.session.openIncoming(reServed.frame)
 		#expect(
@@ -611,7 +616,7 @@ import TwoMLSPQCrypto
 		// earns `.duplicateSideBand`, never a re-serve.
 		var lateProbe = bob.session
 		#expect(throws: TwoMLSError.duplicateSideBand) {
-			try lateProbe.pqBootstrapRespond(heldKPFrame)
+			try lateProbe.pqBootstrapRespond(heldKPFrame, now: SessionTestSupport.now)
 		}
 		let staleKP = heldKPFrame
 
@@ -653,7 +658,7 @@ import TwoMLSPQCrypto
 		// answered with the EK.
 		var probe = bob.session
 		#expect(throws: TwoMLSError.duplicateSideBand) {
-			try probe.pqBootstrapRespond(staleKP)
+			try probe.pqBootstrapRespond(staleKP, now: SessionTestSupport.now)
 		}
 
 		_ = try alice.deliverDecrypted(bob.nextBlob())

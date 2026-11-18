@@ -203,6 +203,7 @@ import TwoMLSPQCrypto
 		let bobIdentity = try SessionTestSupport.identity(bobName)
 		let initiated = try TwoMLSSession.initiate(
 			identity: aliceIdentity, their: bobIdentity.keyPackage,
+			now: SessionTestSupport.now,
 			founding: (
 				classical: deployedShapedFounding(
 					aliceIdentity.keyPackage.classical,
@@ -221,6 +222,7 @@ import TwoMLSPQCrypto
 			identity: bobIdentity, welcome: initiated.welcome,
 			theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			now: SessionTestSupport.now,
 			founding: deployedShapedFounding(
 				bobIdentity.keyPackage.classical,
 				secret: bobIdentity.classicalLeafSecretKey,
@@ -265,7 +267,7 @@ import TwoMLSPQCrypto
 		var (alice, bob, _, bobIdentity) = try deployedShapedEstablishedAndExchanged()
 		let kpFrame = try alice.pqBootstrapBegin().frame
 		let welcomeFrame = try bob.pqBootstrapRespond(
-			kpFrame,
+			kpFrame, now: SessionTestSupport.now,
 			founding: deployedShapedFounding(
 				bobIdentity.keyPackage.pq, secret: bobIdentity.pqLeafSecretKey,
 				signingKey: bobIdentity.pqSigningKey,
@@ -311,6 +313,7 @@ import TwoMLSPQCrypto
 		).clearingInitSecrets(classical: true, pq: true)
 		let initiated = try TwoMLSSession.initiate(
 			identity: aliceIdentity, their: invitationIdentity.keyPackage,
+			now: SessionTestSupport.now,
 			founding: (
 				classical: deployedShapedFounding(
 					aliceIdentity.keyPackage.classical,
@@ -332,6 +335,7 @@ import TwoMLSPQCrypto
 			identity: invitationIdentity, welcome: initiated.welcome,
 			theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
+			now: SessionTestSupport.now,
 			founding: dFounding, catchUpKey: dFounding.key,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider, newClientID: dedicatedClientID)
@@ -958,7 +962,7 @@ import TwoMLSPQCrypto
 			#expect(restored.sendGroup?.pq == nil)
 
 			let kpFrame = try alice.pqBootstrapBegin().frame
-			_ = try restored.pqBootstrapRespond(kpFrame)
+			_ = try restored.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
 			let foundedKey = try #require(restored.leafKeys.sendPQ.current)
 			let presentedKey = try TwoMLSSession.ownLeaf(
 				of: try #require(restored.sendGroup?.pq)
@@ -1155,7 +1159,7 @@ import TwoMLSPQCrypto
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			identity: aliceIdentity, their: theirKP,
+			identity: aliceIdentity, their: theirKP, now: SessionTestSupport.now,
 			founding: (
 				classical: deployedShapedFounding(
 					aliceIdentity.keyPackage.classical,
@@ -1203,7 +1207,8 @@ import TwoMLSPQCrypto
 			welcome: try #require(frame.welcome),
 			theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try restored.bootstrapKPCommitment(),
-			spawnToken: SessionTestSupport.classicalProvider.randomBytes(16))
+			spawnToken: SessionTestSupport.classicalProvider.randomBytes(16),
+			now: SessionTestSupport.now)
 		var bob = received.session
 		#expect(bob.isEstablished)
 
@@ -1383,7 +1388,8 @@ import TwoMLSPQCrypto
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal,
-			their: try #require(invitation.combinerKeyPackage))
+			their: try #require(invitation.combinerKeyPackage),
+			now: SessionTestSupport.now)
 		var parts = try migratedParts(initiated.session)
 		let leaf = parts.identity.classicalLeafSecretKey
 		parts.identity.classicalLeafSecretKey =
@@ -1434,7 +1440,8 @@ import TwoMLSPQCrypto
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal,
-			their: try #require(invitation.combinerKeyPackage))
+			their: try #require(invitation.combinerKeyPackage),
+			now: SessionTestSupport.now)
 		var parts = try migratedParts(initiated.session)
 		let (pqInitSecret, _) = try SessionTestSupport.pqProvider.hpkeGenerateKeyPair()
 		parts.identity.pqInitSecretKey = pqInitSecret.data
@@ -2285,6 +2292,12 @@ import TwoMLSPQCrypto
 			try restored.sendClassicalSigningKey()
 		}
 	}
+
+	/// A migrated bootstrap KeyPackage (KP′) that no longer decodes — here,
+	/// one repeating an extension type — is rejected as an invalid archive.
+	@available(iOS 26, macOS 26, *)
+	@Test(.disabled("pending"))
+	func bootstrapKPWithDuplicateExtensionTypeIsRejectedAtMint() throws {}
 }
 
 // MARK: - Own-offer window sampling and cap edges
@@ -3096,7 +3109,7 @@ extension SessionMigrationTests {
 			keyPackage: CombinerKeyPackage(classical: classicalKP, pq: pqKP))
 		let bob = try SessionTestSupport.identity("honest-bob-for-rogue-mint")
 		let initiated = try TwoMLSSession.initiate(
-			identity: rogueAlice, their: bob.keyPackage,
+			identity: rogueAlice, their: bob.keyPackage, now: SessionTestSupport.now,
 			classicalProvider: classicalProvider, pqProvider: pqProvider)
 		let parts = try migratedParts(initiated.session)
 		#expect(throws: TwoMLSError.archiveInvalid) {

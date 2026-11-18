@@ -198,7 +198,8 @@ import Testing
 			sign: MLS.RFC9420.signingClosure(
 				SessionTestSupport.pqProvider,
 				current: try committer.sendPQSigningKey(), new: freshSigningKey),
-			randomness: try .generate(SessionTestSupport.pqProvider), includePath: true,
+			randomness: try .generate(SessionTestSupport.pqProvider),
+			lifetimeCheck: .at(SessionTestSupport.now), includePath: true,
 			framing: .publicMessage,
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: committerNewID),
@@ -1527,7 +1528,8 @@ import Testing
 
 		// A.3 now runs.
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		#expect(bob.isFullyEstablished)
 
@@ -1672,7 +1674,8 @@ import Testing
 
 		// A.3 now runs — alice joins Group_B.pq off the ORIGINAL KP′.
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		#expect(alice.isFullyEstablished)
 

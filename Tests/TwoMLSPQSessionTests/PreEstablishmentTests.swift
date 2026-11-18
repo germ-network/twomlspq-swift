@@ -67,7 +67,7 @@ import TwoMLSPQCrypto
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 		return (initiated.session, invitation)
 	}
 
@@ -99,7 +99,7 @@ import TwoMLSPQCrypto
 		let received = try invitation.receive(
 			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 		var bob = received.session
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
@@ -237,7 +237,7 @@ import TwoMLSPQCrypto
 		let received = try invitation.receive(
 			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 		var bob = received.session
 		#expect(throws: TwoMLSError.sessionNotReady) {
 			try bob.setInitialAppPayload(Data("host app payload".utf8))
@@ -280,7 +280,7 @@ import TwoMLSPQCrypto
 		let received = try invitation.receive(
 			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 		// Graft the ESTABLISHED acceptor's `recvGroup` onto Alice's own
 		// still-pre-join fields (`initiated`/`initialTheirKP`/`currentStaple`
 		// all stay hers) — an artificial state, but it isolates exactly the
@@ -358,7 +358,7 @@ import TwoMLSPQCrypto
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 		var alice = initiated.session
 		let payload = Data("host app payload".utf8)
 		_ = try alice.setInitialAppPayload(payload)
@@ -540,7 +540,7 @@ import TwoMLSPQCrypto
 		let received = try invitation.receive(
 			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 		var bob = received.session
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
@@ -588,7 +588,7 @@ import TwoMLSPQCrypto
 		let received = try invitation.receive(
 			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 		var bob = received.session
 		_ = try bob.prepareToEncrypt()
 		let bobFrame = try bob.encrypt(Data("bob-hello".utf8)).frame
@@ -665,7 +665,7 @@ import TwoMLSPQCrypto
 		let received = try invitation.receive(
 			welcome: alice.currentStaple, theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 		return (alice, received.session, invitation)
 	}
 
@@ -868,13 +868,16 @@ import TwoMLSPQCrypto
 			pqProvider: SessionTestSupport.pqProvider)
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let theirKP = try #require(invitation.combinerKeyPackage)
-		var alice = try TwoMLSSession.initiate(principal: alicePrincipal, their: theirKP)
-			.session
+		var alice = try TwoMLSSession.initiate(
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now
+		)
+		.session
 		let received = try invitation.receive(
 			welcome: alice.currentStaple,
 			theirClassicalKeyPackage: alice.identity.keyPackage.classical,
 			bootstrapKPCommitment: try alice.bootstrapKPCommitment(),
 			spawnToken: SessionTestSupport.classicalProvider.randomBytes(16),
+			now: SessionTestSupport.now,
 			newClientID: Data("bob-dedicated".utf8))
 		var bob = received.session
 		#expect(bob.owesEstablishmentEnvelope)

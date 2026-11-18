@@ -61,7 +61,8 @@ import Testing
 		// `0x03` frame, as `SessionTestSupport.established()`/
 		// `establishedAndExchanged()` thread it.
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: bobCombinerKP)
+			principal: alicePrincipal, their: bobCombinerKP, now: SessionTestSupport.now
+		)
 		var alice = initiated.session
 		let welcomeA = initiated.welcome
 		let aliceClassicalKP = alice.identity.keyPackage.classical
@@ -70,7 +71,7 @@ import Testing
 		let received = try bobInvitation.receive(
 			welcome: welcomeA, theirClassicalKeyPackage: aliceClassicalKP,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 		var bob = received.session
 		let welcomeB = bob.currentStaple
 		#expect(bob.isEstablished)

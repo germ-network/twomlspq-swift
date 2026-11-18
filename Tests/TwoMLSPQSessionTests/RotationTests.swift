@@ -246,6 +246,7 @@ import TwoMLSPQCrypto
 				SessionTestSupport.classicalProvider,
 				current: try bob.sendClassicalSigningKey(), new: freshSigningKey),
 			randomness: try .generate(SessionTestSupport.classicalProvider),
+			lifetimeCheck: .at(SessionTestSupport.now),
 			includePath: true, framing: .publicMessage,
 			newIdentity: MLS.RFC9420.NewSigningIdentity(
 				credential: .basic(identity: sameID),
@@ -345,7 +346,8 @@ import TwoMLSPQCrypto
 		// §A.3 bootstrap — PQ founding stays on the founding identity
 		// throughout, unaffected by the classical rotation above.
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		#expect(alice.owedBind != nil)
 		let aliceDischargePrepared = try alice.prepareToEncrypt()
@@ -1269,6 +1271,7 @@ import TwoMLSPQCrypto
 				proposalStore: proposalStore,
 				signingKey: try bob.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				includePath: true, framing: .publicMessage)
 			return try transition.takeOutput().message.mlsEncoded()
 		}
@@ -1327,6 +1330,7 @@ import TwoMLSPQCrypto
 					current: try bob.sendClassicalSigningKey(),
 					new: freshSigningKey),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				includePath: true, framing: .publicMessage,
 				newIdentity: MLS.RFC9420.NewSigningIdentity(
 					credential: .basic(identity: neverOfferedID),
@@ -1376,7 +1380,8 @@ import TwoMLSPQCrypto
 		_ = try alice.processIncomingDecrypted(helloFrame)
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		let owed = try #require(alice.owedBind)
@@ -1445,6 +1450,7 @@ import TwoMLSPQCrypto
 						new: freshSigningKey),
 					randomness: try .generate(
 						SessionTestSupport.classicalProvider),
+					lifetimeCheck: .at(SessionTestSupport.now),
 					includePath: true, framing: .publicMessage,
 					psk: store.resolver(),
 					newIdentity: MLS.RFC9420.NewSigningIdentity(
@@ -1523,7 +1529,8 @@ import TwoMLSPQCrypto
 		#expect(alice.pendingProposal == nil)
 		let sendEpochBefore = try #require(alice.sendGroup?.classical.context.epoch)
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		#expect(alice.owedBind != nil)
 		#expect(alice.sendGroup?.classical.context.epoch == sendEpochBefore)

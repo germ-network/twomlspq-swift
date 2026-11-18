@@ -276,6 +276,8 @@ extension TwoMLSSession {
 					pqProvider, current: try sendPQSigningKey(),
 					new: freshKey.signingKey),
 				randomness: try .generate(pqProvider),
+				lifetimeCheck: try TwoPartyRules.lifetimeCheckWithoutAdds(
+					proposals, proposalStore: proposalStore),
 				includePath: true, framing: .publicMessage,
 				psk: pskStore.resolver(),
 				newIdentity: MLS.RFC9420.NewSigningIdentity(

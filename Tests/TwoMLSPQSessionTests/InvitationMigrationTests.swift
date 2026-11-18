@@ -66,12 +66,14 @@ import Testing
 		let other = try makePrincipal("alice")
 		let round = try TwoMLSSession.initiate(
 			principal: other,
-			their: try #require(invitation.combinerKeyPackage))
+			their: try #require(invitation.combinerKeyPackage),
+			now: SessionTestSupport.now)
 		_ = try invitation.receive(
 			welcome: round.welcome,
 			theirClassicalKeyPackage: round.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try round.session.bootstrapKPCommitment(),
-			spawnToken: SessionTestSupport.classicalProvider.randomBytes(16))
+			spawnToken: SessionTestSupport.classicalProvider.randomBytes(16),
+			now: SessionTestSupport.now)
 		// Re-archive the now-mutated invitation so both paths carry the same
 		// non-empty tables.
 		nativeArchive = try invitation.makeInvitationArchive()
@@ -163,7 +165,8 @@ import Testing
 		let alicePrincipal = try makePrincipal("alice")
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal,
-			their: try #require(invitation.combinerKeyPackage))
+			their: try #require(invitation.combinerKeyPackage),
+			now: SessionTestSupport.now)
 		let envelope = try initiated.session.pendingOutbound()
 		guard case .establishment(let frame) = try restored.openInitial(envelope) else {
 			Issue.record("expected .establishment")
@@ -174,7 +177,8 @@ import Testing
 		let received = try restored.receive(
 			welcome: try #require(frame.welcome), theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: SessionTestSupport.classicalProvider.randomBytes(16))
+			spawnToken: SessionTestSupport.classicalProvider.randomBytes(16),
+			now: SessionTestSupport.now)
 		#expect(received.session.isEstablished)
 	}
 
@@ -294,4 +298,10 @@ import Testing
 				consumedRemotes: [])
 		}
 	}
+
+	/// A migrated KeyPackage that no longer decodes — here, one repeating an
+	/// extension type — mints nothing and is rejected as an invalid archive.
+	@available(iOS 26, macOS 26, *)
+	@Test(.disabled("pending"))
+	func duplicateExtensionTypeKeyPackageIsRejectedAtMint() throws {}
 }

@@ -31,7 +31,8 @@ import TwoMLSPQCrypto
 	) {
 		var (alice, bob) = try SessionTestSupport.establishedAndExchanged(profile: profile)
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 
 		_ = try alice.prepareToEncrypt()

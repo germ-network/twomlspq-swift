@@ -314,6 +314,7 @@ import TwoMLSPQCrypto
 					identity: alice1,
 					their: CombinerKeyPackage(
 						classical: rogueClassical, pq: wellCapablePQ),
+					now: SessionTestSupport.now,
 					classicalProvider: SessionTestSupport.classicalProvider,
 					pqProvider: SessionTestSupport.pqProvider)
 			}
@@ -327,6 +328,7 @@ import TwoMLSPQCrypto
 					identity: alice2,
 					their: CombinerKeyPackage(
 						classical: wellCapableClassical, pq: roguePQ),
+					now: SessionTestSupport.now,
 					classicalProvider: SessionTestSupport.classicalProvider,
 					pqProvider: SessionTestSupport.pqProvider)
 			}
@@ -342,7 +344,7 @@ import TwoMLSPQCrypto
 			let alice = try SessionTestSupport.identity(aliceName)
 			let bob = try SessionTestSupport.identity("cap-gate-s4-bob-\(missing)")
 			let initiated = try TwoMLSSession.initiate(
-				identity: alice, their: bob.keyPackage,
+				identity: alice, their: bob.keyPackage, now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 			let rogueClaim = try Self.rogueClassicalKeyPackage(
@@ -354,6 +356,7 @@ import TwoMLSPQCrypto
 					theirClassicalKeyPackage: rogueClaim,
 					bootstrapKPCommitment: try initiated.session
 						.bootstrapKPCommitment(),
+					now: SessionTestSupport.now,
 					classicalProvider: SessionTestSupport.classicalProvider,
 					pqProvider: SessionTestSupport.pqProvider)
 			}
@@ -386,12 +389,13 @@ import TwoMLSPQCrypto
 				"cap-gate-s5-bob2-\(missing)")
 			let initiated = try TwoMLSSession.initiate(
 				identity: aliceIdentity, their: bobIdentity.keyPackage,
+				now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 			var received = try TwoMLSSession.receive(
 				identity: bobIdentity, welcome: initiated.welcome,
 				theirClassicalKeyPackage: aliceIdentity.keyPackage.classical,
-				bootstrapKPCommitment: rogueCommitment,
+				bootstrapKPCommitment: rogueCommitment, now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider
 			).session
@@ -402,7 +406,8 @@ import TwoMLSPQCrypto
 
 			let inbound = Frames.encodePQBootstrapKP(rogueKPBytes)
 			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
-				try received.pqBootstrapRespond(inbound)
+				try received.pqBootstrapRespond(
+					inbound, now: SessionTestSupport.now)
 			}
 			#expect(received.sendGroup?.pq == nil, "Group_B.pq was never founded")
 		}
@@ -528,7 +533,8 @@ import TwoMLSPQCrypto
 			)
 		)
 		let initiated = try TwoMLSSession.initiate(
-			identity: aliceRogue, their: bob.keyPackage, founding: founding,
+			identity: aliceRogue, their: bob.keyPackage, now: SessionTestSupport.now,
+			founding: founding,
 			classicalProvider: SessionTestSupport.classicalProvider,
 			pqProvider: SessionTestSupport.pqProvider)
 
@@ -540,7 +546,7 @@ import TwoMLSPQCrypto
 				identity: bob, welcome: initiated.welcome,
 				theirClassicalKeyPackage: wellCapableClaim,
 				bootstrapKPCommitment: try initiated.session
-					.bootstrapKPCommitment(),
+					.bootstrapKPCommitment(), now: SessionTestSupport.now,
 				classicalProvider: SessionTestSupport.classicalProvider,
 				pqProvider: SessionTestSupport.pqProvider)
 		}
@@ -587,7 +593,8 @@ import TwoMLSPQCrypto
 				provider, groupID: groupID,
 				leafNode: creatorKP.leafNode, leafSecretKey: leafSecretKey,
 				extensions: [infoExtension],
-				epochSecret: SecretBytes(randomByteCount: provider.hashSize))
+				epochSecret: SecretBytes(randomByteCount: provider.hashSize),
+				lifetimeCheck: .at(SessionTestSupport.now))
 			let proposals: [MLS.RFC9420.ProposalOrRef] = [
 				.proposal(.add(joinerKP)),
 				.proposal(
@@ -597,7 +604,9 @@ import TwoMLSPQCrypto
 			try TwoPartyRules.validateCreationProposals(proposals)
 			let transition = try epoch0.committing(
 				provider, proposals: proposals, signingKey: signingKey,
-				randomness: try .generate(provider), psk: pskStore.resolver())
+				randomness: try .generate(provider),
+				lifetimeCheck: .at(SessionTestSupport.now), psk: pskStore.resolver()
+			)
 			let sent = transition.takeOutput()
 			guard let welcome = sent.welcome else {
 				throw MLS.Combiner.Error.missingWelcome
@@ -692,7 +701,7 @@ import TwoMLSPQCrypto
 
 			let kpFrame = try aliceSession.pqBootstrapBegin().frame
 			let welcomeFrame = try bobSession.pqBootstrapRespond(
-				kpFrame, founding: rogueFounding
+				kpFrame, now: SessionTestSupport.now, founding: rogueFounding
 			).frame
 			#expect(throws: TwoMLSError.leafCapabilityUnadvertised) {
 				try aliceSession.pqBootstrapJoin(welcomeFrame)

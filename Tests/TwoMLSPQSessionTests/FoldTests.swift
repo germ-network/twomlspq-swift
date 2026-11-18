@@ -403,6 +403,7 @@ import TwoMLSPQCrypto
 				proposalStore: proposalStore,
 				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				includePath: true, framing: .publicMessage)
 			return try transition.takeOutput().message.mlsEncoded()
 		}
@@ -483,6 +484,7 @@ import TwoMLSPQCrypto
 				proposalStore: proposalStore,
 				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				includePath: true, framing: .publicMessage,
 				psk: { identifier in
 					identifier == forgedIdentifier ? forgedSecret : nil
@@ -644,6 +646,7 @@ import TwoMLSPQCrypto
 				proposalStore: proposalStore,
 				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				includePath: true, framing: .publicMessage)
 			let adopted = transition.group
 			let sent = transition.takeOutput()
@@ -695,6 +698,7 @@ import TwoMLSPQCrypto
 				SessionTestSupport.classicalProvider, proposals: [],
 				signingKey: try alice.sendClassicalSigningKey(),
 				randomness: try .generate(SessionTestSupport.classicalProvider),
+				lifetimeCheck: .at(SessionTestSupport.now),
 				includePath: true, framing: .publicMessage)
 			let adopted = transition.group
 			let sent = transition.takeOutput()

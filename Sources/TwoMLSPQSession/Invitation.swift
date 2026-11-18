@@ -140,6 +140,7 @@ public struct Invitation: Sendable {
 		theirClassicalKeyPackage: MLS.RFC9420.KeyPackage,
 		bootstrapKPCommitment: Data,
 		spawnToken: Data,
+		now: Date,
 		expectedRemoteClientID: Data? = nil,
 		expectedAppBinding: Data? = nil,
 		newClientID: Data? = nil
@@ -166,7 +167,8 @@ public struct Invitation: Sendable {
 		let result = try TwoMLSSession.receive(
 			identity: capturedIdentity, welcome: welcome,
 			theirClassicalKeyPackage: theirClassicalKeyPackage,
-			bootstrapKPCommitment: bootstrapKPCommitment, spawnToken: spawnToken,
+			bootstrapKPCommitment: bootstrapKPCommitment, now: now,
+			spawnToken: spawnToken,
 			classicalProvider: classicalProvider, pqProvider: pqProvider,
 			codepoints: codepoints, expectedAppBinding: expectedAppBinding,
 			newClientID: newClientID)

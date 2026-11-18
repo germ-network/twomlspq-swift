@@ -37,13 +37,14 @@ import Testing
 	) {
 		let theirCombinerKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: initiator, their: theirCombinerKP)
+			principal: initiator, their: theirCombinerKP, now: SessionTestSupport.now)
 		let commitment = try initiated.session.bootstrapKPCommitment()
 		let spawnToken = freshSpawnToken()
 		let received = try invitation.receive(
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
-			bootstrapKPCommitment: commitment, spawnToken: spawnToken)
+			bootstrapKPCommitment: commitment, spawnToken: spawnToken,
+			now: SessionTestSupport.now)
 		return (
 			alice: initiated.session, bob: received.session, welcome: initiated.welcome,
 			spawnToken: spawnToken, bootstrapKPCommitment: commitment,
@@ -84,7 +85,8 @@ import Testing
 		#expect(bobDecrypted.applicationMessage == Data("bob-reply".utf8))
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		#expect(alice.isFullyEstablished)
 		#expect(bob.isFullyEstablished)
@@ -105,7 +107,7 @@ import Testing
 				welcome: round.welcome,
 				theirClassicalKeyPackage: round.alice.identity.keyPackage.classical,
 				bootstrapKPCommitment: round.bootstrapKPCommitment,
-				spawnToken: round.spawnToken)
+				spawnToken: round.spawnToken, now: SessionTestSupport.now)
 		}
 
 		#expect(
@@ -172,13 +174,14 @@ import Testing
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
 		let initiated = try TwoMLSSession.initiate(
 			principal: alicePrincipal,
-			their: try #require(invitation.combinerKeyPackage))
+			their: try #require(invitation.combinerKeyPackage),
+			now: SessionTestSupport.now)
 
 		let received = try invitation.receive(
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: freshSpawnToken(),
+			spawnToken: freshSpawnToken(), now: SessionTestSupport.now,
 			expectedRemoteClientID: Data("alice".utf8))
 
 		#expect(received.session.isEstablished)
@@ -197,15 +200,16 @@ import Testing
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
 		let published = try #require(invitation.combinerKeyPackage)
 		let genuineInitiated = try TwoMLSSession.initiate(
-			principal: genuine, their: published)
-		let freshInitiated = try TwoMLSSession.initiate(principal: fresh, their: published)
+			principal: genuine, their: published, now: SessionTestSupport.now)
+		let freshInitiated = try TwoMLSSession.initiate(
+			principal: fresh, their: published, now: SessionTestSupport.now)
 
 		let received = try invitation.receive(
 			welcome: freshInitiated.welcome,
 			theirClassicalKeyPackage: genuineInitiated.session.identity.keyPackage
 				.classical,
 			bootstrapKPCommitment: try freshInitiated.session.bootstrapKPCommitment(),
-			spawnToken: freshSpawnToken(),
+			spawnToken: freshSpawnToken(), now: SessionTestSupport.now,
 			expectedRemoteClientID: Data("alice".utf8))
 		#expect(received.session.isEstablished)
 	}
@@ -221,9 +225,9 @@ import Testing
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let published = try #require(invitation.combinerKeyPackage)
 		let aliceInitiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: published)
+			principal: alicePrincipal, their: published, now: SessionTestSupport.now)
 		let malloryInitiated = try TwoMLSSession.initiate(
-			principal: malloryPrincipal, their: published)
+			principal: malloryPrincipal, their: published, now: SessionTestSupport.now)
 		let before = tables(invitation)
 
 		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
@@ -234,7 +238,7 @@ import Testing
 					.classical,
 				bootstrapKPCommitment: try aliceInitiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: freshSpawnToken(),
+				spawnToken: freshSpawnToken(), now: SessionTestSupport.now,
 				expectedRemoteClientID: Data("mallory".utf8))
 		}
 		#expect(tables(invitation) == before)
@@ -249,7 +253,8 @@ import Testing
 		let bobPrincipal = try makePrincipal("bob")
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
 		let initiated = try TwoMLSSession.initiate(
-			principal: forger, their: try #require(invitation.combinerKeyPackage))
+			principal: forger, their: try #require(invitation.combinerKeyPackage),
+			now: SessionTestSupport.now)
 
 		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
 			try invitation.receive(
@@ -258,7 +263,7 @@ import Testing
 					.classical,
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: freshSpawnToken(),
+				spawnToken: freshSpawnToken(), now: SessionTestSupport.now,
 				expectedRemoteClientID: Data("mallory".utf8))
 		}
 		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
@@ -268,7 +273,7 @@ import Testing
 					.classical,
 				bootstrapKPCommitment: try initiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: freshSpawnToken(),
+				spawnToken: freshSpawnToken(), now: SessionTestSupport.now,
 				expectedRemoteClientID: Data())
 		}
 	}
@@ -286,9 +291,10 @@ import Testing
 			var (invitation, _) = try bobPrincipal.generateInvitation(
 				lastResort: lastResort)
 			let published = try #require(invitation.combinerKeyPackage)
-			let forged = try TwoMLSSession.initiate(principal: forger, their: published)
+			let forged = try TwoMLSSession.initiate(
+				principal: forger, their: published, now: SessionTestSupport.now)
 			let genuine = try TwoMLSSession.initiate(
-				principal: victim, their: published)
+				principal: victim, their: published, now: SessionTestSupport.now)
 			let before = tables(invitation)
 
 			#expect(throws: TwoMLSError.remoteIdentityMismatch) {
@@ -298,7 +304,7 @@ import Testing
 						.classical,
 					bootstrapKPCommitment: try forged.session
 						.bootstrapKPCommitment(),
-					spawnToken: freshSpawnToken(),
+					spawnToken: freshSpawnToken(), now: SessionTestSupport.now,
 					expectedRemoteClientID: Data("mallory".utf8))
 			}
 			#expect(tables(invitation) == before)
@@ -309,7 +315,7 @@ import Testing
 				theirClassicalKeyPackage: genuine.session.identity.keyPackage
 					.classical,
 				bootstrapKPCommitment: try genuine.session.bootstrapKPCommitment(),
-				spawnToken: freshSpawnToken(),
+				spawnToken: freshSpawnToken(), now: SessionTestSupport.now,
 				expectedRemoteClientID: Data("alice".utf8))
 			#expect(accepted.session.isEstablished)
 		}
@@ -326,7 +332,8 @@ import Testing
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let round = try acceptOneWelcome(from: alicePrincipal, into: &invitation)
 		let forged = try TwoMLSSession.initiate(
-			principal: forger, their: try #require(invitation.combinerKeyPackage))
+			principal: forger, their: try #require(invitation.combinerKeyPackage),
+			now: SessionTestSupport.now)
 
 		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
 			try invitation.receive(
@@ -334,7 +341,7 @@ import Testing
 				theirClassicalKeyPackage: forged.session.identity.keyPackage
 					.classical,
 				bootstrapKPCommitment: try forged.session.bootstrapKPCommitment(),
-				spawnToken: freshSpawnToken(),
+				spawnToken: freshSpawnToken(), now: SessionTestSupport.now,
 				expectedRemoteClientID: Data("mallory".utf8))
 		}
 
@@ -344,14 +351,15 @@ import Testing
 				welcome: round.welcome,
 				theirClassicalKeyPackage: round.alice.identity.keyPackage.classical,
 				bootstrapKPCommitment: round.bootstrapKPCommitment,
-				spawnToken: round.spawnToken,
+				spawnToken: round.spawnToken, now: SessionTestSupport.now,
 				expectedRemoteClientID: Data("mallory".utf8))
 		}
 
 		// So does a forgery against a spent single-use invitation.
 		var (singleUse, _) = try bobPrincipal.generateInvitation(lastResort: false)
 		let published = try #require(singleUse.combinerKeyPackage)
-		let late = try TwoMLSSession.initiate(principal: forger, their: published)
+		let late = try TwoMLSSession.initiate(
+			principal: forger, their: published, now: SessionTestSupport.now)
 		_ = try acceptOneWelcome(from: alicePrincipal, into: &singleUse)
 		#expect(singleUse.combinerKeyPackage == nil)
 		#expect(throws: TwoMLSError.remoteIdentityMismatch) {
@@ -360,7 +368,7 @@ import Testing
 				theirClassicalKeyPackage: late.session.identity.keyPackage
 					.classical,
 				bootstrapKPCommitment: try late.session.bootstrapKPCommitment(),
-				spawnToken: freshSpawnToken(),
+				spawnToken: freshSpawnToken(), now: SessionTestSupport.now,
 				expectedRemoteClientID: Data("mallory".utf8))
 		}
 	}
@@ -384,7 +392,7 @@ import Testing
 		#expect(invitation.combinerKeyPackage == nil)
 
 		let carolInitiated = try TwoMLSSession.initiate(
-			principal: carolPrincipal, their: publishedKP)
+			principal: carolPrincipal, their: publishedKP, now: SessionTestSupport.now)
 		#expect(throws: TwoMLSError.invitationSpent) {
 			try invitation.receive(
 				welcome: carolInitiated.welcome,
@@ -392,7 +400,7 @@ import Testing
 					.classical,
 				bootstrapKPCommitment: try carolInitiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: freshSpawnToken())
+				spawnToken: freshSpawnToken(), now: SessionTestSupport.now)
 		}
 
 		let restored = try Invitation.restore(
@@ -452,9 +460,9 @@ import Testing
 
 		// Each session independently runs its own §A.3.
 		let aliceKPFrame = try aliceRound.alice.pqBootstrapBegin().frame
-		_ = try aliceRound.bob.pqBootstrapRespond(aliceKPFrame)
+		_ = try aliceRound.bob.pqBootstrapRespond(aliceKPFrame, now: SessionTestSupport.now)
 		let carolKPFrame = try carolRound.alice.pqBootstrapBegin().frame
-		_ = try carolRound.bob.pqBootstrapRespond(carolKPFrame)
+		_ = try carolRound.bob.pqBootstrapRespond(carolKPFrame, now: SessionTestSupport.now)
 
 		let aliceBobSendPQKey = try #require(aliceRound.bob.leafKeys.sendPQ.current)
 		let carolBobSendPQKey = try #require(carolRound.bob.leafKeys.sendPQ.current)
@@ -497,7 +505,7 @@ import Testing
 				welcome: round.welcome,
 				theirClassicalKeyPackage: round.alice.identity.keyPackage.classical,
 				bootstrapKPCommitment: round.bootstrapKPCommitment,
-				spawnToken: round.spawnToken)
+				spawnToken: round.spawnToken, now: SessionTestSupport.now)
 		}
 
 		// A NEW, distinct welcome from the SAME remote isolates the
@@ -586,7 +594,7 @@ import Testing
 		#expect(restored.combinerKeyPackage == nil)
 
 		let carolInitiated = try TwoMLSSession.initiate(
-			principal: carolPrincipal, their: publishedKP)
+			principal: carolPrincipal, their: publishedKP, now: SessionTestSupport.now)
 		#expect(throws: TwoMLSError.invitationSpent) {
 			try restored.receive(
 				welcome: carolInitiated.welcome,
@@ -594,7 +602,7 @@ import Testing
 					.classical,
 				bootstrapKPCommitment: try carolInitiated.session
 					.bootstrapKPCommitment(),
-				spawnToken: freshSpawnToken())
+				spawnToken: freshSpawnToken(), now: SessionTestSupport.now)
 		}
 	}
 
@@ -634,7 +642,8 @@ import Testing
 		#expect(aliceDecrypted.applicationMessage == Data("alice-hello".utf8))
 
 		let kpFrame = try alice.pqBootstrapBegin().frame
-		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame).frame
+		let welcomeFrame = try bob.pqBootstrapRespond(kpFrame, now: SessionTestSupport.now)
+			.frame
 		_ = try alice.pqBootstrapJoin(welcomeFrame)
 		#expect(alice.isFullyEstablished)
 		#expect(bob.isFullyEstablished)
@@ -657,7 +666,7 @@ import Testing
 		let (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
 		let theirKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 
 		let envelope = try initiated.session.pendingOutbound()
 		guard case .establishment(let frame) = try invitation.openInitial(envelope) else {
@@ -674,7 +683,7 @@ import Testing
 		let received = try mutableInvitation.receive(
 			welcome: try #require(frame.welcome), theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: freshSpawnToken())
+			spawnToken: freshSpawnToken(), now: SessionTestSupport.now)
 		#expect(received.session.isEstablished)
 	}
 
@@ -693,7 +702,7 @@ import Testing
 		#expect(invitation.combinerKeyPackage == nil)
 
 		let carolInitiated = try TwoMLSSession.initiate(
-			principal: carolPrincipal, their: publishedKP)
+			principal: carolPrincipal, their: publishedKP, now: SessionTestSupport.now)
 		let envelope = try carolInitiated.session.pendingOutbound()
 
 		#expect(throws: TwoMLSError.invitationSpent) {
@@ -718,7 +727,7 @@ import Testing
 			pqProvider: SessionTestSupport.pqProvider)
 
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirKP)
+			principal: alicePrincipal, their: theirKP, now: SessionTestSupport.now)
 		let envelope = try initiated.session.pendingOutbound()
 
 		guard case .establishment(let frame) = try restored.openInitial(envelope) else {
@@ -730,7 +739,7 @@ import Testing
 		let received = try restored.receive(
 			welcome: try #require(frame.welcome), theirClassicalKeyPackage: returnKP,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: freshSpawnToken())
+			spawnToken: freshSpawnToken(), now: SessionTestSupport.now)
 		#expect(received.session.isEstablished)
 	}
 
@@ -805,13 +814,15 @@ import Testing
 		var (invitation, _) = try bobPrincipal.generateInvitation(lastResort: false)
 		let theirCombinerKP = try #require(invitation.combinerKeyPackage)
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now)
 		let dedicatedClientID = Data("bob-dedicated".utf8)
 		let received = try invitation.receive(
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: freshSpawnToken(), newClientID: dedicatedClientID)
+			spawnToken: freshSpawnToken(), now: SessionTestSupport.now,
+			newClientID: dedicatedClientID)
 		var bob = received.session
 		#expect(bob.owesEstablishmentEnvelope)
 
@@ -894,25 +905,27 @@ import Testing
 		let bobPrincipal = try makePrincipal("bob-for-carol")
 		var (bobInvitation, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let firstSession = try TwoMLSSession.initiate(
-			principal: principal, their: try #require(bobInvitation.combinerKeyPackage)
+			principal: principal, their: try #require(bobInvitation.combinerKeyPackage),
+			now: SessionTestSupport.now
 		)
 		_ = try bobInvitation.receive(
 			welcome: firstSession.welcome,
 			theirClassicalKeyPackage: firstSession.session.identity.keyPackage
 				.classical,
 			bootstrapKPCommitment: try firstSession.session.bootstrapKPCommitment(),
-			spawnToken: freshSpawnToken())
+			spawnToken: freshSpawnToken(), now: SessionTestSupport.now)
 
 		var (bobInvitation2, _) = try bobPrincipal.generateInvitation(lastResort: true)
 		let secondSession = try TwoMLSSession.initiate(
 			principal: principal,
-			their: try #require(bobInvitation2.combinerKeyPackage))
+			their: try #require(bobInvitation2.combinerKeyPackage),
+			now: SessionTestSupport.now)
 		_ = try bobInvitation2.receive(
 			welcome: secondSession.welcome,
 			theirClassicalKeyPackage: secondSession.session.identity.keyPackage
 				.classical,
 			bootstrapKPCommitment: try secondSession.session.bootstrapKPCommitment(),
-			spawnToken: freshSpawnToken())
+			spawnToken: freshSpawnToken(), now: SessionTestSupport.now)
 
 		let firstOwnKeys = [
 			try #require(firstSession.session.leafKeys.sendClassical.current)

@@ -28,6 +28,11 @@ enum SessionTestSupport {
 	}()
 	static let pqProvider = MLKEM768CipherSuiteProvider()
 
+	/// A fixed host clock: every KeyPackage the tests mint spans 0..max, so
+	/// any fixed time passes the lifetime check; tests that exercise
+	/// lifetimes mint their own bounds around it.
+	static let now = Date(timeIntervalSince1970: 1_800_000_000)
+
 	static func identity(
 		_ name: String, profile: SessionProfile = .deployedCompatible
 	) throws -> TwoMLSIdentity {
@@ -72,13 +77,14 @@ enum SessionTestSupport {
 		}
 
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now)
 		let spawnToken = classicalProvider.randomBytes(16)
 		let received = try invitation.receive(
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: spawnToken)
+			spawnToken: spawnToken, now: SessionTestSupport.now)
 
 		return (
 			alice: initiated.session, bob: received.session,
@@ -116,13 +122,15 @@ enum SessionTestSupport {
 		}
 
 		let initiated = try TwoMLSSession.initiate(
-			principal: alicePrincipal, their: theirCombinerKP)
+			principal: alicePrincipal, their: theirCombinerKP,
+			now: SessionTestSupport.now)
 		let spawnToken = classicalProvider.randomBytes(16)
 		let received = try invitation.receive(
 			welcome: initiated.welcome,
 			theirClassicalKeyPackage: initiated.session.identity.keyPackage.classical,
 			bootstrapKPCommitment: try initiated.session.bootstrapKPCommitment(),
-			spawnToken: spawnToken, newClientID: dedicatedClientID)
+			spawnToken: spawnToken, now: SessionTestSupport.now,
+			newClientID: dedicatedClientID)
 
 		return (
 			alice: initiated.session, bob: received.session,
