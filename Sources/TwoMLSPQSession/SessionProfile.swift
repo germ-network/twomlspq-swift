@@ -85,8 +85,7 @@ extension TwoMLSSession {
 	/// Swallows a malformed record to `.deployedCompatible`: unreachable
 	/// today (archives are sealed, the migration mint refuses any record,
 	/// and establishment validates the record before it is ever claimed —
-	/// restore re-derives from the already-validated send group and adds no
-	/// separate check of its own).
+	/// restore rejects a malformed record on either classical half).
 	var profile: SessionProfile {
 		guard let context = sendGroup?.classical.context,
 			let recorded = try? SessionProfile.recorded(in: context)

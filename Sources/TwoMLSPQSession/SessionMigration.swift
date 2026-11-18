@@ -98,6 +98,10 @@ public struct MigratedPartySequence: Sendable {
 	/// Oldest → newest canonical credentials, trimmed to the AS history
 	/// window by the live path; supplied as the legacy state holds them.
 	public var history: [Data]
+	/// IGNORED by `mintArchive` for the peer's sequence (`auth.theirs`): nothing
+	/// in migrated state attests the app's approval of a peer rotation. A peer
+	/// rotation approved but not yet folded must be re-requested by the peer
+	/// and approved again. Kept as supplied for my own sequence.
 	public var authorizedNext: [Data]
 	/// IGNORED by `mintArchive`: the deployed engine pins only the A.3
 	/// founding ids (book group-rules.md rule 4's own example, not its full
@@ -349,6 +353,8 @@ public struct MigratedSession: Sendable {
 	public var lastCrossInjectedPQ: UInt64?
 	public var lastSendPQExported: UInt64?
 	public var offeredProposal: MigratedDigestedProposal?
+	/// IGNORED by `mintArchive`, for the same reason as the peer's
+	/// `authorizedNext`: the approval it records is not attested.
 	public var queuedProposal: MigratedDigestedProposal?
 	public var stagedUpdates: [MigratedStagedUpdate]
 	public var sendCrossPSKLedger: [UInt64: MigratedExportedPsk]
@@ -546,12 +552,14 @@ public enum SessionMigration {
 	/// migrated parts — the session-level analogue of
 	/// `InvitationMigration.mintArchive`. The result is
 	/// value-identical to what `makeSessionArchive(kind:)` would have
-	/// produced for the same state (the group halves arrive as snapshot
-	/// archives and are re-snapshotted through a live `Group.restore`, the
-	/// only public path to a `Group.Snapshot` value; restore→`makeSnapshot()`
-	/// is value-preserving, so the minted entry equals the native one) —
-	/// value-identical, not byte-identical: the integer-keyed maps encode in
-	/// `Dictionary` order, exactly as the native path's own encodings do.
+	/// produced for the same state, except that the peer's `authorizedNext`
+	/// and `queuedProposal` are dropped and `pinned` is re-derived. (The
+	/// group halves arrive as snapshot archives and are re-snapshotted
+	/// through a live `Group.restore`, the only public path to a
+	/// `Group.Snapshot` value; restore→`makeSnapshot()` is value-preserving,
+	/// so the minted entry equals the native one.) It is value-identical, not
+	/// byte-identical: the integer-keyed maps encode in `Dictionary` order,
+	/// exactly as the native path's own encodings do.
 	/// The app seals it with its own key; this library never holds a sealing
 	/// key.
 	///
@@ -673,6 +681,10 @@ public enum SessionMigration {
 			try restoredGroup($0, pqProvider)
 		}
 
+		try TwoMLSSession.validateRestoredGroups(
+			sendClassical: sendClassical, sendPQ: sendPQ, recvClassical: recvClassical,
+			recvPQ: recvPQ)
+
 		// A.2 step 2 ("drop at import", both leafKeys paths — run before
 		// `convertDeployedKeys`/`nativeLeafKeys` and before
 		// `validateLeafKeys`): a parked §A.5 Upd′ that fails to verify
@@ -792,25 +804,9 @@ public enum SessionMigration {
 			}
 		}
 
-		// Book wire-format.md: every occupied leaf of every restored tree
-		// must advertise the APQInfo extension and the AppDataUpdate
-		// proposal — a capability-less leaf is refused at mint, mirroring
-		// the same gate the live engine enforces on every peer-leaf ingress
-		// site.
-		do {
-			for group in [sendClassical, sendPQ, recvClassical, recvPQ].compactMap({
-				$0
-			}) {
-				for entry in group.tree.nonBlankLeaves() {
-					let leaf = try MLS.RFC9420.LeafNode(
-						mlsEncoded: entry.record.encoded)
-					try TwoPartyRules.ensureAdvertisesAPQCapabilities(
-						leaf, codepoints: .deployed)
-				}
-			}
-		} catch {
-			throw TwoMLSError.archiveInvalid
-		}
+		try validateMigratedLeafAdverts(
+			sendClassical: sendClassical, sendPQ: sendPQ, recvClassical: recvClassical,
+			recvPQ: recvPQ)
 
 		// Book group-rules.md rule 9: the deployed engine never advertises,
 		// so it never records a profile either — a migrated session always
@@ -912,8 +908,19 @@ public enum SessionMigration {
 				authorizedNext: parts.auth.mine.authorizedNext, pinned: []),
 			theirs: PartySequence(
 				history: parts.auth.theirs.history,
-				authorizedNext: parts.auth.theirs.authorizedNext, pinned: [])
+				authorizedNext: [], pinned: [])
 		).withPQPins(mine: presentedPQIDs.mine, theirs: presentedPQIDs.theirs)
+		try TwoMLSSession.validateAuthShape(mintedAuth)
+		try TwoMLSSession.validateWindowEpochs(
+			listenRendezvous: parts.listenRendezvous.keys,
+			recvHeaderKeys: parts.recvHeaderKeys.keys,
+			recvHeaderKeysPQ: parts.recvHeaderKeysPQ.keys,
+			sendClassicalEpoch: sendClassical.context.epoch,
+			sendPQEpoch: sendPQ?.context.epoch)
+		try TwoMLSSession.validateEstablishmentOwed(
+			parts.owesEstablishmentEnvelope, initiated: parts.initiated,
+			currentStaple: parts.currentStaple, sendClassical: sendClassical,
+			recvClassical: recvClassical, mineHistory: parts.auth.mine.history)
 
 		// Today this mostly re-checks `convertDeployedKeys`'s own conversion
 		// (`.mintConverted`); it becomes load-bearing against genuinely
@@ -1016,11 +1023,7 @@ public enum SessionMigration {
 					digest: $0.digest, proposing: $0.proposing,
 					message: $0.message)
 			},
-			queuedProposal: parts.queuedProposal.map {
-				DigestedProposalArchive(
-					digest: $0.digest, proposing: $0.proposing,
-					message: $0.message)
-			},
+			queuedProposal: nil,
 			stagedUpdates: parts.stagedUpdates.map {
 				StagedUpdateArchive(digest: $0.digest, message: $0.message)
 			},

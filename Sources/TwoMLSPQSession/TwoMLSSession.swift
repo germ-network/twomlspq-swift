@@ -541,7 +541,7 @@ public struct TwoMLSSession: Sendable {
 
 	/// Every retained classical epoch's `HeaderKey` for THIS session's own
 	/// send group — captured by `recordListenRendezvous()` in lockstep with
-	/// `listenRendezvous` (same sites, same idempotency, same retention):
+	/// `listenRendezvous` (same sites, same retention):
 	/// "routable ⟺ openable", the classical header window is exactly the
 	/// rendezvous listen window (book header-encryption.md, "Receive rule").
 	/// Trial-opened FIRST (before `recvHeaderKeysPQ`), newest epoch first.

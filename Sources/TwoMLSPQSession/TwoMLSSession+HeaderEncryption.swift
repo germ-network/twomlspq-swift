@@ -298,7 +298,8 @@ extension TwoMLSSession {
 	/// Capture THIS session's own send-PQ group's `HeaderKeyPQ` at its
 	/// CURRENT `pq_epoch` into `recvHeaderKeysPQ`, then prune to the flat
 	/// keep-newest `pqHeaderWindow`. No-op while the send-PQ half is
-	/// deferred (pre-A.3 Group_B). Idempotent per `pq_epoch`.
+	/// deferred (pre-A.3 Group_B). The current `pq_epoch`'s entry is always
+	/// the derived value, never a carried one.
 	///
 	/// Call sites, traced against every place `sendGroup.pq`'s epoch
 	/// actually advances or the half is founded: `initiate` (Alice founds
@@ -315,9 +316,7 @@ extension TwoMLSSession {
 	mutating func recordPQHeaderKey() throws {
 		guard let send = sendGroup, let pq = send.pq else { return }
 		let epoch = pq.context.epoch
-		if recvHeaderKeysPQ[epoch] == nil {
-			recvHeaderKeysPQ[epoch] = try headerKeyPQ(pq)
-		}
+		recvHeaderKeysPQ[epoch] = try headerKeyPQ(pq)
 		if recvHeaderKeysPQ.count > Self.pqHeaderWindow {
 			let evict = recvHeaderKeysPQ.keys.sorted(by: >).dropFirst(
 				Self.pqHeaderWindow)

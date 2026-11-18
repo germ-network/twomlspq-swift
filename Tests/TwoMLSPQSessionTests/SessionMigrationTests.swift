@@ -32,7 +32,7 @@ import TwoMLSPQCrypto
 	/// fixture that needs the migrator's retained-custody record supplies
 	/// it explicitly.
 	@available(iOS 26, macOS 26, *)
-	private func migratedParts(
+	func migratedParts(
 		_ session: TwoMLSSession, identityOverride: TwoMLSIdentity? = nil,
 		recvLeafPrincipal: MigratedRecvLeafPrincipal? = nil,
 		suppliedLeafKeys: Bool = false
@@ -177,7 +177,7 @@ import TwoMLSPQCrypto
 	// by the native-path tests elsewhere, never here.
 
 	@available(iOS 26, macOS 26, *)
-	private func deployedShapedFounding(
+	func deployedShapedFounding(
 		_ half: MLS.RFC9420.KeyPackage, secret: MLS.HpkeSecretKey,
 		signingKey: MLS.SignatureSecretKey,
 		signatureKey: MLS.SignaturePublicKey
@@ -193,7 +193,7 @@ import TwoMLSPQCrypto
 	/// leaves (never a freshly minted founding leaf), and Bob founds
 	/// Group_B's classical half on his.
 	@available(iOS 26, macOS 26, *)
-	private func deployedShapedEstablished(
+	func deployedShapedEstablished(
 		alice aliceName: String = "alice", bob bobName: String = "bob"
 	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
@@ -237,7 +237,7 @@ import TwoMLSPQCrypto
 	}
 
 	@available(iOS 26, macOS 26, *)
-	private func deployedShapedEstablishedAndExchanged(
+	func deployedShapedEstablishedAndExchanged(
 		alice aliceName: String = "alice", bob bobName: String = "bob"
 	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, aliceIdentity: TwoMLSIdentity,
@@ -259,7 +259,7 @@ import TwoMLSPQCrypto
 	/// leaf too, signed with the same key his classical founding leaf uses
 	/// — exactly the deployed engine's one-key-per-party shape.
 	@available(iOS 26, macOS 26, *)
-	private func deployedShapedFullyEstablishedTurnOnBob() throws -> (
+	func deployedShapedFullyEstablishedTurnOnBob() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession
 	) {
 		var (alice, bob, _, bobIdentity) = try deployedShapedEstablishedAndExchanged()
@@ -291,7 +291,7 @@ import TwoMLSPQCrypto
 	/// `catchUpKey` reuses `founding.key` rather than a second, independent
 	/// mint.
 	@available(iOS 26, macOS 26, *)
-	private func deployedShapedEstablishedDedicated(
+	func deployedShapedEstablishedDedicated(
 		bob bobName: String = "bob", dedicatedClientID: Data = Data("bob-dedicated".utf8)
 	) throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession, invitationIdentity: TwoMLSIdentity,
@@ -345,7 +345,7 @@ import TwoMLSPQCrypto
 	/// complete PQ round (`RatchetTests`' own flow), landing at PQ epoch 2,
 	/// quiescent (no inflight/owed state), ledgers and windows populated.
 	@available(iOS 26, macOS 26, *)
-	private func fullyEstablishedPair() throws -> (
+	func fullyEstablishedPair() throws -> (
 		alice: TwoMLSSession, bob: TwoMLSSession
 	) {
 		var (alice, bob) = try deployedShapedFullyEstablishedTurnOnBob()
@@ -1264,10 +1264,10 @@ import TwoMLSPQCrypto
 	/// `APQInfo` extension and the `AppDataUpdate` proposal, or mint
 	/// refuses with `.archiveInvalid`.
 	@available(iOS 26, macOS 26, *)
-	private func rogueKeyPackage(
-		named name: String, capabilities: MLS.RFC9420.Capabilities
+	func rogueKeyPackage(
+		named name: String, capabilities: MLS.RFC9420.Capabilities,
+		provider: any MLS.CipherSuiteProvider = SessionTestSupport.classicalProvider
 	) throws -> MLS.RFC9420.KeyPackage {
-		let provider = SessionTestSupport.classicalProvider
 		let (signingKey, signatureKey) = try TwoMLSIdentity.mintSignatureKeypair()
 		let (_, leafPublicKey) = try provider.hpkeGenerateKeyPair()
 		let (_, initPublicKey) = try provider.hpkeGenerateKeyPair()
@@ -1293,7 +1293,7 @@ import TwoMLSPQCrypto
 	/// `CombinerKeyPackageWireTests.makeIdentity()`'s stored-property
 	/// workaround for the same restriction.
 	@available(iOS 26, macOS 26, *)
-	private static var rogueCapabilities: MLS.RFC9420.Capabilities {
+	static var rogueCapabilities: MLS.RFC9420.Capabilities {
 		MLS.RFC9420.Capabilities(
 			versions: [.mls10], cipherSuites: [TwoMLSSuite.classical, TwoMLSSuite.pq],
 			extensions: [], proposals: [],
@@ -2462,7 +2462,7 @@ extension SessionMigrationTests {
 	}
 
 	@available(iOS 26, macOS 26, *)
-	private func restoreMinted(_ parts: MigratedSession) throws -> TwoMLSSession {
+	func restoreMinted(_ parts: MigratedSession) throws -> TwoMLSSession {
 		let minted = try SessionMigration.mintArchive(
 			kind: .checkpoint, parts: parts,
 			classicalProvider: SessionTestSupport.classicalProvider,
